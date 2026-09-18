@@ -157,7 +157,6 @@ describe('FencedBatch tree statements', () => {
       taskFollowOn().set({ first_started_at_ms: nowValue }),
       taskFollowOn().set({ first_started_at_ms: value<number>(CLOCK) }),
       taskFollowOn().set({ first_started_at_ms: value<number>(`unixepoch('subsec')*1000`) }),
-      taskFollowOn().set((eb) => ({ first_started_at_ms: eb.fn<number>('unixepoch', []) })),
       taskFollowOn().set({ first_started_at_ms: value<number>('$NOW$ + ?', [5]) }),
     ]
     for (const spelling of spellings) expect(() => followOn(spelling)).toThrow(/reads the clock/)
@@ -515,7 +514,7 @@ describe('FencedBatch tree statements', () => {
       ).not.toThrow()
       expect(() =>
         followOn(gatedBy((eb) => eb.fn('count', [eb.ref('f.run_id' as never)]).as('n'))),
-      ).toThrow(/fence/)
+      ).toThrow(/a call of count, which the grammar does not list/)
       expect(() => followOn(gatedBy(() => aliasedAs(value<number>('COUNT(*)'), 'n')))).toThrow(
         /fence/,
       )
@@ -1284,7 +1283,7 @@ describe('FencedBatch tree statements', () => {
     it('selects plain columns and values, so no row appears that the fence did not match', () => {
       const plain = /must select plain columns and values/
       refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
-      refused(successor({ task: (eb) => eb.fn('upper', [eb.ref('f.task_id')]) }), plain)
+      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), plain)
       refused(
         successor({
           from: (select) => select.having((eb: Loose) => eb(eb.fn.countAll(), '>=', 0)),

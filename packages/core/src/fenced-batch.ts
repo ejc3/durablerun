@@ -28,7 +28,6 @@ import {
   type DefinedStatement,
   type StatementTree,
   type TreeDialect,
-  clockFunctionCalls,
   columnValue,
   defineStatement,
   fenceValue,
@@ -959,9 +958,9 @@ export class FencedBatch {
     const rawTexts = rawFragmentTexts(tree)
     // A compare-and-set may carry the batch clock's own text inside a fragment. Any
     // other spelling is a second clock.
-    const spelledClock =
-      clockFunctionCalls(tree).length !== 0 ||
-      rawTexts.some((text) => CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text))
+    const spelledClock = rawTexts.some((text) =>
+      CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),
+    )
     if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {
       throw new Error(clockReadRule(at))
     }

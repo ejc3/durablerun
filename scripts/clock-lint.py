@@ -55,7 +55,7 @@ except ValueError as error:
 CALLS = (
     "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
     "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
-    "|localtime|localtimestamp|current_timestamp|curdate|curtime"
+    "|localtime|localtimestamp|current_timestamp|curdate|curtime|unix_timestamp"
 )
 CLOCKS = re.compile(
     rf"\b(?:{CALLS})\s*\("
@@ -64,7 +64,9 @@ CLOCKS = re.compile(
     # LOCALTIME and UTC_TIMESTAMP bare; Postgres accepts LOCALTIMESTAMP.
     r"|\b(?:current_timestamp|current_time|current_date"
     r"|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b"
-    r"|\b(?:datetime|date|time)\s*\(\s*'now'",
+    # SQLite reads a date function with no argument as the current time, the same
+    # as with 'now'.
+    r"|\b(?:datetime|date|time)\s*\(\s*(?:'now'|\))",
     re.IGNORECASE,
 )
 META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"

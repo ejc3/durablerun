@@ -72,6 +72,8 @@ const besideTasks = () => loose.selectFrom(['runs as f', 'tasks as t2'])
 const fenceAsStamp = () => successor({ stamp: fenceValue('win') })
 /** An aggregate where a plain column belongs. */
 const aggregated = () => successor({ task: (eb: Loose) => eb.fn.max('f.task_id') })
+/** A bound value where the fenced row's own instant belongs. */
+const boundInstant = () => successor({ instant: (eb: Loose) => eb.val(5) })
 /** A raw node nobody minted, standing as a predicate. */
 const unmintedPredicate = () => taskFollowOn().where(sql.raw<boolean>(`task_name = 'job'`))
 
@@ -448,7 +450,7 @@ describe('the tree path', () => {
 
     it('reads no gate through a function node', () => {
       refuses('mutation-verdict:construction:tree-no-row-function', NO_GATE, () =>
-        followOn(counted((eb) => eb.fn('count', [eb.ref('f.run_id')]).as('n'))),
+        followOn(counted((eb) => eb.fn.coalesce('f.run_id', eb.val('r0')).as('n'))),
       )
     })
 
@@ -682,7 +684,7 @@ describe('the tree path', () => {
 
     it('selects no function node', () => {
       refuses('mutation-verdict:construction:tree-followon-insert-no-function', PLAIN, () =>
-        followOn(successor({ task: (eb: Loose) => eb.fn('upper', [eb.ref('f.task_id')]) })),
+        followOn(successor({ task: (eb: Loose) => eb.fn.coalesce('f.task_id', eb.val('t0')) })),
       )
     })
 
@@ -727,7 +729,15 @@ describe('the tree path', () => {
 
     it('inserts an instant read from the fenced row', () => {
       refuses('mutation-verdict:construction:tree-followon-insert-instant', INSTANT, () =>
-        followOn(successor({ instant: (eb: Loose) => eb.val(5) })),
+        followOn(boundInstant()),
+      )
+    })
+
+    it('keeps only the columns that take the fenced instant', () => {
+      refuses(
+        'mutation-verdict:construction:tree-followon-insert-instants-are-filtered',
+        INSTANT,
+        () => followOn(boundInstant()),
       )
     })
 
@@ -1008,14 +1018,6 @@ describe('the tree path', () => {
       )
     })
 
-    it('refuses a clock called as a function node', () => {
-      refuses('mutation-verdict:construction:tree-clock-function-node', /reads the clock/, () =>
-        followOn(
-          taskFollowOn().set((eb) => ({ first_started_at_ms: eb.fn<number>('unixepoch', []) })),
-        ),
-      )
-    })
-
     it('refuses a clock spelled in a fragment', () => {
       refuses(
         'mutation-verdict:construction:tree-clock-spelling-in-fragment',
@@ -1025,6 +1027,26 @@ describe('the tree path', () => {
             taskFollowOn().set({ first_started_at_ms: value<number>(`unixepoch('subsec')*1000`) }),
           ),
       )
+    })
+
+    it('refuses a clock spelled in any one fragment of several', () => {
+      // Whichever fragment the walk reaches first, the clock is in the other in one of these.
+      const spelled = [
+        { startedAt: 'sysdate()', named: `task_name = 'job'` },
+        { startedAt: '5', named: `task_name = 'job' AND enqueue_at_ms < sysdate()` },
+      ]
+      for (const { startedAt, named } of spelled) {
+        refuses(
+          'mutation-verdict:construction:tree-clock-spelling-any-fragment',
+          /reads the clock/,
+          () =>
+            followOn(
+              taskFollowOn()
+                .set({ first_started_at_ms: value<number>(startedAt) })
+                .where(predicate(named)),
+            ),
+        )
+      }
     })
 
     it('refuses a second clock in a compare-and-set', () => {

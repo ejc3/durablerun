@@ -1130,19 +1130,10 @@ MUTATION_SPECS = [
         "a tree follow-on may resolve the clock token a second time",
     ),
     (
-        "tree-clock-function-node",
-        "packages/core/src/fenced-batch.ts",
-        "      clockFunctionCalls(tree).length !== 0 ||\n",
-        "",
-        "a tree statement may call a database clock as a function node",
-    ),
-    (
         "tree-clock-spelling-in-fragment",
         "packages/core/src/fenced-batch.ts",
-        "      rawTexts.some((text) => CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text))",
-        "      rawTexts.some(\n"
-        "        (text) => false && CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),\n"
-        "      )",
+        "      CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
+        "      false && CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
         "a tree follow-on may embed a dialect clock expression in a fragment",
     ),
     (
@@ -1291,11 +1282,46 @@ MUTATION_SPECS = [
         "a second assignment may overwrite the clock a tree compare-and-set writes",
     ),
     (
-        "tree-clock-function-case-fold",
+        "tree-clock-now-no-argument",
         "packages/core/src/sql-tree.ts",
-        "CLOCK_FUNCTIONS.includes(candidate.func.toLowerCase())",
-        "CLOCK_FUNCTIONS.includes(candidate.func)",
-        "a clock called as a function node in upper case goes unseen",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|$^)`,",
+        "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-now-literal",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:$^|\\))`,",
+        "a date function given 'now' goes unseen in a fragment",
+    ),
+    (
+        "tree-grammar-function-list",
+        "packages/core/src/sql-tree.ts",
+        "    if (FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {",
+        "    if (false && FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {",
+        "a tree statement calls a function the grammar does not list, which is how a clock nobody listed gets in",
+    ),
+    (
+        "tree-grammar-function-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "!GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())",
+        "!GRAMMAR_FUNCTIONS.includes(node.func)",
+        "a listed function spelled in upper case is refused",
+    ),
+    (
+        "tree-grammar-aggregate-list",
+        "packages/core/src/sql-tree.ts",
+        "    if (AggregateFunctionNode.is(node) && !GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())) {",
+        "    if (false && AggregateFunctionNode.is(node) && !GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())) {",
+        "a tree statement calls an aggregate the grammar does not list",
+    ),
+    (
+        "tree-grammar-aggregate-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "!GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())",
+        "!GRAMMAR_AGGREGATES.includes(node.func)",
+        "a listed aggregate spelled in upper case is refused",
     ),
     (
         "tree-clock-spelling-case-fold",
@@ -1325,8 +1351,8 @@ MUTATION_SPECS = [
     (
         "tree-clock-spelling-now-arm",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*'now'`,\n",
-        "    String.raw`(?!)`,\n",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,\n",
+        "    String.raw`(?!)(?:)`,\n",
         "datetime('now') in a fragment goes unseen",
     ),
     (
@@ -1400,48 +1426,6 @@ MUTATION_SPECS = [
         "the clock function timeofday goes unseen in a tree",
     ),
     (
-        "tree-clock-function-utc-timestamp",
-        "packages/core/src/sql-tree.ts",
-        "  'utc_timestamp',\n",
-        "",
-        "the clock function utc_timestamp goes unseen in a tree",
-    ),
-    (
-        "tree-clock-function-utc-date",
-        "packages/core/src/sql-tree.ts",
-        "  'utc_date',\n",
-        "",
-        "the clock function utc_date goes unseen in a tree",
-    ),
-    (
-        "tree-clock-function-utc-time",
-        "packages/core/src/sql-tree.ts",
-        "  'utc_time',\n",
-        "",
-        "the clock function utc_time goes unseen in a tree",
-    ),
-    (
-        "tree-clock-function-localtime",
-        "packages/core/src/sql-tree.ts",
-        "  'localtime',\n",
-        "",
-        "the clock function localtime goes unseen in a tree",
-    ),
-    (
-        "tree-clock-function-localtimestamp",
-        "packages/core/src/sql-tree.ts",
-        "  'localtimestamp',\n",
-        "",
-        "the clock function localtimestamp goes unseen in a tree",
-    ),
-    (
-        "tree-clock-function-current-timestamp",
-        "packages/core/src/sql-tree.ts",
-        "  'current_timestamp',\n",
-        "",
-        "the clock function current_timestamp goes unseen in a tree",
-    ),
-    (
         "tree-clock-function-curdate",
         "packages/core/src/sql-tree.ts",
         "  'curdate',\n",
@@ -1454,6 +1438,13 @@ MUTATION_SPECS = [
         "  'curtime',\n",
         "",
         "the clock function curtime goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-unix-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "  'unix_timestamp',\n",
+        "",
+        "the clock function unix_timestamp goes unseen in a tree",
     ),
     (
         "tree-clock-keyword-current-timestamp",
@@ -1514,22 +1505,22 @@ MUTATION_SPECS = [
     (
         "tree-clock-now-datetime",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*'now'`,",
-        "    String.raw`\\b(?:date|time)\\s*\\(\\s*'now'`,",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
+        "    String.raw`\\b(?:date|time)\\s*\\(\\s*(?:'now'|\\))`,",
         "datetime('now') goes unseen in a fragment",
     ),
     (
         "tree-clock-now-date",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*'now'`,",
-        "    String.raw`\\b(?:datetime|time)\\s*\\(\\s*'now'`,",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
+        "    String.raw`\\b(?:datetime|time)\\s*\\(\\s*(?:'now'|\\))`,",
         "date('now') goes unseen in a fragment",
     ),
     (
         "tree-clock-now-time",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*'now'`,",
-        "    String.raw`\\b(?:datetime|date)\\s*\\(\\s*'now'`,",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
+        "    String.raw`\\b(?:datetime|date)\\s*\\(\\s*(?:'now'|\\))`,",
         "time('now') goes unseen in a fragment",
     ),
     (
@@ -2235,6 +2226,20 @@ MUTATION_SPECS = [
         "  return BinaryOperationNode.is(node) && (operator === 'in' || operator === 'not in')",
         "  return BinaryOperationNode.is(node) && (operator !== 'in' || operator !== 'not in')",
         "a subquery fragment stands as the operand of any comparison",
+    ),
+    (
+        "tree-followon-insert-instants-are-filtered",
+        "packages/core/src/sql-tree.ts",
+        "      .filter(isFencedInstant),",
+        "      .filter(() => true),",
+        "every inserted column is read as taking the fenced row's instant, so none has to",
+    ),
+    (
+        "tree-clock-spelling-any-fragment",
+        "packages/core/src/fenced-batch.ts",
+        "    const spelledClock = rawTexts.some((text) =>",
+        "    const spelledClock = rawTexts.slice(0, 1).some((text) =>",
+        "a clock spelled in one fragment passes when another fragment of the statement spells none",
     ),
     (
         # Not correctness: the emit's access path. Correlating the driver is
@@ -6698,12 +6703,6 @@ VERDICTS = {
         "the tree path the clock refuses the clock token in a follow-on",
         "mutation-verdict:construction:tree-clock-ban-token-in-followon",
     ),
-    "tree-clock-function-node": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the clock refuses a clock called as a function node",
-        "mutation-verdict:construction:tree-clock-function-node",
-    ),
     "tree-clock-spelling-in-fragment": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -6818,11 +6817,41 @@ VERDICTS = {
         "the tree path stamping refuses a compare-and-set clock assigned twice",
         "mutation-verdict:construction:tree-cas-instant-assigned-once",
     ),
-    "tree-clock-function-case-fold": ExpectedVerdict(
+    "tree-clock-now-no-argument": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses a clock function node in upper case",
-        "mutation-verdict:construction:tree-clock-function-case-fold",
+        "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-now-no-argument",
+    ),
+    "tree-clock-now-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a date function given now in a fragment",
+        "mutation-verdict:construction:tree-clock-now-literal",
+    ),
+    "tree-grammar-function-list": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a function it does not list",
+        "mutation-verdict:construction:tree-grammar-function-list",
+    ),
+    "tree-grammar-function-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar reads a function name in any case",
+        "mutation-verdict:construction:tree-grammar-function-case-fold",
+    ),
+    "tree-grammar-aggregate-list": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses an aggregate it does not list",
+        "mutation-verdict:construction:tree-grammar-aggregate-list",
+    ),
+    "tree-grammar-aggregate-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar reads an aggregate name in any case",
+        "mutation-verdict:construction:tree-grammar-aggregate-case-fold",
     ),
     "tree-clock-spelling-case-fold": ExpectedVerdict(
         "construction",
@@ -6851,110 +6880,80 @@ VERDICTS = {
     "tree-clock-function-unixepoch": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses unixepoch called as a function node",
+        "the tree rules the spellings of a clock refuses unixepoch called in a fragment",
         "mutation-verdict:construction:tree-clock-function-unixepoch",
     ),
     "tree-clock-function-julianday": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses julianday called as a function node",
+        "the tree rules the spellings of a clock refuses julianday called in a fragment",
         "mutation-verdict:construction:tree-clock-function-julianday",
     ),
     "tree-clock-function-strftime": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses strftime called as a function node",
+        "the tree rules the spellings of a clock refuses strftime called in a fragment",
         "mutation-verdict:construction:tree-clock-function-strftime",
     ),
     "tree-clock-function-now": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses now called as a function node",
+        "the tree rules the spellings of a clock refuses now called in a fragment",
         "mutation-verdict:construction:tree-clock-function-now",
     ),
     "tree-clock-function-sysdate": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses sysdate called as a function node",
+        "the tree rules the spellings of a clock refuses sysdate called in a fragment",
         "mutation-verdict:construction:tree-clock-function-sysdate",
     ),
     "tree-clock-function-clock-timestamp": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses clock_timestamp called as a function node",
+        "the tree rules the spellings of a clock refuses clock_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-clock-timestamp",
     ),
     "tree-clock-function-statement-timestamp": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses statement_timestamp called as a function node",
+        "the tree rules the spellings of a clock refuses statement_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-statement-timestamp",
     ),
     "tree-clock-function-transaction-timestamp": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses transaction_timestamp called as a function node",
+        "the tree rules the spellings of a clock refuses transaction_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-transaction-timestamp",
     ),
     "tree-clock-function-getdate": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses getdate called as a function node",
+        "the tree rules the spellings of a clock refuses getdate called in a fragment",
         "mutation-verdict:construction:tree-clock-function-getdate",
     ),
     "tree-clock-function-timeofday": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses timeofday called as a function node",
+        "the tree rules the spellings of a clock refuses timeofday called in a fragment",
         "mutation-verdict:construction:tree-clock-function-timeofday",
-    ),
-    "tree-clock-function-utc-timestamp": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses utc_timestamp called as a function node",
-        "mutation-verdict:construction:tree-clock-function-utc-timestamp",
-    ),
-    "tree-clock-function-utc-date": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses utc_date called as a function node",
-        "mutation-verdict:construction:tree-clock-function-utc-date",
-    ),
-    "tree-clock-function-utc-time": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses utc_time called as a function node",
-        "mutation-verdict:construction:tree-clock-function-utc-time",
-    ),
-    "tree-clock-function-localtime": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses localtime called as a function node",
-        "mutation-verdict:construction:tree-clock-function-localtime",
-    ),
-    "tree-clock-function-localtimestamp": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses localtimestamp called as a function node",
-        "mutation-verdict:construction:tree-clock-function-localtimestamp",
-    ),
-    "tree-clock-function-current-timestamp": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses current_timestamp called as a function node",
-        "mutation-verdict:construction:tree-clock-function-current-timestamp",
     ),
     "tree-clock-function-curdate": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses curdate called as a function node",
+        "the tree rules the spellings of a clock refuses curdate called in a fragment",
         "mutation-verdict:construction:tree-clock-function-curdate",
     ),
     "tree-clock-function-curtime": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses curtime called as a function node",
+        "the tree rules the spellings of a clock refuses curtime called in a fragment",
         "mutation-verdict:construction:tree-clock-function-curtime",
+    ),
+    "tree-clock-function-unix-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses unix_timestamp called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-unix-timestamp",
     ),
     "tree-clock-keyword-current-timestamp": ExpectedVerdict(
         "construction",
@@ -7591,6 +7590,18 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules where a fragment stands reads a subquery only under IN, NOT IN, and EXISTS",
         "mutation-verdict:construction:tree-role-operand-only-of-in-or-exists",
+    ),
+    "tree-followon-insert-instants-are-filtered": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts keeps only the columns that take the fenced instant",
+        "mutation-verdict:construction:tree-followon-insert-instants-are-filtered",
+    ),
+    "tree-clock-spelling-any-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses a clock spelled in any one fragment of several",
+        "mutation-verdict:construction:tree-clock-spelling-any-fragment",
     ),
     "generated-selection-fence": ExpectedVerdict(
         "behavior",
@@ -12819,7 +12830,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 657:
+        if len(MUTATIONS) != 658:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

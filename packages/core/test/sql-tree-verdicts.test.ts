@@ -7,7 +7,7 @@ import {
   SelectQueryNode,
   sql,
 } from 'kysely'
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   type SqlFragment,
   aliasedAs,
@@ -302,6 +302,41 @@ describe('the tree rules', () => {
               .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: nowValue })
               .where('run_id', '=', 'r1'),
           ),
+      )
+    })
+
+    it('refuses a function it does not list', () => {
+      refuses(
+        'mutation-verdict:construction:tree-grammar-function-list',
+        /a call of current_date, which the grammar does not list/,
+        () => setting((eb) => ({ first_started_at_ms: eb.fn('current_date', []) })),
+      )
+    })
+
+    it('reads a function name in any case', () => {
+      accepts('mutation-verdict:construction:tree-grammar-function-case-fold', () =>
+        setting((eb) => ({
+          first_started_at_ms: eb.fn('COALESCE', [eb.ref('first_started_at_ms'), eb.val(5)]),
+        })),
+      )
+    })
+
+    it('refuses an aggregate it does not list', () => {
+      refuses(
+        'mutation-verdict:construction:tree-grammar-aggregate-list',
+        /an aggregate call of now, which the grammar does not list/,
+        () => setting((eb) => ({ first_started_at_ms: eb.fn.agg('now') })),
+      )
+    })
+
+    it('reads an aggregate name in any case', () => {
+      accepts('mutation-verdict:construction:tree-grammar-aggregate-case-fold', () =>
+        tail(
+          loose
+            .selectFrom('runs')
+            .select((eb: Loose) => eb.fn.agg('COUNT', ['run_id']).as('n'))
+            .where('fence_stamp', '=', fenceValue('win')),
+        ),
       )
     })
 
@@ -625,7 +660,8 @@ describe('the tree rules', () => {
 
   describe('the spellings of a clock', () => {
     const READS = /reads the clock/
-    const FUNCTION_NODES = [
+    // A name that is also a bare keyword below has no row: the keyword arm refuses its call too.
+    const CALLED = [
       ['unixepoch', 'mutation-verdict:construction:tree-clock-function-unixepoch'],
       ['julianday', 'mutation-verdict:construction:tree-clock-function-julianday'],
       ['strftime', 'mutation-verdict:construction:tree-clock-function-strftime'],
@@ -642,25 +678,29 @@ describe('the tree rules', () => {
       ],
       ['getdate', 'mutation-verdict:construction:tree-clock-function-getdate'],
       ['timeofday', 'mutation-verdict:construction:tree-clock-function-timeofday'],
-      ['utc_timestamp', 'mutation-verdict:construction:tree-clock-function-utc-timestamp'],
-      ['utc_date', 'mutation-verdict:construction:tree-clock-function-utc-date'],
-      ['utc_time', 'mutation-verdict:construction:tree-clock-function-utc-time'],
-      ['localtime', 'mutation-verdict:construction:tree-clock-function-localtime'],
-      ['localtimestamp', 'mutation-verdict:construction:tree-clock-function-localtimestamp'],
-      ['current_timestamp', 'mutation-verdict:construction:tree-clock-function-current-timestamp'],
       ['curdate', 'mutation-verdict:construction:tree-clock-function-curdate'],
       ['curtime', 'mutation-verdict:construction:tree-clock-function-curtime'],
+      ['unix_timestamp', 'mutation-verdict:construction:tree-clock-function-unix-timestamp'],
     ] as const
-    for (const [name, marker] of FUNCTION_NODES) {
-      it(`refuses ${name} called as a function node`, () => {
-        refuses(marker, READS, () => setting((eb) => ({ first_started_at_ms: eb.fn(name, []) })))
+    for (const [name, marker] of CALLED) {
+      it(`refuses ${name} called in a fragment`, () => {
+        refuses(marker, READS, () => startedAt(`${name}()`))
       })
     }
 
-    it('refuses a clock function node in upper case', () => {
-      refuses('mutation-verdict:construction:tree-clock-function-case-fold', READS, () =>
-        setting((eb) => ({ first_started_at_ms: eb.fn('UNIXEPOCH', []) })),
-      )
+    it('refuses the call of a name that is also a bare keyword, by the keyword arm', () => {
+      // These six are in the list of clock functions and need no entry there for text:
+      // deleting one leaves its call refused, which is why they have no mutation.
+      for (const name of [
+        'utc_timestamp',
+        'utc_date',
+        'utc_time',
+        'localtime',
+        'localtimestamp',
+        'current_timestamp',
+      ]) {
+        expect(() => startedAt(`${name}()`), name).toThrow(READS)
+      }
     })
 
     it('refuses a clock spelled in upper case in a fragment', () => {
@@ -678,6 +718,18 @@ describe('the tree rules', () => {
     it('refuses a bare clock keyword in a fragment', () => {
       refuses('mutation-verdict:construction:tree-clock-spelling-keyword-arm', READS, () =>
         startedAt('current_date'),
+      )
+    })
+
+    it('refuses a date function with no argument in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-now-no-argument', READS, () =>
+        startedAt('datetime()'),
+      )
+    })
+
+    it('refuses a date function given now in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-now-literal', READS, () =>
+        startedAt("time('now')"),
       )
     })
 

@@ -733,7 +733,10 @@ are load-bearing):
    `FencedBatch` decides by node identity and position inside a closed
    statement grammar: a node kind or clause the grammar does not list is
    refused, which excludes common table expressions, RETURNING,
-   `UPDATE … FROM`, writes below the root, and schema-qualified tables. The
+   `UPDATE … FROM`, writes below the root, and schema-qualified tables. It
+   lists the functions a statement may call as well, `coalesce` and the
+   aggregates `avg`, `count`, `max`, `min`, and `sum`, so a call of anything
+   else is refused by name. The
    grammar binds what is built from nodes. A store fragment is opaque text,
    reviewed through the generated corpus.
    - A follow-on or tail needs a top-level WHERE conjunct that is itself
@@ -920,10 +923,15 @@ are load-bearing):
      disjoint legs with OR, ordered by a CASE on the task id, because the
      grammar has no UNION. How a dialect names a stored payload's type is a
      store fragment.
-   - Only a compare-and-set may hold the clock token. Raw fragment text is the
-     one thing a tree cannot read, so it is scanned for the batch clock's text
-     and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
-     spelling proxy, confined to raw text.
+   - Only a compare-and-set may hold the clock token. A clock called as a
+     function node is outside the grammar whatever it is named, because the
+     grammar lists the functions a statement may call and lists no clock. Raw
+     fragment text is the one thing a tree cannot read, so it is scanned for
+     the batch clock's text and for the clock spellings
+     `scripts/clock-lint.py` lists, which include a date function called with
+     no argument, SQLite's spelling of the current time. That scan is a
+     spelling proxy, confined to raw text, and a spelling nobody has listed
+     passes it.
    - A follow-on may not assign a column a value that combines that column
      with an arithmetic or concatenation operator, or that hides it in a raw
      fragment. The rule reads an UPDATE's SET list and an INSERT's conflict arm.

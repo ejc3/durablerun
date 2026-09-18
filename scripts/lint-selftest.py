@@ -1700,6 +1700,18 @@ export class S {
     ),
     (
         "clock-lint.py",
+        store("const SQL = `SELECT datetime()`\n"),
+        "raw wall-clock function in store SQL",
+        "SQLite reads a date function with no argument as the current time",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT UNIX_TIMESTAMP()`\n"),
+        "raw wall-clock function in store SQL",
+        "MySQL's UNIX_TIMESTAMP() with no argument is the clock",
+    ),
+    (
+        "clock-lint.py",
         store("const SQL = `SELECT 1\n  * NOW()`\n"),
         "raw wall-clock function in store SQL",
         "a SQL multiplication line is not a block-comment continuation",
