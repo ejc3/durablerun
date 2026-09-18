@@ -193,6 +193,42 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
+  it('holds a queue and an event name of exactly 255 four-byte characters, and refuses 256', async () => {
+    // The width is characters, and a character outside the basic plane is four bytes and
+    // two UTF-16 units. The two names together are the widest key the schema has.
+    const db = await openMysqlTestDb({ idNamespace: 'width-boundary' })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const widest = '\u{1F600}'.repeat(255)
+      await store.emitEvent(widest, widest, '{"x":1}')
+      const [stored] = await db.raw.batch(
+        'fixture:read',
+        [
+          {
+            sql: `SELECT CHAR_LENGTH(event_name) AS characters, LENGTH(event_name) AS bytes,
+                         event_name = ? AND queue = ? AS same FROM events`,
+            args: [widest, widest],
+          },
+        ],
+        'read',
+      )
+      expect(
+        (stored?.rows ?? []).map((row) => [
+          Number(row.characters),
+          Number(row.bytes),
+          Number(row.same),
+        ]),
+      ).toEqual([[255, 1020, 1]])
+      const oneMore = await store.emitEvent('q', '\u{1F600}'.repeat(256), '{}').then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+      expect(oneMore).toBeInstanceOf(InvalidDurableStringError)
+    } finally {
+      await db.close()
+    }
+  })
+
   it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
