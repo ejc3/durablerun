@@ -2493,7 +2493,11 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     SDK writes it only when the step has none, only the lease holder writes
     checkpoints, and the next index is one past the highest handed out. So a
     step retried by a later attempt keeps its place, and no two started steps
-    share one. The model keys the index by saga generation because a fresh
+    share one. Steps do not start concurrently: a durable call made while a
+    registered step is still writing its start marker is refused as a nested
+    call, exactly as one made while a step's body runs, so two registered
+    steps under `Promise.all` fail the task as two unregistered ones do. The
+    model keys the index by saga generation because a fresh
     revival would forget it. Under the decision below no revival follows a
     saga, so a task has one generation and the key is not needed.
   - The terminal decision and the phase marker are ONE batch, whoever decides:

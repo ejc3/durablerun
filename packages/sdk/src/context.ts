@@ -413,18 +413,22 @@ export class ReplayContext implements TaskContext {
       }
       this.#controls.rollbackPhase()
     }
-    if (registration !== undefined) {
-      // The start marker commits BEFORE the body runs. A step commits only after its body
-      // returns, so without the marker a step that started and never persisted would
-      // leave nothing for a rollback to find.
-      await this.markStarted(key)
-      this.register(key, name, registration, undefined)
-    }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
     // attempt re-executes it (retries are the failure story, not replay).
+    //
+    // The nesting guard goes up before anything here is awaited. A registered step awaits
+    // its start marker's write first, and a second durable call made in that window would
+    // otherwise pass the guard, read the same highest index, and start beside this step.
     this.inStep = true
     let raw: unknown
     try {
+      if (registration !== undefined) {
+        // The start marker commits BEFORE the body runs. A step commits only after its
+        // body returns, so without the marker a step that started and never persisted
+        // would leave nothing for a rollback to find.
+        await this.markStarted(key)
+        this.register(key, name, registration, undefined)
+      }
       raw = await fn()
     } finally {
       this.inStep = false
