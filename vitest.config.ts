@@ -5,7 +5,10 @@ import { configDefaults, defineConfig } from 'vitest/config'
 // (DURABLERUN_CONFORMANCE_DIALECTS, a comma list) leaves out the files of the others.
 // Unset, every file runs.
 const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
-  mysql: ['packages/store-mysql/test/real-server.test.ts'],
+  mysql: [
+    'packages/store-mysql/test/real-server.test.ts',
+    'packages/store-mysql/test/query-plans.test.ts',
+  ],
 }
 const selection = process.env.DURABLERUN_CONFORMANCE_DIALECTS
 const selected = selection === undefined ? null : selection.split(',').map((name) => name.trim())
