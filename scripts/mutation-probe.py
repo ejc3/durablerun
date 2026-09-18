@@ -11456,6 +11456,685 @@ def verdict_inventory_problems(
     return problems
 
 
+# Where the rules that read a statement tree live. A region runs from its first anchor to
+# its second, and `None` is a whole file. Part 3b moves these rules, and moves the anchors
+# with them.
+TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]] = {
+    "packages/core/src/sql-tree.ts": ((None, None),),
+    "packages/core/src/fenced-batch.ts": (
+        (
+            "  private requireFenceSource(",
+            "  /**\n   * A statement that runs meaningfully only when a CAS of this batch won.",
+        ),
+        ("  /** `cas`, built as a tree.", "  private add(s: {"),
+    ),
+}
+# A spelling list is a rule for each entry, so every line of one needs a mutation.
+TREE_RULE_SPELLING_BLOCKS: tuple[tuple[str, str, str], ...] = (
+    ("packages/core/src/sql-tree.ts", "const CLOCK_FUNCTIONS = [\n", "]\n"),
+    (
+        "packages/core/src/sql-tree.ts",
+        "export const CLOCK_SPELLING = new RegExp(\n",
+        "  ].join('|'),\n",
+    ),
+    ("packages/core/src/sql-tree.ts", "const COUNTING_OPERATORS = ", "\n"),
+)
+TREE_CONDITION_TOKEN = re.compile(
+    r"\bif \(|&&|\|\||(?<!\?)\? |\.every\(|\.some\(|=== |!== |\.includes\(|\.filter\("
+)
+TREE_STRING_LITERAL = re.compile(r"`[^`]*`|'[^']*'|\"[^\"]*\"")
+
+
+def tree_condition_lines(
+    text: str,
+    regions: tuple[tuple[str | None, str | None], ...],
+    blocks: tuple[tuple[str, str], ...],
+) -> dict[int, int]:
+    """Each condition-bearing line of the regions, with how many conditions it holds.
+
+    This reads text, not TypeScript. A line holds a condition when it carries a
+    branch, a comparison, or a boolean operator outside a string, a comment, and the
+    message of a throw, and it holds one more for each `&&` or `||`. `??` is a default
+    and not a branch. A condition
+    spelled some other way is not counted: see the self-test's false negative.
+    """
+    lines = text.split("\n")
+
+    def span(first: str | None, second: str | None) -> tuple[int, int]:
+        if first is None or second is None:
+            return 1, len(lines)
+        start = text.index(first)
+        end = text.index(second, start + len(first))
+        return text.count("\n", 0, start) + 1, text.count("\n", 0, end) + 1
+
+    wanted: dict[int, int] = {}
+    for first, second in regions:
+        low, high = span(first, second)
+        depth = 0
+        in_throw = False
+        in_comment = False
+        for number in range(low, high + 1):
+            stripped = lines[number - 1].strip()
+            if stripped.startswith("/*"):
+                in_comment = True
+            if in_comment:
+                if "*/" in stripped:
+                    in_comment = False
+                continue
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            if in_throw:
+                depth += stripped.count("(") - stripped.count(")")
+                in_throw = depth > 0
+                continue
+            if re.search(r"\bthrow\b", stripped) and not stripped.startswith("if ("):
+                depth = stripped.count("(") - stripped.count(")")
+                in_throw = depth > 0
+                continue
+            code = TREE_STRING_LITERAL.sub("''", stripped)
+            # The operands of a condition opened on its own line, and the arms of a
+            # ternary, are read on the lines that hold them.
+            if code in ("if (", "} else if (") or code.startswith(("? ", ": ")):
+                continue
+            if TREE_CONDITION_TOKEN.search(code):
+                # An operator that ends or begins the line joins its operand to another
+                # line's, so it adds no condition here.
+                joins = code.endswith(("&&", "||")) + code.startswith(("&&", "||"))
+                wanted[number] = max(1, 1 + code.count("&&") + code.count("||") - joins)
+    for first, second in blocks:
+        low, high = span(first, second)
+        for number in range(low, high + 1):
+            stripped = lines[number - 1].strip()
+            if stripped and stripped not in ("[", "]", ")") and not stripped.endswith("["):
+                if not stripped.endswith("new RegExp("):
+                    wanted[number] = max(wanted.get(number, 0), 1)
+    return wanted
+
+
+def tree_rule_coverage_problems(
+    file: str,
+    text: str,
+    finds: list[tuple[str, str]],
+    regions: tuple[tuple[str | None, str | None], ...],
+    blocks: tuple[tuple[str, str], ...],
+    listed: dict[str, str],
+) -> list[str]:
+    """Hold every condition of a tree rule to a registered mutation or a listed reason.
+
+    The remainder is derived here, from the finds themselves, because a hand-kept list
+    of what has no mutation was read as complete when it was not.
+    """
+    lines = text.split("\n")
+    touching: dict[int, set[str]] = {}
+    for name, find in finds:
+        at = text.find(find)
+        if at < 0:
+            continue
+        first = text.count("\n", 0, at) + 1
+        for number in range(first, first + find.rstrip("\n").count("\n") + 1):
+            touching.setdefault(number, set()).add(name)
+    wanted = tree_condition_lines(text, regions, blocks)
+    problems: list[str] = []
+    short: set[str] = set()
+    for number in sorted(wanted):
+        have = len(touching.get(number, ()))
+        if have >= wanted[number]:
+            continue
+        line = lines[number - 1].strip()
+        short.add(line)
+        if line not in listed:
+            problems.append(
+                f"{file}:{number}: `{line}` holds {wanted[number]} condition(s) and "
+                f"{have} registered mutation(s) touch it; register one for each, or list "
+                "the line in TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
+            )
+    for line, reason in sorted(listed.items()):
+        if not reason.strip():
+            problems.append(f"{file}: listed condition `{line}` has no reason")
+        if line not in short:
+            problems.append(
+                f"{file}: listed condition `{line}` is stale: no such line is short of mutations"
+            )
+    return problems
+
+# Every condition-bearing line of the tree rules that holds more conditions than
+# registered mutations touch it, with what a run showed. An automatic sweep mutated each
+# such line and ran the core suite: where every mutant failed a test the line fails
+# closed, and where one survived the line was read by hand. A new line of this kind
+# fails the self-test until it has a mutation or an entry here.
+TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
+    "packages/core/src/fenced-batch.ts": {
+        "(isCas || tree.kind !== 'DeleteQueryNode')": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "column !== undefined &&": (
+            "refuses more: with it gone an upsert of a table with no preserved instant may assign only provenance, which refuses more"
+        ),
+        "column === undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 9 at the fewest"
+        ),
+        "const following = isCas ? null : followOnInsertProvenance(tree)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 24 at the fewest"
+        ),
+        "const isCas = kind === 'cas' || kind === 'casMany'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "const kind: Kind = open ? 'tail' : asked": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "const open = asked === 'openTail'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 245 at the fewest"
+        ),
+        "const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]": (
+            "a guard, and no shape tells it from the code: no table answers to null"
+        ),
+        "const source = this.statements.find((s) => s.name === name)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 175 at the fewest"
+        ),
+        "const stamped = FENCED_TABLES.find((table) => table === written) ?? null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 127 at the fewest"
+        ),
+        "const stamps = stamped !== null && (tree.kind === 'UpdateQueryNode' || inserted !== null)": (
+            "refuses more: with the table test gone an update of a table with no provenance must stamp it, which refuses more"
+        ),
+        "fence: stamps ? { target: stamped, sealedBy: null } : null,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {": (
+            "changes nothing a statement can show: `compiled.readsClock` is subsumed: the clock token compiles to the batch clock's text, which the comparison beside it finds, and deleting readsClock alone fails no test of 490"
+        ),
+        "if (!isCas) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 49 at the fewest"
+        ),
+        "if (!open && gates.length === 0 && positional.length !== 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!open && gates.length === 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 4 at the fewest"
+        ),
+        "if (column !== undefined && !inserted.clockColumns.includes(column)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (counting !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "if (following !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 28 at the fewest"
+        ),
+        "if (inserted.conflict !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "if (isCas && stamped !== null && inserted !== null) {": (
+            "a guard, and no shape tells it from the code: a compare-and-set that reaches this line has already been required to write a fenced table"
+        ),
+        "if (isCas && stamped === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (kind === 'followOn') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (kind === 'tail') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 22 at the fewest"
+        ),
+        "if (preservedInstant !== undefined && !following.fencedInstants.includes(preservedInstant)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (stamped !== null && following.conflict) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (stamps && inserted === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "inserted.conflict.columns.some((name) => name === null || !provenance.includes(name))": (
+            "a guard, and no shape tells it from the code: the grammar has already refused an assignment to something other than a column"
+        ),
+        "kind !== 'cas' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "kind !== 'casMany'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "stamped !== null &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "tree.kind !== 'InsertQueryNode' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 59 at the fewest"
+        ),
+        "typeof value === 'bigint' ||": (
+            "refuses more: with it gone a bigint argument is refused, which refuses more"
+        ),
+        "typeof value === 'number' ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 34 at the fewest"
+        ),
+        "typeof value === 'string' ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 222 at the fewest"
+        ),
+        "value === null ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+    },
+    "packages/core/src/sql-tree.ts": {
+        "!(select.selections ?? []).some((selection) =>": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "!isRoot &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 256 at the fewest"
+        ),
+        "'current_timestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'localtime',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'localtimestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_date',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_time',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_timestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "([field, value]) => value !== undefined && !fields.includes(field),": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 85 at the fewest"
+        ),
+        "(fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&": (
+            "a guard, and no shape tells it from the code: no fenced source answers to null"
+        ),
+        "(table !== null && new RegExp(String.raw`(?<!\\w)\"?${table}\"?\\.${name}`, 'i').test(text)) ||": (
+            "a guard, and no shape tells it from the code: every statement that assigns writes a table"
+        ),
+        "AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : tableName(source)": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "OrderByItemNode.is(parent) &&": (
+            "a guard, and no shape tells it from the code: only an ORDER BY item has a direction field"
+        ),
+        "RawNode.is(candidate) &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 55 at the fewest"
+        ),
+        "RawNode.is(node) &&": (
+            "a guard, and no shape tells it from the code: the one caller passes a raw node"
+        ),
+        "SelectAllNode.is(node) || (ReferenceNode.is(node) && SelectAllNode.is(node.column))": (
+            "refuses more: with the column test gone every unaliased column is read as a star, which refuses more"
+        ),
+        "conflict: tree.onConflict !== undefined,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 13 at the fewest"
+        ),
+        "conflict: updates === undefined ? null : assignedProvenance(updates),": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 9 at the fewest"
+        ),
+        "const assigned = (column: string) => updates.filter((update) => assignedColumn(update) === column)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 223 at the fewest"
+        ),
+        "const column = reference === undefined ? null : columnName(reference.column)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "const incoming = InsertQueryNode.is(query) ? 'excluded' : null": (
+            "changes nothing a statement can show: `excluded` names no row in an UPDATE, so no UPDATE the database accepts reads it"
+        ),
+        "const inner = AliasNode.is(node) ? node.node : node": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 130 at the fewest"
+        ),
+        "const inner = AliasNode.is(source) ? source.node : source": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "const inner = source === null ? null : derivedSelect(source)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "const name = AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "const only = (list: readonly ColumnUpdateNode[]) => (list.length === 1 ? list[0] : undefined)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "const plain = selections.every((selection) => !isStar(selection.selection))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "const position = predicates.includes(child)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 34 at the fewest"
+        ),
+        "const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 11 at the fewest"
+        ),
+        "const scope = select === null ? [] : tableScope(select)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "const select = selected !== undefined && SelectQueryNode.is(selected) ? selected : null": (
+            "a guard, and no shape tells it from the code: narrows a type"
+        ),
+        "const selection = AliasNode.is(aliased) ? aliased.node : aliased": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
+        ),
+        "const where = select === null ? null : whereOf(select)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "copiedInstant: column === null ? null : { table: tableName(reference?.table), column },": (
+            "a guard, and no shape tells it from the code: an instant that is no column reference names no column to compare"
+        ),
+        "else if (sql[i + 1] === \"'\") literal += sql[++i]": (
+            "changes nothing a statement can show: an escaped quote read as the end of one literal and the start of the next covers the same characters"
+        ),
+        "else if (text[i] === ')') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "for (const item of value) if (isNode(item)) out.push(item)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
+        ),
+        "from === undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 28 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(candidate) || operatorName(candidate.operator) !== '=') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(candidate)) return false": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 15 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(node) || operatorName(node.operator) !== '=') return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!InsertQueryNode.is(tree)) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 18 at the fewest"
+        ),
+        "if (!ReferenceNode.is(reference) || columnName(reference.column) !== 'fence_stamp') continue": (
+            "a guard, and no shape tells it from the code: a node that is no reference has no column named fence_stamp"
+        ),
+        "if (!SelectQueryNode.is(query)) return []": (
+            "a guard, and no shape tells it from the code: only a SELECT has one source that can be a derived table"
+        ),
+        "if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (Array.isArray(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
+        ),
+        "if (ColumnUpdateNode.is(node) && assignedColumn(node) === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (DeleteQueryNode.is(query)) sources.push(...query.from.froms)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (DeleteQueryNode.is(tree)) return tableName(tree.from.froms[0])": (
+            "changes nothing a statement can show: a DELETE stamps nothing, so no rule reads the table it writes"
+        ),
+        "if (InsertQueryNode.is(node)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 17 at the fewest"
+        ),
+        "if (InsertQueryNode.is(query)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 19 at the fewest"
+        ),
+        "if (InsertQueryNode.is(tree)) return tableName(tree.into)": (
+            "changes nothing a statement can show: a SELECT has no into field, and an absent table reads as null either way"
+        ),
+        "if (RawNode.is(candidate)) texts.push(candidate.sqlFragments.join(' '))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 21 at the fewest"
+        ),
+        "if (RawNode.is(child) && !isBuilderRaw(node, child)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (RawNode.is(inner)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 30 at the fewest"
+        ),
+        "if (RawNode.is(operand)) subqueries.push(operand)": (
+            "changes nothing a statement can show: an operand that is no raw node is never looked up in the list"
+        ),
+        "if (SelectModifierNode.is(node) && node.modifier !== 'Distinct') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (SelectQueryNode.is(query)) {": (
+            "refuses more: read for every query, a DELETE's FROM is counted twice, so its unqualified stamp is ambiguous and refused"
+        ),
+        "if (TableNode.is(node) && node.table.schema !== undefined) return 'a schema-qualified table'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (UpdateQueryNode.is(query) && query.table !== undefined) sources.push(query.table)": (
+            "changes nothing a statement can show: a query with no table field adds a source that names no table, which the next line drops"
+        ),
+        "if (UpdateQueryNode.is(query) || DeleteQueryNode.is(query) || SelectQueryNode.is(query)) {": (
+            "changes nothing a statement can show: an INSERT has no where field, and an absent WHERE reads as null either way"
+        ),
+        "if (UpdateQueryNode.is(tree)) return tableName(tree.table)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 39 at the fewest"
+        ),
+        "if (ValueNode.is(node)) return []": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
+        ),
+        "if (boolean !== null) markBoolean(boolean)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 37 at the fewest"
+        ),
+        "if (cached !== undefined) return cached": (
+            "changes nothing a statement can show: a cache hit returns what parsing the text again returns"
+        ),
+        "if (column === null) return []": (
+            "a guard, and no shape tells it from the code: the grammar has already refused an assignment to something other than a column"
+        ),
+        "if (column === null) return null": (
+            "changes nothing a statement can show: a star has no column name, and the name returned for it is null either way unless it is aliased, which a star cannot be"
+        ),
+        "if (derived !== null && selectedSourceColumn(derived) !== column) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (fence !== null) return [fence]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 139 at the fewest"
+        ),
+        "if (fields !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (index < 0 || columns.lastIndexOf(name) !== index) return undefined": (
+            "changes nothing a statement can show: a column that is not listed reads position -1, which holds undefined too"
+        ),
+        "if (indexWhere !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 4 at the fewest"
+        ),
+        "if (insert.onConflict !== undefined && values.where === undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (instant === undefined || !ReferenceNode.is(instant)) return false": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (node === undefined) return null": (
+            "a guard, and no shape tells it from the code: every caller passes a node the grammar has already required"
+        ),
+        "if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false": (
+            "refuses more: with either test gone a comparison of the written column counts as a count, which refuses more"
+        ),
+        "if (parsedFragmentCount < PARSED_FRAGMENT_CAP) {": (
+            "changes nothing a statement can show: the cap bounds memory and decides nothing about a statement"
+        ),
+        "if (placements !== null) placements.head = { fragment, next: placements.head }": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 15 at the fewest"
+        ),
+        "if (problem !== null) return": (
+            "changes nothing a statement can show: the first problem is reported either way"
+        ),
+        "if (qualifier !== undefined && qualifier !== sourceName) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (role === 'subquery' && !isOneGroup(outside)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (select.groupBy !== undefined) return true": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (someNode(indexWhere, (node) => ValueNode.is(node) && node.immediate !== true)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (source !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "if (source === null || selections.length !== 1 || only === undefined) return null": (
+            "a guard, and no shape tells it from the code: a list of length one has a first element"
+        ),
+        "if (sql[i] !== \"'\") literal += sql[i]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "if (sql[i] !== \"'\") {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "if (subquery === null || !SelectQueryNode.is(subquery)) return []": (
+            "changes nothing a statement can show: a subquery that is a fragment has no WHERE a tree can read, so reading it for gates finds none"
+        ),
+        "if (table === null) return []": (
+            "refuses more: a derived table kept in scope names no table, so a fence on it fails the table check"
+        ),
+        "if (text[i] === '(') depth++": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (token === null || bindings === null) return super.transformNode(node, queryId)": (
+            "a guard, and no shape tells it from the code: bindings are null only outside bind(), where no token is transformed"
+        ),
+        "if (token.kind === 'now') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 88 at the fewest"
+        ),
+        "if (token.kind === 'stamp') return ValueNode.create(bindings.stamp) as unknown as T": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "if (token?.kind !== 'fence' || token.fence === null) continue": (
+            "a guard, and no shape tells it from the code: a fence token always names a fence: the second test narrows a type"
+        ),
+        "if (typeof value !== 'object' || value === null || !weakSetHas(knownFragments, value)) {": (
+            "a guard, and no shape tells it from the code: a weak set holds no primitive, so the membership test alone answers the same"
+        ),
+        "if (typeof value !== 'object' || value === null || arrayBufferIsView(value)) return": (
+            "changes nothing a statement can show: bytes hold no undefined bind and no fragment, so descending into them finds nothing"
+        ),
+        "if (value === undefined) throw new Error(`insertedFrom: column '${column}' has no value`)": (
+            "a guard, and no shape tells it from the code: the record's type already requires a value for every column"
+        ),
+        "if (values !== undefined && SelectQueryNode.is(values)) {": (
+            "a guard, and no shape tells it from the code: narrows a type: the grammar admits VALUES or a SELECT and nothing else"
+        ),
+        "if (values !== undefined && ValuesNode.is(values)) {": (
+            "a guard, and no shape tells it from the code: narrows a type"
+        ),
+        "if (visit(value, path)) return": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 13 at the fewest"
+        ),
+        "if (where === null) return false": (
+            "changes nothing a statement can show: an EXISTS with no WHERE holds no fence, so no gate reads whether it is tied"
+        ),
+        "incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "literals.some(": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 76 at the fewest"
+        ),
+        "match[0] === '?' ? 'bind' : match[0] === NOW ? 'now' : { fence: match[1] as string },": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)": (
+            "a guard, and no shape tells it from the code: no source answers to null"
+        ),
+        "name !== null && inner.some((candidate) => candidate.name === name)": (
+            "a guard, and no shape tells it from the code: no source answers to null"
+        ),
+        "path === 'bind' ? `bind '${name}'` : `${path}.${name}`,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "qualifier !== undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 27 at the fewest"
+        ),
+        "return AliasNode.is(aliased) && IdentifierNode.is(aliased.alias) ? aliased.alias.name : column": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "return ColumnNode.is(node) ? node.column.name : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "return OperatorNode.is(node) ? node.operator : null": (
+            "a guard, and no shape tells it from the code: a node that is no operator has no operator field"
+        ),
+        "return ReferenceNode.is(inner) ? (inner.table?.table.identifier.name ?? null) : null": (
+            "a guard, and no shape tells it from the code: a node that is no reference has no table field"
+        ),
+        "return ReferenceNode.is(inner) ? columnName(inner.column) : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "return SelectQueryNode.is(inner) ? inner : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return TableNode.is(inner) ? inner.table.identifier.name : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return UpdateQueryNode.is(query) ? (query.updates ?? []) : []": (
+            "a guard, and no shape tells it from the code: only an UPDATE has an updates field"
+        ),
+        "return conjuncts(where).some((candidate) => {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return fence === null ? [] : [fence.source]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 33 at the fewest"
+        ),
+        "return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null": (
+            "a guard, and no shape tells it from the code: a list of length one has a first element"
+        ),
+        "return inner !== null && mayReturnNoRow(inner) ? gatingFences(inner) : []": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "return node !== undefined && ValueNode.is(node) && node.value instanceof EngineToken": (
+            "a guard, and no shape tells it from the code: only a value node holds a token, so the instanceof test alone answers the same"
+        ),
+        "return row !== undefined && ValueListNode.is(row) ? row.values[index] : undefined": (
+            "a guard, and no shape tells it from the code: the grammar has already required one row of values"
+        ),
+        "return selected !== undefined && SelectQueryNode.is(selected) ? gatingFences(selected) : []": (
+            "changes nothing a statement can show: a row of VALUES has no WHERE, so reading it for gates finds none"
+        ),
+        "return selection !== undefined && AliasNode.is(selection) ? selection.node : selection": (
+            "a guard, and no shape tells it from the code: an unaliased selection is its own node"
+        ),
+        "return test(node) || children(node).some((child) => someNode(child, test))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 100 at the fewest"
+        ),
+        "return typeof value === 'object' && value !== null && weakSetHas(definedStatements, value)": (
+            "a guard, and no shape tells it from the code: a weak set holds no primitive, so the membership test alone answers the same"
+        ),
+        "select !== null &&": (
+            "a guard, and no shape tells it from the code: narrows a type: the VALUES refusal has already spoken for an insert with no SELECT"
+        ),
+        "selects: select !== null,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 35 at the fewest"
+        ),
+        "token === 'bind'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 23 at the fewest"
+        ),
+        "typeof (value as { kind?: unknown }).kind === 'string'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
+        ),
+        "typeof value === 'object' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 251 at the fewest"
+        ),
+        "value !== null &&": (
+            "a guard, and no shape tells it from the code: the builder's nodes hold undefined and never null"
+        ),
+        "where === null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 17 at the fewest"
+        ),
+        "while (placement !== null && placement.fragment !== value) placement = placement.next": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 10 at the fewest"
+        ),
+        "} else if (isNode(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 96 at the fewest"
+        ),
+        "} else if (operand !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
+        ),
+        "} else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {": (
+            "a guard, and no shape tells it from the code: the first two tests narrow a type before the row count is read"
+        ),
+    },
+}
+
+
 def mutation_question_delta_diagnostic(
     name: str,
     find: str,
@@ -12505,6 +13184,119 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
             )
+    tree_coverage_source = (
+        "function gate(node) {\n"
+        "  if (node.a && node.b) return null\n"
+        "  // if (comment) is not code\n"
+        "  if (node.c) {\n"
+        "    throw new Error(\n"
+        "      `a message with a === b`,\n"
+        "    )\n"
+        "  }\n"
+        "  return node.kind === 'x'\n"
+        "}\n"
+        "const SPELLINGS = [\n"
+        "  'now',\n"
+        "  'sysdate',\n"
+        "]\n"
+    )
+    tree_coverage_regions = ((None, None),)
+    tree_coverage_blocks = (("const SPELLINGS = [\n", "]\n"),)
+    tree_coverage_cases = (
+        (
+            "every condition has a mutation or a reason",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+        (
+            "one mutation on a line of two conditions",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            ("fixture.ts:2:",),
+        ),
+        (
+            "a spelling with no mutation",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            ("fixture.ts:13:",),
+        ),
+        (
+            "a stale listing and an empty reason",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": " ", "if (node.c) {": "covered now"},
+            (
+                "fixture.ts: listed condition `if (node.c) {` is stale",
+                "fixture.ts: listed condition `return node.kind === 'x'` has no reason",
+            ),
+        ),
+        (
+            # A second false negative, kept on purpose: the count is of mutations that
+            # touch the line, not of operands removed. Two mutations that both remove
+            # `node.a` leave `node.b` unheld, and the check is clean.
+            "false negative: two mutations of one operand",
+            [
+                ("drops-a", "  if (node.a && node.b) return null"),
+                ("drops-a-again", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+        (
+            # The false negative, kept on purpose: a condition spelled with none of the
+            # tokens this reads is not a line it counts. `Boolean(node.d)` decides a
+            # return here, no mutation touches it, and the check is clean.
+            "false negative: a condition the token list does not name",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+    )
+    for label, finds, listed, wanted_prefixes in tree_coverage_cases:
+        source = tree_coverage_source
+        if label.startswith("false negative"):
+            source = source.replace(
+                "  return node.kind === 'x'\n",
+                "  while (Boolean(node.d)) return null\n  return node.kind === 'x'\n",
+            )
+        got = tree_rule_coverage_problems(
+            "fixture.ts", source, finds, tree_coverage_regions, tree_coverage_blocks, listed
+        )
+        if len(got) != len(wanted_prefixes) or any(
+            not problem.startswith(prefix) for problem, prefix in zip(got, wanted_prefixes)
+        ):
+            failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
     target_checker = mutation_target_diagnostic
     if fault == FROZEN_MIGRATION_TARGET_FAULT:
         target_checker = lambda _file: None
@@ -12829,6 +13621,25 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         if selected_typecheck != TYPECHECK_MUTATION_PROJECTS:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
+            )
+        for tree_rule_file, tree_rule_regions in TREE_RULE_REGIONS.items():
+            failures.extend(
+                tree_rule_coverage_problems(
+                    tree_rule_file,
+                    (ROOT / tree_rule_file).read_text(),
+                    [
+                        (mutation.name, mutation.find)
+                        for mutation in MUTATIONS
+                        if mutation.file == tree_rule_file
+                    ],
+                    tree_rule_regions,
+                    tuple(
+                        (first, second)
+                        for block_file, first, second in TREE_RULE_SPELLING_BLOCKS
+                        if block_file == tree_rule_file
+                    ),
+                    TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
+                )
             )
         if len(MUTATIONS) != 658:
             failures.append("the live mutation inventory cardinality changed")
