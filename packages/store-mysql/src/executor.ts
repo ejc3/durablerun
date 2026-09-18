@@ -28,6 +28,8 @@ const TYPE_INTEGERS = new Set([1, 2, 3, 8, 9, 13])
 const TYPE_BLOBS = new Set([249, 250, 251, 252])
 const BINARY_CHARSET = 63
 
+const ER_NO_SUCH_TABLE = 1146
+
 /** MySQL errors that prove the installed relations differ from this build. */
 const SCHEMA_MISMATCH_ERRNOS = new Set([
   1049, // ER_BAD_DB_ERROR
@@ -35,10 +37,9 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
   1054, // ER_BAD_FIELD_ERROR
   1060, // ER_DUP_FIELDNAME
   1061, // ER_DUP_KEYNAME
-  1146, // ER_NO_SUCH_TABLE
+  ER_NO_SUCH_TABLE,
   1305, // ER_SP_DOES_NOT_EXIST
 ])
-const ER_NO_SUCH_TABLE = 1146
 /**
  * A string is longer than its column. Only an indexed identifier is bounded here, at 255
  * characters, because MySQL cannot index unbounded text. It is invalid input and

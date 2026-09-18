@@ -82,6 +82,7 @@ import {
   wakeRunsUpdate,
 } from '@durablerun/core'
 import {
+  JSON_NUMBER_TYPES,
   LIVE,
   cancelDue,
   durableTaskHeadersAdmissible,
@@ -215,7 +216,7 @@ function activationDurationAdmissible(task: string, at: string): string {
     WHEN NOT ${jsonInputValid(cancellation)} THEN 0
     WHEN JSON_TYPE(CAST(${cancellation} AS JSON)) <> 'OBJECT' THEN 0
     WHEN ${member} IS NULL THEN 1
-    WHEN JSON_TYPE(${member}) NOT IN ('INTEGER','UNSIGNED INTEGER','DOUBLE','DECIMAL') THEN 0
+    WHEN JSON_TYPE(${member}) NOT IN ${JSON_NUMBER_TYPES} THEN 0
     WHEN (${seconds}) < 0 OR (${seconds}) > ${MAX_DURATION_MS} THEN 0
     WHEN (${durationMs}) > ${MAX_DURATION_MS} THEN 0
     WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0

@@ -85,7 +85,7 @@ jobs:
     timeout-minutes: 60
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
-      # One registered mutation is killed by a test that needs a MySQL server.
+      # Some registered mutations are killed by tests that need a MySQL server.
       DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
     services:
       postgres:
@@ -113,7 +113,9 @@ jobs:
         run: |
           docker run -d --name durablerun-mysql -p 127.0.0.1:3306:3306 \
             -e MYSQL_ROOT_PASSWORD=durablerun -e MYSQL_DATABASE=durablerun \
-            --tmpfs /var/lib/mysql:rw,size=2g mysql:8.4 --skip-log-bin
+            --tmpfs /var/lib/mysql:rw,size=4g mysql:8.4 \
+            --skip-log-bin --innodb-flush-log-at-trx-commit=0 \
+            --innodb-doublewrite=0 --sync-binlog=0 --max-connections=500
           for attempt in $(seq 1 60); do
             if docker exec durablerun-mysql mysql -h127.0.0.1 -uroot -pdurablerun -e 'SELECT 1' >/dev/null 2>&1; then
               exit 0

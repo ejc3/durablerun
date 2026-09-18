@@ -337,7 +337,7 @@ export const taskOwnsEveryRun = (task: string): string =>
 export const jsonInputValid = (value: string): string => `JSON_VALID(${value})`
 
 /** A JSON number, as `JSON_TYPE` names the kinds MySQL parses one into. */
-const JSON_NUMBER_TYPES = `('INTEGER','UNSIGNED INTEGER','DOUBLE','DECIMAL')`
+export const JSON_NUMBER_TYPES = `('INTEGER','UNSIGNED INTEGER','DOUBLE','DECIMAL')`
 
 /**
  * Durable retry JSON that can be decoded into a worker payload.

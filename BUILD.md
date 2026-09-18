@@ -1436,7 +1436,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   back. The first migration that alters a table needs a repeatable form, which
   MySQL has no `ADD COLUMN IF NOT EXISTS` for. (5) The optional PlanetScale
   smoke job is not built. (6) Child tasks and sagas land their batches on
-  libSQL and PostgreSQL first, and `store-mysql` ports them after.
+  libSQL and PostgreSQL first, and `store-mysql` ports them after. The review
+  of this PR found ten defects, seven of them in behaviour, recorded in
+  `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an
+  identifier past 255 characters itself, whatever the excess is, because MySQL
+  cuts trailing spaces past the width where it refuses any other excess.
   - **Discharged from PR3.12:** MySQL commits each DDL statement on its own,
     so a `meta` table without its version row would be an ordinary state
     during every cold start, and isolation alone cannot hide it. The adapter
@@ -1448,6 +1452,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
     COMMITTED gave neither. At volume: eight concurrent cold-start migrators
     converged in 3200 of 3200 runs, and the eight-migrator and lost-bootstrap
     schema/admin cases both passed in 120 repeated runs.
+- **PR4.4 store-mysql follow-ups**: what the PR4.3 review found that the
+  milestone does not need, none of it a correctness hole today.
+  - Deferred from PR4.3: the migration lock is chosen by the batch label
+    (`migrate:bootstrap` or `migrate:vN`), spelled in the executor, the admin,
+    and `batch-lint.py`, where the event and claim locks travel in
+    `SqlBatchControl` so a wrapper cannot drop them. Carry it there as a lock
+    coordinate. With it goes the case no test has: a version that was half
+    applied, rerun through `migrate()`. It changes core's batch control and
+    every executor, which PR3.9e part 3b and the child-task fold are editing.
+  - Deferred from PR4.3: a read batch costs four round trips and a
+    single-statement write three, where autocommit needs one. Five of the six
+    read batches hold one statement, the per-tick next-wake among them.
+  - Deferred from PR4.3: `migrate()` reads the version before each of the four
+    empty versions and takes the lock for each. One read and one locked batch
+    would do, which matters most to the conformance suite, which migrates a
+    database for every case.
+  - Deferred from PR4.3: the claim's `FORCE INDEX (runs_poll)` legs have no
+    measured plan test. `store-mysql/test/query-plans.test.ts` is where it
+    goes. The shared concurrency case fails when a leg over-locks, which is
+    how the shape was found.
+  - Deferred from PR4.3: third copies. The test id source, the admin's
+    version read and versioned write, the fixture's corruption-table switch,
+    and the store's dialect-free declarations are now in three packages.
+    Hoisting them is one change to all three stores.
 
 ## Phase 5 — operations + sharding
 

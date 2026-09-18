@@ -68,7 +68,7 @@ podman run --name durablerun-mysql-8 \
   --skip-log-bin --innodb-flush-log-at-trx-commit=0 --innodb-doublewrite=0 \
   --sync-binlog=0 --max-connections=500
 DURABLERUN_MYSQL_URL=mysql://root:durablerun@127.0.0.1:3306/durablerun \
-  bash packages/conformance/bin/dialect-conformance.sh mysql
+  bash scripts/confine.sh bash packages/conformance/bin/dialect-conformance.sh mysql
 ```
 
 `packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance and its store's

@@ -12,6 +12,7 @@ import {
   treeBuilder,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
+import { countMysqlPlaceholders } from '../src/executor.js'
 import { TREE_DIALECT } from '../src/tree.js'
 
 type Tree = Parameters<typeof TREE_DIALECT.compile>[0]
@@ -62,7 +63,7 @@ const leaseCas = () =>
     backoffFits: sqlFragment('1 = 1'),
   })
 
-const binds = (statement: SqlStatement) => statement.sql.split('?').length - 1
+const binds = (statement: SqlStatement) => countMysqlPlaceholders(statement.sql)
 
 describe('MySQL spelling of the shared statement trees', () => {
   it('assigns a column only after every assignment that reads it', async () => {
