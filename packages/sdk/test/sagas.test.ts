@@ -609,12 +609,15 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         .filter((row) => row.name.startsWith('$started:'))
       // The refusal ends the pass while the first step's marker write is in flight, so that
       // marker may or may not land. What cannot happen is a second start beside it.
-      expect({
-        secondStepRan: effects.includes('do:b'),
-        secondStepStarted: markers.some((row) => row.name === '$started:b'),
-        indexesShared: new Set(markers.map((row) => row.index)).size !== markers.length,
-        state: (await f.store.getTaskResult(Q, task.taskId))?.state,
-      }).toEqual({
+      expect(
+        {
+          secondStepRan: effects.includes('do:b'),
+          secondStepStarted: markers.some((row) => row.name === '$started:b'),
+          indexesShared: new Set(markers.map((row) => row.index)).size !== markers.length,
+          state: (await f.store.getTaskResult(Q, task.taskId))?.state,
+        },
+        'mutation-verdict:behavior:saga-sdk-concurrent-start',
+      ).toEqual({
         secondStepRan: false,
         secondStepStarted: false,
         indexesShared: false,
@@ -656,14 +659,17 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         name?: string
         message?: string
       } | null
-      expect({
-        outcomes,
-        effects,
-        outcome: result?.rollback?.outcome,
-        error: error?.name,
-        namesTheStepLeftUnregistered: error?.message?.includes("'c'"),
-        namesWhereTheReplayEnded: error?.message?.includes("'b'"),
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          effects,
+          outcome: result?.rollback?.outcome,
+          error: error?.name,
+          namesTheStepLeftUnregistered: error?.message?.includes("'c'"),
+          namesWhereTheReplayEnded: error?.message?.includes("'b'"),
+        },
+        'mutation-verdict:behavior:saga-sdk-replay-cut',
+      ).toEqual({
         outcomes: ['rolling-back', 'rollback-failed'],
         // c started last and its rollback was never registered, so nothing runs ahead of it.
         effects: ['do:a', 'do:b', 'do:c'],
@@ -714,7 +720,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       const emitted = (rows?.rows ?? [])
         .map((row) => String(row.event_name))
         .filter((name) => name === 'late' || name === 'undone')
-      expect({ outcomes, effects, emitted }).toEqual({
+      expect(
+        { outcomes, effects, emitted },
+        'mutation-verdict:behavior:saga-sdk-frozen-emit',
+      ).toEqual({
         outcomes: ['rolling-back', 'rolled-back'],
         effects: ['do:a', 'replayed-past-the-emit', 'undo:a'],
         emitted: ['undone'],
@@ -759,13 +768,16 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         name?: string
         message?: string
       } | null
-      expect({
-        attempts,
-        effects,
-        outcome: result?.rollback?.outcome,
-        error: error?.name,
-        left: error?.message?.includes('charge-1'),
-      }).toEqual({
+      expect(
+        {
+          attempts,
+          effects,
+          outcome: result?.rollback?.outcome,
+          error: error?.name,
+          left: error?.message?.includes('charge-1'),
+        },
+        'mutation-verdict:behavior:saga-sdk-pass-attempt',
+      ).toEqual({
         // Two forward attempts, then two rollback passes, which both replay as attempt 2.
         attempts: [1, 2, 2, 2],
         effects: ['do:charge-1', 'do:charge-2', 'undo:charge-2', 'undo:charge-2'],

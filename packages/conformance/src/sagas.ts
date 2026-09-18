@@ -744,7 +744,10 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const run = await claimActivated(f.store, Q, 'w-forward')
       await startStep(f, run, 'a', 1)
       const decided = await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
-      expect({ decided, task: await taskRow(f, spawned.taskId) }).toEqual({
+      expect(
+        { decided, task: await taskRow(f, spawned.taskId) },
+        'mutation-verdict:behavior:saga-pass-fits-the-largest-budget',
+      ).toEqual({
         decided: { rollingBack: true },
         task: { state: 'pending', attempts: 1, maxAttempts: 2, failureReason: null },
       })
@@ -766,8 +769,14 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           checkpointOwned(f.store, Q, run, tried.key, tried.stateJson, 60),
         ),
       })
-      expect((await forgedBy(forward)).marker).toBe('LeaseLostError')
-      expect((await forgedBy(forward)).attemptRecord).toBe('LeaseLostError')
+      expect(
+        (await forgedBy(forward)).marker,
+        'mutation-verdict:behavior:saga-phase-marker-is-the-engines',
+      ).toBe('LeaseLostError')
+      expect(
+        (await forgedBy(forward)).attemptRecord,
+        'mutation-verdict:behavior:saga-attempt-record-is-the-engines',
+      ).toBe('LeaseLostError')
       await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
       const pass = await claimActivated(f.store, Q, 'w-pass')
       expect({
@@ -797,7 +806,10 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             { key, stateJson },
           ),
         )
-      expect(await suspendedAs(SAGA_PHASE_CHECKPOINT, '"forged"')).toBe('LeaseLostError')
+      expect(
+        await suspendedAs(SAGA_PHASE_CHECKPOINT, '"forged"'),
+        'mutation-verdict:behavior:saga-suspension-marker-name-is-checked',
+      ).toBe('LeaseLostError')
       expect(await suspendedAs(tried.key, tried.stateJson)).toBe('LeaseLostError')
       // The run is still running and its saga has not begun, so it suspends as any run does.
       expect({
@@ -818,19 +830,22 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             stateJson: triesOf('a', 1).stateJson,
           }),
         )
-      expect({
-        overTheMarker: await failedAs(SAGA_PHASE_CHECKPOINT),
-        asAForwardStep: await failedAs('b'),
-        asARollbackThatRan: await failedAs(rollbackOf('a')),
-        marker: (
-          await rowsOf(
-            f.raw,
-            'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-            [taskId, SAGA_PHASE_CHECKPOINT],
-          )
-        )[0]?.state,
-        task: (await taskRow(f, taskId))?.state,
-      }).toEqual({
+      expect(
+        {
+          overTheMarker: await failedAs(SAGA_PHASE_CHECKPOINT),
+          asAForwardStep: await failedAs('b'),
+          asARollbackThatRan: await failedAs(rollbackOf('a')),
+          marker: (
+            await rowsOf(
+              f.raw,
+              'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+              [taskId, SAGA_PHASE_CHECKPOINT],
+            )
+          )[0]?.state,
+          task: (await taskRow(f, taskId))?.state,
+        },
+        'mutation-verdict:behavior:saga-attempt-record-name-is-checked',
+      ).toEqual({
         overTheMarker: 'LeaseLostError',
         asAForwardStep: 'LeaseLostError',
         asARollbackThatRan: 'LeaseLostError',

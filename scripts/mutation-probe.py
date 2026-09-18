@@ -11555,6 +11555,97 @@ for _verdict, _names in (
 MUTATION_SPECS.extend(
     (
         (
+            "saga-pass-guards-the-budget-it-writes",
+            "packages/store-libsql/src/store.ts",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "           AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 't')}`,\n",
+            "the pass is checked against the budget the task was spawned with, so a task spawned with the largest budget never rolls back",
+        ),
+        (
+            "saga-phase-marker-is-the-engines",
+            "packages/store-libsql/src/fragments.ts",
+            "  `(${name} = '${SAGA_PHASE_CHECKPOINT}'\n",
+            "  `(${name} = '$no-such-name'\n",
+            "a lease holder writes the phase marker and forges a saga",
+        ),
+        (
+            "saga-attempt-record-is-the-engines",
+            "packages/store-libsql/src/fragments.ts",
+            "    OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`\n",
+            "    OR ${namedUnder(name, '$no-such-prefix:')})`\n",
+            "a lease holder writes a rollback's attempt record and spends its budget",
+        ),
+        (
+            "saga-set-checkpoint-name-is-checked",
+            "packages/store-libsql/src/store.ts",
+            "         AND NOT ${checkpointIsTheEngines('?')}`,\n          [checkpointName, checkpointName, checkpointName],\n",
+            "         AND ? IS NOT NULL`,\n          [checkpointName, checkpointName],\n",
+            "a plain checkpoint write is refused no name of the engine's",
+        ),
+        (
+            "saga-suspension-marker-name-is-checked",
+            "packages/store-libsql/src/store.ts",
+            "         AND NOT ${checkpointIsTheEngines('?')}`,\n          [checkpoint.key, checkpoint.key],\n",
+            "         AND ? IS NOT NULL`,\n          [checkpoint.key],\n",
+            "a suspension commits a marker named as the phase marker and forges a saga",
+        ),
+        (
+            "saga-attempt-record-name-is-checked",
+            "packages/store-libsql/src/store.ts",
+            "         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,\n",
+            "         )${rollback === undefined ? '' : ` AND ? IS NOT NULL`}`,\n",
+            "a failed rollback commits its record over the phase marker and replaces the saga's cause",
+        ),
+        (
+            "saga-nesting-guard-covers-the-start-marker",
+            "packages/sdk/src/context.ts",
+            "    this.inStep = true\n    let raw: unknown\n",
+            "    let raw: unknown\n",
+            "a second registered step starts while the first writes its start marker, and the two share an index",
+        ),
+        (
+            "saga-rollback-budget-is-bounded",
+            "packages/sdk/src/context.ts",
+            "          attempts > MAX_COUNT\n",
+            "          attempts > MAX_COUNT * MAX_COUNT\n",
+            "a rollback budget the retry decision refuses is accepted, and the task ends with the wrong reason when the rollback first fails",
+        ),
+        (
+            "saga-replay-emits-nothing",
+            "packages/sdk/src/context.ts",
+            "    if (this.#sagaCauseJson !== undefined && !this.inStep) return\n",
+            "    if (this.#sagaCauseJson === null && !this.inStep) return\n",
+            "a rollback pass emits an event the forward pass never reached",
+        ),
+        (
+            "saga-rollback-handler-may-emit",
+            "packages/sdk/src/context.ts",
+            "    if (this.#sagaCauseJson !== undefined && !this.inStep) return\n",
+            "    if (this.#sagaCauseJson !== undefined) return\n",
+            "a rollback handler's emit is dropped",
+        ),
+        (
+            "saga-pass-replays-one-ordinal-back",
+            "packages/sdk/src/context.ts",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries\n",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt - this.recordedRollbackTries\n",
+            "the first rollback pass replays as an attempt that never ran",
+        ),
+        (
+            "saga-pass-replays-past-recorded-tries",
+            "packages/sdk/src/context.ts",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries\n",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt - 1\n",
+            "a pass that follows a failed rollback attempt replays as an attempt that never ran",
+        ),
+        (
+            "saga-halt-says-where-the-replay-ended",
+            "packages/sdk/src/context.ts",
+            "        this.replayLastCutAt = key\n",
+            "        // MUTATION: the pass forgets where its replay stopped\n",
+            "a saga halted by a handler's selective catch names only the step left unregistered",
+        ),
+        (
             "saga-fail-enters-only-before-the-phase",
             "packages/store-libsql/src/store.ts",
             "        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,\n",
@@ -11586,7 +11677,7 @@ MUTATION_SPECS.extend(
             "saga-failed-rollback-needs-the-phase",
             "packages/store-libsql/src/store.ts",
             "        phase: rollback === undefined ? 'open' : sqlFragment(sagaBegan('runs')),\n",
-            "        phase: 'open',\n",
+            "        phase: rollback === undefined ? 'open' : 'open',\n",
             "a failed rollback is accepted for a task that is not rolling back, and ends it",
         ),
         (
@@ -12087,6 +12178,7 @@ for _verdict, _names in (
         ),
         (
             "saga-bad-registration-is-permanent",
+            "saga-rollback-budget-is-bounded",
         ),
     ),
     (
@@ -12233,6 +12325,113 @@ for _verdict, _names in (
         ),
         (
             "saga-rollback-checkpoint-refused-outside-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] rolls back a task spawned with the largest budget a task may have",
+            "mutation-verdict:behavior:saga-pass-fits-the-largest-budget",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-guards-the-budget-it-writes",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses the phase marker and an attempt record through a plain checkpoint write",
+            "mutation-verdict:behavior:saga-phase-marker-is-the-engines",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-phase-marker-is-the-engines",
+            "saga-set-checkpoint-name-is-checked",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses the phase marker and an attempt record through a plain checkpoint write",
+            "mutation-verdict:behavior:saga-attempt-record-is-the-engines",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-attempt-record-is-the-engines",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses an engine-only name as the marker of a suspension",
+            "mutation-verdict:behavior:saga-suspension-marker-name-is-checked",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-suspension-marker-name-is-checked",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a failed rollback whose attempt record carries any other name",
+            "mutation-verdict:behavior:saga-attempt-record-name-is-checked",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-attempt-record-name-is-checked",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] refuses a second registered step while the first writes its start marker, as it refuses any nested step",
+            "mutation-verdict:behavior:saga-sdk-concurrent-start",
+        ),
+        (
+            "saga-nesting-guard-covers-the-start-marker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] emits nothing from a rollback pass that the forward pass never reached",
+            "mutation-verdict:behavior:saga-sdk-frozen-emit",
+        ),
+        (
+            "saga-replay-emits-nothing",
+            "saga-rollback-handler-may-emit",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] replays a rollback pass with the attempt of the run that failed, on every pass",
+            "mutation-verdict:behavior:saga-sdk-pass-attempt",
+        ),
+        (
+            "saga-pass-replays-one-ordinal-back",
+            "saga-pass-replays-past-recorded-tries",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] says where the replay ended when a handler rethrows past a step that never persisted",
+            "mutation-verdict:behavior:saga-sdk-replay-cut",
+        ),
+        (
+            "saga-halt-says-where-the-replay-ended",
         ),
     ),
 ):
@@ -13810,6 +14009,27 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     ),
     "saga-row-checker-forward-checkpoint-in-the-phase": (
         "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-nesting-guard-covers-the-start-marker": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-rollback-budget-is-bounded": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-replay-emits-nothing": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-rollback-handler-may-emit": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-pass-replays-one-ordinal-back": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-pass-replays-past-recorded-tries": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-halt-says-where-the-replay-ended": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "legacy-wait-step-backfill": (
         "the Vitest title is generated from the migration-derived table, column, "
@@ -16094,7 +16314,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 815:
+        if len(MUTATIONS) != 828:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
