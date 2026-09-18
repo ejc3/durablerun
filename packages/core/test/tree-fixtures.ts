@@ -19,7 +19,7 @@ import {
 
 /** What `fenced-batch-tree.test.ts` and `fenced-batch-tree-verdicts.test.ts` both build on. */
 export const CLOCK = `CAST(unixepoch('subsec') * 1000 AS INTEGER)`
-export const dialect = new TreeDialect(new SqliteQueryCompiler())
+const dialect = new TreeDialect(new SqliteQueryCompiler())
 
 export type Builder = { toOperationNode(): OperationNode }
 
@@ -181,4 +181,56 @@ export const eventInsert = () =>
     emitted_at_ms: nowValue,
     fence_stamp: stampValue,
     fence_at_ms: nowValue,
+  })
+
+// A follow-on update of tasks, and the subquery gates the tie tests put on it.
+/** The fenced source: the run this batch's compare-and-set stamped. */
+export const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
+/** The fenced source beside a second FROM source, which can supply rows of its own. */
+export const widened = (eb: Loose) => eb.selectFrom(['runs as f', 'tasks as t2']).where(gate)
+export const stampedTasks = () =>
+  loose.updateTable('tasks').set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+export const tasksWhere = (where: (eb: Loose) => Loose) => stampedTasks().where(where)
+export const keyIn = (keys: (eb: Loose) => Loose) =>
+  tasksWhere((eb) => eb('task_id', 'in', keys(eb)))
+export const tiedKeys = (eb: Loose) => fenced(eb).select('f.task_id')
+export const tiedBy = (tie: (select: Loose, eb: Loose) => Loose) =>
+  tasksWhere((eb) => eb.exists(tie(fenced(eb).select('f.run_id'), eb)))
+/** IN through one derived table, which selects `source_key` however the test says. */
+export const throughDerived = (inner: (eb: Loose) => Loose) =>
+  keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
+/** A follow-on update of tasks, gated and tied, with whatever provenance the test gives it. */
+export const tasksSetting = (assignments: object) =>
+  loose
+    .updateTable('tasks')
+    .set({ state: 'completed', ...assignments })
+    .where((eb: Loose) => eb('task_id', 'in', tiedKeys(eb)))
+
+/** An upsert of the one event, with the conflict arm the test gives it. */
+export const eventUpsert = (set: (eb: Loose) => object) =>
+  (eventInsert() as Loose).onConflict((conflict: Loose) =>
+    conflict.columns(['queue', 'event_name']).doUpdateSet((eb: Loose) => set(eb)),
+  )
+export const waitInsert = () =>
+  db.insertInto('waits').values({
+    run_id: 'r1',
+    step_name: 's',
+    queue: 'q',
+    task_id: 't1',
+    event_name: 'e',
+    status: 'waiting',
+    created_at_ms: nowValue,
+    fence_stamp: stampValue,
+    fence_at_ms: nowValue,
+  })
+/** The one event as a row of VALUES, with the columns the test overrides. */
+export const eventRow = (row: object) =>
+  loose.insertInto('events').values({
+    queue: 'q',
+    event_name: 'e',
+    payload: 'p',
+    emitted_at_ms: nowValue,
+    fence_stamp: stampValue,
+    fence_at_ms: nowValue,
+    ...row,
   })

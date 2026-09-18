@@ -17,16 +17,27 @@ import {
   capturingExecutor,
   checkpoint,
   eventInsert,
+  eventRow,
+  eventUpsert,
+  fenced,
   followOn,
   gate,
   joined,
+  keyIn,
   loose,
   predicate,
   recorded,
+  stampedTasks,
   statement,
   successor,
   taskFollowOn,
+  tasksSetting,
+  tasksWhere,
+  throughDerived,
+  tiedBy,
+  tiedKeys,
   value,
+  waitInsert,
   winCas,
   withCas,
 } from './tree-fixtures.js'
@@ -66,48 +77,6 @@ const tail = (builder: Builder) => withCas().tailTree('read', statement(builder)
 
 const NO_GATE = /has no fence gating every row/
 const UNTIED = /not tied to the rows it reads or writes/
-
-const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
-const stampedTasks = () =>
-  loose.updateTable('tasks').set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
-const tasksWhere = (where: (eb: Loose) => Loose) => stampedTasks().where(where)
-const keyIn = (keys: (eb: Loose) => Loose) => tasksWhere((eb) => eb('task_id', 'in', keys(eb)))
-const tiedBy = (tie: (select: Loose, eb: Loose) => Loose) =>
-  tasksWhere((eb) => eb.exists(tie(fenced(eb).select('f.run_id'), eb)))
-const tiedKeys = (eb: Loose) => fenced(eb).select('f.task_id')
-/** A follow-on update of tasks, gated and tied, with whatever provenance the test gives it. */
-const tasksSetting = (assignments: object) =>
-  loose
-    .updateTable('tasks')
-    .set({ state: 'completed', ...assignments })
-    .where((eb: Loose) => eb('task_id', 'in', tiedKeys(eb)))
-/** An upsert of the one event, with the conflict arm the test gives it. */
-const eventUpsert = (set: (eb: Loose) => object) =>
-  (eventInsert() as Loose).onConflict((conflict: Loose) =>
-    conflict.columns(['queue', 'event_name']).doUpdateSet((eb: Loose) => set(eb)),
-  )
-const waitInsert = () =>
-  db.insertInto('waits').values({
-    run_id: 'r1',
-    step_name: 's',
-    queue: 'q',
-    task_id: 't1',
-    event_name: 'e',
-    status: 'waiting',
-    created_at_ms: nowValue,
-    fence_stamp: stampValue,
-    fence_at_ms: nowValue,
-  })
-const eventRow = (row: object) =>
-  loose.insertInto('events').values({
-    queue: 'q',
-    event_name: 'e',
-    payload: 'p',
-    emitted_at_ms: nowValue,
-    fence_stamp: stampValue,
-    fence_at_ms: nowValue,
-    ...row,
-  })
 
 describe('the tree path', () => {
   describe('stamping', () => {
@@ -411,13 +380,13 @@ describe('the tree path', () => {
     })
 
     it('ties IN through a derived table only by the column that table selects from the fenced source', () => {
-      const through = (inner: (eb: Loose) => Loose) =>
-        keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
       expect(() =>
-        many(through((eb) => fenced(eb).select('f.task_id as source_key').distinct())),
+        many(throughDerived((eb) => fenced(eb).select('f.task_id as source_key').distinct())),
       ).not.toThrow()
       refuses('mutation-verdict:construction:tree-tie-in-derived-column', UNTIED, () =>
-        many(through((eb) => fenced(eb).select(eb.val('t-victim').as('source_key')).distinct())),
+        many(
+          throughDerived((eb) => fenced(eb).select(eb.val('t-victim').as('source_key')).distinct()),
+        ),
       )
     })
 

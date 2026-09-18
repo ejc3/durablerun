@@ -9,7 +9,6 @@ import {
   aliasedAs,
   capLostLaunchCas,
   coalesced,
-  compileOnlyBuilder,
   treeBuilder as db,
   defineStatement,
   emitEventCas,
@@ -25,10 +24,6 @@ import {
   suspendCas,
 } from '../src/index.js'
 
-/**
- * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
- * must still allow, as `fenced-batch.test.ts` does for text statements.
- */
 import {
   type Builder,
   CLOCK,
@@ -38,21 +33,31 @@ import {
   checkpoint,
   either,
   eventInsert,
+  fenced,
   followOn,
   gate,
   joined,
   key,
+  keyIn,
   loose,
   predicate,
   recorded,
   statement,
   successor,
   taskFollowOn,
+  tasksWhere,
+  throughDerived,
   value,
+  waitInsert,
+  widened,
   winCas,
   withCas,
 } from './tree-fixtures.js'
 
+/**
+ * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
+ * must still allow, as `fenced-batch.test.ts` does for text statements.
+ */
 describe('FencedBatch tree statements', () => {
   it('compiles a compare-and-set and a gated follow-on with every token bound', async () => {
     const { captured, executor } = capturingExecutor(1)
@@ -927,18 +932,6 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(conflict('none')))).toThrow(
       /must preserve events.emitted_at_ms while re-stamping/,
     )
-    const waitInsert = () =>
-      db.insertInto('waits').values({
-        run_id: 'r1',
-        step_name: 's',
-        queue: 'q',
-        task_id: 't1',
-        event_name: 'e',
-        status: 'waiting',
-        created_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      })
     const silentUpsert = waitInsert().onConflict((oc) =>
       oc.columns(['run_id', 'step_name']).doUpdateSet({ status: 'waiting' }),
     )
@@ -1505,20 +1498,6 @@ describe('FencedBatch tree statements', () => {
   })
 
   it('ties a subquery gate to the fenced source, and lets nothing widen it', () => {
-    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
-    type Loose = any
-    const loose = compileOnlyBuilder<Loose>()
-    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
-    const tasks = (where: (eb: Loose) => Loose) =>
-      loose
-        .updateTable('tasks')
-        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
-        .where(where)
-    const keyIn = (keys: (eb: Loose) => Loose) => tasks((eb) => eb('task_id', 'in', keys(eb)))
-    const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
-    const widened = (eb: Loose) => eb.selectFrom(['runs as f', 'tasks as t2']).where(gate)
-    const throughDerived = (inner: (eb: Loose) => Loose) =>
-      keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
     const shapes: { shape: string; query: Builder; tied: boolean }[] = [
       {
         shape: 'IN selects a column of the fenced source',
@@ -1564,14 +1543,14 @@ describe('FencedBatch tree statements', () => {
       },
       {
         shape: 'EXISTS equates the fenced source with the outer row',
-        query: tasks((eb) =>
+        query: tasksWhere((eb) =>
           eb.exists(fenced(eb).select('f.run_id').whereRef('f.task_id', '=', 'tasks.task_id')),
         ),
         tied: true,
       },
       {
         shape: 'EXISTS equates a second inner source with the outer row',
-        query: tasks((eb) =>
+        query: tasksWhere((eb) =>
           eb.exists(widened(eb).select('f.run_id').whereRef('t2.task_id', '=', 'tasks.task_id')),
         ),
         tied: false,
