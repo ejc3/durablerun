@@ -854,6 +854,121 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // The three cases above each hold one door. This one holds the table: every batch that
+    // commits a checkpoint under a name its caller chose, against every reserved name, in
+    // both phases. Each pair is refused, or admitted only in its phase. A store that gains a
+    // batch which takes a caller's checkpoint name gains a door here, and the static count
+    // of checkpoint writes in the conformance tests is what sends its author to this table.
+    it('admits a reserved checkpoint name only at its door and in its phase, and matches it exactly', async () => {
+      const tried = triesOf('a', 1)
+      const reserved = {
+        phaseMarker: { key: SAGA_PHASE_CHECKPOINT, stateJson: '"forged"' },
+        startMarker: { key: startMarker('b'), stateJson: '2' },
+        rollback: { key: rollbackOf('a'), stateJson: 'null' },
+        attemptRecord: tried,
+      }
+      // Names that are no reserved name: a reserved one in another case, or padded. A store
+      // that folds case or pads spaces when it compares a name answers these as reserved.
+      const lookalikes = {
+        upperPhaseMarker: { key: SAGA_PHASE_CHECKPOINT.toUpperCase(), stateJson: '"x"' },
+        paddedPhaseMarker: { key: `${SAGA_PHASE_CHECKPOINT} `, stateJson: '"x"' },
+        upperRollback: { key: rollbackOf('a').toUpperCase(), stateJson: '"x"' },
+        upperAttemptRecord: { key: tried.key.toUpperCase(), stateJson: tried.stateJson },
+      }
+      const doors = {
+        'set-checkpoint': (
+          queue: string,
+          run: ClaimedRun,
+          write: { key: string; stateJson: string },
+        ) => checkpointOwned(f.store, queue, run, write.key, write.stateJson, 60),
+        suspend: (queue: string, run: ClaimedRun, write: { key: string; stateJson: string }) =>
+          f.store.suspendRun(queue, run.runId, run.claimToken, { inSeconds: 5 }, write),
+        'fail-rollback': (
+          queue: string,
+          run: ClaimedRun,
+          write: { key: string; stateJson: string },
+        ) =>
+          f.store.failRollback(queue, run.runId, run.claimToken, CAUSE, null, {
+            key: write.key,
+            stateJson: tried.stateJson,
+          }),
+      }
+      let cell = 0
+      // Every cell has a task and a queue of its own: an admitted write parks, ends, or
+      // retries its run, and a rollback pass is claimable work on the queue it sits on.
+      const answer = async (
+        door: keyof typeof doors,
+        phase: 'forward' | 'rollingBack',
+        write: { key: string; stateJson: string },
+      ) => {
+        const queue = `door-${++cell}`
+        await f.store.spawn(queue, 'saga', '{}')
+        let run = await claimActivated(f.store, queue, `w-forward-${cell}`)
+        await checkpointOwned(f.store, queue, run, startMarker('a'), '1', 60)
+        if (phase === 'rollingBack') {
+          await f.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
+          run = await claimActivated(f.store, queue, `w-pass-${cell}`)
+        }
+        return refusalName(doors[door](queue, run, write))
+      }
+      const table = async (names: Record<string, { key: string; stateJson: string }>) => {
+        const answers: Record<string, Record<string, Record<string, string>>> = {}
+        for (const door of Object.keys(doors) as (keyof typeof doors)[]) {
+          const byPhase: Record<string, Record<string, string>> = {}
+          for (const phase of ['forward', 'rollingBack'] as const) {
+            const cells: Record<string, string> = {}
+            for (const [label, write] of Object.entries(names)) {
+              cells[label] = await answer(door, phase, write)
+            }
+            byPhase[phase] = cells
+          }
+          answers[door] = byPhase
+        }
+        return answers
+      }
+      const REFUSED = 'LeaseLostError'
+      const every = (names: object, outcome: string) =>
+        Object.fromEntries(Object.keys(names).map((label) => [label, outcome]))
+      const reservedAnswers = await table(reserved)
+      const lookalikeAnswers = await table(lookalikes)
+      expect(
+        reservedAnswers,
+        'mutation-verdict:behavior:saga-caller-named-checkpoint-doors',
+      ).toEqual({
+        'set-checkpoint': {
+          forward: { ...every(reserved, REFUSED), startMarker: 'accepted' },
+          rollingBack: { ...every(reserved, REFUSED), rollback: 'accepted' },
+        },
+        suspend: {
+          forward: { ...every(reserved, REFUSED), startMarker: 'accepted' },
+          rollingBack: every(reserved, REFUSED),
+        },
+        'fail-rollback': {
+          forward: every(reserved, REFUSED),
+          rollingBack: { ...every(reserved, REFUSED), attemptRecord: 'accepted' },
+        },
+      })
+      // A lookalike is a plain name: a forward checkpoint, which the phase freezes, and no
+      // attempt record.
+      expect(
+        lookalikeAnswers,
+        'mutation-verdict:behavior:saga-reserved-names-match-exactly',
+      ).toEqual({
+        'set-checkpoint': {
+          forward: every(lookalikes, 'accepted'),
+          rollingBack: every(lookalikes, REFUSED),
+        },
+        suspend: {
+          forward: every(lookalikes, 'accepted'),
+          rollingBack: every(lookalikes, REFUSED),
+        },
+        'fail-rollback': {
+          forward: every(lookalikes, REFUSED),
+          rollingBack: every(lookalikes, REFUSED),
+        },
+      })
+    })
+
     // A crash between batches changes nothing durable, and the next rollback is a function
     // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
     // that dies is recovered by the lease story like any run, and the pass that follows
