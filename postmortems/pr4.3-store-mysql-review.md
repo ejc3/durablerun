@@ -8,9 +8,10 @@ deadlock, a name with trailing spaces past 255 characters is silently stored
 as a different name, and a DELETE of exactly two rows reports one. Two are
 hot reads whose cost grows with a queue's history. Two are in the executor's
 use of mysql2. The rest are a label rule standing in for a lock coordinate,
-stale spec text, and a second parser of one environment variable. Our own
-machinery found none of the ten. Nine are fixed here, seven of them as a red
-test and a fix, and one is deferred to a named PR.
+stale spec text, and a second parser of one environment variable. A narrow
+re-review of the fixes then found an eleventh, which one of the fixes had
+introduced. Our own machinery found none of the eleven. Ten are fixed here,
+eight of them as a red test and a fix, and one is deferred to a named PR.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** Never "who wrote it", "should have noticed", "was careless" — those
@@ -45,6 +46,14 @@ The fourth would misattribute a lost compare-and-set as won, for any
 application that handed the store its own mysql2 pool, because mysql2 turns
 `FOUND_ROWS` on by default and the precondition lived in a comment.
 
+The fifth was introduced by a fix in this round, and it would have moved
+every write after a connection's first to another isolation level. Once the
+session settings were sent once for each connection, a pool that resets
+connections on release, which mysql2 offers as an option, came back from every
+release with a fresh session: REPEATABLE READ, the server's time zone, and no
+strict mode. The cleanup, the claim, and the batch-visibility rule were all
+measured under READ COMMITTED.
+
 The rest cost time and not state. The cancel scan and the next-wake read
 walked a queue's dead history on every sweep and every driver tick. Every
 batch paid one more round trip to set the session again.
@@ -63,16 +72,20 @@ batch paid one more round trip to set the session again.
 | 8 | The migration lock is chosen by matching the batch label | A future `migrate:v6:ddl` or `migrate:repair` batch would run DDL with no lock and no test going red | Core's rule that a lock travels in the batch control | The rule covers the event and claim locks, and nothing checks that a third lock uses it | None built. Deferred to PR4.4 in BUILD.md, with the half-applied-version case |
 | 9 | DESIGN.md and AGENTS.md still said MySQL takes row locks for events, and the 30 second lock wait and its error were in no spec | A port in another language has no line to match | The rule that a behaviour change updates DESIGN.md in the same diff | It is an instruction to a reviewer, with no checker | The text is corrected and the lock wait has a test. No mechanism: the class is open |
 | 10 | The root vitest configuration parsed `DURABLERUN_CONFORMANCE_DIALECTS` a second time, leniently | A misspelled name drops a server's test files and the run stays green | The single-definition rule | The validated parser lived in a file that imports `pg` and `mysql2`, which a configuration file should not load, so a second one was written | One parser in a file that imports nothing, used by both readers (rung 1 for this value), with a test of the lists it refuses |
+| 11 | Fix-induced, by the fix for 6: the settings are remembered against the connection object, and a pool with mysql2's `resetOnRelease` sends a reset on every release, so the same object carries a fresh session | Every write after a connection's first runs at REPEATABLE READ, with the server's time zone and no strict mode. Reachable through `open` and `fromPool` | The tests of the fix for 6 | They asked whether the settings are sent once, and nothing asked whether the session the settings describe is still there on the next batch | The store's own pool forces the option off and `fromPool` refuses it, with a mutation, and a case reads the session from the server on each of three batches (rung 3). A pool that cannot reset would be rung 1 and is not ours to build |
 
 ## Detection ledger
 
-Every finding came from the outside review of PR #51. The branch had passed
-the whole gate locally three times and CI was green on the reviewed head, so
-each of the ten is a defect our machinery was shown and accepted.
+Every finding came from outside review. The branch had passed the whole gate
+locally three times and CI was green on the reviewed head, so each of the
+first ten is a defect our machinery was shown and accepted. The eleventh was
+in a fix that had passed every gate again, and the re-review found it by
+asking what else mysql2's pool can do to a connection.
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | Outside review of PR #51, seven finder angles and the reviewer's own runs on MySQL 8.4 | 10 | No |
+| Narrow re-review of the fixes, with its own run on MySQL 8.4 | 1 | No |
 | This project's machinery: conformance, fault and poison matrices, lints, mutation probe | 0 | Yes |
 
 Self-catch rate: 0% (previous round: 25%).
@@ -111,6 +124,14 @@ here is a case over the real pool in which the server does the counting.
 states. The law is enforced by review, which is why it recurred. For this one
 value the second parser is now unwritable without deleting an import.
 
+**A fix that changes what an earlier accident was covering.** Finding 11.
+Sending the settings before every batch was a defect, and it was also what
+repaired a session that something else had changed. Removing the defect
+removed the repair. Earlier rounds record fix-induced defects, and the
+mechanism has each time been a re-review of the fix, which is what found this
+one. No mechanism asks of a fix what the old behaviour was incidentally
+providing.
+
 **A precondition in a comment**, finding 7, and **spec text left behind**,
 finding 9, are both rules that exist only as instructions to a reviewer.
 Neither has ever had a mechanism, and finding 9 still has none.
@@ -130,22 +151,28 @@ says otherwise.
 | `fromPool` refuses `FOUND_ROWS` | 3 | `fromPool` over a pool with the flag off and `supportBigNumbers: false` is accepted, and that pool decodes a BIGINT past 2^53 as a rounded number. Ran. The check reads one flag of the several options `createOwnedMysqlPool` sets |
 | The store refuses an identifier past the width at every entry | 3, with its method list derived from the store | A new identifier parameter on a method that already has an entry passes the coverage test with no call for it. Not run: it is a statement about a parameter that does not exist yet. The executor's check below is what would still refuse the write |
 | The executor refuses a write that raised note 1265 | 3, at the chokepoint | No false negative found for a write through this executor. Two were tried and both are refused: a value cut by `CAST(? AS CHAR(3))` is error 1292 under the strict mode the session sets, and `INSERT IGNORE` of 300 characters raises the same note 1265. Its boundary is the executor: a fixture or an operator writing through another client is not checked |
+| The store's pool never resets on release, and `fromPool` refuses one that does | 3 | A pool with `resetOnRelease: false` that the application also uses: after one store batch, another user ran `SET SESSION transaction_isolation = 'REPEATABLE-READ', sql_mode = ''` on the pooled connection, and the store's next batch read REPEATABLE-READ with no strict mode. Ran. DESIGN.md now says a pool handed to `fromPool` must not have its session changed, which is a sentence and not a check |
 | Measured plan tests for the cancel scan and the next-wake read | 3 | The claim's `FORCE INDEX (runs_poll)` removed from the store, with both plan tests still passing. Ran. The claim has no plan test, and any hot read without one is unheld |
 | The shared concurrent-beats case | 3, probabilistic | The cleanup written as `WHERE (queue, driver_id) IN (the same skip-locked read)` still deadlocked 22 of 200 beats when measured. At that rate 80 beats almost never all pass, so this case would catch it. A cycle that forms once in a thousand beats passes the case 92 times in 100 |
 | One parser of the dialect selection | 1 for this value | The files that need a server are a hand-kept map in the root configuration. A new server test file that is not added to it still runs, and fails, in a job that has no such server. That is loud and not silent. Not run |
 
 ## Fix-induced defects
 
-None of the ten findings was caused by a fix for another. Three defects were
-introduced while fixing and were caught by the fix's own green run before any
-commit: the first next-wake rewrite read a property the bounds object does not
+One of the eleven findings, finding 11, was caused by a fix for another: the
+fix for finding 6, which remembers the session settings against the physical
+connection. It passed its own red test, a case over the real pool, every
+gate, and the first review, and the narrow re-review of the behaviour changes
+found it. Its repair was itself tested against the server, on three batches
+over one connection, and was not reviewed again, because that re-review was
+this PR's last round.
+
+Three more defects were introduced while fixing and were caught by the fix's
+own green run before any commit: the first next-wake rewrite read a property the bounds object does not
 have and MySQL answered error 1054; the first deadlock fix was refused with
 error 1093 until the derived table was kept materialized; and the lock-wait
 test expected a returned connection where the executor discards it. A fourth
 candidate, the `IN` form of the cleanup, was legal SQL and was rejected only
-because it was measured: 22 of 200 beats still deadlocked. The fixes were
-tested and measured, and were not re-reviewed as new code. One narrow
-re-review of the behaviour changes is the plan.
+because it was measured: 22 of 200 beats still deadlocked.
 
 ## Evidence
 
@@ -158,6 +185,7 @@ re-review of the behaviour changes is the plan.
   - `df55695` red, `fc99de3` fix. "seeks the earliest instant of each wake source, whatever the queue holds": expected 1207 to be less than 20.
   - `6bba5b8` red, `898f21c` fix. "scheduler conformance [mysql] > driver registry > concurrent beats from distinct drivers all land": MySQL error 1213. The same case passed on libSQL and PostgreSQL in the red run.
   - `01d311f` red, `e0883ce` fix. Three tests: the raw write was 'accepted', emitEvent threw a RangeError where an invalid durable string is expected, and none of the store's 45 entries refused.
+  - `2d49867` red, `179963a` fix, for finding 11. Over `open()` with the option on, one connection read "READ-COMMITTED +00:00 strict=1" on its first batch and "REPEATABLE-READ SYSTEM strict=0" on its second and third, and `fromPool` did not throw. The re-review's own reproduction reads READ-COMMITTED on all three batches after the fix.
 - The reviewer's own harness, rerun before and after: 29 successes and 171
   deadlocks of 200 before, 200 successes and 0 deadlocks after. DELETEs of 1,
   2, and 3 rows reported 1, 1, 3 before.
@@ -231,7 +259,10 @@ Deferred (recorded in BUILD.md):
 - A boundary sampled at the wrong value. Nothing enumerates the values at
   which two rules of one function meet, and the mutation probe cannot see a
   condition that was never written.
-- A foreign pool that decodes numbers or dates differently from the owned one.
+- A foreign pool that decodes numbers or dates differently from the owned one,
+  or whose other users change a connection's session state.
+- What a fix removes by accident. Finding 11 was found by a second review and
+  by nothing of ours.
 - A write with a statement shape the counting rule does not know, a REPLACE
   or an INSERT behind a comment, if the store ever writes one.
 - A behaviour change that leaves DESIGN.md behind. It is still a rule for a

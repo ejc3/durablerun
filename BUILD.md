@@ -1437,7 +1437,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   MySQL has no `ADD COLUMN IF NOT EXISTS` for. (5) The optional PlanetScale
   smoke job is not built. (6) Child tasks and sagas land their batches on
   libSQL and PostgreSQL first, and `store-mysql` ports them after. The review
-  of this PR found ten defects, seven of them in behaviour, recorded in
+  of this PR found eleven defects, eight of them in behaviour and one of them
+  introduced by a fix, recorded in
   `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an
   identifier past 255 characters itself, whatever the excess is, because MySQL
   cuts trailing spaces past the width where it refuses any other excess.
