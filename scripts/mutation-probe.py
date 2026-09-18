@@ -6718,9 +6718,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-spawn-needs-the-parents-live-claim",
-            "packages/core/src/statements/spawn.ts",
-            "          : admitted.where((where) => where.exists(stillClaimed(parent, parent.liveTask))),\n",
-            "          : admitted, // MUTATION\n",
+            "packages/store-libsql/src/store.ts",
+            "        parent:\n          childOf === undefined\n",
+            "        parent:\n          childOf === undefined || childOf !== undefined\n",
             "any caller of the spawn port creates a parent's child, and the parent adopts it and reads its result",
         ),
         (
