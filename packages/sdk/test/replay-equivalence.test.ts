@@ -321,9 +321,10 @@ function withoutChildIds(rows: { checkpoint_name: unknown; state: unknown }[]): 
  * derived from the call count the reference run measured, and it always ends at the
  * last call, where the parent's final checkpoint and its completion are.
  */
-function faultPoints(_measuredCalls: number): number[] {
+function faultPoints(measuredCalls: number): number[] {
   const points: number[] = []
-  for (let call = 3; call <= 28; call += 2) points.push(call)
+  for (let call = 3; call < measuredCalls; call += 2) points.push(call)
+  points.push(measuredCalls)
   return points
 }
 
@@ -332,7 +333,13 @@ async function runProgram(
   seed: string,
   failAtCall: number,
   tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
-): Promise<{ result: string | undefined; checkpoints: unknown[]; calls: number }> {
+): Promise<{
+  result: string | undefined
+  checkpoints: unknown[]
+  /** How many tasks of each name exist at the end: a second child is a second row here. */
+  tasks: string[]
+  calls: number
+}> {
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
@@ -406,8 +413,19 @@ async function runProgram(
     )
     expect(await engineInvariantViolations(raw)).toEqual([])
     expect(await childTaskViolations(raw)).toEqual([])
+    const [counted] = await raw.batch(
+      't',
+      [
+        {
+          sql: 'SELECT task_name, COUNT(*) AS n FROM tasks GROUP BY task_name ORDER BY task_name',
+          args: [],
+        },
+      ],
+      'read',
+    )
     return {
       calls,
+      tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
       result: outcome?.completedPayloadJson,
       checkpoints: withoutChildIds(
         (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
@@ -487,6 +505,7 @@ describe('replay equivalence (generated programs x fault points x adversarial va
         const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
         expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
         expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
+        expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
       }
     }, 60_000)
   }
