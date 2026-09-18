@@ -465,22 +465,18 @@ export interface CompiledTree {
   readonly placeholders: number
   /** Every fence the statement names, wherever it appears. */
   readonly fences: readonly string[]
-  /** Whether the clock token appears anywhere in the statement. */
-  readonly readsClock: boolean
 }
 
 class TokenBinder extends OperationNodeTransformer {
   #bindings: TokenBindings | null = null
   #fences: string[] = []
-  #readsClock = false
 
   bind(tree: StatementTree, bindings: TokenBindings) {
     this.#bindings = bindings
     this.#fences = []
-    this.#readsClock = false
     try {
       const bound = this.transformNode(tree)
-      return { bound, fences: this.#fences, readsClock: this.#readsClock }
+      return { bound, fences: this.#fences }
     } finally {
       this.#bindings = null
     }
@@ -491,7 +487,6 @@ class TokenBinder extends OperationNodeTransformer {
     const bindings = this.#bindings
     if (token === null || bindings === null) return super.transformNode(node, queryId)
     if (token.kind === 'now') {
-      this.#readsClock = true
       return RawNode.createWithSql(bindings.now) as unknown as T
     }
     if (token.kind === 'stamp') return ValueNode.create(bindings.stamp) as unknown as T
@@ -511,14 +506,13 @@ export class TreeDialect {
 
   /** Bind every engine token and compile, in one walk of the tree. */
   compile(tree: StatementTree, bindings: TokenBindings): CompiledTree {
-    const { bound, fences, readsClock } = this.#binder.bind(tree, bindings)
+    const { bound, fences } = this.#binder.bind(tree, bindings)
     const compiled = this.compiler.compileQuery(bound, createQueryId())
     return {
       sql: compiled.sql,
       parameters: compiled.parameters,
       placeholders: compiled.sql.split('?').length - 1,
       fences,
-      readsClock,
     }
   }
 }

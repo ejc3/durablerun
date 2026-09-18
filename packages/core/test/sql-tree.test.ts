@@ -270,7 +270,6 @@ describe('SQL tree checks', () => {
       parameters: ['completed', 'seed:complete', 'r1', 'seed:claim'],
       placeholders: 4,
       fences: ['claim'],
-      readsClock: true,
     })
   })
 

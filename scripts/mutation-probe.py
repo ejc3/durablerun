@@ -1066,13 +1066,6 @@ MUTATION_SPECS = [
         "a fragment's read of the incoming row is refused as a read of the written row",
     ),
     (
-        "tree-clock-ban-token-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && spelledClock) {",
-        "a tree follow-on may resolve the clock token a second time",
-    ),
-    (
         "tree-clock-spelling-in-fragment",
         "packages/core/src/fenced-batch.ts",
         "      CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
@@ -1169,9 +1162,9 @@ MUTATION_SPECS = [
         # showed no mutation touched. A spelling list has one entry for each spelling.
         "tree-clock-text-in-followon",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && (spelledClock || compiled.readsClock)) {",
-        "a tree follow-on may carry the batch clock's own text in a fragment",
+        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && spelledClock) {",
+        "a tree follow-on may carry the batch clock, as the clock token or as its own text in a fragment",
     ),
     (
         "tree-gate-inner-tie-carried",
@@ -2065,8 +2058,8 @@ MUTATION_SPECS = [
     (
         "tree-followon-spelled-clock-message",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && (compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && compiled.sql.includes(this.now)) {",
         "a follow-on's spelled-out clock is refused as a second clock, not as a follow-on reading the clock",
     ),
     (
@@ -6703,12 +6696,6 @@ VERDICTS = {
         "the tree path counting assignments reads excluded as the incoming row when it is spelled in a fragment",
         "mutation-verdict:construction:tree-counting-excluded-in-fragment",
     ),
-    "tree-clock-ban-token-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the clock refuses the clock token in a follow-on",
-        "mutation-verdict:construction:tree-clock-ban-token-in-followon",
-    ),
     "tree-clock-spelling-in-fragment": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -6784,7 +6771,7 @@ VERDICTS = {
     "tree-clock-text-in-followon": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the clock refuses the text of the batch clock in a follow-on fragment",
+        "the tree path the clock refuses the batch clock in a follow-on, as the token and as its own text",
         "mutation-verdict:construction:tree-clock-text-in-followon",
     ),
     "tree-gate-inner-tie-carried": ExpectedVerdict(
@@ -11734,8 +11721,8 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "fence: stamps ? { target: stamped, sealedBy: null } : null,": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
         ),
-        "if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {": (
-            "changes nothing a statement can show: `compiled.readsClock` is subsumed: the clock token compiles to the batch clock's text, which the comparison beside it finds, and deleting readsClock alone fails no test of 490"
+        "if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {": (
+            "fails closed: with `!isCas` gone every compare-and-set that reads the clock is refused, and 226 of the 472 core tests fail"
         ),
         "if (!isCas) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 49 at the fewest"
@@ -13735,7 +13722,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 665:
+        if len(MUTATIONS) != 664:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

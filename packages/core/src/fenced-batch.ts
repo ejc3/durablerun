@@ -829,7 +829,9 @@ export class FencedBatch {
     const spelledClock = rawTexts.some((text) =>
       CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),
     )
-    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {
+    // The clock token compiles to the batch clock's own text, so one comparison finds
+    // the token and that text written into a fragment alike.
+    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {
       throw new Error(clockReadRule(at))
     }
     if (spelledClock) {

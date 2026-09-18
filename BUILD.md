@@ -920,12 +920,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     line holds more conditions than registered mutations touch it, unless
     `TREE_CONDITIONS_WITHOUT_A_MUTATION` in `scripts/mutation-probe.py` lists
     the line with what a run showed: deleting it fails ordinary tests, or no
-    shape can tell it from the code. One entry matters to part 3b by name:
-    `compiled.readsClock`. The comparison beside it,
-    `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refuses,
-    and also the batch clock's own text written into a fragment, which
-    `readsClock` does not see. Part 3b may delete `readsClock` and must keep
-    the comparison, which `tree-clock-text-in-followon` holds.
+    shape can tell it from the code. Part 3b deleted one entry by name,
+    `compiled.readsClock`. The comparison that stood beside it,
+    `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refused,
+    because the clock token compiles to the batch clock's text, and also that
+    text written into a fragment. `tree-clock-text-in-followon` holds the
+    comparison with both shapes.
     Part 3b follows: the text path and its scanners deleted, with `cas`,
     `casMany`, `followOn`, `tail`, `openTail`, and `fenceSetAt`, one pass over
     the tree for all checks, the corpus enrolled from label and variant

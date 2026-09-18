@@ -1008,14 +1008,6 @@ describe('the tree path', () => {
   })
 
   describe('the clock', () => {
-    it('refuses the clock token in a follow-on', () => {
-      refuses(
-        'mutation-verdict:construction:tree-clock-ban-token-in-followon',
-        /reads the clock/,
-        () => followOn(taskFollowOn().set({ first_started_at_ms: nowValue })),
-      )
-    })
-
     it('refuses a clock spelled in a fragment', () => {
       refuses(
         'mutation-verdict:construction:tree-clock-spelling-in-fragment',
@@ -1055,21 +1047,26 @@ describe('the tree path', () => {
       )
     })
 
-    it('refuses the text of the batch clock in a follow-on fragment', () => {
-      // A clock no spelling list names, so only the comparison with the batch's own text sees it.
+    it('refuses the batch clock in a follow-on, as the token and as its own text', () => {
+      // The token compiles to the batch clock's text, so one comparison holds both shapes.
+      // The clock is one no spelling list names, so nothing else sees its text.
       const clock = '(SELECT 7)'
-      const started = (text: string) =>
+      const started = (assigned: typeof nowValue) =>
         batchWithClock(clock)
           .casTree('win', statement(winCas()))
           .followOnTree(
             'task',
-            statement(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+            statement(taskFollowOn().set({ first_started_at_ms: assigned })),
             'one',
           )
-      expect(() => started('(SELECT 8)')).not.toThrow()
-      refuses('mutation-verdict:construction:tree-clock-text-in-followon', /reads the clock/, () =>
-        started(clock),
-      )
+      expect(() => started(value<number>('(SELECT 8)'))).not.toThrow()
+      for (const assigned of [nowValue, value<number>(clock)]) {
+        refuses(
+          'mutation-verdict:construction:tree-clock-text-in-followon',
+          /reads the clock/,
+          () => started(assigned),
+        )
+      }
     })
 
     it('says a follow-on that spells a clock reads the clock', () => {
