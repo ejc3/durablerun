@@ -1168,8 +1168,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
   for an await whose event and wait row live in one queue. TLC checks it with
-  the await allowed and with it refused, and seven probes each exhibit one
-  violation or one reachable behaviour. Seventeen mutants, each one guard of
+  the await allowed and with it refused, and ten probes each exhibit one
+  violation or one reachable behaviour. Twenty-nine mutants, each one guard of
   the model bent or deleted, must each violate the property its entry names
   (`specs/ChildTasks.mutants.json`, run by `scripts/tla.sh`), because a probe
   shows that an invariant can fail and cannot show that a guard is held. The
@@ -1196,19 +1196,43 @@ these three things; nothing else in the system does I/O, time, or randomness.
   surface `child-tasks` holds the model's actions and guards on both dialects,
   the operation fuzz and the SDK's replay-equivalence harness generate child
   awaits, and `childTaskViolations` checks every history only the engine wrote.
-  Two reads were added and are recorded in DESIGN.md §3.2: `child-queue`
-  decides the queue rule, and `run-task` names the task of a run that another
-  store activated. Not built here, each with its reason: the `/api/runs/:id`
-  route, because `/api/inspect` already answers with a task's result, and a
-  route by run id is left to the PR that needs it. Registered mutations of the
-  PostgreSQL store, because the mutation audit has none for that store: the
-  event lock in its terminal batches is held only by the real-concurrency
-  conformance case, which was seen to fail three times of three without the
-  lock. Detection of an await cycle, which the model leaves to the
-  cancellation deadline. Event cleanup, which does not exist yet. A reserved
-  namespace for idempotency keys: `ctx.spawn` builds its key under `$spawn:`,
-  and the raw `spawn` port and the hosted enqueue route take any key, so a
-  caller could place a task where a later parent will look for its child.
+  Two reads were added and are recorded in DESIGN.md §3.2: `task-done-state`
+  says why a child await neither registered nor hit, and `run-task` names the
+  task of a run that another store activated. The review round is
+  `postmortems/pr3.3-child-tasks-impl-review.md`. It changed the model first:
+  a child that a build older than this protocol ended has no completion event,
+  and the await records its outcome (`AwaitMaterialize`), under the deploy rule
+  the model states as an assumption. The maintainer decided four things as
+  built: the store remembers a run's task and the task id does not pass through
+  the port, `ctx.spawn` is its own memoized step, `ctx.awaitTask` resolves for a
+  failed or cancelled child, and `TerminalImpliesDone` is held by
+  `childTaskViolations` and not the invariant library. Not built here, each
+  with its reason:
+  - The `/api/runs/:id` route, because `/api/inspect` already answers with a
+    task's result, and a route by run id is left to the PR that needs it.
+  - A repair for the one case the deploy rule covers: an older build that ends
+    a child while a parent is parked on it strands the parent until its timeout
+    or its cancellation deadline. A sweep that records the event of a terminal
+    task that has a registered waiter would close it. It is deferred because it
+    is a protocol step, so it is modeled first, and no deployment mixes builds
+    across this change yet.
+  - Detection of an await cycle, which the model leaves to the cancellation
+    deadline.
+  - Event cleanup, which does not exist yet. It must not remove a completion
+    event whose task can still be awaited.
+  - The completed payload is stored twice, in the task row and inside the
+    completion event. A pointer to the task row cannot replace the copy,
+    because a revival overwrites that row. It waits until result sizes are
+    observed.
+  - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
+    more are the completion event, the wake, and the lock. Folding statements
+    needs a grammar the tree path does not have.
+  - Option, not a deferral of this PR: the generated follow-ons that select
+    their source by key (`task`, `task-mirror`) still correlate the source to
+    `tasks` on the queue, so their plan is a scan of `tasks` with a keyed probe
+    for each row. It is on main, it measured 4 to 6 ms at 2,000 tasks, and
+    binding the queue as the wake now does would make it a keyed lookup. It
+    changes the compiled corpus of every label, so it is its own change.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
