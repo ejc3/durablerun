@@ -35,6 +35,8 @@ validated by that run.
 
 **Status: IN PROGRESS (named 2026-09-16).** The maintainer named six items, in
 this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
+PR3.9 ends with PR3.9f, which the review of PR3.9e part 3c added: exit test 3
+needs it, so it is the last part of PR3.9 and not a seventh item.
 Each lands as its own PR, and only one implementation PR is in flight at a time.
 PR3.9 lands before the new batches, so child tasks, sagas, and the MySQL store
 write their SQL as trees once. PR4.3 lands last, so the third dialect
@@ -51,14 +53,17 @@ implements the finished surface once.
 2. A mutation audit whose worker baseline goes red names the failing test in
    the coordinator's failure message, and an aborted audit's teardown either
    reaps every worker group or reports a measured reason it cannot.
+   This is met. PR #33 made a red worker baseline name its failing tests in
+   the coordinator's failure message, and gave killed verifier groups time to
+   empty, so an aborted audit's teardown reaps them or reports why it cannot,
+   and PR #31 drains a process group before calling a descendant live.
 3. Every store batch's SQL is built as a tree and checked as a tree, per
    PR3.9, and the textual scanners it replaces are deleted. PR3.9e part 3b
-   deleted `FencedBatch`'s text path and its scanners, and part 3c gave the
-   rules of `fragment-lint` and `clock-lint` a tree-level form. The two still
-   scan store SQL text, because a store still sends its reads, three writes,
-   and its admin's statements as text that no tree holds. So this is met for
-   every fenced batch, and for every store batch when PR3.9f builds that text
-   as trees and deletes the two scans.
+   deleted `FencedBatch`'s text path and its scanners, and part 3c asked the
+   rules of `fragment-lint` and `clock-lint` of the tree. This is NOT met. The
+   two lints still scan store SQL text, because a store still sends its reads,
+   some of its writes, and its admin's statements as text that no tree holds.
+   It is met when PR3.9f builds that text as trees and deletes the two scans.
 4. A task can spawn a child from a step and await the child's completion as an
    event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
@@ -968,26 +973,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
     round is `postmortems/pr3.9e-part3b-review.md`.
   - PR3.9e part 3c, DONE. A batch reads a statement's object graph once for
     all of its checks (`packages/core/src/tree-walk.ts`). A statement is held
-    to one definition of eligibility: a list of states is one of the defined
-    sets and a comparison of `cancel_at_ms` built from nodes is refused, which
-    are `fragment-lint`'s rules asked of the tree, where a condition built from
-    nodes is visible. `clock-lint`'s rule already had its tree-level form: the
-    grammar lists no clock function and a fragment's text is read for a clock
-    spelling. The corpus is enrolled from `corpus/labels.json` and from what a
-    `FencedBatch` compiled. The base gate's bridge is one table of pinned file
-    pairs and one live registry arm. Completion's task mirror is a tree
-    statement in core and `tasks.completed_payload` is in the column table.
-    The registry holds 769 mutations. The two text lints are NOT deleted, and
-    the entry below that owned that says why.
+    to one definition of eligibility, which is `fragment-lint`'s rules asked of
+    the tree, where a condition built from nodes is visible: a list that IN or
+    NOT IN compares with a state column is one of the defined sets, read from
+    nodes or from a fragment's text with its binds, and the only tests of
+    `cancel_at_ms` a statement may build from nodes are IS NULL and IS NOT
+    NULL. The state-list half is a check of spellings, and its verdict tests
+    run the spellings it does not read. `clock-lint`'s rule already had its
+    tree-level form: the grammar lists no clock function and a fragment's text
+    is read for a clock spelling. The corpus is enrolled from
+    `corpus/labels.json`, from what a `FencedBatch` compiled, and from every
+    `FencedBatch` a store's sources construct. The base gate's bridge is one
+    table of pinned file pairs and one live registry arm. Completion's task
+    mirror is a tree statement in core and `tasks.completed_payload` is in the
+    column table. The registry holds 770 mutations. The two text lints are NOT
+    deleted, and the entry below that owned that says why. Its review round is
+    `postmortems/pr3.9e-part3c-review.md`.
   - PR3.9f, not started. Build the statements a store still sends as text as
     trees, then delete `fragment-lint` and `clock-lint`. They are the reads
-    (`claimed-task-name`, `refusal-state`, `sweep:scan`, `get-checkpoints`,
-    `task-result`, `next-wake`), three writes that are no fenced batch
-    (`heartbeat`, `expire-lease-now`, `driver-heartbeat`), and the admin's
-    statements. They need what the statement grammar does not list today:
+    (`claimed-task-name`, `refusal-state`, `run-task`, `task-done-state`,
+    `sweep:scan`, `get-checkpoints`, `task-result`, `next-wake`), two writes
+    that are no fenced batch on any dialect (`expire-lease-now` and
+    `driver-heartbeat`), `heartbeat` on libSQL and PostgreSQL, where it is one
+    text statement with RETURNING, and the admin's statements. MySQL already
+    builds `heartbeat` as a fenced batch of trees, because it has no
+    RETURNING. They need what the statement grammar does not list today:
     RETURNING, UNION ALL, LIMIT with a bind, and an index hint on MySQL. Exit
-    test 3 of the current milestone is met for every store batch when it
-    lands.
+    test 3 of the current milestone is met when it lands.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
@@ -1044,11 +1056,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     checkpoint conformance cases pass.
   - Delivered in PR3.9e part 3c as far as a tree reaches, and deferred to
     PR3.9f for the rest. The rules have their tree-level form:
-    `eligibilityDefinitionProblem` holds a list of states to the defined sets
-    and refuses a comparison of `cancel_at_ms` built from nodes, and the clock
-    rule was already asked of the tree. The two lints are not deleted, because
-    their subjects are not gone: a store still sends its reads, `heartbeat`,
-    `expire-lease-now`, `driver-heartbeat`, and its admin's statements as text
+    `eligibilityDefinitionProblem` holds a list compared with a state column
+    to the defined sets and allows only IS NULL tests of `cancel_at_ms` built
+    from nodes, and the clock rule was already asked of the tree. The two
+    lints are not deleted, because
+    their subjects are not gone: a store still sends its reads,
+    `expire-lease-now`, `driver-heartbeat`, `heartbeat` on libSQL and
+    PostgreSQL, and its admin's statements as text
     that no tree holds, and a raw clock call or a second eligibility
     comparison written there is visible to those scans alone. PR3.9f builds
     that text as trees and then deletes them. The record this entry replaced:
@@ -1065,14 +1079,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     descriptor this entry requires below, and from what ran. Core answers
     whether a `FencedBatch` compiled a statement, by identity, so the recorder
     sees every tree-built batch whatever its label, and one the descriptor does
-    not name fails. The enrolment's refusals are tested as failing controls.
+    not name fails. That sees only what the scenario drives, and MySQL's
+    `heartbeat` was a fenced batch it never drove, so a test also reads every
+    `FencedBatch` a store's sources construct and holds each store's labels to
+    the labels the descriptor enrols for its dialect. The enrolment's refusals
+    are tested as failing controls.
   - Delivered in PR3.9e part 3c: none of the base hashes the base gate's
     bridges were pinned to named a file main still had, so the five checker
     bridges and the seventeen registry arms are deleted. A checker bridge is
     now a row in one table of pinned file pairs, a path with the base file's
-    hash and the head file's hash, and the registry step keeps its helpers and
-    the one live arm. The table has no live row: the last one a pull request
-    needed carried the batch lint that child tasks changed, which main has.
+    hash and the head file's hash, and the registry step keeps the one live arm
+    and the helpers that arm calls. A helper that re-aims or retires a base
+    entry comes back, from the file's history, with the arm that needs it. The
+    table has no live row: the last one a pull request needed carried the batch
+    lint that child tasks changed, which main has. So the step runs the table's
+    three answers as controls on every pull request.
   - Option, not scheduled, from
     `postmortems/pr3.9a-statement-trees-review.md`: PR3.9e part 2 made the
     gating rule check that a gated subquery is tied to the outer row, which
