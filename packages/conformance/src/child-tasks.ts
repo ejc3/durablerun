@@ -400,7 +400,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
             label !== 'complete'
               ? statements
               : statements.map((statement) =>
-                  /^insert into "events"/i.test(statement.sql)
+                  /^insert into ["`]events["`]/i.test(statement.sql)
                     ? { sql: 'SELECT 1 WHERE 1 = 0', args: [] }
                     : statement,
                 ),

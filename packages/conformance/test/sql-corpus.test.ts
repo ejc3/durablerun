@@ -54,14 +54,16 @@ type Signature = readonly { sql: string; bindArity: number }[]
  */
 const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
   spawn: (signature) =>
-    signature.some(({ sql }) => /^insert into "tasks".*"claimed_by"/s.test(sql))
+    signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
       ? 'spawned-child'
       : 'spawned',
   // Only a retrying failure inserts a successor run.
   fail: (signature) =>
     signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
   'await-event': (signature) =>
-    signature.some(({ sql }) => /"tasks" as "c"/.test(sql)) ? 'registered-child' : 'registered',
+    signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
+      ? 'registered-child'
+      : 'registered',
 }
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {
