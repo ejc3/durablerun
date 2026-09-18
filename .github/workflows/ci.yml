@@ -1116,6 +1116,82 @@ jobs:
               repaired = exempt(repaired, candidate, (
                   'mutation-verdict:construction:tree-followon-insert-no-fragment',
               ))
+          elif digest == 'fbcf7a71356290b0f36ffb33ee7f633c604129d106e1e753c6f8f521a632b475':
+              # Child tasks re-aim one find and register verdict markers this registry
+              # predates. The generated follow-on's queue correlation became the else arm
+              # of the choice between correlating the queue and binding it, so its find
+              # gained a word. Every other find of this registry still occurs once.
+              def held_by_head(repaired, candidate, file, lines):
+                  # List condition lines of the tree rules that this tree adds. The base
+                  # registry has no mutation for a line it predates. Each line is listed
+                  # only when this tree's registry quotes it as the end of a find.
+                  opening = f'    "{file}": {{\n'
+                  table = repaired.index('TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n')
+                  at = repaired.index(opening, table) + len(opening)
+                  for line in lines:
+                      if f'        "{line}": (\n' in repaired or (line + '\\n"') not in candidate:
+                          raise SystemExit(f'{line}: the bridge lists only a condition this tree holds by a mutation and the base does not list.')
+                  entries = ''.join(
+                      f'        "{line}": (\n            "held by a mutation of the head registry, which the base predates"\n        ),\n'
+                      for line in lines
+                  )
+                  return repaired[:at] + entries + repaired[at:]
+              repaired = reaim(previous, candidate, ('generated-relation-queue-ownership',))
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:activate-remembers-the-run-task',
+                  'mutation-verdict:behavior:batch-names-each-gate',
+                  'mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers',
+                  'mutation-verdict:behavior:cancel-locks-runs-before-the-task',
+                  'mutation-verdict:behavior:child-await-allows-the-same-queue',
+                  'mutation-verdict:behavior:child-await-error-names-the-task',
+                  'mutation-verdict:behavior:child-await-keeps-an-event-written-since-the-read',
+                  'mutation-verdict:behavior:child-await-records-an-unrecorded-ending',
+                  'mutation-verdict:behavior:child-await-records-only-the-row-it-read',
+                  'mutation-verdict:behavior:child-await-records-only-under-a-live-claim',
+                  'mutation-verdict:behavior:child-await-refuses-an-unknown-task',
+                  'mutation-verdict:behavior:child-await-refuses-another-queue',
+                  'mutation-verdict:behavior:child-await-registers-on-a-revived-child',
+                  'mutation-verdict:behavior:child-spawn-key-is-unambiguous',
+                  'mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim',
+                  'mutation-verdict:behavior:emit-event-refuses-reserved-name',
+                  'mutation-verdict:behavior:emit-takes-the-event-lock',
+                  'mutation-verdict:behavior:event-name-is-a-durable-string',
+                  'mutation-verdict:behavior:generated-bound-queue-holds-both-sides',
+                  'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
+                  'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
+                  'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
+                  'mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take',
+                  'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
+                  'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+                  'mutation-verdict:behavior:postgres-gate-names-an-earlier-statement',
+                  'mutation-verdict:behavior:postgres-port-event-lock-is-the-row',
+                  'mutation-verdict:behavior:postgres-skips-a-gated-statement',
+                  'mutation-verdict:behavior:recording-await-takes-the-event-lock',
+                  'mutation-verdict:behavior:replay-harness-counts-tasks',
+                  'mutation-verdict:behavior:replay-harness-window-is-measured',
+                  'mutation-verdict:behavior:reserved-event-name-prefix',
+                  'mutation-verdict:behavior:reserved-event-name-type',
+                  'mutation-verdict:behavior:run-task-memo-is-bounded',
+                  'mutation-verdict:behavior:sdk-child-await-refusal-is-permanent',
+                  'mutation-verdict:behavior:sdk-child-outcome-error-is-permanent',
+                  'mutation-verdict:behavior:sdk-child-timeout-names-the-task',
+                  'mutation-verdict:behavior:sdk-spawn-is-idempotent-under-replay',
+                  'mutation-verdict:behavior:sdk-spawn-refusal-is-permanent',
+                  'mutation-verdict:behavior:sdk-spawn-undurable-input-is-permanent',
+                  'mutation-verdict:behavior:spawn-child-key-excludes-a-caller-key',
+                  'mutation-verdict:behavior:spawn-queue-is-a-durable-string',
+                  'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
+                  'mutation-verdict:behavior:task-done-event-first-write-wins',
+                  'mutation-verdict:behavior:task-done-event-follows-the-terminal-statement',
+                  'mutation-verdict:behavior:task-outcome-refuses-contradiction',
+                  'mutation-verdict:behavior:task-outcome-refuses-live-state',
+                  'mutation-verdict:behavior:task-outcome-refuses-non-json',
+                  'mutation-verdict:behavior:task-outcome-refuses-non-object',
+                  'mutation-verdict:behavior:terminal-batch-takes-the-event-lock',
+                  'mutation-verdict:behavior:terminal-batch-writes-the-completion-event',
+                  'mutation-verdict:behavior:wake-sources-find-the-woken-runs',
+                  'mutation-verdict:behavior:wake-tasks-binds-the-queue',
+              ))
               repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
                   "const gateName = open ? undefined : gates[0]?.fence",
                   "const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)",
