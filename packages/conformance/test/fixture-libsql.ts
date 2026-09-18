@@ -115,9 +115,12 @@ export async function makeLibsqlFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
 ): Promise<StoreFixture> {
-  // Let the event loop reach its timers phase. Nothing else on the libSQL path does,
-  // and a worker whose loop does not turn for a minute fails its run with every test
-  // passing. fixture-libsql-yields.test.ts holds this line.
+  // Resume from a timer. Nothing else on the libSQL path lets the event loop turn, and a
+  // worker whose loop does not turn for a minute fails its run with every test passing.
+  // It has to be a timer. Run in a worker thread: a blocking stretch that resumes from a
+  // timer callback has a waiting reply handled before a deadline armed during it, and one
+  // that resumes from setImmediate, which Clock.yieldTurn uses, meets the deadline first.
+  // fixture-libsql-yields.test.ts holds this line.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
   const encodedSeed = [...String(seed)]
     .map((character) => character.codePointAt(0)?.toString(16))
