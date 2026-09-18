@@ -16,7 +16,6 @@ import {
   type WorkerClaimedRun,
   decodeTaskOutcome,
   parseTaskValueJson,
-  requireDurableString,
   serializeTaskValue,
   userDurationToMs,
   userEpochMs,
@@ -356,15 +355,10 @@ export class ReplayContext implements TaskContext {
     const paramsJson = serializeTaskValue('child task params', params)
     const { queue: childQueue, ...spawnOptions } = opts ?? {}
     const queue = childQueue === undefined ? this.#queue : childQueue
-    // A queue name is durable, and this is the first one task code chooses. One that no
-    // store keeps unchanged is refused here, for good, like a step name that is not.
+    // A queue name is durable, and this is the first one task code chooses. The spawn port
+    // refuses one that no store keeps unchanged, and the catch below makes that permanent.
     if (typeof queue !== 'string' || queue === '') {
       throw new FatalTaskError(`ctx.spawn('${taskName}') queue must be a non-empty string`)
-    }
-    try {
-      requireDurableString(`ctx.spawn('${taskName}') queue`, queue)
-    } catch (error) {
-      throw new FatalTaskError(error instanceof Error ? error.message : 'queue is not durable')
     }
     // The child is keyed by this task and this call site, so every pass, every retry,
     // and a pass that died between the spawn and its checkpoint all find one child. The
@@ -377,7 +371,7 @@ export class ReplayContext implements TaskContext {
       )
     } catch (error) {
       // The store refuses an invalid option the same way on every pass, so retrying
-      // the task would only repeat the refusal. A header no store can keep is refused
+      // the task would only repeat the refusal. A queue no store can keep is refused
       // with InvalidDurableStringError, which is a TypeError and not a RangeError.
       if (error instanceof RangeError || error instanceof InvalidDurableStringError) {
         throw new FatalTaskError(`ctx.spawn('${taskName}') was refused: ${error.message}`)
@@ -400,11 +394,10 @@ export class ReplayContext implements TaskContext {
     const key = this.storageName(EngineKey.awaitTask(taskId))
     // The task sees the task it awaited, never the engine's name for the event.
     const timedOut: TimedOut = () => new TaskTimeoutError(taskId.value)
-    const settled = await this.settledAwait(timedOut, key)
-    if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled)
-    let outcome: Awaited<ReturnType<SchedulerStore['awaitTaskDone']>>
     try {
-      outcome = await this.#controls.storeCall(() =>
+      const settled = await this.settledAwait(timedOut, key)
+      if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled)
+      const outcome = await this.#controls.storeCall(() =>
         this.#store.awaitTaskDone(
           this.#queue,
           this.#run.taskId,
@@ -415,12 +408,16 @@ export class ReplayContext implements TaskContext {
           timeout === undefined ? null : timeout,
         ),
       )
+      return decodeTaskOutcome(taskId.value, await this.registeredAwait(timedOut, key, outcome))
     } catch (error) {
-      // The child's queue never changes, so neither does the refusal.
-      if (error instanceof ChildAwaitRefusedError) throw new FatalTaskError(error.message)
+      // Neither changes on a retry: the child's queue, so the refusal, and a recorded
+      // outcome that cannot be read, which the store and the decoder refuse with
+      // RangeError. Retrying would rerun every side effect before the await for nothing.
+      if (error instanceof ChildAwaitRefusedError || error instanceof RangeError) {
+        throw new FatalTaskError(error.message)
+      }
       throw error
     }
-    return decodeTaskOutcome(taskId.value, await this.registeredAwait(timedOut, key, outcome))
   }
 
   /**
