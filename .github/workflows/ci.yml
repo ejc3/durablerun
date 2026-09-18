@@ -436,6 +436,33 @@ jobs:
                   "mutation-verdict:construction:tree-deadline-stops-at-a-subquery",
                   "mutation-verdict:construction:tree-walk-reads-below-the-root",
               ))
+          elif digest == 'e8c76017b6272b895c3fedeb9713775c8588529deb04c40b555c084378014626':
+              # Sagas register verdict markers this registry predates, and re-aim nothing:
+              # every find of this registry still occurs exactly once in this tree. This arm
+              # is keyed on the child-task branch's registry, which this branch is built on.
+              repaired = exempt(previous, candidate, (
+                  'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
+                  'mutation-verdict:behavior:saga-budget-boundary',
+                  'mutation-verdict:behavior:saga-endings',
+                  'mutation-verdict:behavior:saga-failed-rollback-needs-the-phase',
+                  'mutation-verdict:behavior:saga-finish-is-honest',
+                  'mutation-verdict:behavior:saga-forward-phase-is-frozen',
+                  'mutation-verdict:behavior:saga-only-an-owed-terminal-failure-enters',
+                  'mutation-verdict:behavior:saga-phase-entry',
+                  'mutation-verdict:behavior:saga-phase-is-entered-once',
+                  'mutation-verdict:behavior:saga-plans',
+                  'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
+                  'mutation-verdict:behavior:saga-row-checker-names-the-defect',
+                  'mutation-verdict:behavior:saga-sdk-attempts-counted',
+                  'mutation-verdict:behavior:saga-sdk-bad-registration',
+                  'mutation-verdict:behavior:saga-sdk-corrupt-state',
+                  'mutation-verdict:behavior:saga-sdk-fatal-rollback',
+                  'mutation-verdict:behavior:saga-sdk-marker-first',
+                  'mutation-verdict:behavior:saga-sdk-order',
+                  'mutation-verdict:behavior:saga-sdk-unpersisted-step',
+                  'mutation-verdict:behavior:saga-sdk-unregistered',
+                  'mutation-verdict:behavior:saga-sweep-cap-enters',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

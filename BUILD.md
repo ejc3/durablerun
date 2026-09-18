@@ -1363,6 +1363,77 @@ these three things; nothing else in the system does I/O, time, or randomness.
   rollback attempt is counted, which the model cannot see because an uncounted
   attempt is a stuttering step. The review round is
   `postmortems/pr3.4-sagas-spec-review.md`.
+  The implementation is built on that model, under the maintainer's three
+  answers: a cancellation in the phase halts the saga, `retry-task` refuses a
+  task whose saga began, and an infrastructure cap rolls back. A saga's state
+  is checkpoints under reserved names, so there is no migration. One batch
+  label is new, `fail-rollback`, with its own port method, and DESIGN.md
+  §3.10 maps each action of the model to its batch. Exit test item 5 is held
+  on libSQL and PostgreSQL by the `sagas` conformance surface, 17 cases on
+  each dialect, and by the SDK's saga suite, 14 cases on each dialect, which
+  runs through a PostgreSQL twin of the SDK's test harness. Each owed twin,
+  and the case that holds it:
+  - The start marker commits before the body runs: the SDK case `commits the
+    start marker before the body runs`, which reads the checkpoints from
+    inside the body.
+  - The decision and the phase marker are one batch in `fail` and in both
+    sweep caps: `enters the phase in the batch that decides the failure, and
+    ends nothing`, `a sweep cap enters the phase when a rollback is owed, and
+    ends the saga inside it`, and the fault matrix's `saga-cap-edges` starting
+    state, which seeds a task at each of the three caps and lets the armed
+    fault land on each crossing.
+  - No forward step starts or commits in the phase: `freezes the forward
+    phase, and admits a rollback only inside it`, which also refuses a
+    completion, a suspension, and a wait. The row checker `sagaViolations`
+    runs behind every saga case, every fault matrix cell, and every fuzz walk,
+    and each of its eight conditions has a hand-written saga it must name.
+  - `retry-task` refuses a task whose saga began: `ends failed with the
+    deciding failure and a complete outcome once every rollback ran`.
+  - A cancellation mid-rollback records `failed` exactly when a step is left
+    uncompensated: `a cancellation in the phase halts the saga, and the
+    outcome says what was left`, and the SDK's cancellation case.
+  - The infrastructure-cap rule: the sweep cap case, and `a parent awaiting a
+    rolling-back child sees nothing until the saga ends, then one outcome`,
+    which runs over every terminal label from a record keyed by the label
+    type.
+  - A failed rollback attempt is counted: `counts a failed rollback attempt,
+    retries it past the budget, and halts when told to`, `refuses a failed
+    rollback of a task that is not rolling back, and writes nothing`, and the
+    SDK's counting case.
+  - Crash mid-rollback resumes, reverse order exactly once each, caught errors
+    never trigger rollback, `output === undefined` for a step that started and
+    never persisted, and a rollback failure halts and surfaces: the SDK's saga
+    suite on both dialects, and the replay-equivalence harness, which
+    generates saga programs and faults each at every sampled store call across
+    the forward phase and the rollback passes.
+  - Rolling deploys: `leaves a failure an older build decided alone, and rolls
+    back once a newer one decides`, `caps a failure in the phase that carries
+    no attempt record, which halts the saga`, `revives a failed task whose
+    saga never began, as before`, and the SDK case for a step that committed
+    before it registered a rollback.
+  The mutation registry gains 45 mutations, one condition each, and moves
+  from 729 to 774. Writing one for each condition showed three guards that
+  nothing could kill, because the compare-and-set their statement is fenced
+  on already holds them, and they were removed. Measured on one machine: on
+  PostgreSQL every failure sends nine queries where it sent eight, because
+  the rollback pass is gated on the failure alone, and a completion and a
+  checkpoint send what they did. A test pins the count for each batch a saga
+  touches. Query plan pins hold that every saga read reaches the checkpoints
+  by primary key with the task bound. The fault matrix's PostgreSQL tests take
+  53 to 63 seconds each against a 120 second limit, where this branch's base
+  takes 41 to 50 on the same machine.
+  Open, and owned by this entry until it merges:
+  - The poison matrix seeds no task with a started step, so it never reaches
+    the rollback pass. The pass's one stored-integer guard is held by a
+    boundary case in the `sagas` surface.
+  - The store records the attempt count the SDK hands it and does not check
+    it against the last one, and nothing caps how many passes a task may
+    take. Rollback budgets are the SDK's to keep.
+  - A saga with nothing to roll back records nothing, where the model calls
+    it complete at entry.
+  - The registry bridge arm in `ci.yml` is keyed on the registry of the
+    child-task branch this branch is built on. It must be keyed again on
+    main's registry when that branch merges or changes.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
