@@ -1413,7 +1413,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     before it registered a rollback.
   The mutation registry gains 61 mutations, one condition each, 45 with the
   implementation, 13 with the review fold below, one with the MySQL port, and
-  two with the re-review's fold, and moves from 746 to 807. Writing one for
+  two with the re-review's fold, and moves from 770 to 831. Writing one for
   each condition showed three guards that
   nothing could kill, because the compare-and-set their statement is fenced
   on already holds them, and they were removed. Measured on one machine: on
@@ -1470,8 +1470,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A saga with nothing to roll back records nothing, where the model calls
     it complete at entry.
   - The registry bridge arm in `ci.yml` is keyed on main's registry as of
-    the merge of child tasks. It must be keyed again if main's registry
-    changes before this entry merges.
+    the merge of PR3.9e part 3c, whose own arm it replaces as the bridge's
+    one live arm. It must be keyed again if main's registry changes before
+    this entry merges.
   - The MySQL store runs sagas, ported on this entry by the store's author.
     The port is the PostgreSQL store's change applied to it: all 325 lines
     added to that store verbatim, and 64 of the 67 lines of saga fragments.
