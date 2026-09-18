@@ -846,12 +846,12 @@ are load-bearing):
      thing that keeps a statement narrow. Its SELECT list holds no aggregate and no function call, and
      the SELECT has no HAVING, because each can return a row the fence did not
      match. That is asked of the statement's own SELECT and does not lean on
-     what the gating rule decides about aggregates. A value fragment in that
-     list is read for a call as the nodes are: a name, bare or quoted, followed
-     by a parenthesis, outside the fragment's string literals, is refused,
-     whatever the function is, because a list of aggregate spellings is what a
-     dialect outgrows. So a scalar function is refused there too, in text as
-     in nodes. No shipped follow-on insert passes a value fragment: the failure
+     what the gating rule decides about aggregates. A SQL fragment in that
+     list is refused whatever it holds, because text can spell a call in more
+     ways than a reader of text closes: a reader of names before a parenthesis
+     passed the schema-qualified `pg_catalog.max(...)`. A value that needs a
+     function is computed by the caller and bound. No shipped follow-on insert
+     passes a value fragment: the failure
      successors' deadline, the failed run's instant plus a delay the store
      binds, is built from nodes in the shared statement. A value taken from a
      joined row that only store text ties to the fenced one is still outside

@@ -1057,8 +1057,8 @@ jobs:
               # deadline, the headroom guard that protects the addition, where the
               # generated text sits inside a template literal and parses. The base gate
               # runs no mutant. The head registry owns the two that cap the deadline.
-              # The restored reader of a value fragment for a call has four mutations
-              # and four markers the base predates.
+              # A follow-on insert's SELECT list now refuses a fragment, which is one
+              # more operand on a line two base mutations touch, and one new marker.
               repaired = retire(previous, candidate, (
                   'followon-provenance-check',
                   'positive-fence-required',
@@ -1106,13 +1106,10 @@ jobs:
                   repaired, candidate, 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]]'
               )
               repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  'if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true',
+                  '(node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),',
               ))
               repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:construction:tree-followon-insert-no-fragment-call',
-                  'mutation-verdict:construction:tree-fragment-call-quoted-name',
-                  'mutation-verdict:construction:tree-fragment-call-keyword-is-not-a-call',
-                  'mutation-verdict:construction:tree-fragment-call-keyword-case-fold',
+                  'mutation-verdict:construction:tree-followon-insert-no-fragment',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

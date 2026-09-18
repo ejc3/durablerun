@@ -686,37 +686,10 @@ describe('the tree path', () => {
       )
     })
 
-    it('selects no call spelled in a value fragment', () => {
-      refuses('mutation-verdict:construction:tree-followon-insert-no-fragment-call', PLAIN, () =>
-        followOn(successor({ task: () => value<string>('max(f.task_id)') })),
-      )
-    })
-
-    it('reads a quoted name before a parenthesis as a call', () => {
-      refuses('mutation-verdict:construction:tree-fragment-call-quoted-name', PLAIN, () =>
-        followOn(successor({ task: () => value<string>('"max"(f.task_id)') })),
-      )
-    })
-
-    it('does not read a keyword before a parenthesis as a call', () => {
-      accepts('mutation-verdict:construction:tree-fragment-call-keyword-is-not-a-call', () =>
-        followOn(
-          successor({
-            task: () =>
-              value<string>('case when f.attempt in (1, 2) then f.task_id else f.queue end'),
-          }),
-        ),
-      )
-    })
-
-    it('reads a keyword whatever its case', () => {
-      accepts('mutation-verdict:construction:tree-fragment-call-keyword-case-fold', () =>
-        followOn(
-          successor({
-            task: () =>
-              value<string>('CASE WHEN f.attempt IN (1, 2) THEN f.task_id ELSE f.queue END'),
-          }),
-        ),
+    it('selects no fragment', () => {
+      // The nearest shape only this operand refuses: a plain column, written as text.
+      refuses('mutation-verdict:construction:tree-followon-insert-no-fragment', PLAIN, () =>
+        followOn(successor({ task: () => value<string>('f.task_id') })),
       )
     })
 

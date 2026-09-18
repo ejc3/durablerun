@@ -190,8 +190,7 @@ Allowed cases (do NOT flag these):
   `$NOW$`, `$STAMP$`, and `$FENCE:x$`, which only `engine-tokens.ts` and the
   primitive's `fence()` ever produce, in exactly one casing. The same file's
   real keyword checks already are case-insensitive (`CLOCK_SPELLING` carries
-  the `i` flag, and `fragmentCalls` lowercases a word before comparing it with
-  `NOT_A_CALL`).
+  the `i` flag).
 
 - **Sorts already guarded against NULL.** The claim's `ORDER BY
   r.available_at_ms, r.run_id` is preceded by `AND r.available_at_ms IS NOT

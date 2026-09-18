@@ -330,43 +330,6 @@ const FRAGMENT_TOKEN = new RegExp(
   'g',
 )
 
-// Words that may stand before a parenthesis without calling anything.
-const NOT_A_CALL = [
-  'and',
-  'or',
-  'not',
-  'in',
-  'is',
-  'as',
-  'on',
-  'case',
-  'when',
-  'then',
-  'else',
-  'between',
-  'exists',
-  'select',
-  'from',
-  'where',
-]
-// A name, bare or quoted as any dialect quotes one, followed by an opening parenthesis.
-const CALL = /(?<![\w."`\]])(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_]\w*))\s*\(/g
-
-/**
- * Whether a fragment's text calls a function, outside its string literals. The tree
- * rules refuse a function node wherever an aggregate would let a SELECT return a row its
- * WHERE did not match, and a fragment is opaque to them, so this is that rule's twin for
- * text. It refuses every call and not a list of aggregate spellings, as the node rule
- * refuses every function node: a list of spellings is what a dialect outgrows.
- */
-export function fragmentCalls(sql: string): boolean {
-  for (const match of readFragment(sql).outside.matchAll(CALL)) {
-    const bare = match[4]
-    if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true
-  }
-  return false
-}
-
 /** A fragment's text outside its string literals, with each literal left as `''`. */
 export function fragmentOutsideLiterals(sql: string): string {
   return readFragment(sql).outside
@@ -854,8 +817,8 @@ function assignedUpdates(query: OperationNode): readonly ColumnUpdateNode[] {
  * cannot see what text does with a value, so any read of the assigned row counts: an
  * unqualified mention, or one qualified by the table being written, whatever wraps it.
  * A mention under another qualifier is another row, read through a subquery, and a copy
- * of it is fine. Arithmetic on it is refused all the same, as the text path refused
- * `x = t.x + 1` by name: `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
+ * of it is fine. Arithmetic on it is refused all the same, such as `x = t.x + 1`:
+ * `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
  */
 function mentions(text: string, column: string, table: string | null): boolean {
   const name = String.raw`"?${column}"?(?!\w)`
@@ -1261,8 +1224,9 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
  * compares with a fence. `fencedInstants` names every inserted column that takes exactly
  * that, so a preserved first instant can be held to it as well. `plain` is false when the
  * SELECT could return a row its WHERE did not match, which an insert would then write
- * with no gate: an aggregate or a function call in its list, built from nodes or spelled
- * in a fragment's text (`fragmentCalls`), or a HAVING. This is asked here, of the statement's own
+ * with no gate: an aggregate, a function call, or a fragment in its list, or a HAVING. A
+ * fragment is refused whatever it holds: text can spell a call in more ways than a reader
+ * of text closes, and no shipped follow-on insert selects one. This is asked here, of the statement's own
  * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
  * false when the SELECT could return more rows than the fenced ones: a second FROM item,
  * a FROM item that is not the source the fence is compared on, or a join with no ON. A
@@ -1317,10 +1281,7 @@ export function followOnInsertProvenance(tree: OperationNode): {
       !(select.selections ?? []).some((selection) =>
         someNode(
           selection,
-          (node) =>
-            AggregateFunctionNode.is(node) ||
-            FunctionNode.is(node) ||
-            (RawNode.is(node) && fragmentCalls(node.sqlFragments.join(' '))),
+          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),
         ),
       ),
     // With no fence compared at all, the gate rule and the instant rule speak for it.

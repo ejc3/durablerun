@@ -955,7 +955,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tests that began from a text statement build trees. The twenty-eight that
     only exercised the text scanners are deleted, and the PR accounts for each
     by name. The failure successors' deadline is built from nodes in the
-    shared statement, and the reader of a value fragment for a call is back,
+    shared statement, and a follow-on insert's SELECT list holds no fragment,
     as the option below records. The registry holds 647 mutations.
   - PR3.9e part 3c, live. Exit test 3 of the current milestone is met when it
     lands, and not before. It owns the items below that name it: one pass over
@@ -1037,8 +1037,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     successor's deadline, and the reader refused the mutant before its own
     verdict could catch it. PR3.9e part 3b built that deadline from nodes in
     the shared statement, re-aimed those two mutations there, where they cap
-    it with a CASE, and restored the reader: a follow-on insert's value
-    fragments are read for a call.
+    it with a CASE, and then refused every fragment in a follow-on insert's
+    SELECT list, because a reader of text passed a schema-qualified call.
   - Deferred to PR3.9e part 3c, until a tree statement names it:
     `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,

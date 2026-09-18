@@ -1,4 +1,10 @@
-import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
+import {
+  type ExpressionBuilder,
+  SelectModifierNode,
+  SelectQueryNode,
+  expressionBuilder,
+  sql,
+} from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   type SqlFragment,
@@ -1229,7 +1235,13 @@ describe('FencedBatch tree statements', () => {
     it('stamps the inserted row, and takes its instant from the fenced row and nowhere else', () => {
       const instant = /fence_at_ms as the fenced row's own fence_at_ms/
       refused(successor({ stamp: fenceValue('win') }), /must insert fence_stamp as the stamp/)
-      refused(successor({ stamp: sql.lit('s') }), /must insert fence_stamp as the stamp/)
+      // A literal is a fragment, which the plain-selection rule refuses first. A bound
+      // value is what the stamp rule itself refuses.
+      refused(successor({ stamp: sql.lit('s') }), /must select plain columns and values/)
+      refused(
+        successor({ stamp: expressionBuilder<never, never>().val('s') }),
+        /must insert fence_stamp as the stamp/,
+      )
       // Not a bind, and not another column of the fenced row.
       refused(successor({ instant: (eb) => eb.val(5) }), instant)
       refused(successor({ instant: (eb) => eb.ref('f.available_at_ms') }), instant)
@@ -1304,28 +1316,22 @@ describe('FencedBatch tree statements', () => {
       )
     })
 
-    it('reads a value fragment for a function call, as it reads nodes for one', () => {
+    it('refuses a fragment in its SELECT list, whatever the text holds', () => {
       const plain = /must select plain columns and values/
       const taskFrom = (text: string, args: SqlFragment['args'] = []) =>
         successor({ task: () => value<string>(text, args) })
-      // The node rule refuses every function node, so the text rule refuses every call,
-      // however it is spaced or quoted, and not a list of aggregate spellings.
+      // Text can spell a call in more ways than a reader of text closes, so none is read.
       refused(taskFrom('max(f.task_id)'), plain)
       refused(taskFrom('MAX (f.task_id)'), plain)
       refused(taskFrom('"max"(f.task_id)'), plain)
-      refused(taskFrom('`max`(f.task_id)'), plain)
-      refused(taskFrom('[max](f.task_id)'), plain)
       refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
       refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
       // A qualified name is a call too: PostgreSQL resolves pg_catalog.max to the aggregate.
       refused(taskFrom('pg_catalog.max(f.task_id)'), plain)
-      // Plain text stays: a column, arithmetic in parentheses, a keyword before a
-      // parenthesis, and a call that is only the inside of a string literal.
-      expect(() => followOn(taskFrom('f.task_id'))).not.toThrow()
-      expect(() => followOn(taskFrom('(f.task_id)'))).not.toThrow()
-      expect(() =>
-        followOn(taskFrom("CASE WHEN f.attempt IN (1, 2) THEN f.task_id ELSE 'max(x)' END")),
-      ).not.toThrow()
+      // The cost is a false refusal: a plain column written as text adds no row. A
+      // follow-on insert builds its values from nodes, or its caller binds them.
+      refused(taskFrom('f.task_id'), plain)
+      expect(() => followOn(successor())).not.toThrow()
     })
 
     it('reads each value by position, so a star is refused', () => {
@@ -1465,16 +1471,6 @@ describe('FencedBatch tree statements', () => {
         expect(() =>
           withCas().openTailTree('read', 'a reason', statement(misplaced('and'))),
         ).toThrow(/which never matches/)
-      })
-
-      it('refuses every call in a value fragment, a harmless scalar one included', () => {
-        // The text rule cannot tell an aggregate from a scalar function, because a name
-        // is all it reads, so it refuses both. The cost is a false refusal: lower() adds
-        // no row. A follow-on insert that needs such a value has its caller compute it
-        // and bind it.
-        const plain = /must select plain columns and values/
-        refused(successor({ task: () => value<string>('max(f.task_id)') }), plain)
-        refused(successor({ task: () => value<string>('lower(f.task_id)') }), plain)
       })
     })
 
