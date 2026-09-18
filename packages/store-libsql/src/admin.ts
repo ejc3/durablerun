@@ -34,20 +34,26 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     // from an existing, initialized-but-corrupt empty meta table; running it
     // first launders the latter into a valid version-zero database.
     if ((await this.readSchemaVersion()) === null) {
-      await this.db.batch('migrate:bootstrap', [
-        {
-          sql: `CREATE TABLE IF NOT EXISTS meta (
-                  key TEXT PRIMARY KEY,
-                  value TEXT NOT NULL
-                ) WITHOUT ROWID`,
-          args: [],
-        },
-        {
-          sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
-                ON CONFLICT (key) DO NOTHING`,
-          args: [],
-        },
-      ])
+      try {
+        await this.db.batch('migrate:bootstrap', [
+          {
+            sql: `CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                  ) WITHOUT ROWID`,
+            args: [],
+          },
+          {
+            sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
+                  ON CONFLICT (key) DO NOTHING`,
+            args: [],
+          },
+        ])
+      } catch (error) {
+        // A concurrent migrator may have won the bootstrap, and that is success once the
+        // metadata exists. With the metadata still absent, the failure is real.
+        if ((await this.readSchemaVersion()) === null) throw error
+      }
     }
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
