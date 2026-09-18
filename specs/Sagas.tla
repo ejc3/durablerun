@@ -352,9 +352,12 @@ StartOrderImmutable ==
 ForwardFrozenInSaga ==
   [][(phase = "rolling_back" /\ phase' = "rolling_back") => (fwd' = fwd /\ startIdx' = startIdx)]_vars
 
-\* Within a generation a rollback's end, the outcome, and the decision are final.
+\* Within a generation a rollback's end, its spent attempts, the outcome, and the
+\* decision are final or only grow.
 RollbackIsFinal ==
   [][\A s \in Steps : (rb[s] # "none" /\ generation' = generation) => rb'[s] = rb[s]]_vars
+TriesOnlyGrow ==
+  [][\A s \in Steps : generation' = generation => rbTries'[s] >= rbTries[s]]_vars
 OutcomeIsFinal ==
   [][(outcome # "none" /\ generation' = generation) => outcome' = outcome]_vars
 DecisionIsMadeOnce ==
