@@ -2129,8 +2129,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
     const name = EventName.taskDone(childTaskId)
-    // A child revived between the read and the batch that records it is live again, so
-    // the next round registers. Two rounds cover that, and a third is the claim's loss.
+    // A child revived before the read, or between the read and the batch that records it,
+    // is live again, so the next round registers. Two rounds cover that. A live child that
+    // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
+    // the claim is lost, the task is cancelled, or the timeout does not fit.
     for (let round = 0; round < 2; round++) {
       const answer = await this.awaitNamedEvent(
         queue,
@@ -2146,7 +2148,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
       const child = await this.taskDoneState(childTaskId)
       const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
       if (refusal !== null) throw refusal
-      if (child === null || !isTerminalState(child.outcome.state)) break
+      // A live child was revived since the batch looked, and the next round registers on it.
+      if (child === null || !isTerminalState(child.outcome.state)) continue
       const recorded = await this.recordTaskDone(
         { queue, taskId, runId, claimToken },
         childTaskId,
