@@ -66,6 +66,13 @@ const ENTRIES: Readonly<Record<string, Entry>> = {
     s.awaitEvent('q', 't', 'r', 'c', id, 'e', null),
     s.awaitEvent('q', 't', 'r', 'c', 's', id, null),
   ],
+  awaitTaskDone: (s, id) => [
+    s.awaitTaskDone(id, 't', 'r', 'c', 's', 'child'),
+    s.awaitTaskDone('q', id, 'r', 'c', 's', 'child'),
+    s.awaitTaskDone('q', 't', id, 'c', 's', 'child'),
+    s.awaitTaskDone('q', 't', 'r', 'c', id, 'child'),
+    s.awaitTaskDone('q', 't', 'r', 'c', 's', id),
+  ],
 }
 
 /** Methods no caller reaches: each runs inside a public one, behind its check. */

@@ -2243,9 +2243,18 @@ export class MysqlSchedulerStore implements SchedulerStore {
   /**
    * The child await (DESIGN.md §3.2). Child tasks are not ported to this dialect yet: no
    * batch here writes a completion event, so there is nothing an await could hit or be
-   * woken by. It fails loudly and registers nothing.
+   * woken by. It bounds its identifiers as every public method does, then fails loudly
+   * and registers nothing.
    */
-  async awaitTaskDone(): Promise<never> {
+  async awaitTaskDone(
+    queue: string,
+    taskId: string,
+    runId: string,
+    _claimToken: string,
+    stepName: string,
+    childTaskId: string,
+  ): Promise<never> {
+    requireIndexable({ queue, taskId, runId, stepName, childTaskId })
     throw new Error('store-mysql does not implement awaitTaskDone yet')
   }
 }
