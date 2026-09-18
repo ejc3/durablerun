@@ -65,6 +65,13 @@ review returned, but the review reported it first, so it is counted as theirs.
 
 Self-catch rate: 0% (previous round: 0%).
 
+One more defect of this change was found after the round, and by our machinery: the
+unfiltered mutation audit in CI reported a registered mutant on the wrong path, because
+it spelled a list of states the new rule refuses at build time. It is not among the
+twelve, which are the review's. The filtered probes run while the rule was written
+could not have found it, since the mutant belongs to another rule's closure, and a
+filtered run is never an audit.
+
 The previous round, part 3b, was 0 of 7. Two rounds at zero say the mechanisms these
 rounds add guard the code that was just written and not the claims made about it: six
 of these twelve are a document or a test suite saying more than the code does.
