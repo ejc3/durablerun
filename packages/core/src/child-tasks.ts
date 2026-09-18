@@ -56,7 +56,8 @@ export function refuseReservedEventName(operation: string, eventName: string): v
 /**
  * An event name a statement or a lock may carry. There are two ways to have one, and
  * both are here: a name a caller of the port supplied, which is refused when it is
- * reserved, and the completion event of a task, which only the engine reaches. Every
+ * reserved or when no store can keep it, and the completion event of a task, which only
+ * the engine reaches. Every
  * event statement and the event lock take this and not a string, so a store method
  * cannot forget the refusal, and nothing outside this file can mint a reserved name.
  */
@@ -67,7 +68,7 @@ export class EventName {
 
   static fromPort(operation: string, raw: string): EventName {
     refuseReservedEventName(operation, raw)
-    return new EventName(raw)
+    return new EventName(requireDurableString(`${operation} eventName`, raw))
   }
 
   static taskDone(taskId: string): EventName {
