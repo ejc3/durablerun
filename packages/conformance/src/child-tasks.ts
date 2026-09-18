@@ -302,10 +302,14 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       await f.admin.setFakeNowEpochMs(START_MS)
     })
 
-    afterEach(async () => {
+    // A case that already failed has said what it found, and it may have stopped partway
+    // through a history. Judging that half-made history too would put a second failure
+    // beside the first, and a verdict must have exactly one. Every case that passes its
+    // own assertions is still judged.
+    afterEach(async ({ task }) => {
       const violations = await childTaskViolations(f.raw)
       await f.close()
-      expect(violations).toEqual([])
+      if (task.result?.state !== 'fail') expect(violations).toEqual([])
     })
 
     it('has one way to end a child for every terminal batch label', () => {
