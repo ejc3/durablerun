@@ -2,12 +2,10 @@ import { EventName, type TaskOutcome, encodeTaskOutcome } from './child-tasks.js
 import type { FencedBatch } from './fenced-batch.js'
 import { taskDoneEventInsert } from './statements/events.js'
 
-/** What a dialect supplies to a terminal batch's completion event: its wake, and one read. */
+/** What a dialect supplies to a terminal batch's completion event: its wake. */
 export interface TaskDoneStore {
   /** Add the statements that wake every run parked on `name`, under the fence `event`. */
   wake(name: EventName): void
-  /** Whether the task's completion event exists. Asked only off the common path. */
-  isRecorded(): Promise<boolean>
 }
 
 /**
@@ -15,20 +13,20 @@ export interface TaskDoneStore {
  * ChildTerminal): the task's completion event, and the wake of every run parked on it,
  * in the batch that ends the task. `terminal` names the statement that made the task
  * terminal, so a batch that ended nothing writes no event and wakes nobody. Every
- * dialect adds them through here, and runs the check this returns on the batch's
- * results.
+ * dialect adds them through here.
  *
- * The insert writes one row or none, and none passes every row-count audit. When the
- * statement named `terminal` did end the task, only an event an earlier ending recorded
- * explains an insert that wrote nothing, which is a revived task ending again. Anything
- * else is a batch that names the wrong task or the wrong terminal statement, and the
- * check says so.
+ * Nothing is checked after the batch. A terminal write's answer is its batch's answer,
+ * and a read after the commit could only change that answer for a transition that has
+ * happened. A batch that names the wrong task or the wrong terminal statement would end
+ * the task with no event, and an insert that writes nothing passes every row-count
+ * audit. What holds that is `childTaskViolations`, which every conformance case, every
+ * fuzz walk, and the SDK harness run over the rows, with one case for each terminal label.
  */
 export function addTaskDone(
   b: FencedBatch,
   ended: { queue: string; taskId: string; terminal: string; outcome: TaskOutcome },
   store: TaskDoneStore,
-): (results: Awaited<ReturnType<FencedBatch['run']>>['results']) => Promise<void> {
+): void {
   const { queue, taskId, terminal, outcome } = ended
   b.followOnTree(
     'event',
@@ -36,12 +34,4 @@ export function addTaskDone(
     'one',
   )
   store.wake(EventName.taskDone(taskId))
-  return async (results) => {
-    const endedHere = (results[terminal]?.rowsAffected ?? 0) > 0
-    const inserted = (results.event?.rowsAffected ?? 0) > 0
-    if (!endedHere || inserted || (await store.isRecorded())) return
-    throw new Error(
-      `${b.label} ended task ${taskId} and recorded no completion event: the batch names the wrong task or the wrong terminal statement`,
-    )
-  }
 }

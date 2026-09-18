@@ -86,7 +86,6 @@ import {
   storageValueKind,
   storedEventRead,
   suspendCas,
-  taskDoneEventName,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
 } from '@durablerun/core'
@@ -1019,12 +1018,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, item.runId, 'cap')
-    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-fail', {
+    this.taskDone(b, queue, item.taskId, 'task-fail', {
       state: 'failed',
       failureReasonJson: REASON_RELAUNCH_CAP,
     })
-    const { won, results } = await b.run(this.db)
-    await taskDoneRecorded(results)
+    const { won } = await b.run(this.db)
     if (won === 'reopen') {
       return {
         kind: 'lost-launch',
@@ -1142,12 +1140,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     // The dead run's waits die with it (the reviewed orphan-waits leak).
     waitsGone(b, item.runId, 'fail')
-    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-terminal', {
+    this.taskDone(b, queue, item.taskId, 'task-terminal', {
       state: 'failed',
       failureReasonJson: REASON_INFRA_CAP,
     })
     const { won, results } = await b.run(this.db)
-    await taskDoneRecorded(results)
     if (won !== 'fail') return null // lost the race
     // Report what the batch DID, not what it can be inferred to have done.
     // Reading "the successor insert wrote nothing" as "the cap is exhausted"
@@ -1345,12 +1342,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
       whereArgs: [taskId],
       rows: 'source-keys',
     })
-    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'cancel', {
+    this.taskDone(b, queue, taskId, 'cancel', {
       state: 'cancelled',
       failureReasonJson: REASON_CANCELLED,
     })
-    const { won, results } = await b.run(this.db)
-    await taskDoneRecorded(results)
+    const { won } = await b.run(this.db)
     return won === 'cancel'
   }
 
@@ -1574,12 +1570,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, runId, 'complete')
-    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'task', {
+    this.taskDone(b, queue, taskId, 'task', {
       state: 'completed',
       completedPayloadJson: resultJson,
     })
-    const { won, results } = await b.run(this.db)
-    await taskDoneRecorded(results)
+    const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
   }
 
@@ -1713,12 +1708,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
     waitsGone(b, runId, 'fail')
     // The task turns terminal under one of two statements, and only the one that ran
     // stamped it, so the event follows whichever ended the task and no retry writes one.
-    const taskDoneRecorded = this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {
+    this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {
       state: 'failed',
       failureReasonJson: failureJson,
     })
-    const { won, results } = await b.run(this.db)
-    await taskDoneRecorded(results)
+    const { won } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal('fail', runId)
   }
 
@@ -1930,8 +1924,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
 
   /**
    * What every terminal batch owes a task's parent, added through core (`addTaskDone`):
-   * the completion event and the wake of every run parked on it. It returns the check
-   * each terminal path runs on its batch's results.
+   * the completion event and the wake of every run parked on it.
    */
   private taskDone(
     b: FencedBatch,
@@ -1939,13 +1932,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
     taskId: string,
     terminal: string,
     outcome: TaskOutcome,
-  ): ReturnType<typeof addTaskDone> {
-    return addTaskDone(
+  ): void {
+    addTaskDone(
       b,
       { queue, taskId, terminal, outcome },
       {
         wake: (name) => this.wakeWaiters(b, queue, name, 'woken-waits-gone'),
-        isRecorded: async () => (await this.taskDoneState(taskId))?.recorded === true,
       },
     )
   }
@@ -2167,27 +2159,21 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * A task as its completion event sees it: its queue, its outcome, the stamp its row
-   * carries, and whether the event exists. Read only off the common path: by an await
-   * that neither registered nor hit, to say why.
+   * A task as a child await sees it: its queue, its outcome, and the stamp its row
+   * carries. Read only off the common path: by an await that neither registered nor
+   * hit, to say why.
    */
   private async taskDoneState(taskId: string): Promise<{
     queue: string
     outcome: TaskResult
     stamp: string | null
-    recorded: boolean
   } | null> {
     const [rows] = await this.db.batch(
       'task-done-state',
       [
         {
-          sql: `SELECT queue, fence_stamp, ${TASK_RESULT_COLUMNS},
-                       CAST(CASE WHEN EXISTS (
-                         SELECT 1 FROM events e
-                         WHERE e.queue = tasks.queue AND e.event_name = ?
-                       ) THEN 1 ELSE 0 END AS BIGINT) AS recorded
-                FROM tasks WHERE task_id = ?`,
-          args: [taskDoneEventName(taskId), taskId],
+          sql: `SELECT queue, fence_stamp, ${TASK_RESULT_COLUMNS} FROM tasks WHERE task_id = ?`,
+          args: [taskId],
         },
       ],
       'read',
@@ -2198,7 +2184,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue: String(row.queue),
       outcome: decodeTaskResult(taskId, row),
       stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
-      recorded: Number(row.recorded) === 1,
     }
   }
 

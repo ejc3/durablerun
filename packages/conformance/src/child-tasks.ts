@@ -386,8 +386,11 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     // A terminal path that names the wrong task, or the wrong terminal statement, ends
     // the task and inserts no event, and an insert that matches nothing passes every
     // row-count audit. The executor here makes `complete`'s event insert match nothing,
-    // which is what such a path would send. The store must say so, loudly.
-    it('fails loudly when a batch ends a task and records no completion event', async () => {
+    // which is what such a path would send. The write still answers as its batch did, so
+    // what reports the missing event is the check this surface runs after every case,
+    // and the fuzz and the SDK harness run over every history. This is that check, seen
+    // failing.
+    it('reports a batch that ended a task and recorded no completion event', async () => {
       const child = await f.store.spawn(Q, 'child', '{}')
       const run = await claimActivated(f.store, Q, 'w-child')
       const mislabelled = f.storeOver({
@@ -404,13 +407,10 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
             control,
           ),
       })
-      const outcome = await mislabelled.complete(Q, run.runId, run.claimToken, '{}').then(
-        () => 'accepted',
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
-      )
-      expect(outcome, 'mutation-verdict:behavior:terminal-batch-requires-its-event').toMatch(
-        /recorded no completion event/,
-      )
+      await mislabelled.complete(Q, run.runId, run.claimToken, '{}')
+      expect(await childTaskViolations(f.raw)).toEqual([
+        `terminal-task-without-completion-event: ${child.taskId}`,
+      ])
       // The task did end with nothing recorded, which is the state an await repairs.
       const parent = await claimedParent(f)
       expect((await awaitChild(f.store, Q, parent, child.taskId, null)).emitted).toBe(true)
