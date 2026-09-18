@@ -2542,7 +2542,11 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 - **The forward phase is frozen by the store.** Inside the phase it refuses a
   forward checkpoint, a completion, a suspension, which commits a marker, and
   a wait registration, which would park the pass on an event that may never
-  come. `reschedule` and `defer-launch` stay open, because a build without
+  come. Two names are the engine's alone in either phase: the phase marker,
+  which only the batch that decides a failure writes, and a rollback's attempt
+  record, which only the batch that fails a pass writes. A lease holder's
+  plain checkpoint write is refused both, so no caller of the port, a worker
+  in another language included, can forge a saga or spend a rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
   the first durable call with no memo ends a pass's replay.
 - **The completion event** is a task's first terminal outcome, so the batch

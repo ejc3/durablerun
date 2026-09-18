@@ -99,6 +99,7 @@ import {
   QUEUED,
   cancelDue,
   checkpointInItsPhase,
+  checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
   eligibleTask,
@@ -2107,7 +2108,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ),
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
         // The forward phase is frozen once a saga began, and a rollback runs only in it.
-        sagaPhase: sqlFragment(checkpointInItsPhase('runs', '?'), [checkpointName]),
+        sagaPhase: sqlFragment(
+          `${checkpointInItsPhase('runs', '?')}
+         AND NOT ${checkpointIsTheEngines('?')}`,
+          [checkpointName, checkpointName, checkpointName],
+        ),
       }),
     )
     // The attempt comparison in checkpointWrite's conflict arm is the last-writer-wins

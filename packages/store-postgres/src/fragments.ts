@@ -441,6 +441,16 @@ const namedUnder = (name: string, prefix: string): string =>
 export const checkpointInItsPhase = (task: string, name: string): string =>
   `(${namedUnder(name, SAGA_ROLLBACK_PREFIX)}) = (${sagaBegan(task)})`
 
+/**
+ * `name` is one only the engine's own batches write: the phase marker, which the batch
+ * that decides a task's failure writes, and a rollback's attempt record, which the batch
+ * that fails a pass writes. A lease holder's plain checkpoint write is refused both in
+ * either phase, so no caller of the port can forge a saga or spend a rollback's budget.
+ */
+export const checkpointIsTheEngines = (name: string): string =>
+  `(${name} = '${SAGA_PHASE_CHECKPOINT}'
+    OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
+
 /** The rollback of the step a saga checkpoint `marker` names has run. */
 const rollbackRan = (marker: string, prefix: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints sr
