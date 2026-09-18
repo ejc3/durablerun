@@ -874,15 +874,43 @@ MUTATION_SPECS = [
     (
         "tree-followon-insert-no-aggregate",
         "packages/core/src/sql-tree.ts",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
-        "        someNode(selection, (node) => FunctionNode.is(node)),",
+        "            AggregateFunctionNode.is(node) ||\n            FunctionNode.is(node) ||\n",
+        "            FunctionNode.is(node) ||\n",
         "an aggregate lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-no-fragment-call",
+        "packages/core/src/sql-tree.ts",
+        "            FunctionNode.is(node) ||\n            (RawNode.is(node) && fragmentCalls(node.sqlFragments.join(' '))),\n",
+        "            FunctionNode.is(node),\n",
+        "a call spelled in a value fragment lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-fragment-call-quoted-name",
+        "packages/core/src/sql-tree.ts",
+        "    if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true\n",
+        "    if (bare !== undefined && !NOT_A_CALL.includes(bare.toLowerCase())) return true\n",
+        "a call whose name is quoted passes the reader of a value fragment",
+    ),
+    (
+        "tree-fragment-call-keyword-is-not-a-call",
+        "packages/core/src/sql-tree.ts",
+        "    if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true\n",
+        "    return true\n",
+        "a keyword before a parenthesis is refused as a call, so a CASE with IN cannot be a value",
+    ),
+    (
+        "tree-fragment-call-keyword-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "    if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true\n",
+        "    if (bare === undefined || !NOT_A_CALL.includes(bare)) return true\n",
+        "a keyword in upper case before a parenthesis is refused as a call",
     ),
     (
         "tree-followon-insert-no-function",
         "packages/core/src/sql-tree.ts",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node)),",
+        "            AggregateFunctionNode.is(node) ||\n            FunctionNode.is(node) ||\n",
+        "            AggregateFunctionNode.is(node) ||\n",
         "a function call lets a follow-on insert write a row its fence did not match",
     ),
     (
@@ -6559,6 +6587,30 @@ VERDICTS = {
         "the tree path a follow-on that inserts selects no aggregate node",
         "mutation-verdict:construction:tree-followon-insert-no-aggregate",
     ),
+    "tree-followon-insert-no-fragment-call": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects no call spelled in a value fragment",
+        "mutation-verdict:construction:tree-followon-insert-no-fragment-call",
+    ),
+    "tree-fragment-call-quoted-name": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts reads a quoted name before a parenthesis as a call",
+        "mutation-verdict:construction:tree-fragment-call-quoted-name",
+    ),
+    "tree-fragment-call-keyword-is-not-a-call": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts does not read a keyword before a parenthesis as a call",
+        "mutation-verdict:construction:tree-fragment-call-keyword-is-not-a-call",
+    ),
+    "tree-fragment-call-keyword-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts reads a keyword whatever its case",
+        "mutation-verdict:construction:tree-fragment-call-keyword-case-fold",
+    ),
     "tree-followon-insert-no-function": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -11838,6 +11890,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "'utc_timestamp',": (
             "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
         ),
+        "(RawNode.is(node) && fragmentCalls(node.sqlFragments.join(' '))),": (
+            "fails closed: with the raw-node guard gone every other node of a follow-on insert's SELECT list throws on its missing fragments, and 38 of the 476 core tests fail"
+        ),
         "([field, value]) => value !== undefined && !fields.includes(field),": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 85 at the fewest"
         ),
@@ -13741,7 +13796,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 664:
+        if len(MUTATIONS) != 668:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -330,6 +330,43 @@ const FRAGMENT_TOKEN = new RegExp(
   'g',
 )
 
+// Words that may stand before a parenthesis without calling anything.
+const NOT_A_CALL = [
+  'and',
+  'or',
+  'not',
+  'in',
+  'is',
+  'as',
+  'on',
+  'case',
+  'when',
+  'then',
+  'else',
+  'between',
+  'exists',
+  'select',
+  'from',
+  'where',
+]
+// A name, bare or quoted as any dialect quotes one, followed by an opening parenthesis.
+const CALL = /(?<![\w."`\]])(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_]\w*))\s*\(/g
+
+/**
+ * Whether a fragment's text calls a function, outside its string literals. The tree
+ * rules refuse a function node wherever an aggregate would let a SELECT return a row its
+ * WHERE did not match, and a fragment is opaque to them, so this is that rule's twin for
+ * text. It refuses every call and not a list of aggregate spellings, as the node rule
+ * refuses every function node: a list of spellings is what a dialect outgrows.
+ */
+export function fragmentCalls(sql: string): boolean {
+  for (const match of readFragment(sql).outside.matchAll(CALL)) {
+    const bare = match[4]
+    if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true
+  }
+  return false
+}
+
 /** A fragment's text outside its string literals, with each literal left as `''`. */
 export function fragmentOutsideLiterals(sql: string): string {
   return readFragment(sql).outside
@@ -1224,8 +1261,8 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
  * compares with a fence. `fencedInstants` names every inserted column that takes exactly
  * that, so a preserved first instant can be held to it as well. `plain` is false when the
  * SELECT could return a row its WHERE did not match, which an insert would then write
- * with no gate: an aggregate or a function call in its list, built from nodes, or a
- * HAVING. A call spelled inside a value fragment is outside what this can read. This is asked here, of the statement's own
+ * with no gate: an aggregate or a function call in its list, built from nodes or spelled
+ * in a fragment's text (`fragmentCalls`), or a HAVING. This is asked here, of the statement's own
  * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
  * false when the SELECT could return more rows than the fenced ones: a second FROM item,
  * a FROM item that is not the source the fence is compared on, or a join with no ON. A
@@ -1278,7 +1315,13 @@ export function followOnInsertProvenance(tree: OperationNode): {
       select !== null &&
       select.having === undefined &&
       !(select.selections ?? []).some((selection) =>
-        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),
+        someNode(
+          selection,
+          (node) =>
+            AggregateFunctionNode.is(node) ||
+            FunctionNode.is(node) ||
+            (RawNode.is(node) && fragmentCalls(node.sqlFragments.join(' '))),
+        ),
       ),
     // With no fence compared at all, the gate rule and the instant rule speak for it.
     alone:

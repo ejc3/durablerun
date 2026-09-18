@@ -701,7 +701,7 @@ export class FencedBatch {
       }
       if (!following.plain) {
         throw new Error(
-          `${at} must select plain columns and values: an aggregate, a function call, or a HAVING can return a row the fence did not match, and the insert would write it`,
+          `${at} must select plain columns and values: an aggregate or a function call, built from nodes or spelled in a fragment, or a HAVING, can return a row the fence did not match, and the insert would write it`,
         )
       }
       if (!following.alone) {
