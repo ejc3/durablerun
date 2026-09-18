@@ -14,6 +14,9 @@ class FakeConnection {
   readonly headers = new Map<string, { affectedRows: number; info: string }>()
   released = 0
 
+  /** The physical connection under a pool's wrapper, as mysql2 exposes it. */
+  readonly connection = {}
+
   async query(sql: string) {
     this.sent.push(sql)
     const header = this.headers.get(sql)
@@ -33,8 +36,15 @@ class FakeConnection {
   destroy() {}
 }
 
+/** The part of a mysql2 pool that records the handshake flags it connects with. */
+const OWNED_POOL_CONFIG = { config: { connectionConfig: { clientFlags: 0 } } }
+
 function executorOver(connection: FakeConnection): MysqlExecutor {
-  const pool = { getConnection: async () => connection, end: async () => undefined }
+  const pool = {
+    getConnection: async () => connection,
+    end: async () => undefined,
+    pool: OWNED_POOL_CONFIG,
+  }
   return MysqlExecutor.fromPool(pool as unknown as Pool)
 }
 
@@ -110,6 +120,24 @@ describe('MysqlExecutor transactions', () => {
       results.map(({ rowsAffected }) => rowsAffected),
       'mutation-verdict:construction:mysql-only-an-insert-counts-twice',
     ).toEqual([2])
+  })
+
+  it('sends the session settings once for each physical connection', async () => {
+    // mysql2's promise pool hands out a new wrapper object on every checkout, over the
+    // same physical connection. The settings belong to the connection.
+    const connection = new FakeConnection()
+    const pool = {
+      getConnection: async () => new Proxy(connection, {}),
+      end: async () => undefined,
+      pool: OWNED_POOL_CONFIG,
+    }
+    const executor = MysqlExecutor.fromPool(pool as unknown as Pool)
+    await executor.batch('next-wake', [{ sql: 'SELECT 1 AS value', args: [] }], 'read')
+    await executor.batch('next-wake', [{ sql: 'SELECT 1 AS value', args: [] }], 'read')
+    expect(
+      connection.sent.filter((sql) => sql.startsWith('SET SESSION')),
+      'mutation-verdict:construction:mysql-session-settings-once-per-connection',
+    ).toHaveLength(1)
   })
 
   it('takes no lock for the version read', async () => {
