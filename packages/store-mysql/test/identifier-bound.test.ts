@@ -138,3 +138,53 @@ it('counts characters as MySQL does, so 200 characters outside the basic plane, 
   expect(results.filter((outcome) => outcome instanceof InvalidDurableStringError)).toEqual([])
   expect(reached.length).toBeGreaterThan(0)
 })
+
+/**
+ * Two names the store derives from an identifier are longer than it, and the bound is held
+ * to them as they are stored. Each refusal names what the caller passed.
+ */
+it('holds a child task id to the width less its completion event prefix, and says so', async () => {
+  const awaited = async (childTaskId: string) => {
+    const { store, reached } = storeOverRecorder()
+    const outcome = await store.awaitTaskDone('q', 't', 'r', 'c', 's', childTaskId, null).then(
+      () => 'accepted',
+      (error: unknown) => error,
+    )
+    return { outcome, reached: reached.length }
+  }
+  // `$task-done:` is 11 characters, so 244 is the longest child id whose event name fits.
+  const fits = await awaited('x'.repeat(244))
+  expect(fits.outcome).not.toBeInstanceOf(InvalidDurableStringError)
+  expect(fits.reached).toBeGreaterThan(0)
+  const tooLong = await awaited('x'.repeat(245))
+  expect(tooLong.outcome).toBeInstanceOf(InvalidDurableStringError)
+  expect(String(tooLong.outcome)).toContain('childTaskId')
+  expect(String(tooLong.outcome)).not.toContain('eventName')
+  expect(tooLong.reached).toBe(0)
+})
+
+it('holds a replay key to the width less the rest of the stored child key, and says so', async () => {
+  const parentTaskId = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+  expect(parentTaskId).toHaveLength(36)
+  const spawned = async (replayKey: string) => {
+    const { store, reached } = storeOverRecorder()
+    const outcome = await store
+      .spawn('q', 'child', '{}', {
+        childOf: { parentQueue: 'q', parentTaskId, runId: 'r', claimToken: 'c', replayKey },
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    return { outcome, reached: reached.length }
+  }
+  // `$spawn:36:`, the parent id, and a colon are 47 characters, which leaves 208.
+  const fits = await spawned('k'.repeat(208))
+  expect(fits.outcome).not.toBeInstanceOf(InvalidDurableStringError)
+  expect(fits.reached).toBeGreaterThan(0)
+  const tooLong = await spawned('k'.repeat(209))
+  expect(tooLong.outcome).toBeInstanceOf(InvalidDurableStringError)
+  expect(String(tooLong.outcome)).toContain('replayKey')
+  expect(String(tooLong.outcome)).not.toContain('idempotencyKey')
+  expect(tooLong.reached).toBe(0)
+})
