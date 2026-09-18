@@ -190,8 +190,11 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
     })
 
     it('forgives a bootstrap that lost to a concurrent migrator, and only then', async () => {
-      const bootstrapFailing = async (winnerFinishesFirst: boolean) => {
-        const fixture = await makeFixture(`schema-admin-bootstrap-lost-${winnerFinishesFirst}`, {
+      // The loser's bootstrap call fails three ways: after a winner finished every
+      // migration, after its own commit landed and only the answer was lost, which leaves
+      // version zero, and with nothing committed by anyone.
+      const bootstrapFailing = async (committedBy: 'winner' | 'itself' | 'nobody') => {
+        const fixture = await makeFixture(`schema-admin-bootstrap-lost-${committedBy}`, {
           migrate: false,
         })
         try {
@@ -199,7 +202,8 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
             batch: async (label, statements, control) => {
               if (label !== 'migrate:bootstrap')
                 return fixture.raw.batch(label, statements, control)
-              if (winnerFinishesFirst) await fixture.admin.migrate()
+              if (committedBy === 'winner') await fixture.admin.migrate()
+              if (committedBy === 'itself') await fixture.raw.batch(label, statements, control)
               throw new Error('the bootstrap failed')
             },
           })
@@ -217,13 +221,15 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
 
       expect(
         {
-          afterAWinner: await bootstrapFailing(true),
-          withNoWinner: await bootstrapFailing(false),
+          afterAWinner: await bootstrapFailing('winner'),
+          afterItsOwnCommit: await bootstrapFailing('itself'),
+          withNothingCommitted: await bootstrapFailing('nobody'),
         },
         'mutation-verdict:behavior:bootstrap-loss-forgiven',
       ).toEqual({
         afterAWinner: { migration: 'resolved', migrated: true },
-        withNoWinner: { migration: 'Error: the bootstrap failed', migrated: false },
+        afterItsOwnCommit: { migration: 'resolved', migrated: true },
+        withNothingCommitted: { migration: 'Error: the bootstrap failed', migrated: false },
       })
     })
 
