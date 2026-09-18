@@ -1188,6 +1188,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
   here: a same-queue await is allowed, and an await across queues is refused
   until a delivery protocol for it is modeled, because events are keyed by
   queue.
+  The implementation is built on that model. Every terminal batch writes the
+  completion event and wakes its waiters as follow-ons of the statement that
+  ended the task, and takes the event lock on PostgreSQL. The `emitEvent` and
+  `awaitEvent` ports refuse a reserved name, `awaitTaskDone` is the child
+  await, and the SDK adds `ctx.spawn` and `ctx.awaitTask`. The conformance
+  surface `child-tasks` holds the model's actions and guards on both dialects,
+  the operation fuzz and the SDK's replay-equivalence harness generate child
+  awaits, and `childTaskViolations` checks every history only the engine wrote.
+  Two reads were added and are recorded in DESIGN.md §3.2: `child-queue`
+  decides the queue rule, and `run-task` names the task of a run that another
+  store activated. Not built here, each with its reason: the `/api/runs/:id`
+  route, because `/api/inspect` already answers with a task's result, and a
+  route by run id is left to the PR that needs it. Registered mutations of the
+  PostgreSQL store, because the mutation audit has none for that store: the
+  event lock in its terminal batches is held only by the real-concurrency
+  conformance case, which was seen to fail three times of three without the
+  lock. Detection of an await cycle, which the model leaves to the
+  cancellation deadline. Event cleanup, which does not exist yet. A reserved
+  namespace for idempotency keys: `ctx.spawn` builds its key under `$spawn:`,
+  and the raw `spawn` port and the hosted enqueue route take any key, so a
+  caller could place a task where a later parent will look for its child.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,

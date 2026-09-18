@@ -448,7 +448,9 @@ One invocation executes one claimed run to its next suspension point:
   (throw Suspend CARRYING the sleep marker; the runtime lands marker + park in
   ONE fenced batch — `suspendRun` — because a marker whose park failed would
   read as "the wake already happened" to the next attempt), `awaitEvent`
-  (checkpoint-or-register-wait, throw Suspend), `emitEvent`, `spawn` (child tasks).
+  (checkpoint-or-register-wait, throw Suspend), `emitEvent`, and `spawn` and
+  `awaitTask` (child tasks, below). A task name given to `spawn` follows the
+  rules of a step name, because it becomes part of a replay key.
   User-supplied names — step names AND event names, on `awaitEvent` and
   `emitEvent` alike — may not contain `#` (reserved for the SDK's repeat
   counters — `poll`, `poll#2` — which are user-visible in the checkpoints
@@ -602,20 +604,43 @@ One invocation executes one claimed run to its next suspension point:
     register a wait that nothing will ever wake.
   - A timed await that comes due consumes its wait row and returns no
     outcome, and a later emit finds no row to wake.
-  - The name is reserved, and these are requirements on the implementation.
-    The store's `emitEvent` port must refuse a name that starts with `$`. It
-    does not today. The hosted emit route and the SDK already refuse one
-    through `UserName.parse`, and any other caller of the port could win
-    first-write-wins and forge a child's result. For the same reason the child
-    await cannot be the SDK's `awaitEvent`, which refuses the reserved name:
-    it reaches the store by an internal path that builds the name from the
-    child's task id.
+  - The name is reserved. The store's `emitEvent` and `awaitEvent` ports
+    refuse a name that starts with `$` with `RangeError`, through one core
+    function (`refuseReservedEventName`), and write or register nothing. The
+    hosted emit route and the SDK already refused one through
+    `UserName.parse`. Any other caller of the emit port could have won
+    first-write-wins and forged a child's result, and any caller of the await
+    port could have skipped the queue rule below. The child await is therefore
+    its own port method, `awaitTaskDone(queue, taskId, runId, claimToken,
+    stepName, childTaskId, timeoutSeconds)`, which builds the name from the
+    child's task id (`taskDoneEventName`) and then runs the `await-event` batch
+    unchanged.
+  - The payload is the child's first outcome, in the shape `getTaskResult`
+    answers with: the terminal state, and the completed payload or the failure
+    reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds
+    it as a value, so no dialect builds JSON in SQL. The insert selects from
+    the task row the batch made terminal, under the stamp of the statement
+    that ended it, so a batch that ended nothing writes no event, and a `fail`
+    that scheduled a retry writes none. It carries no conflict clause, which a
+    follow-on insert may not have. An event that exists is left alone by a
+    `NOT EXISTS` guard, which the event lock makes safe.
+  - A terminal batch names the task, and `complete` and `fail` are handed only
+    the run. The store that activated a run remembers its task, so the
+    worker's own terminal write pays no read. Any other caller pays one read of
+    the run's task (`run-task`) before the batch. A run's task never changes
+    and run ids are never reused, so neither the read nor the memory can be
+    stale. Passing the task id through the port would remove the read, and
+    would change the rule that a launch carries only the run and its token.
   - A child is awaited only within its parent's queue. Events are keyed by
     queue and are shard-local (§3.7), so a same-queue child is the only one
     whose terminal batch can wake its parent: a child in another queue writes
     its event under that queue, where the parent's wait row is not. Awaiting a
     child in another queue is refused, as a permanent error that registers
     nothing, until a delivery protocol across queues exists and is modeled.
+    `awaitTaskDone` decides it from one read of the child's queue
+    (`child-queue`), which never changes, before it issues any batch. A child in
+    another queue, and a task that does not exist, throw
+    `ChildAwaitRefusedError`. A child in the parent's queue is never refused.
     This departs from Absurd, which refuses the same-queue await because its
     await polls and holds a worker slot, so a parent and its child can
     deadlock a small pool. Ours suspends and holds nothing. The model isolates
@@ -624,7 +649,33 @@ One invocation executes one claimed run to its next suspension point:
   - Not modeled, and bounded elsewhere: an await cycle, where a parent awaits
     a child that awaits the parent, waits forever in any queue. Nothing
     detects it, and only a cancellation deadline bounds it, as it bounds any
-    untimed await.
+    untimed await. A task that awaits itself is the shortest such cycle.
+  - The SDK surface is `ctx.spawn(taskName, params, opts?)` and
+    `ctx.awaitTask(child, opts?)`. A spawn is memoized like a step, and it
+    carries the idempotency key `$spawn:<parent task id>:<replay key>`, so a
+    pass that died after the spawn committed and before its checkpoint did
+    finds the same child on the next pass, and so does a zombie. `awaitTask`
+    resolves to the child's first outcome and does not throw for a failed or
+    cancelled child, so the parent decides what a failure means. A timeout
+    throws `EventTimeoutError`. A refused await, and a spawn the store refuses
+    as invalid input, are permanent failures (`FatalTaskError`), because
+    neither changes on a retry. A child defaults to its parent's queue.
+  - The model's actions and guards have executable twins in the conformance
+    surface `child-tasks`, which every dialect runs: one case over every
+    terminal batch, generated from the batch labels, plus the hit, the retry
+    that writes no event, the first outcome after a revival, both refusals of
+    the reserved name, both directions of the queue rule, the timeout, the
+    cancelled parent, every simulated interleaving of the await with the
+    child's ending, and the same race over real concurrent connections, which
+    fails on PostgreSQL when a terminal batch drops its event lock. Rows that
+    only the engine wrote are also held to `childTaskViolations`: a terminal
+    task has its completion event, and a completion event names a task of its
+    queue and decodes. It runs in the operation fuzz, which awaits children
+    and requires a cross-queue await to be refused, and in the SDK's
+    replay-equivalence harness, which generates `spawn` and `awaitTask`. It is
+    not part of the invariant library, because that library also judges states
+    the poison matrix writes by hand, where no batch could have written the
+    event.
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the
@@ -1341,8 +1392,10 @@ are load-bearing):
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
-`deferLaunch`) reads its run's state only after the refusal (`refusal-state`),
-so a write that wins pays for no read. It throws `RunCancelledError` (AB001)
+`awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal
+(`refusal-state`), so a write that wins pays for no refusal read. The one read a
+winning `complete` or `fail` can pay is its run's task (`run-task`, §3.2), and
+only in a store that did not activate the run. It throws `RunCancelledError` (AB001)
 when the task's cancellation ended the run and `LeaseLostError` (AB002)
 otherwise, including when that read fails. `heartbeat` reports `held: false`
 with `reason: 'cancelled'` or `reason: 'lease-lost'`, from the same read. A worker retrying `complete` after a lost
@@ -2092,6 +2145,7 @@ stutters.
    `sweep` (expired leases + cancellation, classified by activation state),
    `expireLeaseNow(queue, runId, claimToken)`, `emitEvent`/`registerWait`
    (worker-initiated registration is claim-fenced like every worker write),
+   `awaitTaskDone` (the same registration for a child's completion event, §3.2),
    `nextWakeAt`, and `driverHeartbeat` — an observability-only upsert of the
    driver's liveness row (`drivers` table: queue+driver id, last beat, expiry at
    twice the beat cadence; each beat also deletes expired rows so the registry
