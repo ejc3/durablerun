@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { isTreeBuiltStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
@@ -14,6 +14,7 @@ import {
   type CorpusSignature,
   type VariantNamers,
   enrolCorpus,
+  enrolledFor,
   recordingTreeBatches,
 } from '../src/sql-corpus.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
@@ -183,7 +184,9 @@ describe('corpus enrolment', () => {
           ['spawn-child', [one]],
         ]),
       ),
-    ).toThrow(/spawn-child ran as tree-built batches and corpus\/labels\.json does not enrol them/)
+    ).toThrow(
+      /spawn-child ran as tree-built batches and corpus\/labels\.json does not enrol them for control/,
+    )
   })
 
   it('fails for an enrolled label that never ran', () => {
@@ -224,13 +227,40 @@ describe('corpus enrolment', () => {
     expect([...recorded.keys()]).toEqual(['a-label-nobody-listed'])
   })
 
+  it('enrols every label a store builds as a FencedBatch, read from the store sources', () => {
+    // The scenario records what it drives, and a batch it never drives would have no golden
+    // copy and fail nothing. This reads the constructions themselves.
+    const packages = new URL('../../', import.meta.url)
+    const stores = readdirSync(packages).filter((name) => name.startsWith('store-'))
+    expect(stores.length).toBeGreaterThanOrEqual(3)
+    for (const store of stores) {
+      const dialect = store.slice('store-'.length)
+      const sources = new URL(`${store}/src/`, packages)
+      const text = readdirSync(sources)
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => readFileSync(new URL(file, sources), 'utf8'))
+        .join('\n')
+      const constructions = text.match(/new FencedBatch\(/g) ?? []
+      const labels = [...text.matchAll(/new FencedBatch\(\s*'([^']+)'/g)].map((found) => found[1])
+      // A label that is not a literal could not be read here, so it is refused.
+      expect(labels.length, `${store} constructs a FencedBatch whose label is not a literal`).toBe(
+        constructions.length,
+      )
+      expect(labels.length).toBeGreaterThan(0)
+      expect([...new Set(labels)].sort(), `${store}'s FencedBatch labels`).toEqual(
+        Object.keys(enrolledFor(DESCRIPTOR, dialect)).sort(),
+      )
+    }
+  })
+
   it('enrols every label the descriptor names in the corpus of every dialect', () => {
     for (const { dialect } of SELECTED_DIALECT_FIXTURES) {
       const corpus = JSON.parse(
         readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'),
       )
-      expect(Object.keys(corpus)).toEqual(Object.keys(DESCRIPTOR))
-      for (const [label, variants] of Object.entries(DESCRIPTOR)) {
+      const enrolled = enrolledFor(DESCRIPTOR, dialect)
+      expect(Object.keys(corpus)).toEqual(Object.keys(enrolled))
+      for (const [label, variants] of Object.entries(enrolled)) {
         for (const variant of Object.keys(corpus[label])) expect(variants).toContain(variant)
       }
     }

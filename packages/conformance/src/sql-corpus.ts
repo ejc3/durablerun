@@ -8,7 +8,28 @@ import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/cor
  * whose statements a `FencedBatch` compiled is tree-built, and a tree-built label the
  * descriptor does not name fails.
  */
-export type CorpusDescriptor = Readonly<Record<string, readonly string[]>>
+/**
+ * A label's variants. A label only some dialects build as trees names those dialects too:
+ * MySQL's `heartbeat` needs a second statement where the others use RETURNING.
+ */
+export type CorpusEntry =
+  | readonly string[]
+  | { readonly variants: readonly string[]; readonly dialects: readonly string[] }
+export type CorpusDescriptor = Readonly<Record<string, CorpusEntry>>
+
+/** The labels a descriptor enrols for one dialect, each with its variants. */
+export function enrolledFor(
+  descriptor: CorpusDescriptor,
+  dialect: string,
+): Record<string, readonly string[]> {
+  const enrolled: Record<string, readonly string[]> = {}
+  for (const [label, entry] of Object.entries(descriptor)) {
+    if (Array.isArray(entry)) enrolled[label] = entry
+    else if ('dialects' in entry && entry.dialects.includes(dialect))
+      enrolled[label] = entry.variants
+  }
+  return enrolled
+}
 export type CorpusSignature = readonly { sql: string; bindArity: number }[]
 export type Corpus = Record<string, Record<string, CorpusSignature>>
 
@@ -53,14 +74,15 @@ export function enrolCorpus(
   recorded: ReadonlyMap<string, readonly CorpusSignature[]>,
   variantOf: VariantNamers = {},
 ): Corpus {
-  const unenrolled = [...recorded.keys()].filter((label) => !Object.hasOwn(descriptor, label))
+  const enrolled = enrolledFor(descriptor, dialect)
+  const unenrolled = [...recorded.keys()].filter((label) => !Object.hasOwn(enrolled, label))
   if (unenrolled.length > 0) {
     throw new Error(
-      `${dialect}: ${unenrolled.join(', ')} ran as tree-built batches and corpus/labels.json does not enrol them`,
+      `${dialect}: ${unenrolled.join(', ')} ran as tree-built batches and corpus/labels.json does not enrol them for ${dialect}`,
     )
   }
   return Object.fromEntries(
-    Object.entries(descriptor).map(([label, variants]) => {
+    Object.entries(enrolled).map(([label, variants]) => {
       const signatures = recorded.get(label) ?? []
       if (signatures.length === 0) throw new Error(`${dialect}: no ${label} batch ran`)
       if (signatures.length > variants.length) {

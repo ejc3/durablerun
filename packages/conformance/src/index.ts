@@ -24,8 +24,10 @@ export * from './fault-matrix.js'
 export {
   type Corpus,
   type CorpusDescriptor,
+  type CorpusEntry,
   type CorpusSignature,
   enrolCorpus,
+  enrolledFor,
   recordingTreeBatches,
   type VariantNamers,
 } from './sql-corpus.js'
