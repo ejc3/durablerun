@@ -33,6 +33,7 @@ import {
   fenceValue,
   followOnInsertProvenance,
   fragmentBinds,
+  fragmentOutsideLiterals,
   gatingFences,
   insertProvenance,
   isDefinedStatement,
@@ -1321,23 +1322,17 @@ function beforeTopLevelWhere(sql: string): string {
   return at < 0 ? sql : sql.slice(0, at)
 }
 
-/** A caller supplies one scalar RHS; assignment structure stays generated. */
+/**
+ * A caller supplies one scalar RHS; assignment structure stays generated. The tree
+ * module reads the literals, so there is one reading of where a string ends.
+ */
 function assertSetExpression(at: string, column: string, expression: string): void {
-  const structural = blankLiterals(expression)
+  const structural = fragmentOutsideLiterals(expression)
   if (/--|\/\*|#/.test(structural)) {
     throw new Error(`${at} set expression for '${column}' contains a SQL comment`)
   }
   let depth = 0
-  for (let i = 0; i < expression.length; i++) {
-    const ch = expression[i]
-    if (ch === "'") {
-      const end = skipString(expression, i)
-      if (end >= expression.length) {
-        throw new Error(`${at} set expression for '${column}' has an unterminated string`)
-      }
-      i = end
-      continue
-    }
+  for (const ch of structural) {
     if (ch === '(') depth++
     else if (ch === ')') {
       depth--
@@ -1347,6 +1342,11 @@ function assertSetExpression(at: string, column: string, expression: string): vo
     } else if ((ch === ',' && depth === 0) || ch === ';') {
       throw new Error(`${at} set expression for '${column}' escapes its generated assignment`)
     }
+  }
+  // A literal takes two quotes and each quote escaped inside one takes two more, so an
+  // odd count leaves a literal open, and everything after it was read as its contents.
+  if ((expression.split("'").length - 1) % 2 !== 0) {
+    throw new Error(`${at} set expression for '${column}' has an unterminated string`)
   }
   if (depth !== 0) {
     throw new Error(`${at} set expression for '${column}' has unbalanced parentheses`)

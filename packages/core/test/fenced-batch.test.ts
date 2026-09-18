@@ -237,6 +237,47 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       }),
     ).toThrow(/escapes its generated assignment/)
 
+    // What a set value may not do to the assignment generated around it. A row that
+    // holds two problems is refused for the one that comes first in its text.
+    const escapes: ReadonlyArray<readonly [string, string, RegExp]> = [
+      ['open-literal', `'pending`, /has an unterminated string/],
+      ['open-escaped-literal', `'it''s`, /has an unterminated string/],
+      ['closes-early', `'pending')`, /has an unmatched '\)'/],
+      ['never-closes', `('pending'`, /has unbalanced parentheses/],
+      ['second-statement', `'pending'; DELETE FROM runs`, /escapes its generated assignment/],
+      ['comma-before-open-literal', `1, 'pending`, /escapes its generated assignment/],
+      ['comma-inside-open-literal', `'pending, 1`, /has an unterminated string/],
+      ['comment-inside-open-literal', `'pending # open`, /has an unterminated string/],
+    ]
+    for (const [name, value, refusal] of escapes) {
+      expect(
+        () =>
+          withCas().derived(name, {
+            relation: 'runs-to-tasks',
+            fence: 'win',
+            set: { state: value },
+            rows: 'one',
+          }),
+        name,
+      ).toThrow(refusal)
+    }
+    // Text that only looks like an escape inside a literal, or inside parentheses, stands.
+    for (const [name, value] of [
+      ['quoted', `'a, b; c # d -- e'`],
+      ['grouped', `coalesce(task_name, 'pending')`],
+    ] as const) {
+      expect(
+        () =>
+          withCas().derived(name, {
+            relation: 'runs-to-tasks',
+            fence: 'win',
+            set: { state: value },
+            rows: 'one',
+          }),
+        name,
+      ).not.toThrow()
+    }
+
     expect(() =>
       withCas().derived('mysql-comment-escape', {
         relation: 'runs-to-tasks',

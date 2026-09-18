@@ -330,6 +330,11 @@ const FRAGMENT_TOKEN = new RegExp(
   'g',
 )
 
+/** A fragment's text outside its string literals, with each literal left as `''`. */
+export function fragmentOutsideLiterals(sql: string): string {
+  return readFragment(sql).outside
+}
+
 /** How many arguments a fragment's text binds: its `?` outside string literals. */
 export function fragmentBinds(sql: string): number {
   return readFragment(sql).outside.split('?').length - 1
