@@ -888,24 +888,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
     both reads of a claimed run select one list. `checkpoints` joins
     `STORE_TABLE_COLUMNS`. Spawn's receipt became one read of `tasks` with an
     OR predicate, because the grammar has no UNION. Part 2's review
-    round is `postmortems/pr3.9e-part2-review.md`. Part 3 opens with
-    registered mutations for the tree checks, as its own PR, before the text
-    path is deleted. Part 1's review round,
+    round is `postmortems/pr3.9e-part2-review.md`. Part 1's review round,
     `postmortems/pr3.9e-part1-review.md`, is the third running whose findings
     trace to one cause: the corpus proves statements, and nothing compares
-    what the tree rules refuse with what the text rules refused. The text
-    rules are held by thirty registered mutations and the tree rules by none.
-    Each text-path mutation that holds a rule gets a tree-path successor that
-    removes the same condition, and the successor is caught before its
-    original is retired. The rest of part 3 follows: the text path and its
-    scanners deleted, with `cas`, `casMany`, `followOn`, `tail`, `openTail`,
-    and `fenceSetAt`, one pass over the tree for all checks, the corpus
-    enrolled from label and variant descriptors, and the bridge as one table
-    of pinned file pairs.
-  - Deferred to PR3.9e part 3, with the tree-path mutations: the line that
-    decides a fragment's parentheses is owned by two mutations, and neither
-    removes the parentheses from a value fragment alone. That condition gets
-    its own mutant.
+    what the tree rules refuse with what the text rules refused.
+    Part 3a, done: the tree rules have registered mutations, eighty of them,
+    in their own PR before the text path is deleted. Each removes one
+    condition in `addTree` or in `sql-tree.ts`, and each is caught by one test
+    in `packages/core/test/fenced-batch-tree-verdicts.test.ts`. They cover
+    stamping, the gate and where a fence may stand, a subquery that returns a
+    row whatever it matched, the tie of a subquery gate to the fenced source,
+    the follow-on insert, the inserting compare-and-set, counting assignments
+    and `excluded`, the clock, the open tail, fragment roles and a value
+    fragment's parentheses, the statement grammar, and the two compiler bind
+    errors. The registry went from 439 entries to 519 and no existing entry
+    changed. Part 3b follows: the text path and its scanners deleted, with
+    `cas`, `casMany`, `followOn`, `tail`, `openTail`, and `fenceSetAt`, one
+    pass over the tree for all checks, the corpus enrolled from label and
+    variant descriptors, and the bridge as one table of pinned file pairs.
+    Twelve registered mutations own text that part 3b deletes, and each now has
+    a tree-path successor, so part 3b retires them with a bridge arm:
+    `followon-provenance-check`, `positive-fence-required`,
+    `positive-fence-is-not`, `top-level-or-reach`, `clock-ban-in-followon`,
+    `clock-ban-raw-dialect-in-followon`, `raw-fence-token-check`,
+    `event-upsert-requires-preserved-instant`, and the four
+    `testing-helper-bind-*` entries that mutate the text compiler's bind count
+    and undefined-argument errors. Their tests in `fenced-batch.test.ts` and
+    the bind-producer test in `testing.test.ts` build text statements, and move
+    to trees in the same PR. The other registered mutations of
+    `fenced-batch.ts` already mutate code the tree path runs: the generator,
+    `seal()`, `requireFenceSource`, the gate's table check, and the compiler
+    error's brand.
+  - Deferred to PR3.9e part 3b, with the one pass over the tree: six
+    conditions of the tree rules have no mutant, because deleting any one of
+    them leaves the same shape refused by the next rule, with another message.
+    They are the VALUES refusal of a follow-on insert, which the plain-selection
+    rule refuses next; the untied gate's own message, which the no-gate rule
+    refuses next; a follow-on's spelled-out clock, which the any-statement
+    clock rule refuses next; an unminted raw node's message, which the role
+    rule refuses next; the arithmetic count's message, which the fragment
+    count rule words differently; and `compiled.readsClock`, which answers the
+    question `compiled.sql.includes(this.now)` answers for the same token, so
+    the registered mutant removes the pair. The one pass keeps one of each
+    pair or gives the first its own shape.
   - Deferred to PR3.9e part 3, with the text path's deletion: a batch's `tree`
     option is optional while text-only batches exist, and `derived()` needs
     one. It becomes required then, so a batch built without it fails to
@@ -931,14 +956,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     about 68 to 153 µs more store CPU for each set-checkpoint and 68 to 136 µs
     for each cancel, by the same cause. Collect node kinds, raw nodes, and
     function nodes in one pass when the text checks are deleted.
-  - Deferred to PR3.9e: the insert rules get registered tree-path mutations
-    with the other tree checks. Until then each condition is held by its own
-    refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
-    condition deletions each failing a test. PR3.9e part 2 witnessed nineteen
-    more, for the follow-on insert rule, the subquery tie, and the open tail.
-    Two of them guard a clearer message over a rule that refuses the same shape
-    next: a VALUES follow-on, which the gate rule refuses, and an aggregate
-    node, which the gating rule's aggregate check refuses.
   - Deferred to PR4.3: the shared await-event and emit-event statements are
     built with the builder's conflict clause and `IS DISTINCT FROM`, and MySQL 8
     has neither spelling. A statement is a tree and the dialect's compiler
@@ -960,11 +977,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and its checks stay, and goes with them. The stores' `fenced` and
     `fenceFrom` fragment helpers lost their last caller when part 2 moved the
     emit's wake, and part 2's review deleted them.
-  - Deferred to PR3.9e: the tree path has no registered mutations of its own.
-    The thirty mutations that own the text scanners in `fenced-batch.ts` get
-    tree-path successors when the scanners are deleted, covering the statement
-    grammar, fragment roles, gating, stamping, the clock, and counting
-    assignments.
   - Deferred to PR3.9e: `fragment-lint` and `clock-lint` scan store SQL text, and
     a condition built from nodes in `packages/core/src/statements/` is outside
     what a text lint can see. PR #41's review asked for the wider scope. Run
