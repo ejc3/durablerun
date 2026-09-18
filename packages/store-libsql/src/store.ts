@@ -1029,11 +1029,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, item.runId, 'cap')
-    this.taskDone(b, queue, item.taskId, 'task-fail', {
+    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-fail', {
       state: 'failed',
       failureReasonJson: REASON_RELAUNCH_CAP,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
+    await taskDoneRecorded(results)
     if (won === 'reopen') {
       return {
         kind: 'lost-launch',
@@ -1150,11 +1151,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     })
     // The dead run's waits die with it (the reviewed orphan-waits leak).
     waitsGone(b, item.runId, 'fail')
-    this.taskDone(b, queue, item.taskId, 'task-terminal', {
+    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-terminal', {
       state: 'failed',
       failureReasonJson: REASON_INFRA_CAP,
     })
     const { won, results } = await b.run(this.db)
+    await taskDoneRecorded(results)
     if (won !== 'fail') return null // lost the race
     // Report what the batch DID, not what it can be inferred to have done.
     // Reading "the successor insert wrote nothing" as "the cap is exhausted"
@@ -1340,11 +1342,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       whereArgs: [taskId],
       rows: 'source-keys',
     })
-    this.taskDone(b, queue, taskId, 'cancel', {
+    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'cancel', {
       state: 'cancelled',
       failureReasonJson: REASON_CANCELLED,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
+    await taskDoneRecorded(results)
     return won === 'cancel'
   }
 
@@ -1567,11 +1570,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, runId, 'complete')
-    this.taskDone(b, queue, taskId, 'task', {
+    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'task', {
       state: 'completed',
       completedPayloadJson: resultJson,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
+    await taskDoneRecorded(results)
     if (won !== 'complete') throw await this.refusal('complete', runId)
   }
 
@@ -1704,11 +1708,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     waitsGone(b, runId, 'fail')
     // The task turns terminal under one of two statements, and only the one that ran
     // stamped it, so the event follows whichever ended the task and no retry writes one.
-    this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {
+    const taskDoneRecorded = this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {
       state: 'failed',
       failureReasonJson: failureJson,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
+    await taskDoneRecorded(results)
     if (won !== 'fail') throw await this.refusal('fail', runId)
   }
 
@@ -1917,7 +1922,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * What every terminal batch owes a task's parent (DESIGN.md §3.2, ChildTasks.tla's
    * ChildTerminal): the task's completion event, and the wake of every run parked on
    * it, in the batch that ends the task. `terminal` names the statement that made the
-   * task terminal, so a batch that ended nothing writes no event and wakes nobody.
+   * task terminal, so a batch that ended nothing writes no event and wakes nobody. It
+   * returns the check to run on the batch's results.
    */
   private taskDone(
     b: FencedBatch,
@@ -1925,7 +1931,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     taskId: string,
     terminal: string,
     outcome: TaskOutcome,
-  ): void {
+  ): (results: Awaited<ReturnType<FencedBatch['run']>>['results']) => Promise<void> {
     const eventName = taskDoneEventName(taskId)
     b.followOnTree(
       'event',
@@ -1939,6 +1945,21 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'one',
     )
     this.wakeWaiters(b, queue, eventName, 'woken-waits-gone')
+    // The insert writes one row or none, and none passes every row-count audit. When
+    // the statement named `terminal` did end the task, only an event an earlier ending
+    // recorded explains an insert that wrote nothing. Anything else is a batch that
+    // names the wrong task or the wrong terminal statement, and it must not be silent.
+    return async (results) => {
+      const ended = (results[terminal]?.rowsAffected ?? 0) > 0
+      const inserted = (results.event?.rowsAffected ?? 0) > 0
+      if (!ended || inserted) return
+      const state = await this.taskDoneState(taskId)
+      if (state?.recorded !== true) {
+        throw new Error(
+          `${b.label} ended task ${taskId} and recorded no completion event: the batch names the wrong task or the wrong terminal statement`,
+        )
+      }
+    }
   }
 
   /**
@@ -2162,9 +2183,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * carries, and whether the event exists. Read only off the common path: by an await
    * that neither registered nor hit, to say why.
    */
-  private async taskDoneState(
-    taskId: string,
-  ): Promise<{
+  private async taskDoneState(taskId: string): Promise<{
     queue: string
     outcome: TaskResult
     stamp: string | null
