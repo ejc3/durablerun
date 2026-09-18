@@ -11585,8 +11585,8 @@ MUTATION_SPECS.extend(
         (
             "saga-failed-rollback-needs-the-phase",
             "packages/store-libsql/src/store.ts",
-            "        ...(rollback === undefined ? {} : { phase: sqlFragment(sagaBegan('runs')) }),\n",
-            "        ...(rollback === undefined ? {} : {}),\n",
+            "        phase: rollback === undefined ? 'open' : sqlFragment(sagaBegan('runs')),\n",
+            "        phase: 'open',\n",
             "a failed rollback is accepted for a task that is not rolling back, and ends it",
         ),
         (

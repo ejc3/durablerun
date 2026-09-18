@@ -5,7 +5,6 @@ import {
   REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
-  REASON_ROLLED_BACK,
   RELAUNCH_CAP,
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
@@ -926,10 +925,6 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         })
       }
       expect(observed, 'mutation-verdict:behavior:saga-endings').toEqual(expected)
-    })
-
-    it('names the reason a finished pass ends its run with', () => {
-      expect(JSON.parse(REASON_ROLLED_BACK)).toEqual({ name: '$RolledBack' })
     })
   })
 }

@@ -1566,6 +1566,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     b.casTree(
       'suspend',
       suspendCas({
+        // `reschedule` stays open inside the phase: a build without the task's handler
+        // must still be able to park a launch it cannot run.
+        phase: 'open',
         queue,
         runId,
         claimToken,
@@ -1860,7 +1863,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       failCas({
         // A failed rollback is one only while its task is rolling back. Every statement
         // behind this one is fenced on its stamp, so none of them asks again.
-        ...(rollback === undefined ? {} : { phase: sqlFragment(sagaBegan('runs')) }),
+        phase: rollback === undefined ? 'open' : sqlFragment(sagaBegan('runs')),
         queue,
         runId,
         claimToken,

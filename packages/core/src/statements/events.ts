@@ -1,5 +1,6 @@
 import { type ExpressionBuilder, expressionBuilder } from 'kysely'
 import { type EventName, taskDoneEventName } from '../child-tasks.js'
+import type { SagaPhasePredicate } from '../sagas.js'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
@@ -65,7 +66,7 @@ export const registerWaitCas = defineStatement(
     /** What the store requires of the task `t` for its run to suspend. */
     taskEligible: SqlFragment
     /** The forward phase is frozen once a saga began, so no wait registers then (§3.10). */
-    phase: SqlFragment
+    phase: SagaPhasePredicate
     /**
      * The task whose completion event this is, for a child await, or null for any other
      * event. A wait on a completion event registers only while that task is live and in
@@ -103,7 +104,9 @@ export const registerWaitCas = defineStatement(
       )
       .where((where) => where.exists(stillClaimed(binds, binds.taskEligible)))
       .where(rawSql<boolean>(binds.timeoutFits, 'predicate'))
-      .where(rawSql<boolean>(binds.phase, 'predicate'))
+      .$if(binds.phase !== 'open', (query) =>
+        query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
+      )
     const awaitedTaskId = binds.awaitedTaskId
     if (awaitedTaskId !== null) {
       guarded = guarded.where((where) =>

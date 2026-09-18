@@ -1,4 +1,5 @@
 import { expressionBuilder } from 'kysely'
+import type { SagaPhasePredicate } from '../sagas.js'
 import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { failedRunColumns, whereClaimedRun } from './claimed-run.js'
@@ -17,8 +18,8 @@ export const failCas = defineStatement(
     claimToken: string
     failureJson: string
     admission: SqlFragment
-    /** What the saga phase requires of this failure, when it requires anything (§3.10). */
-    phase?: SqlFragment
+    /** What the saga phase requires of this failure (§3.10). */
+    phase: SagaPhasePredicate
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -29,7 +30,7 @@ export const failCas = defineStatement(
       })
       .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.admission, 'predicate'))
-      .$if(binds.phase !== undefined, (query) =>
+      .$if(binds.phase !== 'open', (query) =>
         query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
       ),
 )

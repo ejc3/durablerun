@@ -1,4 +1,5 @@
 import { expressionBuilder } from 'kysely'
+import type { SagaPhasePredicate } from '../sagas.js'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
@@ -30,7 +31,7 @@ export const checkpointLeaseCas = defineStatement(
      * What the saga phase requires of this write (DESIGN.md §3.10): a forward checkpoint
      * only before the phase, and a rollback's only inside it.
      */
-    sagaPhase: SqlFragment
+    sagaPhase: SagaPhasePredicate
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -43,7 +44,9 @@ export const checkpointLeaseCas = defineStatement(
       .where('task_id', '=', binds.taskId)
       .where(rawSql<boolean>(binds.admission, 'predicate'))
       .where(rawSql<boolean>(binds.leaseFits, 'predicate'))
-      .where(rawSql<boolean>(binds.sagaPhase, 'predicate')),
+      .$if(binds.sagaPhase !== 'open', (query) =>
+        query.where(rawSql<boolean>(binds.sagaPhase as SqlFragment, 'predicate')),
+      ),
 )
 
 /**

@@ -490,12 +490,14 @@ function requireIndexable(identifiers: Readonly<Record<string, unknown>>): void 
  * timestamps come from NOW_MS (rule 3).
  */
 /**
- * Sagas (DESIGN.md §3.10) are not ported to this store. Where a shared statement
- * requires the saga phase's predicate, this store passes one that admits every row, so
- * nothing here freezes a forward phase, and `failRollback` refuses. The port owes every
- * use of this constant its real predicate.
+ * Sagas (DESIGN.md §3.10) are not ported to this store. Where a shared statement takes
+ * the saga phase's predicate and the phase would freeze it, this store passes `'open'`,
+ * which adds no SQL, so every statement here is what it was before sagas, nothing freezes
+ * a forward phase, and `failRollback` refuses. The port owes every use of this constant
+ * its real predicate. `reschedule` passes a plain `'open'`, because it stays open on
+ * every store.
  */
-const SAGAS_NOT_PORTED = sqlFragment('1 = 1')
+const SAGAS_NOT_PORTED = 'open' as const
 
 export class MysqlSchedulerStore implements SchedulerStore {
   constructor(
@@ -1628,6 +1630,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'suspend',
       suspendCas({
+        phase: 'open',
         queue,
         runId,
         claimToken,
@@ -1668,6 +1671,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'suspend',
       suspendCas({
+        phase: SAGAS_NOT_PORTED,
         queue,
         runId,
         claimToken,
@@ -1772,6 +1776,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'fail',
       failCas({
+        phase: SAGAS_NOT_PORTED,
         queue,
         runId,
         claimToken,

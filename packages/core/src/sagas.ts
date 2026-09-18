@@ -1,5 +1,6 @@
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlRow } from './primitives.js'
+import type { SqlFragment } from './sql-tree.js'
 import type { RollbackOutcome } from './types.js'
 import { parseTaskValueJson, serializeTaskValue } from './validate.js'
 
@@ -24,13 +25,18 @@ const {
  * - `$rollback-tries:<step>` records a rollback's failed attempts, written in the batch
  *   that fails the pass, so a failed attempt is counted or the pass did not fail.
  */
+/**
+ * What the saga phase requires of a statement it can freeze: a predicate, or `'open'`
+ * when it requires nothing, which adds no SQL. Every such statement takes one and none
+ * defaults it, so a store does not compile until it has said, for each, what the phase
+ * requires there.
+ */
+export type SagaPhasePredicate = SqlFragment | 'open'
+
 export const SAGA_PHASE_CHECKPOINT = '$rolling-back'
 export const SAGA_STARTED_PREFIX = '$started:'
 export const SAGA_ROLLBACK_PREFIX = '$rollback:'
 export const SAGA_TRIES_PREFIX = '$rollback-tries:'
-
-/** The reason a rollback pass's run ends with once every rollback has run. */
-export const REASON_ROLLED_BACK = '{"name":"$RolledBack"}'
 
 /** One failed attempt of a rollback, as `$rollback-tries:<step>` holds it. */
 export interface RollbackTry {
@@ -62,15 +68,9 @@ export function decodeRollbackTry(stateJson: string): RollbackTry | null {
   return { tries, errorJson }
 }
 
-/** The column names `decodeRollbackOutcome` reads beside a task's outcome. */
-export const ROLLBACK_OUTCOME_COLUMNS = Object.freeze([
-  'rollback_outcome',
-  'rollback_error',
-] as const)
-
 /**
- * A terminal task's rollback outcome, from a row that selected
- * `ROLLBACK_OUTCOME_COLUMNS`, or undefined when no saga began. `rollback_error` is the
+ * A terminal task's rollback outcome, from a row that selected the store's
+ * `rollback_outcome` and `rollback_error` columns, or undefined when no saga began. `rollback_error` is the
  * attempt record of the rollback that halted the saga, when one did. The outcome is derived
  * from the saga's checkpoints when it is read and is stored nowhere, so it cannot
  * disagree with them: `failed` exactly when a step that started is left uncompensated.

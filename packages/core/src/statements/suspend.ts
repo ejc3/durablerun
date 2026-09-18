@@ -1,3 +1,4 @@
+import type { SagaPhasePredicate } from '../sagas.js'
 import { type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { CLEARED_WAKE_COLUMNS, whereClaimedRun } from './claimed-run.js'
@@ -17,8 +18,8 @@ export const suspendCas = defineStatement(
     wakeAt: SqlFragment
     wakeFits: SqlFragment
     admission: SqlFragment
-    /** What the saga phase requires of this park, when it requires anything (§3.10). */
-    phase?: SqlFragment
+    /** What the saga phase requires of this park (§3.10). */
+    phase: SagaPhasePredicate
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -29,7 +30,7 @@ export const suspendCas = defineStatement(
       .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.admission, 'predicate'))
       .where(rawSql<boolean>(binds.wakeFits, 'predicate'))
-      .$if(binds.phase !== undefined, (query) =>
+      .$if(binds.phase !== 'open', (query) =>
         query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
       ),
 )

@@ -1798,6 +1798,7 @@ describe('FencedBatch tree statements', () => {
   it('passes the shared suspend and event statements through a batch', async () => {
     const wakeAt = sqlFragment('(CASE WHEN ? = 1 THEN $NOW$ + ? ELSE ? END)', [1, 5_000, 0])
     const suspend = suspendCas({
+      phase: 'open',
       queue: 'q',
       runId: 'r1',
       claimToken: 'tok',
