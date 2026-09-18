@@ -365,3 +365,114 @@ describe('cancellation deadlines', () => {
     expect(p).toContain('tasks_cancel')
   })
 })
+
+describe('every write a store ships, by the table it writes', () => {
+  /**
+   * A generated follow-on writes the rows that belong to the rows its batch stamped: the
+   * task of a run, the runs of a task. Left to correlate its source to the written table
+   * on the queue, the source is a correlated subquery, SQLite cannot drive the write from
+   * it, and the statement scans the table it writes and probes the source once for each
+   * row. That is every task in the database, in any queue, on claim, activate, and
+   * complete: one `complete` measured 61 ms beside 100,000 tasks. The statements are
+   * recovered from the real operations, as the other pins of this file are, and every
+   * UPDATE and DELETE of every label is planned, so a new follow-on is read too.
+   */
+  const REACHED = [
+    'claim',
+    'activate',
+    'defer-launch',
+    'reschedule',
+    'suspend',
+    'await-event',
+    'emit-event',
+    'complete',
+    'fail',
+    'retry-task',
+    'cancel-task',
+    'sweep:lost-launch',
+    'sweep:claim-timeout',
+  ]
+
+  async function shippedWrites(): Promise<{ label: string; sql: string; args: unknown[] }[]> {
+    const seen: { label: string; sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
+        return db.batch(label, statements, mode)
+      },
+    }
+    const admin = new LibsqlStoreAdmin(db)
+    await admin.setFakeNowEpochMs(1_000_000)
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('shipped-writes'))
+    // A claim token is fresh for every claim, as a tick's is, and the run carries it.
+    let claims = 0
+    const claimed = async (name: string, options: { maxAttempts?: number } = {}) => {
+      const spawned = await store.spawn('q', name, '{}', options)
+      claims += 1
+      const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+      if (!run || run.taskId !== spawned.taskId) throw new Error(`expected to claim ${name}`)
+      return run
+    }
+    const started = async (name: string, options: { maxAttempts?: number } = {}) => {
+      const run = await claimed(name, options)
+      await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      return run
+    }
+    const deferred = await claimed('deferred')
+    await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
+    const rescheduled = await started('rescheduled')
+    await store.reschedule('q', rescheduled.runId, rescheduled.claimToken, { inSeconds: 3600 })
+    const suspended = await started('suspended')
+    await store.suspendRun(
+      'q',
+      suspended.runId,
+      suspended.claimToken,
+      { inSeconds: 3600 },
+      { key: 'step', stateJson: '{}' },
+    )
+    const waiting = await started('waiting')
+    await store.awaitEvent(
+      'q',
+      waiting.taskId,
+      waiting.runId,
+      waiting.claimToken,
+      'step',
+      'event',
+      null,
+    )
+    await store.emitEvent('q', 'event', '{}')
+    const [woken] = await store.claim('q', 'worker-woken', { leaseSeconds: 60, limit: 1 })
+    if (woken?.taskId !== waiting.taskId) throw new Error('expected to claim the woken run')
+    await store.activate('q', woken.runId, woken.claimToken, woken.claimGen)
+    await store.complete('q', woken.runId, woken.claimToken, '{}')
+    const retried = await started('fails-and-retries', { maxAttempts: 2 })
+    await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
+    const failed = await started('fails', { maxAttempts: 1 })
+    await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    await store.retryTask('q', failed.taskId)
+    await store.cancelTask('q', failed.taskId)
+    // One run whose launch is lost and one whose worker dies, then the clock passes both leases.
+    await claimed('launch-is-lost')
+    await started('worker-dies')
+    await admin.setFakeNowEpochMs(1_000_000 + 120_000)
+    await store.sweep('q', 10)
+    const writes = seen.filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
+    const labels = new Set(writes.map((st) => st.label))
+    expect(REACHED.filter((label) => !labels.has(label))).toEqual([])
+    return writes
+  }
+
+  it('never scans the table it writes', async () => {
+    const scans: string[] = []
+    for (const st of await shippedWrites()) {
+      const table = /^\s*(?:update|delete from)\s+"?([a-z_]+)"?/i.exec(st.sql)?.[1]
+      if (table === undefined) throw new Error(`cannot name the table of: ${st.sql.slice(0, 60)}`)
+      const p = await writePlan(st.sql, st.args as (string | number)[])
+      const scanned = p
+        .split('\n')
+        .some((step) => new RegExp(`^SCAN ${table}\\b`).test(step.trim()))
+      if (scanned) scans.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`)
+    }
+    expect([...new Set(scans)].sort()).toEqual([])
+  })
+})
