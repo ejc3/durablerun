@@ -310,6 +310,11 @@ OutcomeHonest ==
   outcome = "complete" =>
     \A s \in Registered : fwd[s] # "none" => rb[s] = "done"
 
+\* "failed" means failed: a step that started was left uncompensated.
+FailedOutcomeHonest ==
+  outcome = "failed" =>
+    \E s \in Registered : fwd[s] # "none" /\ rb[s] # "done"
+
 OutcomeOnlyWhenTerminal == outcome # "none" => task \in {"failed", "cancelled"}
 
 \* A failed task has a rollback outcome, unless the rule let an infrastructure
