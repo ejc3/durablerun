@@ -484,6 +484,44 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       await f.close()
     })
 
+    it('halts when the replay does not register a rollback that is owed', async () => {
+      const f = await open('saga-unregistered')
+      const effects: string[] = []
+      let registers = true
+      const reg = registry({
+        saga: async (ctx) => {
+          await effectfulStep(ctx, effects, 'a')
+          // A task function that is not deterministic: a later pass registers nothing for b.
+          await ctx.step(
+            'b',
+            () => 2,
+            registers ? { rollback: () => void effects.push('undo:b') } : undefined,
+          )
+          throw new FatalTaskError('boom')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}')
+      expect(await runNext(f, reg, 'w-forward')).toBe('rolling-back')
+      registers = false
+      const outcomes = await drive(f, reg, task.taskId)
+      const result = await f.store.getTaskResult(Q, task.taskId)
+      expect({
+        outcomes,
+        effects,
+        outcome: result?.rollback?.outcome,
+        error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { name?: string } | null)
+          ?.name,
+      }).toEqual({
+        outcomes: ['rollback-failed'],
+        // b started last and cannot be compensated, and a is not compensated ahead of it.
+        effects: ['do:a'],
+        outcome: 'failed',
+        error: '$RollbackNotRegistered',
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
     it('does not roll back a step that committed before it registered a rollback', async () => {
       const f = await open('saga-older-step')
       const effects: string[] = []

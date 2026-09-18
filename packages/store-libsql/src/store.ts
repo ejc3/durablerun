@@ -1843,7 +1843,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'fail',
       failCas({
-        // A failed rollback is one only while its task is rolling back.
+        // A failed rollback is one only while its task is rolling back. Every statement
+        // behind this one is fenced on its stamp, so none of them asks again.
         ...(rollback === undefined ? {} : { phase: sqlFragment(sagaBegan('runs')) }),
         queue,
         runId,
@@ -1880,9 +1881,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           checkpointName: rollback.tried.key,
           stateJson: rollback.tried.stateJson,
           fence: 'fail',
-          attemptStored: sqlFragment(
-            `${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')} AND ${sagaBegan('f')}`,
-          ),
+          attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
         }),
         'one',
       )
@@ -1907,7 +1906,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         fence: 'fail',
         enteringWith: null,
         delayMs: rollback.passDelayMs,
-        admission: `${sagaBegan('t')} AND ${epochAdditionFits('f.fence_at_ms', '?')}`,
+        admission: epochAdditionFits('f.fence_at_ms', '?'),
         admissionArgs: [rollback.passDelayMs],
       })
     }

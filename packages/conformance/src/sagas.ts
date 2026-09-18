@@ -557,6 +557,38 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // Only a TERMINAL failure begins a saga. A worker that dies and a launch that is lost,
+    // each below its cap, are retried by the lease story as they always were, with the
+    // rollback still owed and no phase begun.
+    it('retries a death and a lost launch below their caps, and rolls nothing back', async () => {
+      const dies = await f.store.spawn(Q, 'dies', '{}')
+      const died = await claimActivated(f.store, Q, 'w-dies')
+      await startStep(f, died, 'a', 1)
+      await f.admin.setFakeNowEpochMs(START_MS + 100_000)
+      const afterTheDeath = (await f.store.sweep(Q, 10)).map((one) => one.kind)
+      await f.admin.setFakeNowEpochMs(START_MS + 5_000_000)
+      const relaunched = await claimOne(f.store, Q, 'w-lost')
+      await f.admin.setFakeNowEpochMs(START_MS + 5_100_000)
+      const afterTheLostLaunch = (await f.store.sweep(Q, 10)).map((one) => one.kind)
+      expect({
+        afterTheDeath,
+        relaunchedIsTheInfrastructureSuccessor:
+          relaunched.taskId === dies.taskId && relaunched.attempt === died.attempt + 1,
+        afterTheLostLaunch,
+        checkpoints: await checkpointNames(f, dies.taskId),
+        task: (await taskRow(f, dies.taskId))?.state,
+        result: await f.store.getTaskResult(Q, dies.taskId),
+      }).toEqual({
+        afterTheDeath: ['claim-timeout'],
+        relaunchedIsTheInfrastructureSuccessor: true,
+        afterTheLostLaunch: ['lost-launch'],
+        checkpoints: [startMarker('a')],
+        task: 'pending',
+        result: { state: 'pending' },
+      })
+      await f.store.cancelTask(Q, dies.taskId)
+    })
+
     // A crash between batches changes nothing durable, and the next rollback is a function
     // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
     // that dies is recovered by the lease story like any run, and the pass that follows
