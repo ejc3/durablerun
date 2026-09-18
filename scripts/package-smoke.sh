@@ -47,29 +47,40 @@ done
 
 surface_snapshot="$ROOT/scripts/published-surface-v0.1.0-alpha.1.json"
 node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_snapshot"
-# The check must be able to fail: a snapshot that names one export the packages
-# never had has to be refused, or a broken reader would pass every tree.
+# The check must be able to fail, and for the reason each control names. A control
+# changes one thing in a copy of the snapshot and leaves the rest, the real withdrawals
+# included, so every other refusal stays quiet. The refusal is read, not only the exit
+# code: a control that is refused for another reason fails here.
 surface_control="$PACK_DIR/surface-control.json"
-node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));s.surface['@durablerun/core']['.'].push('PackageSurfaceControlNeverExported');fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
-  "$surface_snapshot" "$surface_control"
-if node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_control" >/dev/null 2>&1; then
-  echo "package-smoke: package-surface accepted a snapshot naming a never-exported name" >&2
-  exit 1
-fi
-
-# A withdrawal must be able to fail as well. One of a name the packages still export
-# has to be refused, or the table would excuse a name without anyone deleting it, and so
-# does one of a name the release never exported, and one with no reason.
-surface_withdrawal() {
-  node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));s.withdrawn={'@durablerun/core':{'.':{[process.argv[3]]:process.argv[4]}}};fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
-    "$surface_snapshot" "$surface_control" "$1" "$2"
-  if node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_control" >/dev/null 2>&1; then
-    echo "package-smoke: package-surface accepted a withdrawal of $3" >&2
+surface_refuses() {
+  # $1 what the control shows, $2 the refusal expected, $3 JavaScript that edits the copy.
+  node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const exported=s.surface['@durablerun/core']['.'];const withdrawn=(((s.withdrawn??={})['@durablerun/core']??={})['.']??={});$3;fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
+    "$surface_snapshot" "$surface_control"
+  local refusal
+  if refusal="$(node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_control" 2>&1)"; then
+    echo "package-smoke: package-surface accepted $1" >&2
+    exit 1
+  fi
+  if [[ "$refusal" != *"package-surface: 1 "* || "$refusal" != *"$2"* ]]; then
+    echo "package-smoke: package-surface refused $1 for another reason: $refusal" >&2
     exit 1
   fi
 }
-surface_withdrawal FencedBatch 'a control' 'a name that is still exported'
-surface_withdrawal PackageSurfaceControlNeverExported 'a control' 'a name the release never exported'
+surface_refuses 'a snapshot naming a never-exported name' \
+  'PackageSurfaceControlNeverExported' \
+  "exported.push('PackageSurfaceControlNeverExported')"
+# A withdrawal that does not hold: without these the table would excuse a name nobody
+# deleted, a name the release never had, or a name with nothing said about why.
+surface_refuses 'a withdrawal of a name that is still exported' \
+  'FencedBatch is withdrawn, but it is still exported' \
+  "withdrawn.FencedBatch='a control'"
+surface_refuses 'a withdrawal of a name the release never exported' \
+  'never exported it' \
+  "withdrawn.PackageSurfaceControlNeverExported='a control'"
+# The reason is blanked on a real withdrawal, the only kind that holds otherwise.
+surface_refuses 'a withdrawal with no reason' \
+  'is withdrawn with no reason' \
+  "withdrawn[Object.keys(withdrawn)[0]]=' '"
 
 node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 
