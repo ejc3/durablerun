@@ -1,11 +1,34 @@
 import { encodeTaskOutcome, taskDoneEventName } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import { TERMINAL_BATCHES } from '../src/child-tasks.js'
-import { awaitTaskOwned, claimActivated, readOne, withFixture } from '../src/scenario.js'
+import {
+  awaitOwned,
+  awaitTaskOwned,
+  claimActivated,
+  readOne,
+  withFixture,
+} from '../src/scenario.js'
 import { makePostgresFixture } from './fixture-postgres.js'
 
 const START_MS = 1_000_000
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** A trigger that sleeps after a wait row is inserted, so the await that wrote it stays open. */
+const HOLD_THE_AWAIT_OPEN = [
+  {
+    sql: `CREATE FUNCTION hold_the_await_open() RETURNS trigger LANGUAGE plpgsql AS '
+            BEGIN
+              PERFORM pg_sleep(0.4);
+              RETURN NEW;
+            END'`,
+    args: [],
+  },
+  {
+    sql: `CREATE TRIGGER hold_the_await_open AFTER INSERT ON waits
+          FOR EACH ROW EXECUTE FUNCTION hold_the_await_open()`,
+    args: [],
+  },
+]
 
 /**
  * Every batch that ends a task takes the event lock of its completion event, each at its
@@ -22,21 +45,7 @@ it('every terminal batch waits for an await of its completion event that has not
   for (const batch of TERMINAL_BATCHES) {
     await withFixture(makePostgresFixture, `terminal-lock-${batch.label}`, async (f) => {
       await f.admin.setFakeNowEpochMs(START_MS)
-      await f.raw.batch('hold-the-await-open', [
-        {
-          sql: `CREATE FUNCTION hold_the_await_open() RETURNS trigger LANGUAGE plpgsql AS '
-                  BEGIN
-                    PERFORM pg_sleep(0.4);
-                    RETURN NEW;
-                  END'`,
-          args: [],
-        },
-        {
-          sql: `CREATE TRIGGER hold_the_await_open AFTER INSERT ON waits
-                FOR EACH ROW EXECUTE FUNCTION hold_the_await_open()`,
-          args: [],
-        },
-      ])
+      await f.raw.batch('hold-the-await-open', HOLD_THE_AWAIT_OPEN)
       await f.store.spawn('q', 'parent', '{}')
       // A lease that outlives the clock move a sweep needs.
       const parent = await claimActivated(f.store, 'q', 'w-parent', 3600)
@@ -116,5 +125,34 @@ it('an await that records an outcome waits for another that has not committed', 
       { first: await firstAnswer, second: await secondAnswer, events: Number(events?.n) },
       'mutation-verdict:behavior:recording-await-takes-the-event-lock',
     ).toEqual({ first: recorded, second: recorded, events: 1 })
+  })
+}, 60_000)
+
+/**
+ * An emit takes the same lock, and so does the await on the other side of every case in
+ * this file. The same trigger holds an await of a caller's event open across the whole
+ * emit: an unlocked emit inserts the event, sees no wait row, and the waiter sleeps
+ * forever, and a locked one waits for the await to commit and wakes it. Before this case
+ * the emit's lock was held by a race of real connections alone, which is a sample.
+ */
+it('an emit waits for an await of its event that has not committed', async () => {
+  await withFixture(makePostgresFixture, 'emit-lock', async (f) => {
+    await f.admin.setFakeNowEpochMs(START_MS)
+    await f.raw.batch('hold-the-await-open', HOLD_THE_AWAIT_OPEN)
+    await f.store.spawn('q', 'waiter', '{}')
+    const waiter = await claimActivated(f.store, 'q', 'w-waiter', 3600)
+    const awaiting = awaitOwned(f.store, 'q', waiter, 's', 'go', null)
+    await pause(100)
+    await f.store.emitEvent('q', 'go', '{"n":1}')
+    const awaited = await awaiting
+    const run = await readOne(f.raw, 'SELECT state, event_payload FROM runs WHERE run_id = ?', [
+      waiter.runId,
+    ])
+    expect({ awaited, waiter: run }, 'mutation-verdict:behavior:emit-takes-the-event-lock').toEqual(
+      {
+        awaited: { emitted: false },
+        waiter: { state: 'pending', event_payload: '{"n":1}' },
+      },
+    )
   })
 }, 60_000)
