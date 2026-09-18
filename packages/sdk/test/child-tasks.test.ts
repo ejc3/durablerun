@@ -196,7 +196,13 @@ describe('child tasks through the SDK', () => {
         } catch (error) {
           if (!(error instanceof EventTimeoutError)) throw error
           await ctx.sleepFor(5)
-          return 'timed-out'
+          // What the task sees names the task it awaited, and never the engine's event.
+          const seen = error as EventTimeoutError & { taskId?: unknown }
+          return {
+            name: seen.name,
+            awaited: seen.taskId === child.taskId,
+            leaksTheEngineName: `${seen.message} ${seen.eventName}`.includes('$task-done'),
+          }
         }
       },
       stuck: async (ctx) => {
@@ -210,7 +216,10 @@ describe('child tasks through the SDK', () => {
     expect(await claimAndRun(f, reg, 'w3')).toEqual({ kind: 'suspended' }) // timed out, now sleeping
     await f.advance(6_000)
     expect(await claimAndRun(f, reg, 'w4')).toEqual({ kind: 'completed' }) // the timeout replays
-    expect(await resultOf(f, parent.taskId)).toBe('timed-out')
+    expect(
+      await resultOf(f, parent.taskId),
+      'mutation-verdict:behavior:sdk-child-timeout-names-the-task',
+    ).toEqual({ name: 'TaskTimeoutError', awaited: true, leaksTheEngineName: false })
     await expectCleanRows(f)
     f.close()
   })
