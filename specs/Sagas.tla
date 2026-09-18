@@ -304,12 +304,6 @@ ReverseOrder ==
   \A s, t \in Registered :
     ((rb[s] # "none" \/ rbTries[s] > 0) /\ startIdx[t] > startIdx[s]) => rb[t] = "done"
 
-\* A halted saga runs no later rollback: everything that started before the
-\* failed one is untouched.
-HaltStops ==
-  \A s, t \in Registered :
-    (rb[s] = "failed" /\ startIdx[t] < startIdx[s]) => (rb[t] = "none" /\ rbTries[t] = 0)
-
 \* Nothing of a saga exists before the terminal failure is decided, and the
 \* phase is entered only by a decision.
 SagaOnlyAfterDecision ==
