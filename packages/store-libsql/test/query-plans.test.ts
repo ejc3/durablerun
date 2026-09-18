@@ -475,4 +475,24 @@ describe('every write a store ships, by the table it writes', () => {
     }
     expect([...new Set(scans)].sort()).toEqual([])
   })
+
+  it('never walks the runs of a queue to write the one run it was given', async () => {
+    // With a queue and a state beside the key, SQLite prefers (queue, state) to the key
+    // and walks every run of the queue in that state. A write that is handed its run
+    // names it on the written side, which costs nothing and gives the planner the key.
+    // Only the written table is read here, which the plan names in full. A source is
+    // named by its alias, and a source that selects a batch's rows by queue and state,
+    // as the claim's follow-ons do, is another question (BUILD.md).
+    const walks: string[] = []
+    for (const st of await shippedWrites()) {
+      const p = await writePlan(st.sql, st.args as (string | number)[])
+      const walked = p
+        .split('\n')
+        .some((step) =>
+          /^SEARCH runs USING INDEX runs_poll \(queue=\? AND state=\?\)$/.test(step.trim()),
+        )
+      if (walked) walks.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`)
+    }
+    expect([...new Set(walks)].sort()).toEqual([])
+  })
 })
