@@ -3,6 +3,7 @@ import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/cor
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
+  awaitTaskOwned,
   checkpointOwned,
   claimActivated,
   claimOne,
@@ -121,7 +122,7 @@ describe('generated SQL corpus', () => {
         const parent = await claimActivated(store, 'q', 'w5c')
         const child = await store.spawn('q', 'child', '{}')
         const awaitChild = (run: typeof parent, childTaskId: string) =>
-          store.awaitTaskDone('q', run.taskId, run.runId, run.claimToken, 'step', childTaskId, null)
+          awaitTaskOwned(store, 'q', run, 'step', childTaskId, null)
         expect(await awaitChild(parent, child.taskId)).toEqual({ emitted: false })
         const childRun = await claimActivated(store, 'q', 'w5d')
         expect(childRun.taskId).toBe(child.taskId)

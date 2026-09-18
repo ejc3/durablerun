@@ -1,7 +1,7 @@
 import { encodeTaskOutcome } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import { TERMINAL_BATCHES } from '../src/child-tasks.js'
-import { claimActivated, readOne, withFixture } from '../src/scenario.js'
+import { awaitTaskOwned, claimActivated, readOne, withFixture } from '../src/scenario.js'
 import { makePostgresFixture } from './fixture-postgres.js'
 
 const START_MS = 1_000_000
@@ -42,15 +42,7 @@ it('every terminal batch waits for an await of its completion event that has not
       const parent = await claimActivated(f.store, 'q', 'w-parent', 3600)
       const ready = await batch.prepare(f, 'q')
       if (ready.advanceMs > 0) await f.admin.setFakeNowEpochMs(START_MS + ready.advanceMs)
-      const awaiting = f.store.awaitTaskDone(
-        'q',
-        parent.taskId,
-        parent.runId,
-        parent.claimToken,
-        's',
-        ready.childTaskId,
-        null,
-      )
+      const awaiting = awaitTaskOwned(f.store, 'q', parent, 's', ready.childTaskId, null)
       await pause(100)
       await ready.end(f.store)
       const awaited = await awaiting

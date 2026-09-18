@@ -18,17 +18,19 @@ import { SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { claimActivated, claimOne, readOne, refusalName, withFixture } from './scenario.js'
+import { engineInvariantViolations, eventKey } from './invariants.js'
+import {
+  awaitTaskOwned,
+  claimActivated,
+  claimOne,
+  readOne,
+  refusalName,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 const START_MS = 1_000_000
 const STEP = '$await-task'
-
-/** One event's key, as one string. */
-function eventKey(queue: unknown, eventName: string): string {
-  return JSON.stringify([String(queue), eventName])
-}
 
 /**
  * What specs/ChildTasks.tla requires of any history the engine itself produced, read
@@ -55,11 +57,14 @@ export async function childTaskViolations(raw: SqlExecutor): Promise<string[]> {
   for (const event of events?.rows ?? []) {
     const eventName = String(event.event_name)
     if (taskIdOfDoneEvent(eventName) === null) continue
-    done.set(eventKey(event.queue, eventName), { eventName, payload: String(event.payload) })
+    done.set(eventKey(String(event.queue), eventName), {
+      eventName,
+      payload: String(event.payload),
+    })
   }
   for (const task of tasks?.rows ?? []) {
     const taskId = String(task.task_id)
-    const key = eventKey(task.queue, taskDoneEventName(taskId))
+    const key = eventKey(String(task.queue), taskDoneEventName(taskId))
     const event = done.get(key)
     done.delete(key)
     if (event === undefined) {
@@ -99,15 +104,7 @@ function awaitChild(
   childTaskId: string,
   timeoutSeconds: number | null,
 ) {
-  return store.awaitTaskDone(
-    queue,
-    parent.taskId,
-    parent.runId,
-    parent.claimToken,
-    STEP,
-    childTaskId,
-    timeoutSeconds,
-  )
+  return awaitTaskOwned(store, queue, parent, STEP, childTaskId, timeoutSeconds)
 }
 
 /** Park an activated parent on `childTaskId`. The parent is claimed before the child is spawned. */
@@ -345,7 +342,6 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
             parent: parentRun,
             waits: await waitCount(fx),
             woken: woken?.runId === parent.runId ? woken.wake : 'the parent was not claimable',
-            decoded: decodeTaskOutcome(childTaskId, payloadJson),
             violations: [
               ...(await engineInvariantViolations(fx.raw)),
               ...(await childTaskViolations(fx.raw)),
@@ -357,7 +353,6 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
             parent: { state: 'pending', wake_event: eventName, event_payload: payloadJson },
             waits: 0,
             woken: { event: eventName, step: STEP, payloadJson },
-            decoded: outcome,
             violations: [],
           }
         })

@@ -13,6 +13,7 @@ import {
   type SqlExecutor,
   type SqlRow,
   childSpawnKey,
+  taskDoneEventName,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -3503,7 +3504,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // first-write-wins ahead of the task's own terminal batch and forge its result.
       it('refuses to emit a reserved event name, and writes nothing', async () => {
         const spawned = await f.store.spawn(Q, 'child', '{}')
-        const reserved = `$task-done:${spawned.taskId}`
+        const reserved = taskDoneEventName(spawned.taskId)
         const forged = await refusalName(
           f.store.emitEvent(Q, reserved, '{"state":"completed","completedPayloadJson":"1"}'),
         )

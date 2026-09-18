@@ -2,6 +2,7 @@ import { INFRA_RETRY_CAP, RELAUNCH_CAP, type SqlExecutor } from '@durablerun/cor
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
 
@@ -422,28 +423,8 @@ export async function runFaultMatrixCase(
       if (parentTask && childTask && parent?.taskId === parentTask.taskId) {
         await go(() => store.activate(Q, parent.runId, parent.claimToken, parent.claimGen))
         // An await of no task at all neither registers nor hits, so it reads why.
-        await go(() =>
-          store.awaitTaskDone(
-            Q,
-            parent.taskId,
-            parent.runId,
-            parent.claimToken,
-            'w-no-child',
-            'no-such-task',
-            null,
-          ),
-        )
-        await go(() =>
-          store.awaitTaskDone(
-            Q,
-            parent.taskId,
-            parent.runId,
-            parent.claimToken,
-            'w-child',
-            childTask.taskId,
-            null,
-          ),
-        )
+        await go(() => awaitTaskOwned(store, Q, parent, 'w-no-child', 'no-such-task', null))
+        await go(() => awaitTaskOwned(store, Q, parent, 'w-child', childTask.taskId, null))
         const [child] =
           (await go(() => store.claim(Q, 'w-child', { leaseSeconds: 60, limit: 1 }))) ?? []
         if (child?.taskId === childTask.taskId) {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import type { StoreFixture } from '../src/index.js'
-import { claimActivated, readOne, refusalName } from '../src/scenario.js'
+import { awaitTaskOwned, claimActivated, readOne, refusalName } from '../src/scenario.js'
 import { makePostgresFixture } from './fixture-postgres.js'
 
 /**
@@ -53,15 +53,7 @@ it('a child ending does not deadlock against a cancel of its parked parent', asy
   const parent = await claimActivated(f.store, 'q', 'w-parent')
   const child = await f.store.spawn('q', 'child', '{}')
   const childRun = await claimActivated(f.store, 'q', 'w-child')
-  await f.store.awaitTaskDone(
-    'q',
-    parent.taskId,
-    parent.runId,
-    parent.claimToken,
-    's',
-    child.taskId,
-    null,
-  )
+  await awaitTaskOwned(f.store, 'q', parent, 's', child.taskId, null)
   const before = await deadlocks()
   const cancelling = refusalName(f.store.cancelTask('q', parentTask.taskId))
   await pause(150)

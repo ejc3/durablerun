@@ -3,7 +3,7 @@ import { Rng } from '@durablerun/harness'
 import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { awaitOwned, checkpointOwned, withFixture } from './scenario.js'
+import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
 
 const Q = 'q'
 
@@ -243,15 +243,7 @@ async function runWalk(
         // must leave the run held. A silent acceptance is a walk failure.
         const foreign = await f.store.spawn('other', `foreign${step}`, '{}')
         try {
-          await f.store.awaitTaskDone(
-            Q,
-            run.taskId,
-            run.runId,
-            run.claimToken,
-            `cw${step}`,
-            foreign.taskId,
-            null,
-          )
+          await awaitTaskOwned(f.store, Q, run, `cw${step}`, foreign.taskId, null)
           throw new Error(`fuzz seed ${seed} step ${step}: a cross-queue child await was ACCEPTED`)
         } catch (error) {
           if (!(error instanceof ChildAwaitRefusedError)) throw error
@@ -262,11 +254,10 @@ async function runWalk(
         const childTaskId = known ?? (await f.store.spawn(Q, `child${step}`, '{}')).taskId
         if (known === undefined) knownTasks.push(childTaskId)
         await countIfHeld('childAwaits', () =>
-          f.store.awaitTaskDone(
+          awaitTaskOwned(
+            f.store,
             Q,
-            run.taskId,
-            run.runId,
-            run.claimToken,
+            run,
             `cw${step}`,
             childTaskId,
             rng.next() < 0.5 ? 30 + rng.int(60) : null,
