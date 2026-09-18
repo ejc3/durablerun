@@ -1774,7 +1774,7 @@ describe('FencedBatch tree statements', () => {
       runId: 'r1',
       taskId: 't1',
       stepName: 's',
-      eventName: 'e',
+      eventName: EventName.fromPort('test', 'e'),
       timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
       timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
       claimToken: 'tok',
@@ -1783,7 +1783,7 @@ describe('FencedBatch tree statements', () => {
     })
     const emit = emitEventCas({
       queue: 'q',
-      eventName: 'e',
+      eventName: EventName.fromPort('test', 'e'),
       payloadJson: '{}',
       existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
     })

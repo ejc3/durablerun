@@ -4,6 +4,7 @@ import {
   type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
+  EventName,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -34,6 +35,7 @@ import {
   type WakeSpec,
   activateCas,
   activatedRunRead,
+  addTaskDone,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
@@ -61,7 +63,6 @@ import {
   normalizeRetryStrategy,
   parseTaskValueJson,
   rawSql,
-  refuseReservedEventName,
   refusedLease,
   refusedWriteError,
   registerWaitCas,
@@ -85,7 +86,6 @@ import {
   storageValueKind,
   storedEventRead,
   suspendCas,
-  taskDoneEventInsert,
   taskDoneEventName,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
@@ -1858,7 +1858,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    refuseReservedEventName('emitEvent', eventName)
+    const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
@@ -1876,7 +1876,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'event',
       emitEventCas({
         queue,
-        eventName,
+        eventName: name,
         payloadJson,
         existingEventAdmits: sqlFragment(
           `typeof(events.payload) = 'text'
@@ -1884,11 +1884,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ),
       }),
     )
-    this.wakeWaiters(b, queue, eventName, 'waits-gone')
+    this.wakeWaiters(b, queue, name, 'waits-gone')
     b.openTailTree(
       'stored-event',
       'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      storedEventRead({ queue, eventName, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
+      storedEventRead({
+        queue,
+        eventName: name,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+      }),
     )
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
@@ -1919,11 +1923,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * What every terminal batch owes a task's parent (DESIGN.md §3.2, ChildTasks.tla's
-   * ChildTerminal): the task's completion event, and the wake of every run parked on
-   * it, in the batch that ends the task. `terminal` names the statement that made the
-   * task terminal, so a batch that ended nothing writes no event and wakes nobody. It
-   * returns the check to run on the batch's results.
+   * What every terminal batch owes a task's parent, added through core (`addTaskDone`):
+   * the completion event and the wake of every run parked on it. It returns the check
+   * each terminal path runs on its batch's results.
    */
   private taskDone(
     b: FencedBatch,
@@ -1931,35 +1933,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     taskId: string,
     terminal: string,
     outcome: TaskOutcome,
-  ): (results: Awaited<ReturnType<FencedBatch['run']>>['results']) => Promise<void> {
-    const eventName = taskDoneEventName(taskId)
-    b.followOnTree(
-      'event',
-      taskDoneEventInsert({
-        queue,
-        taskId,
-        eventName,
-        payloadJson: encodeTaskOutcome(outcome),
-        terminal,
-      }),
-      'one',
+  ): ReturnType<typeof addTaskDone> {
+    return addTaskDone(
+      b,
+      { queue, taskId, terminal, outcome },
+      {
+        wake: (name) => this.wakeWaiters(b, queue, name, 'woken-waits-gone'),
+        isRecorded: async () => (await this.taskDoneState(taskId))?.recorded === true,
+      },
     )
-    this.wakeWaiters(b, queue, eventName, 'woken-waits-gone')
-    // The insert writes one row or none, and none passes every row-count audit. When
-    // the statement named `terminal` did end the task, only an event an earlier ending
-    // recorded explains an insert that wrote nothing. Anything else is a batch that
-    // names the wrong task or the wrong terminal statement, and it must not be silent.
-    return async (results) => {
-      const ended = (results[terminal]?.rowsAffected ?? 0) > 0
-      const inserted = (results.event?.rowsAffected ?? 0) > 0
-      if (!ended || inserted) return
-      const state = await this.taskDoneState(taskId)
-      if (state?.recorded !== true) {
-        throw new Error(
-          `${b.label} ended task ${taskId} and recorded no completion event: the batch names the wrong task or the wrong terminal statement`,
-        )
-      }
-    }
   }
 
   /**
@@ -1968,7 +1950,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * A terminal batch already has a `waits-gone`, for the waits of the run it ends, so
    * the caller names the statement that reaps the woken runs' waits.
    */
-  private wakeWaiters(b: FencedBatch, queue: string, eventName: string, waitsGone: string): void {
+  private wakeWaiters(b: FencedBatch, queue: string, name: EventName, waitsGone: string): void {
+    const eventName = name.value
     const runWait = registeredWait('runs')
     // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
     // stating rather than hiding. Every other follow-on selects its rows from
@@ -2024,7 +2007,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.followOnTree(
       'wake-runs',
       wakeRunsUpdate({
-        eventName,
+        eventName: name,
         registeredStep: sqlFragment(runWait.step),
         parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),
         waiterRunIds: sqlFragment(
@@ -2115,14 +2098,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     eventName: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    refuseReservedEventName('awaitEvent', eventName)
     const answer = await this.awaitNamedEvent(
       queue,
       taskId,
       runId,
       claimToken,
       stepName,
-      eventName,
+      EventName.fromPort('awaitEvent', eventName),
       timeoutSeconds,
       null,
     )
@@ -2148,7 +2130,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    const eventName = taskDoneEventName(childTaskId)
+    const name = EventName.taskDone(childTaskId)
     // A child revived between the read and the batch that records it is live again, so
     // the next round registers. Two rounds cover that, and a third is the claim's loss.
     for (let round = 0; round < 2; round++) {
@@ -2158,7 +2140,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         runId,
         claimToken,
         stepName,
-        eventName,
+        name,
         timeoutSeconds,
         childTaskId,
       )
@@ -2227,7 +2209,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     outcome: TaskOutcome,
   ): Promise<{ emitted: true; payloadJson: string } | null> {
     const { queue } = claim
-    const eventName = taskDoneEventName(childTaskId)
+    const name = EventName.taskDone(childTaskId)
+    const eventName = name.value
     const b = new FencedBatch('await-event', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -2238,7 +2221,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       materializeTaskDoneCas({
         ...awaiting,
         childTaskId,
-        eventName,
+        eventName: name,
         payloadJson: encodeTaskOutcome(outcome),
         childState: outcome.state,
         childStamp,
@@ -2250,7 +2233,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
       emittedEventRead({
         ...awaiting,
-        eventName,
+        eventName: name,
         payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
         liveTask: sqlFragment(`t.state IN ${LIVE}`),
       }),
@@ -2279,10 +2262,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     runId: string,
     claimToken: string,
     stepName: string,
-    eventName: string,
+    name: EventName,
     timeoutSeconds: number | null,
     awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
+    const eventName = name.value
     const timeoutMs =
       timeoutSeconds === null
         ? null
@@ -2312,7 +2296,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         taskId,
         claimToken,
         stepName,
-        eventName,
+        eventName: name,
         awaitedTaskId,
         timeoutAt: sqlFragment(`CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END`, [
           timeoutMs,
@@ -2370,7 +2354,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
       emittedEventRead({
         queue,
-        eventName,
+        eventName: name,
         runId,
         taskId,
         claimToken,

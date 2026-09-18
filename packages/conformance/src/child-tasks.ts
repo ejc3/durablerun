@@ -12,6 +12,7 @@ import {
   encodeTaskOutcome,
   isTerminalState,
   taskDoneEventName,
+  taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -50,11 +51,10 @@ export async function childTaskViolations(raw: SqlExecutor): Promise<string[]> {
     'read',
   )
   const violations: string[] = []
-  const prefix = taskDoneEventName('')
   const done = new Map<string, { eventName: string; payload: string }>()
   for (const event of events?.rows ?? []) {
     const eventName = String(event.event_name)
-    if (!eventName.startsWith(prefix)) continue
+    if (taskIdOfDoneEvent(eventName) === null) continue
     done.set(eventKey(event.queue, eventName), { eventName, payload: String(event.payload) })
   }
   for (const task of tasks?.rows ?? []) {

@@ -5,8 +5,20 @@
  * payload, and refusals from this one file.
  */
 
+import { TASK_INTRINSICS } from './intrinsics.js'
+import { taskResultContradiction } from './task-result.js'
 import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
 import { requireDurableString } from './validate.js'
+
+// Task code shares this process, and this file decodes what task code will read, so it
+// calls captured operations and reads own properties only, as `task-result.ts` does.
+const {
+  JSONParse: parseJson,
+  JSONStringify: stringifyJson,
+  ObjectHasOwn: hasOwn,
+  RangeError: TrustedRangeError,
+  StringStartsWith: startsWith,
+} = TASK_INTRINSICS
 
 /** Event names with this prefix belong to the engine. No caller of the port may emit or await one. */
 export const RESERVED_EVENT_PREFIX = '$'
@@ -18,18 +30,122 @@ export function taskDoneEventName(taskId: string): string {
   return `${TASK_DONE_EVENT_PREFIX}${taskId}`
 }
 
+/** The task a completion event's name speaks for, or null for any other event name. */
+export function taskIdOfDoneEvent(eventName: string): string | null {
+  return startsWith(eventName, TASK_DONE_EVENT_PREFIX)
+    ? eventName.slice(TASK_DONE_EVENT_PREFIX.length)
+    : null
+}
+
 /**
  * Refuse a reserved event name at the store's port. A caller that could emit a
- * completion event's name would win first-write-wins and forge a child's
- * result, and one that could await it would skip the queue rule.
+ * completion event's name would win first-write-wins and forge a child's result, and
+ * one that could await it would skip the queue rule.
  */
 export function refuseReservedEventName(operation: string, eventName: string): void {
   if (typeof eventName !== 'string') {
-    throw new RangeError(`${operation} eventName must be a string`)
+    throw new TrustedRangeError(`${operation} eventName must be a string`)
   }
-  if (eventName.startsWith(RESERVED_EVENT_PREFIX)) {
-    throw new RangeError(
+  if (startsWith(eventName, RESERVED_EVENT_PREFIX)) {
+    throw new TrustedRangeError(
       `${operation} eventName '${eventName}' is reserved: names that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
+    )
+  }
+}
+
+/**
+ * An event name a statement or a lock may carry. There are two ways to have one, and
+ * both are here: a name a caller of the port supplied, which is refused when it is
+ * reserved, and the completion event of a task, which only the engine reaches. Every
+ * event statement and the event lock take this and not a string, so a store method
+ * cannot forget the refusal, and nothing outside this file can mint a reserved name.
+ */
+export class EventName {
+  private declare readonly eventNameBrand: undefined
+
+  private constructor(readonly value: string) {}
+
+  static fromPort(operation: string, raw: string): EventName {
+    refuseReservedEventName(operation, raw)
+    return new EventName(raw)
+  }
+
+  static taskDone(taskId: string): EventName {
+    return new EventName(taskDoneEventName(taskId))
+  }
+}
+
+/**
+ * The first outcome a task reached, as its completion event carries it. It is
+ * the shape `getTaskResult` answers with, narrowed to a terminal state. The two
+ * can disagree on purpose: a failed task that is revived and then completes
+ * keeps its first outcome here, so a parent's replay reads one answer forever.
+ */
+export type TaskOutcome = TaskResult & { state: TerminalState }
+
+const OUTCOME_FIELDS = ['completedPayloadJson', 'failureReasonJson'] as const
+
+/** The completion event's payload. The terminal batch binds it, so SQL never builds JSON. */
+export function encodeTaskOutcome(outcome: TaskOutcome): string {
+  const ordered: Record<string, string> = { state: outcome.state }
+  for (const name of OUTCOME_FIELDS) {
+    const value = outcome[name]
+    if (value !== undefined) ordered[name] = value
+  }
+  return stringifyJson(ordered)
+}
+
+/** Decode a completion event's payload, refusing anything `encodeTaskOutcome` could not have written. */
+export function decodeTaskOutcome(taskId: string, payloadJson: string): TaskOutcome {
+  let parsed: unknown
+  try {
+    parsed = parseJson(payloadJson)
+  } catch {
+    throw new TrustedRangeError(`task ${taskId} has a completion event that is not JSON`)
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new TrustedRangeError(`task ${taskId} has a completion event that is not an object`)
+  }
+  const fields = parsed as Record<string, unknown>
+  const state = hasOwn(fields, 'state') ? fields.state : undefined
+  if (!isTerminalState(state)) {
+    throw new TrustedRangeError(`task ${taskId} has a completion event with no terminal state`)
+  }
+  const result: TaskResult = { state }
+  for (const name of OUTCOME_FIELDS) {
+    const value = hasOwn(fields, name) ? fields[name] : undefined
+    if (value === undefined) continue
+    if (typeof value !== 'string') {
+      throw new TrustedRangeError(`task ${taskId} has a completion event whose ${name} is not text`)
+    }
+    result[name] = value
+  }
+  // The rule a task row is held to: a completed outcome carries its payload, a failed or
+  // cancelled one its reason, and neither carries the other's.
+  const contradiction = taskResultContradiction(result)
+  if (contradiction !== null) {
+    throw new TrustedRangeError(
+      `task ${taskId} has a completion event that says it is ${state} but ${contradiction}`,
+    )
+  }
+  return result as TaskOutcome
+}
+
+/**
+ * An await of a child was refused, and nothing was registered. It is permanent:
+ * the child is in another queue, or no such task exists, and neither changes.
+ * Events are keyed by queue, so only a child in the parent's queue can wake it.
+ */
+export class ChildAwaitRefusedError extends Error {
+  override readonly name = 'ChildAwaitRefusedError'
+  constructor(
+    readonly childTaskId: string,
+    readonly reason: 'other-queue' | 'no-such-task',
+  ) {
+    super(
+      reason === 'other-queue'
+        ? `task ${childTaskId} is in another queue, and a child is awaited only within its parent's queue`
+        : `task ${childTaskId} does not exist, so nothing would ever end the await`,
     )
   }
 }
@@ -45,7 +161,7 @@ export function childSpawnKey(parentTaskId: string, replayKey: string): string {
  * who could take one would hand a parent a task of its own choosing as its child.
  */
 export function refuseReservedIdempotencyKey(operation: string, key: string): void {
-  if (key.startsWith(RESERVED_EVENT_PREFIX)) {
+  if (startsWith(key, RESERVED_EVENT_PREFIX)) {
     throw new RangeError(
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
@@ -72,78 +188,6 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
   const key = requireDurableString('idempotencyKey', callerKey)
   refuseReservedIdempotencyKey('spawn', key)
   return key
-}
-
-/**
- * The first outcome a task reached, as its completion event carries it. It is
- * the shape `getTaskResult` answers with, narrowed to a terminal state. The two
- * can disagree on purpose: a failed task that is revived and then completes
- * keeps its first outcome here, so a parent's replay reads one answer forever.
- */
-export type TaskOutcome = TaskResult & { state: TerminalState }
-
-/** The completion event's payload. The terminal batch binds it, so SQL never builds JSON. */
-export function encodeTaskOutcome(outcome: TaskOutcome): string {
-  const ordered: Record<string, string> = { state: outcome.state }
-  if (outcome.completedPayloadJson !== undefined) {
-    ordered.completedPayloadJson = outcome.completedPayloadJson
-  }
-  if (outcome.failureReasonJson !== undefined) {
-    ordered.failureReasonJson = outcome.failureReasonJson
-  }
-  return JSON.stringify(ordered)
-}
-
-/** Decode a completion event's payload, refusing anything `encodeTaskOutcome` could not have written. */
-export function decodeTaskOutcome(taskId: string, payloadJson: string): TaskOutcome {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(payloadJson)
-  } catch {
-    throw new RangeError(`task ${taskId} has a completion event that is not JSON`)
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new RangeError(`task ${taskId} has a completion event that is not an object`)
-  }
-  const fields = parsed as Record<string, unknown>
-  const own = (name: string): unknown => (Object.hasOwn(fields, name) ? fields[name] : undefined)
-  const state = own('state')
-  if (!isTerminalState(state)) {
-    throw new RangeError(`task ${taskId} has a completion event with no terminal state`)
-  }
-  const completed = own('completedPayloadJson')
-  const failure = own('failureReasonJson')
-  const isCompleted = state === 'completed'
-  if (
-    typeof (isCompleted ? completed : failure) !== 'string' ||
-    (isCompleted ? failure : completed) !== undefined
-  ) {
-    throw new RangeError(
-      `task ${taskId} has a completion event whose outcome contradicts its state ${state}`,
-    )
-  }
-  return isCompleted
-    ? { state, completedPayloadJson: completed as string }
-    : { state, failureReasonJson: failure as string }
-}
-
-/**
- * An await of a child was refused, and nothing was registered. It is permanent:
- * the child is in another queue, or no such task exists, and neither changes.
- * Events are keyed by queue, so only a child in the parent's queue can wake it.
- */
-export class ChildAwaitRefusedError extends Error {
-  override readonly name = 'ChildAwaitRefusedError'
-  constructor(
-    readonly childTaskId: string,
-    readonly reason: 'other-queue' | 'no-such-task',
-  ) {
-    super(
-      reason === 'other-queue'
-        ? `task ${childTaskId} is in another queue, and a child is awaited only within its parent's queue`
-        : `task ${childTaskId} does not exist, so nothing would ever end the await`,
-    )
-  }
 }
 
 /**

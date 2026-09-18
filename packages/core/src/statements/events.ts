@@ -1,4 +1,5 @@
 import { type ExpressionBuilder, expressionBuilder } from 'kysely'
+import { type EventName, taskDoneEventName } from '../child-tasks.js'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
@@ -55,7 +56,7 @@ export const registerWaitCas = defineStatement(
     taskId: string
     claimToken: string
     stepName: string
-    eventName: string
+    eventName: EventName
     /** The wait's timeout instant, or NULL for an untimed wait. */
     timeoutAt: SqlFragment
     timeoutFits: SqlFragment
@@ -78,7 +79,7 @@ export const registerWaitCas = defineStatement(
       step_name: eb.val(binds.stepName),
       queue: eb.val(binds.queue),
       task_id: eb.val(binds.taskId),
-      event_name: eb.val(binds.eventName),
+      event_name: eb.val(binds.eventName.value),
       status: eb.val('waiting'),
       timeout_at_ms: rawSql<number | null>(binds.timeoutAt, 'value'),
       created_at_ms: nowValue,
@@ -94,7 +95,7 @@ export const registerWaitCas = defineStatement(
               .selectFrom('events')
               .select('events.queue')
               .where('events.queue', '=', binds.queue)
-              .where('events.event_name', '=', binds.eventName),
+              .where('events.event_name', '=', binds.eventName.value),
           ),
         ),
       )
@@ -132,7 +133,7 @@ export const emitEventCas = defineStatement(
   'emit-event',
   (binds: {
     queue: string
-    eventName: string
+    eventName: EventName
     payloadJson: string
     existingEventAdmits: SqlFragment
   }) =>
@@ -140,7 +141,7 @@ export const emitEventCas = defineStatement(
       .insertInto('events')
       .values({
         queue: binds.queue,
-        event_name: binds.eventName,
+        event_name: binds.eventName.value,
         payload: binds.payloadJson,
         emitted_at_ms: nowValue,
         ...FENCE_ASSIGNMENTS,
@@ -186,7 +187,7 @@ const recordedEvent = (eb: ExpressionBuilder<StoreTables, 'runs'>, eventName: st
 export const wakeRunsUpdate = defineStatement(
   'emit-event wake-runs',
   (binds: {
-    eventName: string
+    eventName: EventName
     /** The step of the run's one registered wait, for a run parked before runs carried `wake_step`. */
     registeredStep: SqlFragment
     /** The run is parked on this event. */
@@ -201,30 +202,30 @@ export const wakeRunsUpdate = defineStatement(
       .updateTable('runs')
       .set((eb) => ({
         state: 'pending',
-        available_at_ms: recordedEvent(eb, binds.eventName).select('f.fence_at_ms'),
+        available_at_ms: recordedEvent(eb, binds.eventName.value).select('f.fence_at_ms'),
         wake_step: coalesced<string | null>(
           'wake_step',
           rawSql<string | null>(binds.registeredStep, 'value'),
         ),
-        wake_event: binds.eventName,
-        event_payload: recordedEvent(eb, binds.eventName).select('f.payload'),
+        wake_event: binds.eventName.value,
+        event_payload: recordedEvent(eb, binds.eventName.value).select('f.payload'),
         fence_stamp: stampValue,
-        fence_at_ms: recordedEvent(eb, binds.eventName).select('f.fence_at_ms'),
+        fence_at_ms: recordedEvent(eb, binds.eventName.value).select('f.fence_at_ms'),
       }))
       .where('state', '=', 'sleeping')
       .where(rawSql<boolean>(binds.parkedOnEvent, 'predicate'))
       .where((eb) => eb('run_id', 'in', rawSql<string>(binds.waiterRunIds, 'subquery')))
       .where(rawSql<boolean>(binds.witness, 'predicate'))
-      .where((eb) => eb.exists(recordedEvent(eb, binds.eventName).select('f.queue')))
+      .where((eb) => eb.exists(recordedEvent(eb, binds.eventName.value).select('f.queue')))
       .where(rawSql<boolean>(binds.taskIsLive, 'predicate')),
 )
 
 /** One event, by its key. */
-const eventRow = (binds: { queue: string; eventName: string }) =>
+const eventRow = (binds: { queue: string; eventName: EventName }) =>
   treeBuilder
     .selectFrom('events')
     .where('queue', '=', binds.queue)
-    .where('event_name', '=', binds.eventName)
+    .where('event_name', '=', binds.eventName.value)
 
 /**
  * `emit-event`'s read of the stored event. It is an open read: on a replay the row may
@@ -233,7 +234,7 @@ const eventRow = (binds: { queue: string; eventName: string }) =>
  */
 export const storedEventRead = defineStatement(
   'emit-event stored-event',
-  (binds: { queue: string; eventName: string; payloadType: SqlFragment }) =>
+  (binds: { queue: string; eventName: EventName; payloadType: SqlFragment }) =>
     eventRow(binds).select(() => [
       aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type'),
     ]),
@@ -246,7 +247,13 @@ export const storedEventRead = defineStatement(
  */
 export const emittedEventRead = defineStatement(
   'await-event hit',
-  (binds: AwaitingClaim & { eventName: string; payloadType: SqlFragment; liveTask: SqlFragment }) =>
+  (
+    binds: AwaitingClaim & {
+      eventName: EventName
+      payloadType: SqlFragment
+      liveTask: SqlFragment
+    },
+  ) =>
     eventRow(binds)
       .select('payload')
       .select(() => [aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type')])
@@ -270,15 +277,15 @@ export const taskDoneEventInsert = defineStatement(
   (binds: {
     queue: string
     taskId: string
-    eventName: string
     payloadJson: string
     /** The statement of this batch that made the task terminal. */
     terminal: string
   }) => {
+    const eventName = taskDoneEventName(binds.taskId)
     const eb = expressionBuilder<{ f: StoreTables['tasks'] }, 'f'>()
     const event = {
       queue: eb.ref('f.queue'),
-      event_name: eb.val(binds.eventName),
+      event_name: eb.val(eventName),
       payload: eb.val(binds.payloadJson),
       emitted_at_ms: eb.ref('f.fence_at_ms'),
       fence_stamp: stampValue,
@@ -302,7 +309,7 @@ export const taskDoneEventInsert = defineStatement(
                   .selectFrom('events as e')
                   .select('e.queue')
                   .whereRef('e.queue', '=', 'f.queue')
-                  .where('e.event_name', '=', binds.eventName),
+                  .where('e.event_name', '=', eventName),
               ),
             ),
           ),
@@ -324,7 +331,7 @@ export const materializeTaskDoneCas = defineStatement(
   (
     binds: AwaitingClaim & {
       childTaskId: string
-      eventName: string
+      eventName: EventName
       payloadJson: string
       childState: TerminalState
       /** The stamp the child's row carried when its outcome was read, or null. */
@@ -335,7 +342,7 @@ export const materializeTaskDoneCas = defineStatement(
     const eb = expressionBuilder<{ c: StoreTables['tasks'] }, 'c'>()
     const event = {
       queue: eb.ref('c.queue'),
-      event_name: eb.val(binds.eventName),
+      event_name: eb.val(binds.eventName.value),
       payload: eb.val(binds.payloadJson),
       emitted_at_ms: nowValue,
       ...FENCE_ASSIGNMENTS,
@@ -359,7 +366,7 @@ export const materializeTaskDoneCas = defineStatement(
                   .selectFrom('events as e')
                   .select('e.queue')
                   .whereRef('e.queue', '=', 'c.queue')
-                  .where('e.event_name', '=', binds.eventName),
+                  .where('e.event_name', '=', binds.eventName.value),
               ),
             ),
           )

@@ -133,11 +133,11 @@ describe('closed transaction lock prelude', () => {
   })
 
   it('must be declared once, before SQL, and followed immediately by a CAS', () => {
-    expect(() => withCas().lockEvent({ queue: 'q', eventName: 'e' })).toThrow(
-      /before every SQL statement/,
-    )
+    expect(() =>
+      withCas().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') }),
+    ).toThrow(/before every SQL statement/)
 
-    const duplicate = batch().lockEvent({ queue: 'q', eventName: 'e' })
+    const duplicate = batch().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
     expect(() => duplicate.lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(/already has/)
 
     const readFirst = batch().lockEvent({ queue: 'q', eventName: 'e' })
@@ -155,7 +155,10 @@ describe('closed transaction lock prelude', () => {
 
   it('rejects a non-string coordinate for either closed lock kind', () => {
     expect(() =>
-      batch().lockEvent({ queue: undefined as unknown as string, eventName: 'e' }),
+      batch().lockEvent({
+        queue: undefined as unknown as string,
+        eventName: EventName.fromPort('test', 'e'),
+      }),
     ).toThrow(/coordinates must be strings/)
     expect(() =>
       batch().lockClaim({ queue: 'q', claimToken: undefined as unknown as string }),

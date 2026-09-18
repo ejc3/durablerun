@@ -18,6 +18,7 @@ import {
   parseFenceStamp,
   sqlBatchMode,
   taskDoneEventName,
+  taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS, TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import {
@@ -2137,15 +2138,14 @@ function leaseOnlyShortened(before: SqlRow, after: SqlRow): boolean {
  * barrier is what stops a refused or laundering transition from writing one anyway.
  */
 function completionEventBarrier(before: ProtocolSnapshot, after: ProtocolSnapshot): string[] {
-  const prefix = taskDoneEventName('')
   const existed = rowsByKey('events', before.events)
   const beforeTasks = rowsByKey('tasks', before.tasks)
   const afterTasks = rowsByKey('tasks', after.tasks)
   const errors: string[] = []
   for (const event of after.events) {
     const eventName = String(event.event_name)
-    if (!eventName.startsWith(prefix) || existed.has(key('events', event))) continue
-    const taskId = eventName.slice(prefix.length)
+    const taskId = taskIdOfDoneEvent(eventName)
+    if (taskId === null || existed.has(key('events', event))) continue
     const was = beforeTasks.get(taskId)
     const is = afterTasks.get(taskId)
     const ended =

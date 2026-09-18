@@ -1,4 +1,5 @@
 import { type Expression, type Kysely, isExpression } from 'kysely'
+import type { EventName } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -15,7 +16,6 @@ import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
   SqlClaimLockCoordinates,
-  SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
   SqlStatement,
@@ -267,9 +267,9 @@ export class FencedBatch {
    * be declared before the batch's first statement, and the first statement
    * after it must be the fenced CAS whose branch the lock protects.
    */
-  lockEvent(coordinates: SqlEventLockCoordinates): this {
+  lockEvent(coordinates: { readonly queue: string; readonly eventName: EventName }): this {
     const { queue, eventName } = coordinates
-    return this.addTransactionLock({ kind: 'event', queue, eventName })
+    return this.addTransactionLock({ kind: 'event', queue, eventName: eventName?.value })
   }
 
   /**

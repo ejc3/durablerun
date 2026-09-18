@@ -71,6 +71,9 @@ describe('decodeTaskResult', () => {
       'TASK_OUTCOME_COLUMNS',
       'TASK_RESULT_COLUMNS',
       'decodeTaskResult',
+      // Not a reader of rows: the same rule, in words, for an outcome already in hand.
+      // The completion event's decoder holds its payload to it.
+      'taskResultContradiction',
       'taskResultContradictions',
     ])
   })

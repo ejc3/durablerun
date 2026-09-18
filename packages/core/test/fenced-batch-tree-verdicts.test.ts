@@ -1230,7 +1230,7 @@ describe('the tree path', () => {
         /followed immediately by a CAS/,
         () =>
           batch()
-            .lockEvent({ queue: 'q', eventName: 'e' })
+            .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
             .openTailTree(
               'read',
               'a reason',
