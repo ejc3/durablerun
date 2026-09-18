@@ -73,7 +73,8 @@ that makes it difficult to review, land, and dogfood promptly.
 1. Fenced batches keyed on the POST-transition state (batch statements see
    earlier statements' effects — never re-check the consumed pre-condition).
 2. awaitEvent/emitEvent must be atomic AND mutually exclusive per dialect
-   (SQLite: one batch; PG/MySQL: row-lock transaction).
+   (SQLite: one batch; PostgreSQL: a row lock in the transaction; MySQL: a
+   session named lock around it).
 3. Engine time is database time; clients pass relative durations only.
 4. Claim has a durable lease/receipt claim token, while mutating batch
    follow-ons key on the claim CAS's per-invocation statement stamp.

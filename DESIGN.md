@@ -985,7 +985,9 @@ are load-bearing):
    name=:e) IS NULL`; sleep the run under the same guard; checkpoint `… WHERE
    payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
    single writer serializes it. On Postgres/MySQL a batch is NOT serialized
-   against emit: use a short transaction taking Absurd's original row locks.
+   against emit, so the batch carries a lock coordinate and the executor takes
+   it first: a row lock inside the transaction on PostgreSQL, and a session
+   named lock around the transaction on MySQL.
    `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
    coordinate — never caller SQL — to the dialect executor, which acquires it
    before the first fenced CAS and holds it through commit or rollback. The
@@ -993,7 +995,11 @@ are load-bearing):
    the prelude, and matching event coordinates are mutually exclusive. A
    dialect may realize the coordinate with a durable sentinel row, as
    PostgreSQL does, or with a named lock the session takes before the
-   transaction starts and releases after it ends, as MySQL does. Any further
+   transaction starts and releases after it ends, as MySQL does. MySQL's named lock
+   waits at most 30 seconds, for the event, claim, and migration locks alike. A
+   batch that cannot take its lock in that time has written nothing and fails
+   with `StoreUnavailableError`, which a caller retries like any outage.
+   PostgreSQL's row lock has no bound of the store's own. Any further
    row locks retain the documented order: event first, then run (FOR
    SHARE/FOR UPDATE). The timeout branch is part of the contract: a wait with
    a timeout sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
@@ -1634,7 +1640,25 @@ realized in the store's compiler, executor, fragments, or schema:
   matched, and counts an upsert that updated as two. The executor runs without
   `CLIENT_FOUND_ROWS`, so an upsert whose conflict arm changes nothing reports
   zero, and normalizes the rest from the server's own `Rows matched:` and
-  `Duplicates:` lines.
+  `Duplicates:` lines. A single-row upsert that updated carries no such line
+  and reports two, which the executor counts once. A `DELETE` carries no such
+  line either, so that rule reads the statement and applies to an `INSERT`
+  alone. The flag is part of the handshake and mysql2 turns it on by default,
+  so a pool the application owns is refused unless it connects without it.
+- **A write with no index to find its rows locks every row it scans**, under
+  READ COMMITTED too, and waits on rows other transactions hold. The driver
+  registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats
+  deadlocked, each waiting on the row another had just upserted. It now finds
+  expired rows with a `FOR UPDATE SKIP LOCKED` read in a derived table kept
+  materialized, and deletes them by primary key with the expired rows first in
+  the join. It waits on nothing, and measured 0 deadlocks of 200. The same
+  read under `IN (...)` let the `DELETE` scan, and 22 of 200 still deadlocked.
+- **`MIN()` is not answered from an index once another predicate stands beside
+  it.** The next-wake read walked 1207 rows of a 1200-row queue. Each wake
+  source is now the first row in index order of one state, with the index
+  named, and walks fewer than 20. The store has its own measured plan tests,
+  `query-plans.test.ts`, which read the session's handler counters around the
+  exact production SQL.
 - **No RETURNING.** `heartbeat` is a fenced batch of two tree statements here:
   the extension stamps the run, and the remainder is read under that stamp
   from the two instants the extension stored, so it reads no clock.
@@ -1647,10 +1671,16 @@ realized in the store's compiler, executor, fragments, or schema:
 - **The schema.** An indexed string is `VARCHAR(255)` under
   `utf8mb4_0900_bin`, which is case, accent, and trailing-space exact. MySQL
   cannot index unbounded text, so an identifier longer than 255 characters is
-  refused as an invalid durable string, where the other dialects hold it.
+  refused as an invalid durable string, where the other dialects hold it. The
+  store refuses it at every entry, before any statement is sent and whatever
+  the excess is, because MySQL refuses only some: excess that is trailing
+  spaces is cut with note 1265 in every `sql_mode`, and the cut value is a
+  different identifier. The executor also refuses any write that raised that
+  note, and its transaction rolls back.
   Payloads, the claim token, and the statement stamp are `LONGTEXT`. There is
   no partial index: a unique index already holds NULL keys apart, and the hot
-  indexes lead with the state. `key` is a reserved word, so every statement
+  indexes lead with the state after the queue, `tasks_cancel` included, because
+  a failed task keeps its deadline and would otherwise be walked by every sweep. `key` is a reserved word, so every statement
   over the version table quotes it.
 - **A BIGINT column rounds a fraction** where PostgreSQL refuses it, in strict
   mode too. The column still cannot hold one, and the conformance fixture shows

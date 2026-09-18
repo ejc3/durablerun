@@ -1,3 +1,4 @@
+import { StoreUnavailableError } from '@durablerun/core'
 import type { FieldPacket, Pool } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
@@ -12,6 +13,8 @@ class FakeConnection {
   readonly sent: string[] = []
   /** What the server answers a statement with, where a test cares. */
   readonly headers = new Map<string, { affectedRows: number; info: string }>()
+  /** What GET_LOCK answers: 1 when taken, 0 when the wait ran out. */
+  lockAnswer = 1
   released = 0
 
   /** The physical connection under a pool's wrapper, as mysql2 exposes it. */
@@ -26,14 +29,18 @@ class FakeConnection {
 
   async execute(sql: string) {
     this.sent.push(sql)
-    return sql.includes('GET_LOCK') ? rows([{ acquired: 1 }], 'acquired') : OK
+    return sql.includes('GET_LOCK') ? rows([{ acquired: this.lockAnswer }], 'acquired') : OK
   }
 
   release() {
     this.released += 1
   }
 
-  destroy() {}
+  destroyed = 0
+
+  destroy() {
+    this.destroyed += 1
+  }
 }
 
 /** The part of a mysql2 pool that records the handshake flags it connects with. */
@@ -156,6 +163,22 @@ describe('MysqlExecutor transactions', () => {
     ).toThrow(/FOUND_ROWS/)
     expect(over(undefined)).toThrow(/FOUND_ROWS/)
     expect(over(OWNED_POOL_CONFIG)).not.toThrow()
+  })
+
+  it('reports the store unavailable when a named lock cannot be taken in time, and writes nothing', async () => {
+    const connection = new FakeConnection()
+    connection.lockAnswer = 0
+    const outcome = await executorOver(connection)
+      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    expect(outcome).toBeInstanceOf(StoreUnavailableError)
+    expect(String(outcome)).toContain('within 30 seconds')
+    expect(afterSessionSetup(connection).filter((sql) => !sql.includes('GET_LOCK'))).toEqual([])
+    // The connection leaves the batch exactly once, returned or discarded.
+    expect(connection.released + connection.destroyed).toBe(1)
   })
 
   it('takes no lock for the version read', async () => {
