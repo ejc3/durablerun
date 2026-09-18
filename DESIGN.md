@@ -1197,6 +1197,18 @@ are load-bearing):
      `'now'`, whatever function takes it. That scan is a
      spelling proxy, confined to raw text, and a spelling nobody has listed
      passes it.
+   - A list of states in a statement is one of the defined sets: the live, the
+     queued, or the terminal states. `eligibilityDefinitionProblem` reads a
+     value list built from nodes and a list of literals in a fragment's text
+     alike, wherever it stands, and a row of inserted values is no list. A
+     comparison of `cancel_at_ms` built from nodes is refused, on either side
+     and under arithmetic, because each dialect compares the deadline in its
+     own `cancelDue` and `cancelNotDue` fragments, which carry the bounds a
+     stored deadline must be within. These are the rules
+     `scripts/fragment-lint.py` applies to store SQL text, asked of the tree,
+     where a condition built from nodes is as visible as one written as text.
+     A set spelled as alternatives joined by OR passes, and a test runs that
+     false negative.
    - A follow-on may not assign a column a value that combines that column
      with an arithmetic or concatenation operator, or that hides it in a raw
      fragment. The rule reads an UPDATE's SET list and an INSERT's conflict arm.
@@ -1240,9 +1252,14 @@ are load-bearing):
    column descriptor with every dialect's catalog. `FencedBatch` has no text
    path: every statement it holds is a tree, its constructor's type requires
    the dialect that compiles one, and the scanners that read a
-   statement's text are deleted. `scripts/fragment-lint.py` and
-   `scripts/clock-lint.py` still read store SQL text, until PR3.9e part 3c
-   gives the rules of theirs that still matter a tree-level form.
+   statement's text are deleted. A batch reads a statement's object graph
+   once for all of its checks. `scripts/fragment-lint.py` and
+   `scripts/clock-lint.py` still read store SQL text, because a store still
+   sends text that no tree holds: the sweep's discovery reads, the next-wake
+   read, the other reads, `heartbeat`, `expire-lease-now`, `driver-heartbeat`,
+   and the admin's statements. Their rules have a tree-level form for
+   everything a tree holds, and the two scans stay for that text until it is
+   built as trees too.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

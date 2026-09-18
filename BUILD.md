@@ -53,9 +53,12 @@ implements the finished surface once.
    reaps every worker group or reports a measured reason it cannot.
 3. Every store batch's SQL is built as a tree and checked as a tree, per
    PR3.9, and the textual scanners it replaces are deleted. PR3.9e part 3b
-   deleted `FencedBatch`'s text path and its scanners. `fragment-lint` and
-   `clock-lint` still scan store SQL text, so this is met when PR3.9e part 3c
-   lands.
+   deleted `FencedBatch`'s text path and its scanners, and part 3c gave the
+   rules of `fragment-lint` and `clock-lint` a tree-level form. The two still
+   scan store SQL text, because a store still sends its reads, three writes,
+   and its admin's statements as text that no tree holds. So this is met for
+   every fenced batch, and for every store batch when PR3.9f builds that text
+   as trees and deletes the two scans.
 4. A task can spawn a child from a step and await the child's completion as an
    event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
@@ -833,7 +836,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Thirteen operations across two dialects, plus about 170 registered mutations
   whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
   Since PR3.9e part 3b a batch holds tree statements only, and `FencedBatch`
-  has no text path. PR3.9e part 3c is what remains.
+  has no text path. PR3.9e part 3c made a batch read each statement's tree
+  once, asked the two text lints' rules of the tree, and enrolled the corpus
+  from a descriptor. PR3.9f is what remains.
   - PR3.9a: the tree layer in core. Engine tokens are value nodes carrying
     sentinel objects, and `FencedBatch` checks a tree statement by node identity
     and position inside a closed statement grammar. Statements are defined once
@@ -961,13 +966,45 @@ these three things; nothing else in the system does I/O, time, or randomness.
     shared statement, and a follow-on insert's SELECT list holds no fragment,
     as the option below records. The registry holds 665 mutations. Its review
     round is `postmortems/pr3.9e-part3b-review.md`.
-  - PR3.9e part 3c, live. Exit test 3 of the current milestone is met when it
-    lands, and not before. It owns the items below that name it: one pass over
-    the tree, a tree-level form of the two text lints' rules, the corpus
-    enrolled from descriptors, the bridge as one table, and
-    `tasks.completed_payload`.
-  - Deferred to PR3.9e part 3c:
-    a tree statement is rebuilt and re-checked on every
+  - PR3.9e part 3c, DONE. A batch reads a statement's object graph once for
+    all of its checks (`packages/core/src/tree-walk.ts`). A statement is held
+    to one definition of eligibility: a list of states is one of the defined
+    sets and a comparison of `cancel_at_ms` built from nodes is refused, which
+    are `fragment-lint`'s rules asked of the tree, where a condition built from
+    nodes is visible. `clock-lint`'s rule already had its tree-level form: the
+    grammar lists no clock function and a fragment's text is read for a clock
+    spelling. The corpus is enrolled from `corpus/labels.json` and from what a
+    `FencedBatch` compiled. The base gate's bridge is one table of pinned file
+    pairs and one live registry arm. Completion's task mirror is a tree
+    statement in core and `tasks.completed_payload` is in the column table.
+    The registry holds 769 mutations. The two text lints are NOT deleted, and
+    the entry below that owned that says why.
+  - PR3.9f, not started. Build the statements a store still sends as text as
+    trees, then delete `fragment-lint` and `clock-lint`. They are the reads
+    (`claimed-task-name`, `refusal-state`, `sweep:scan`, `get-checkpoints`,
+    `task-result`, `next-wake`), three writes that are no fenced batch
+    (`heartbeat`, `expire-lease-now`, `driver-heartbeat`), and the admin's
+    statements. They need what the statement grammar does not list today:
+    RETURNING, UNION ALL, LIMIT with a bind, and an index hint on MySQL. Exit
+    test 3 of the current milestone is met for every store batch when it
+    lands.
+  - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
+    checks read a statement's object graph once. A profile of a store call put
+    about two fifths of its time in reading node fields generically, once for
+    every check. One walk now records each node's children and where its
+    subtree ends, and every later pass reads those lists. Measured on libSQL's
+    compiler with a stub executor, the lower minimum of two alternating rounds,
+    before and after in microseconds for each call, on a loaded machine under
+    the confinement limits, so the ratio is the result and the absolute
+    numbers are not comparable with the figures below: reschedule 354 to 304,
+    suspend 560 to 488, await-event 814 to 695, emit-event 908 to 727, set-checkpoint
+    274 to 226, cancel 307 to 257, complete 319 to 239, and a retrying fail 848 to 699.
+    The after figures include the new eligibility rule. What remains is that a
+    tree statement is still rebuilt and re-checked on every call, and the
+    grammar check's own work for each node: an option, not scheduled, until a
+    measurement on a real deployment shows store CPU matters beside a round
+    trip. The record this entry replaced: a tree statement is rebuilt and
+    re-checked on every
     call, and the checks walk the tree once each. PR3.9c's review measured the
     four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
     about 167 µs, suspend 121 µs to about 201 µs, await-event 141 µs to about
@@ -976,18 +1013,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     about 68 to 153 µs more store CPU for each set-checkpoint and 68 to 136 µs
     for each cancel, by the same cause. Collect node kinds, raw nodes, and
     function nodes in one pass, and measure before and after the same way.
-  - Deferred to PR3.9e part 3c: a generated follow-on now costs about 159 µs to
+  - Delivered in PR3.9e part 3c by the one walk above: a generated follow-on
+    cost about 159 µs to
     build, check, and compile, where the text generator cost about 44 µs,
     measured on libSQL's compiler with a stub executor. Building the tree is
     about 28 µs and compiling it about 19 µs, so most of the rest is the tree
     checks, which walk the tree once each. A batch holds up to five generated
-    statements. The one-pass item above owns this.
-  - Deferred to PR3.9e part 3c: a hand-written follow-on costs more as a tree by
+    statements. The one-pass item above owned this.
+  - Delivered in PR3.9e part 3c by the one walk above: a hand-written
+    follow-on cost more as a tree by
     the same cause. The revival's run insert takes about 247 µs to build, check,
     and compile where its text took about 59 µs, and the `revived` tail about
     32 µs where its text took about 1 µs, measured on libSQL's compiler with a
     stub executor, beside a batch that costs about 66 µs with its
-    compare-and-set alone. The one-pass item above owns this too.
+    compare-and-set alone. The one-pass item above owned this too.
   - Resolved by PR4.3: the shared await-event, emit-event, and
     checkpoint-write statements are built with the builder's conflict clause
     and `IS DISTINCT FROM`, and MySQL 8 has neither spelling. `store-mysql`'s
@@ -1003,7 +1042,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tiebreak rides in each assignment as `IF(condition, value, column)`, with
     the incoming row named `excluded` through a derived table, and the
     checkpoint conformance cases pass.
-  - Deferred to PR3.9e part 3c:
+  - Delivered in PR3.9e part 3c as far as a tree reaches, and deferred to
+    PR3.9f for the rest. The rules have their tree-level form:
+    `eligibilityDefinitionProblem` holds a list of states to the defined sets
+    and refuses a comparison of `cancel_at_ms` built from nodes, and the clock
+    rule was already asked of the tree. The two lints are not deleted, because
+    their subjects are not gone: a store still sends its reads, `heartbeat`,
+    `expire-lease-now`, `driver-heartbeat`, and its admin's statements as text
+    that no tree holds, and a raw clock call or a second eligibility
+    comparison written there is visible to those scans alone. PR3.9f builds
+    that text as trees and then deletes them. The record this entry replaced:
     `fragment-lint` and `clock-lint` scan store SQL text, and
     a condition built from nodes in `packages/core/src/statements/` is outside
     what a text lint can see. PR #41's review asked for the wider scope. Run
@@ -1012,16 +1060,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that file is refused. So the wider scope would check nothing. The rules
     that still matter, one definition of the live states among them, get a
     tree-level form, and then the two text lints are deleted.
-  - Deferred to PR3.9e part 3c: the corpus is enrolled from label and variant
-    descriptors, as this entry requires below, and a tree label that is not
-    enrolled fails.
-  - Deferred to PR3.9e part 3c:
-    base-gate's re-aim bridge has one arm per historical
-    registry hash. Arms pinned to a registry no open PR is based on are deleted
-    then, leaving the helpers and the live arm. The checker bridges go the same
-    way: the batch lint bridge is pinned to a lint main no longer has, and the
-    outcome lint bridge dies when PR3.9d's first half merges. What remains
-    becomes one table of pinned file pairs.
+  - Delivered in PR3.9e part 3c: the corpus is enrolled from
+    `packages/conformance/corpus/labels.json`, the label and variant
+    descriptor this entry requires below, and from what ran. Core answers
+    whether a `FencedBatch` compiled a statement, by identity, so the recorder
+    sees every tree-built batch whatever its label, and one the descriptor does
+    not name fails. The enrolment's refusals are tested as failing controls.
+  - Delivered in PR3.9e part 3c: none of the base hashes the base gate's
+    bridges were pinned to named a file main still had, so the five checker
+    bridges and the seventeen registry arms are deleted. A checker bridge is
+    now a row in one table of pinned file pairs, a path with the base file's
+    hash and the head file's hash, and the registry step keeps its helpers and
+    the one live arm. The table has no live row: the last one a pull request
+    needed carried the batch lint that child tasks changed, which main has.
   - Option, not scheduled, from
     `postmortems/pr3.9a-statement-trees-review.md`: PR3.9e part 2 made the
     gating rule check that a gated subquery is tied to the outer row, which
@@ -1043,12 +1094,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the shared statement, re-aimed those two mutations there, where they cap
     it with a CASE, and then refused every fragment in a follow-on insert's
     SELECT list, because a reader of text passed a schema-qualified call.
-  - Deferred to PR3.9e part 3c, until a tree statement names it:
-    `tasks.completed_payload` stays
-    out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
-    which its statements assign. Completion's task mirror is a generated
-    `derived()` statement, which part 3c moves. `checkpoints.status` stays out
-    the same way: every checkpoint write leaves it to its default.
+  - Delivered in PR3.9e part 3c: completion's task mirror is
+    `completeTaskMirror`, one tree statement in core, and
+    `tasks.completed_payload` is in `STORE_TABLE_COLUMNS`. `checkpoints.status`
+    stays out: every checkpoint write leaves it to its default.
   - Option, not scheduled: load compiled statements from the generated corpus at
     run time, so Kysely becomes a build-time dependency. Importing Kysely
     unbundled measured about 65 ms per cold start, beside about 72 ms for
