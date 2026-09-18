@@ -290,8 +290,7 @@ async function runWalk(
     stats.fails +
     stats.reschedules +
     stats.sweepTransitions +
-    stats.cancels +
-    stats.childAwaits
+    stats.cancels
   if (steps >= 50 && progress === 0) {
     throw new Error(`fuzz seed ${seed}: zero progress across ${steps} steps`)
   }
