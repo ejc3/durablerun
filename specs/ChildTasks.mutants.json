@@ -1,0 +1,121 @@
+[
+  {
+    "name": "timeout-keeps-wait-row",
+    "guard": "a timeout consumes the wait row",
+    "caughtBy": "WaitIntegrity",
+    "find": "parent' = \"timedout\" /\\ wait' = FALSE",
+    "replace": "parent' = \"timedout\" /\\ wait' = wait"
+  },
+  {
+    "name": "hit-returns-a-fixed-outcome",
+    "guard": "an await that hits returns the outcome the event carries",
+    "caughtBy": "SeenIsFirstOutcome",
+    "find": "/\\ parent' = \"resolved\" /\\ seen' = doneEvent",
+    "replace": "/\\ parent' = \"resolved\" /\\ seen' = \"completed\""
+  },
+  {
+    "name": "emit-overwrites",
+    "guard": "the completion event is first-write-wins",
+    "caughtBy": "DoneIsFirstOutcome",
+    "find": "  IF doneEvent = None\n  THEN /\\ doneEvent' = o",
+    "replace": "  IF TRUE\n  THEN /\\ doneEvent' = o"
+  },
+  {
+    "name": "emit-leaves-wait-row",
+    "guard": "the emit that wakes a waiter consumes its wait row",
+    "caughtBy": "WaitIntegrity",
+    "find": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = FALSE",
+    "replace": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = TRUE"
+  },
+  {
+    "name": "emit-parks-another-outcome",
+    "guard": "the woken parent is handed the outcome the event carries",
+    "caughtBy": "ParkedMatchesEvent",
+    "find": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = FALSE",
+    "replace": "THEN parent' = \"woken\" /\\ parked' = (CHOOSE x \\in Outcomes : x # o) /\\ wait' = FALSE"
+  },
+  {
+    "name": "miss-ignores-existing-event",
+    "guard": "a wait registers only while the event is absent",
+    "caughtBy": "WaitIntegrity",
+    "find": "  /\\ doneEvent = None\n  /\\ parent' = \"waiting\" /\\ wait' = TRUE",
+    "replace": "  /\\ parent' = \"waiting\" /\\ wait' = TRUE"
+  },
+  {
+    "name": "cancel-keeps-wait-row",
+    "guard": "cancelling the parent deletes its wait row",
+    "caughtBy": "WaitIntegrity",
+    "find": "parent' = \"cancelled\" /\\ wait' = FALSE",
+    "replace": "parent' = \"cancelled\" /\\ wait' = wait"
+  },
+  {
+    "name": "miss-ignores-rule",
+    "guard": "a refused await registers no wait",
+    "caughtBy": "RefusedNeverWaits",
+    "find": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ AwaitAllowed",
+    "replace": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  },
+  {
+    "name": "hit-ignores-rule",
+    "guard": "a refused await returns no outcome",
+    "caughtBy": "RefusedNeverWaits",
+    "find": "AwaitHit ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ AwaitAllowed",
+    "replace": "AwaitHit ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  },
+  {
+    "name": "revive-clears-event",
+    "guard": "retry-task leaves the completion event alone",
+    "caughtBy": "DoneImmutable",
+    "find": "  /\\ child' = \"live\" /\\ retries' = retries + 1\n  /\\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen>>",
+    "replace": "  /\\ child' = \"live\" /\\ retries' = retries + 1 /\\ doneEvent' = None\n  /\\ UNCHANGED <<firstOutcome, parent, wait, parked, seen>>"
+  },
+  {
+    "name": "emit-wakes-a-timed-out-parent",
+    "guard": "an emit wakes only a parent with a wait row",
+    "caughtBy": "AnswerIsFinal",
+    "find": "       /\\ IF wait\n",
+    "replace": "       /\\ IF wait \\/ parent = \"timedout\"\n"
+  },
+  {
+    "name": "claim-woken-returns-nothing",
+    "guard": "the woken parent's await returns the parked outcome",
+    "caughtBy": "SeenIsFirstOutcome",
+    "find": "/\\ parent' = \"resolved\" /\\ seen' = parked",
+    "replace": "/\\ parent' = \"resolved\" /\\ seen' = None"
+  },
+  {
+    "name": "refused-registers-a-wait",
+    "guard": "a refusal registers nothing",
+    "caughtBy": "WaitIntegrity",
+    "find": "  /\\ parent' = \"refused\"\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries>>",
+    "replace": "  /\\ parent' = \"refused\" /\\ wait' = TRUE\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>"
+  },
+  {
+    "name": "first-outcome-ghost-rewritten",
+    "guard": "the first outcome is recorded once",
+    "caughtBy": "DoneIsFirstOutcome",
+    "find": "firstOutcome' = IF firstOutcome = None THEN o ELSE firstOutcome",
+    "replace": "firstOutcome' = o"
+  },
+  {
+    "name": "timeout-takes-a-woken-parent",
+    "guard": "a timeout takes only a parent that is still waiting",
+    "caughtBy": "WakeIsDelivered",
+    "find": "AwaitTimeout ==\n  /\\ parent = \"waiting\"",
+    "replace": "AwaitTimeout ==\n  /\\ parent \\in {\"waiting\", \"woken\"}"
+  },
+  {
+    "name": "emit-wakes-a-cancelled-parent",
+    "guard": "an emit wakes only a parent with a wait row, and a cancelled parent has none",
+    "caughtBy": "AnswerIsFinal",
+    "find": "       /\\ IF wait\n",
+    "replace": "       /\\ IF wait \\/ parent = \"cancelled\"\n"
+  },
+  {
+    "name": "refuse-ignores-rule",
+    "guard": "an await the rule allows is never refused",
+    "caughtBy": "RefusalIsTheRule",
+    "find": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ ~AwaitAllowed",
+    "replace": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  }
+]

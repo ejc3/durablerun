@@ -38,7 +38,40 @@ async function fakeCommands(root: string): Promise<{
   const java = join(bin, 'java')
   await writeFile(
     java,
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$JAVA_LOG"\nif [[ "\${1:-}" == '-version' ]]; then\n  printf '%s\\n' 'openjdk version "25-test"' >&2\n  exit 0\nfi\nprintf '%s\\n' 'Model checking completed. No error has been found.'\n`,
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$JAVA_LOG"
+if [[ "\${1:-}" == '-version' ]]; then
+  printf '%s\\n' 'openjdk version "25-test"' >&2
+  exit 0
+fi
+# By default every model passes. A test may ask for witnessed probes, and for
+# mutant runs that are caught or that violate some other property.
+cfg=''; meta=''; prev=''
+for arg in "$@"; do
+  [[ "$prev" == '-config' ]] && cfg="$arg"
+  [[ "$prev" == '-metadir' ]] && meta="$arg"
+  prev="$arg"
+done
+probe="\${cfg%.cfg}"
+if [[ -n "\${STUB_PROBES_WITNESSED:-}" && "$probe" == *Probe* ]]; then
+  printf '%s\\n' "Error: Invariant $probe is violated."
+  exit 12
+fi
+if [[ "$meta" == */mutants/* ]]; then
+  case "\${STUB_MUTANTS:-}" in
+    caught)
+      grep -oE '"caughtBy": "[A-Za-z]+"' "$STUB_MUTANTS_JSON" | sort -u |
+        sed -E 's/.*: "(.*)"/Error: Invariant \\1 is violated./'
+      exit 12
+      ;;
+    wrong)
+      printf '%s\\n' 'Error: Invariant SomethingElse is violated.'
+      exit 12
+      ;;
+  esac
+fi
+printf '%s\\n' 'Model checking completed. No error has been found.'
+`,
   )
   await chmod(java, 0o755)
   return { bin, curlLog, java, javaLog }
@@ -96,6 +129,49 @@ describe('TLA tool artifact', () => {
     expect(await readIfPresent(commands.curlLog)).toBe('')
     expect(await readIfPresent(commands.javaLog)).toContain('tools/tla/tla2tools.jar')
     expect(await readIfPresent(commands.javaLog)).toContain('SchedulerLiveness1.cfg')
+  })
+
+  describe('the child-task mutant check', () => {
+    const mutantsJson = join(repoRoot, 'specs', 'ChildTasks.mutants.json')
+
+    async function runGate(mutants: 'survive' | 'caught' | 'wrong') {
+      const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-mutants-'))
+      scratch.push(root)
+      const commands = await fakeCommands(root)
+      // Every probe is witnessed, so the mutants' verdict alone decides the gate.
+      const result = runTla(repoRoot, commands, {
+        TLA_ONLY: 'safety',
+        STUB_PROBES_WITNESSED: '1',
+        STUB_MUTANTS: mutants,
+        STUB_MUTANTS_JSON: mutantsJson,
+      })
+      const names = (
+        JSON.parse(await readFile(mutantsJson, 'utf8')) as readonly { readonly name: string }[]
+      ).map(({ name }) => name)
+      expect(names.length).toBeGreaterThan(0)
+      return { names, output: `${result.stdout}\n${result.stderr}`, status: result.status }
+    }
+
+    it('passes when every mutant violates the property its entry names', async () => {
+      const { names, output, status } = await runGate('caught')
+      expect(status, output).toBe(0)
+      expect(output).toContain(`child-task mutants: ${names.length} of ${names.length} caught`)
+    })
+
+    it('fails when the mutants survive', async () => {
+      const { names, output, status } = await runGate('survive')
+      expect(status, output).not.toBe(0)
+      expect(output).not.toContain('VACUOUS')
+      for (const name of names) expect(output).toContain(`SURVIVED: ${name}`)
+      expect(output).toContain(`child-task mutants: 0 of ${names.length} caught`)
+    })
+
+    it('fails when a mutant violates only some other property', async () => {
+      const { names, output, status } = await runGate('wrong')
+      expect(status, output).not.toBe(0)
+      expect(output).not.toContain('VACUOUS')
+      for (const name of names) expect(output).toContain(`WRONG-PROPERTY: ${name}`)
+    })
   })
 
   it('rejects a corrupted repository checker before Java starts', async () => {
