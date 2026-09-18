@@ -549,6 +549,14 @@ describe('bookkeeping checks', () => {
     }
   })
 
+  it('cannot be constructed without the dialect that compiles its trees', () => {
+    // The type is the rule. This line stops compiling if the dialect becomes optional,
+    // which is what let a batch hold a statement nothing could compile.
+    // @ts-expect-error a batch takes the dialect that compiles its statements
+    const withoutDialect = () => new FencedBatch('b', 'seed', { now: '0' })
+    expect(withoutDialect).toBeTypeOf('function')
+  })
+
   it('rejects a batch with no CAS', async () => {
     // Only reachable through an open tail: a fenced statement cannot even be BUILT
     // without a CAS, because a fence has nothing to name.

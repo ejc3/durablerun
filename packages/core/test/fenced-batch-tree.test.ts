@@ -1,7 +1,6 @@
 import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
-  FencedBatch,
   type SqlFragment,
   type SqlStatement,
   type StoreTables,
@@ -1762,11 +1761,6 @@ describe('FencedBatch tree statements', () => {
     expect(sent[2]).toContain(
       'do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is distinct from ? and (events.payload IS NOT NULL)',
     )
-  })
-
-  it('refuses a tree statement in a batch without a tree dialect', () => {
-    const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
-    expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
   })
 
   it('refuses a tail that is not a SELECT, and allows a fenced SELECT', () => {

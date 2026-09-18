@@ -1,7 +1,6 @@
 import { sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
-  FencedBatch,
   aliasedAs,
   treeBuilder as db,
   fenceValue,
@@ -12,7 +11,6 @@ import {
   stampValue,
 } from '../src/index.js'
 import {
-  CLOCK,
   type Loose,
   accepts,
   batch,
@@ -1189,15 +1187,6 @@ describe('the tree path', () => {
         /a raw fragment that rawSql did not mint/,
         /fragment standing as a/,
         () => followOn(unmintedPredicate()),
-      )
-    })
-
-    it('says a batch without a tree dialect has none', () => {
-      refusesAs(
-        'mutation-verdict:construction:tree-needs-a-dialect',
-        /the batch has no tree dialect/,
-        /Cannot read properties of null/,
-        () => new FencedBatch('b', 'seed', { now: CLOCK }).casTree('win', statement(winCas())),
       )
     })
 

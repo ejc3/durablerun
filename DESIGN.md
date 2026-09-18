@@ -781,7 +781,7 @@ are load-bearing):
      rule cannot read a fragment. In a fragment it refuses any mention of that
      column that is unqualified or qualified by the table being written,
      whatever wraps it, and arithmetic on that column under any other
-     qualifier, as the text path refused `x = t.x + 1` by name. A copy of
+     qualifier, such as `x = t.x + 1`. A copy of
      another row's column stays allowed. A fragment may hold a fence token,
      which becomes a fence node: it is bound and must name a fence of the
      batch, and it gates nothing. Nothing may be left over beside a token. The
@@ -974,9 +974,12 @@ are load-bearing):
 
    `packages/conformance/corpus` records every statement a tree-built label
    compiles to, per dialect, and a conformance case compares the builder's
-   column descriptor with every dialect's catalog. No `FencedBatch` statement
-   in a store is text any more. `FencedBatch` keeps its text path and the
-   scanners that guard it until PR3.9e part 3 deletes them.
+   column descriptor with every dialect's catalog. `FencedBatch` has no text
+   path: every statement it holds is a tree, its constructor's type requires
+   the dialect that compiles one, and the scanners that read a
+   statement's text are deleted. `scripts/fragment-lint.py` and
+   `scripts/clock-lint.py` still read store SQL text, until PR3.9e part 3c
+   gives the rules of theirs that still matter a tree-level form.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

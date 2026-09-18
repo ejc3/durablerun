@@ -7,7 +7,16 @@
     "durablerun-sdk-0.1.0-alpha.1.tgz": "f8c8441590a33de4d2744e15143c460ba5713e4ec03a8a422c11d443af365ba7",
     "durablerun-store-libsql-0.1.0-alpha.1.tgz": "d5a53ce6d571c33b495fbcf395106af9f47d12f6b565ecb52d00233235ad821d"
   },
-  "withdrawn": {},
+  "withdrawn": {
+    "@durablerun/core": {
+      ".": {
+        "FENCE_COLS": "the provenance columns as SQL text, for FencedBatch's text statements, which are deleted: a tree statement assigns provenance as nodes, with FENCE_ASSIGNMENTS, stampValue and nowValue",
+        "FENCE_SET": "the provenance assignment as SQL text, for FencedBatch's text statements, which are deleted: a tree statement assigns provenance as nodes, with FENCE_ASSIGNMENTS, stampValue and nowValue",
+        "FENCE_VALS": "the provenance values as SQL text, for FencedBatch's text statements, which are deleted: a tree statement assigns provenance as nodes, with FENCE_ASSIGNMENTS, stampValue and nowValue",
+        "fenceSetAt": "the preserved-instant provenance assignment as SQL text, deleted with FencedBatch's text statements: a tree statement copies the preserved instant as a column node"
+      }
+    }
+  },
   "surface": {
     "@durablerun/core": {
       ".": [

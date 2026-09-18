@@ -2049,15 +2049,6 @@ MUTATION_SPECS = [
         "a transaction lock may be followed by a statement that is not the compare-and-set it protects",
     ),
     (
-        "tree-needs-a-dialect",
-        "packages/core/src/fenced-batch.ts",
-        "    if (dialect === null) {\n"
-        "      throw new Error(`${at} is a tree statement, but the batch has no tree dialect`)\n"
-        "    }\n",
-        "",
-        "a batch without a tree dialect fails on a null read and no longer says why",
-    ),
-    (
         "tree-followon-insert-selects",
         "packages/core/src/fenced-batch.ts",
         "      if (!following.selects) {",
@@ -7504,12 +7495,6 @@ VERDICTS = {
         "the tree path the statement, its fragments, and its binds refuses a statement that is not a compare-and-set after a lock",
         "mutation-verdict:construction:tree-lock-precedes-a-cas",
     ),
-    "tree-needs-a-dialect": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the statement, its fragments, and its binds says a batch without a tree dialect has none",
-        "mutation-verdict:construction:tree-needs-a-dialect",
-    ),
     "tree-followon-insert-selects": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -11567,16 +11552,15 @@ def verdict_inventory_problems(
 
 
 # Where the rules that read a statement tree live. A region runs from its first anchor to
-# its second, and `None` is a whole file. Part 3b moves these rules, and moves the anchors
-# with them.
+# its second, and `None` is a whole file. An anchor moves with the rule it bounds.
 TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]] = {
     "packages/core/src/sql-tree.ts": ((None, None),),
     "packages/core/src/fenced-batch.ts": (
         (
             "  private requireFenceSource(",
-            "  /**\n   * A statement that runs meaningfully only when a CAS of this batch won.",
+            "  /**\n   * A follow-on whose row set is GENERATED from the fence.",
         ),
-        ("  /** `cas`, built as a tree.", "  private add(s: {"),
+        ("  casTree(name: string, statement: DefinedStatement): this {", "  async run(db: SqlExecutor"),
     ),
 }
 # A spelling list is a rule for each entry, so every line of one needs a mutation.
@@ -13751,7 +13735,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 666:
+        if len(MUTATIONS) != 665:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
