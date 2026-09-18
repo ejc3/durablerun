@@ -317,6 +317,43 @@ jobs:
           base.write_bytes(candidate)
           print('Installed the pinned head outcome lint over the pinned base lint.')
           PY
+      - name: Bridge withdrawn published names past the older base surface snapshot
+        # The base's package-surface check fails when a name its snapshot lists is
+        # gone, and the base snapshot cannot say a name left on purpose. This tree's
+        # snapshot withdraws names with a reason, and this tree's own check refuses a
+        # withdrawal that does not hold. Pinned to one base snapshot and to the exact
+        # names, this removes those names from the base's list. It replaces data,
+        # never checker logic. Any other base snapshot skips.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          base = Path('/tmp/base/scripts/published-surface-v0.1.0-alpha.1.json')
+          head = Path('scripts/published-surface-v0.1.0-alpha.1.json')
+          pinned = '3b737a4a98c5accefbd025cfc044702dcc64993faa7baed7601a5930c23601f3'
+          if not base.exists() or hashlib.sha256(base.read_bytes()).hexdigest() != pinned:
+              print('Base surface snapshot does not need the withdrawal bridge.')
+              raise SystemExit(0)
+          expected = {'@durablerun/core': {'.': ['FENCE_COLS', 'FENCE_SET', 'FENCE_VALS', 'fenceSetAt']}}
+          withdrawn = json.loads(head.read_text()).get('withdrawn', {})
+          declared = {
+              package: {subpath: sorted(reasons) for subpath, reasons in subpaths.items()}
+              for package, subpaths in withdrawn.items()
+          }
+          if declared != expected:
+              raise SystemExit('The withdrawal bridge is pinned to four names, and this tree withdraws a different set.')
+          snapshot = json.loads(base.read_text())
+          for package, subpaths in withdrawn.items():
+              for subpath, reasons in subpaths.items():
+                  names = snapshot['surface'][package][subpath]
+                  for name, reason in reasons.items():
+                      if names.count(name) != 1 or not isinstance(reason, str) or not reason.strip():
+                          raise SystemExit(f'{package} {subpath}: {name}: the bridge removes only a name the base lists once and this tree withdraws with a reason.')
+                      names.remove(name)
+          base.write_text(json.dumps(snapshot, indent=2) + '\n')
+          print('Removed four withdrawn names from the base surface snapshot; its checker is unchanged.')
+          PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
@@ -413,6 +450,63 @@ jobs:
                   anchors.append((start, text.index('    ),\n', start)))
               (start, end), (new_start, new_end) = anchors
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+          def retire(repaired, candidate, names, inventory):
+              # Remove each named top-level entry, its verdict, and any one-line row another
+              # table keys by its name, for a mutation whose code this tree deleted. The
+              # candidate must no longer register the name, and the inventory assertion
+              # drops by the number removed.
+              for name in names:
+                  if f'"{name}"' in candidate:
+                      raise SystemExit(f'{name}: the bridge retires only an entry this tree no longer registers.')
+                  key = f'        "{name}",\n'
+                  if repaired.count(key) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  start = repaired.rindex('    (\n', 0, repaired.index(key))
+                  if not repaired.startswith('    (\n' + key, start):
+                      raise SystemExit(f'{name}: the bridge retires only a top-level entry.')
+                  repaired = repaired[:start] + repaired[repaired.index('    ),\n', start) + len('    ),\n'):]
+                  verdict = f'    "{name}": ExpectedVerdict(\n'
+                  if repaired.count(verdict) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one verdict entry.')
+                  start = repaired.index(verdict)
+                  repaired = repaired[:start] + repaired[repaired.index('    ),\n', start) + len('    ),\n'):]
+                  row = f'    "{name}": '
+                  repaired = '\n'.join(
+                      line for line in repaired.split('\n') if not (line.startswith(row) and line.endswith(','))
+                  )
+                  if f'"{name}"' in repaired:
+                      raise SystemExit(f'{name}: the base registry still names the retired entry.')
+              size = f'        if len(MUTATIONS) != {inventory}:\n'
+              if repaired.count(size) != 1:
+                  raise SystemExit('the bridge requires the base inventory size assertion.')
+              return repaired.replace(size, f'        if len(MUTATIONS) != {inventory - len(names)}:\n')
+          def reaim_lines(repaired, name, old, new):
+              # Replace literal lines inside one named top-level entry, for an entry a base
+              # generator reads in a shape this tree's registry no longer has.
+              key = f'        "{name}",\n'
+              if repaired.count(key) != 1:
+                  raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
+              start = repaired.rindex('    (\n', 0, repaired.index(key))
+              end = repaired.index('    ),\n', start) + len('    ),\n')
+              if repaired[start:end].count(old) != 1:
+                  raise SystemExit(f'{name}: the re-aim bridge requires the pinned lines exactly once.')
+              return repaired[:start] + repaired[start:end].replace(old, new) + repaired[end:]
+          def list_conditions(repaired, candidate, file, lines):
+              # List condition lines of a tree rule whose mutations this tree registers and the
+              # base predates, so the base's derived coverage check reads them as held.
+              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
+              opening = f'    "{file}": {{\n'
+              if repaired.count(table) != 1 or repaired.count(opening, repaired.index(table)) != 1:
+                  raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
+              at = repaired.index(opening, repaired.index(table)) + len(opening)
+              for line in lines:
+                  if f'"{line}": (' in repaired or line not in candidate:
+                      raise SystemExit(f'{line}: the bridge lists only a line this tree mutates and the base does not list.')
+              entries = ''.join(
+                  f'        "{line}": (\n            "held by mutations the head registry registers, which the base predates"\n        ),\n'
+                  for line in lines
+              )
+              return repaired[:at] + entries + repaired[at:]
           if digest == '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
               # Three SDK guard specs were re-aimed against this registry.
               repaired = previous
@@ -946,6 +1040,79 @@ jobs:
                   'mutation-verdict:construction:tree-role-operand-only-of-in-or-exists',
                   'mutation-verdict:construction:tree-followon-insert-instants-are-filtered',
                   'mutation-verdict:construction:tree-clock-spelling-any-fragment',
+              ))
+          elif digest == '6bfce7f63d8c96771bf2a47584d4a4144a8e8f12c094a2b1e58b33a0e221c700':
+              # Deleting FencedBatch's text path retired the twelve mutations that owned its
+              # text, each with a tree-path successor, and two tree mutations: the question
+              # tree-needs-a-dialect removed is gone now that the dialect is required, and
+              # tree-clock-ban-token-in-followon removed the same condition as
+              # tree-clock-text-in-followon once the dead clock flag went. Four entries
+              # are re-aimed at lines that changed, and the derived coverage check's two
+              # tables move with the rules they bound. The failure successors' deadline
+              # is built from nodes in core, so this tree's registry aims their two exact
+              # mutations at packages/core/src/statements/successor.ts. The base generator
+              # hardcodes the libSQL store as their file and writes its cap as SQL text,
+              # and the base self-test parses every mutant it generates. So each of its
+              # two tuples is aimed at the store text that still stands for that
+              # deadline, the headroom guard that protects the addition, where the
+              # generated text sits inside a template literal and parses. The base gate
+              # runs no mutant. The head registry owns the two that cap the deadline.
+              # The restored reader of a value fragment for a call has four mutations
+              # and four markers the base predates.
+              repaired = retire(previous, candidate, (
+                  'followon-provenance-check',
+                  'positive-fence-required',
+                  'positive-fence-is-not',
+                  'top-level-or-reach',
+                  'clock-ban-in-followon',
+                  'clock-ban-raw-dialect-in-followon',
+                  'raw-fence-token-check',
+                  'event-upsert-requires-preserved-instant',
+                  'testing-helper-bind-count-missing-argument',
+                  'testing-helper-bind-count-unused-argument',
+                  'testing-helper-bind-count-factory',
+                  'testing-helper-bind-undefined-brand',
+                  'tree-needs-a-dialect',
+                  'tree-clock-ban-token-in-followon',
+              ), 678)
+              repaired = reaim(repaired, candidate, (
+                  'tree-clock-text-in-followon',
+                  'tree-followon-spelled-clock-message',
+                  'tree-followon-insert-no-function',
+                  'tree-followon-insert-no-aggregate',
+              ))
+              repaired = reaim_lines(
+                  repaired,
+                  'claim-timeout-successor',
+                  '        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\\n",\n'
+                  '        "f.fence_at_ms + ${infraDelayMs}",\n',
+                  '        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\\n"\n'
+                  '        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",\n'
+                  '        "${epochAdditionFits(NOW, infraDelayMs)}",\n',
+              )
+              repaired = reaim_lines(
+                  repaired,
+                  'user-retry-successor',
+                  '        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\\n",\n'
+                  '        "f.fence_at_ms + ?",\n',
+                  '        "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\\n"\n'
+                  '        "          OR ${epochAdditionFits(NOW, \'?\')})`",\n'
+                  '        "${epochAdditionFits(NOW, \'?\')}",\n',
+              )
+              repaired = reaim_table(
+                  repaired, candidate, 'TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]]'
+              )
+              repaired = reaim_table(
+                  repaired, candidate, 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]]'
+              )
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  'if (bare === undefined || !NOT_A_CALL.includes(bare.toLowerCase())) return true',
+              ))
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:construction:tree-followon-insert-no-fragment-call',
+                  'mutation-verdict:construction:tree-fragment-call-quoted-name',
+                  'mutation-verdict:construction:tree-fragment-call-keyword-is-not-a-call',
+                  'mutation-verdict:construction:tree-fragment-call-keyword-case-fold',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
