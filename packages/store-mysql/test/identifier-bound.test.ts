@@ -238,6 +238,7 @@ it('holds a saga step key to the width less the longest saga prefix, at every en
       ([field, outcome]) =>
         outcome instanceof InvalidDurableStringError && String(outcome).includes(field),
     ),
+    'mutation-verdict:construction:mysql-saga-step-key-bound',
   ).toEqual([true, true, true, true])
   expect(tooLong.reached).toBe(0)
   // A name that is not a saga's is held to the plain width and nothing less.

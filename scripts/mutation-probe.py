@@ -7099,6 +7099,13 @@ MUTATION_SPECS.extend(
             "            mode === 'read' && // MUTATION\n",
             "a write batch InnoDB rolled back as a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge an infrastructure retry",
         ),
+        (
+            "mysql-saga-step-key-bound",
+            "packages/store-mysql/src/store.ts",
+            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > SAGA_STEP_KEY_CHARACTERS) {\n",
+            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > Number.MAX_SAFE_INTEGER) { // MUTATION\n",
+            "a step whose key fits only its shortest saga name starts on MySQL, and the batch that fails its rollback can never store the attempt record",
+        ),
     )
 )
 
@@ -10910,6 +10917,12 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock runs a write batch again after a deadlock, under the named lock it already holds",
             "mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again",
+        ),
+        "mysql-saga-step-key-bound": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/identifier-bound.test.ts",
+            "holds a saga step key to the width less the longest saga prefix, at every entry that carries one",
+            "mutation-verdict:construction:mysql-saga-step-key-bound",
         ),
     }
 )
@@ -16314,7 +16327,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 828:
+        if len(MUTATIONS) != 829:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
