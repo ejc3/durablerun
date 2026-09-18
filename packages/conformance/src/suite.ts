@@ -3440,6 +3440,26 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      // ChildTasks.tla's UserMayForge is FALSE: a name that starts with `$` belongs to
+      // the engine. A caller that could emit a task's completion event would win
+      // first-write-wins ahead of the task's own terminal batch and forge its result.
+      it('refuses to emit a reserved event name, and writes nothing', async () => {
+        const spawned = await f.store.spawn(Q, 'child', '{}')
+        const reserved = `$task-done:${spawned.taskId}`
+        const forged = await refusalName(
+          f.store.emitEvent(Q, reserved, '{"state":"completed","completedPayloadJson":"1"}'),
+        )
+        const stored = await readOne(
+          f.raw,
+          `SELECT COUNT(*) AS n FROM events WHERE queue = ? AND event_name = ?`,
+          [Q, reserved],
+        )
+        expect(
+          { forged, events: Number(stored?.n) },
+          'mutation-verdict:behavior:emit-event-refuses-reserved-name',
+        ).toEqual({ forged: 'RangeError', events: 0 })
+      })
+
       it('emit-before-await returns the payload inline with nothing suspended', async () => {
         await f.store.emitEvent(Q, 'ready', '{"x":2}')
         await f.store.spawn(Q, 'late', '{}')
