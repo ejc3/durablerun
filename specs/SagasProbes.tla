@@ -1,9 +1,10 @@
 ----------------------------- MODULE SagasProbes -----------------------------
 \* Vacuity probes for Sagas.tla, as Probes.tla is for Scheduler.tla.  Each is
 \* EXPECTED TO FAIL under the configuration that bears its name, and its
-\* counterexample is a witness.  Two show that an invariant can fail, one that
-\* the liveness property can, and eight that a behaviour the protocol exists for
-\* is reachable.  Run one at a time.
+\* counterexample is a witness: that an invariant or the liveness property can
+\* fail, or that a behaviour the protocol exists for is reachable.  A witness of a
+\* saga asks for a rollback that ran, because a saga with nothing to roll back
+\* completes at entry and shows nothing.  Run one at a time.
 EXTENDS Sagas
 
 \* AtomicEnter = FALSE: the phase marker is a second step, so a task is failed
@@ -27,12 +28,19 @@ SagasProbeStartedNotFinished == ~(\E s \in Steps : rb[s] = "done" /\ fwd[s] = "s
 SagasProbeRollbackRetried == ~(\E s \in Steps : rb[s] = "done" /\ rbTries[s] > 0)
 \* Witness: a cancellation that halted a saga.
 SagasProbeCancelledMidRollback == ~(task = "cancelled" /\ phase = "rolling_back")
-\* Witness, under "fresh": a revived task that ran a rolled-back step again.
-SagasProbeRevivedAfterSaga == ~(generation = 1 /\ \E s \in Registered : fwd[s] = "done")
-\* Witness, with InfraCapRollsBack = TRUE: a saga an infrastructure cap began.
-SagasProbeInfraRolledBack == ~(cause = "infra" /\ outcome = "complete")
+\* Witness, under "fresh": a step whose effect a rollback compensated runs again
+\* in the next generation.  An action property, because only a step shows it.
+SagasProbeRevivedAfterSaga ==
+  [][~(generation = 1 /\ \E s \in Registered : effect[s] = "gone" /\ effect'[s] = "maybe")]_vars
+\* Witness, with InfraCapRollsBack = TRUE: a saga an infrastructure cap began,
+\* which rolled a step back and completed.
+SagasProbeInfraRolledBack ==
+  ~(cause = "infra" /\ outcome = "complete" /\ \E s \in Registered : rb[s] = "done")
 \* Witness, with InfraCapRollsBack = FALSE: a failed task with a started step and
 \* no rollback outcome.
 SagasProbeInfraSkipped ==
   ~(task = "failed" /\ outcome = "none" /\ \E s \in Registered : fwd[s] # "none")
+\* Witness, with InfraCapRollsBack = FALSE: a failed task no saga began for is
+\* revived in the forward phase, as retry-task revives any failed task today.
+SagasProbeRevivedWithNoSaga == ~(task = "live" /\ revivals = 1 /\ generation = 0)
 =============================================================================
