@@ -416,6 +416,42 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       expect((await awaitChild(f.store, Q, parent, child.taskId, null)).emitted).toBe(true)
     })
 
+    // A terminal write's answer is its batch's answer. A task that was revived and ends
+    // again inserts no event, because its first outcome stands. Whatever the store reads
+    // once that batch has committed, a failure of the read is not a failure of the write:
+    // the run is complete, and the cancellation happened.
+    it('answers a committed terminal write as committed when a read after it fails', async () => {
+      const answers: Record<string, unknown> = {}
+      for (const how of ['complete', 'cancel'] as const) {
+        const child = await f.store.spawn(Q, `child-${how}`, '{}', { maxAttempts: 1 })
+        const first = await claimActivated(f.store, Q, `w-first-${how}`)
+        await f.store.fail(Q, first.runId, first.claimToken, FAILURE, null)
+        expect(await f.store.retryTask(Q, child.taskId)).not.toBeNull()
+        const second = await claimActivated(f.store, Q, `w-second-${how}`)
+        const readsFail = f.storeOver({
+          batch: (label, statements, control) =>
+            label === 'task-done-state'
+              ? Promise.reject(new Error('the connection dropped after the commit'))
+              : f.raw.batch(label, statements, control),
+        })
+        const answer = await (how === 'complete'
+          ? readsFail.complete(Q, second.runId, second.claimToken, '{}')
+          : readsFail.cancelTask(Q, child.taskId)
+        ).then(
+          (value) => value ?? 'accepted',
+          (error: unknown) => `threw: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        const task = await readOne(f.raw, 'SELECT state FROM tasks WHERE task_id = ?', [
+          child.taskId,
+        ])
+        answers[how] = { answer, state: task?.state }
+      }
+      expect(answers).toEqual({
+        complete: { answer: 'accepted', state: 'completed' },
+        cancel: { answer: true, state: 'cancelled' },
+      })
+    })
+
     // A failure that retries ends nothing: the task is live, so it has no outcome yet.
     it('a failure that schedules a retry writes no completion event and wakes nobody', async () => {
       const parent = await claimedParent(f)
