@@ -50,6 +50,11 @@ SETUP_LABEL_FAMILIES = {
         "raw",
         "migrate:v",
     ): "migration versions are setup trace addresses, not protocol actions",
+    (
+        "packages/store-mysql/src/admin.ts",
+        "raw",
+        "migrate:v",
+    ): "migration versions are setup trace addresses, not protocol actions",
 }
 
 labels: set[str] = set()

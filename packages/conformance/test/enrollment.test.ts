@@ -16,7 +16,7 @@ const EXPECTED_SURFACE_IDS = [
   'wake-witness',
   'schema-admin',
 ] as const
-const EXPECTED_DIALECTS = ['libsql', 'postgres'] as const
+const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 
 describe('shared conformance enrollment is one indivisible door', () => {
   it('exports one umbrella instead of asking dialects to select sub-suites', () => {

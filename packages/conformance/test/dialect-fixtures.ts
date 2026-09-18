@@ -1,5 +1,6 @@
 import type { StoreFixtureFactory } from '../src/index.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
+import { makeMysqlFixture } from './fixture-mysql.js'
 import { makePostgresFixture } from './fixture-postgres.js'
 
 export const DIALECT_FIXTURES: readonly {
@@ -8,6 +9,7 @@ export const DIALECT_FIXTURES: readonly {
 }[] = [
   { dialect: 'libsql', makeFixture: makeLibsqlFixture },
   { dialect: 'postgres', makeFixture: makePostgresFixture },
+  { dialect: 'mysql', makeFixture: makeMysqlFixture },
 ]
 
 /**

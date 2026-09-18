@@ -12,11 +12,11 @@ cd "$(dirname "$0")/.."
 ENGINE_SRC_DIRS=(
   packages/core/src
   packages/store-libsql/src
+  packages/store-postgres/src
+  packages/store-mysql/src
   packages/conformance/src
   packages/driver/src
   packages/sdk/src
-  # store-postgres and store-mysql join on arrival — dialect stores are
-  # engine code too.
 )
 ALLOWLIST=(
   packages/core/src/ids.ts          # systemIdSource IS the id/entropy boundary
