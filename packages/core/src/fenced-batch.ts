@@ -131,6 +131,14 @@ interface DerivedSelection<R extends FenceRelation = FenceRelation> {
   whereArgs?: SqlStatement['args']
   narrow?: string
   narrowArgs?: SqlStatement['args']
+  /**
+   * The one queue both sides are in, for a queue-scoped relation: the source rows and
+   * the written rows each compare their queue with this bind. Without it the source is
+   * correlated to the target on the queue, which is as safe and runs the source once
+   * for every target row. A source selected by key pays nothing for that. A source
+   * selected by queue and state pays the target table times the queue's backlog.
+   */
+  queue?: string
   rows: 'one' | 'source-keys'
 }
 
@@ -445,12 +453,19 @@ export class FencedBatch {
       }
     }
     const whereArgs = spec.whereArgs ?? []
+    const boundQueue = spec.queue
+    if (boundQueue !== undefined && !relation.queueScoped) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') binds a queue, and '${spec.relation}' is not queue-scoped`,
+      )
+    }
     const fencedSource = () => {
       let rows = generatedBuilder.selectFrom(`${from} as f`)
       if (spec.where) {
         rows = rows.where(rawSql<boolean>(sqlFragment(spec.where, whereArgs), 'predicate'))
       }
-      if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)
+      if (boundQueue !== undefined) rows = rows.where('f.queue', '=', boundQueue)
+      else if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)
       return rows.where((eb) => eb(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence)))
     }
     // A self relation reads its own target. MySQL refuses that directly, so the keys go
@@ -472,9 +487,10 @@ export class FencedBatch {
       : null
 
     if (spec.set === undefined) {
-      const selected = generatedBuilder
+      let selected = generatedBuilder
         .deleteFrom(target)
         .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+      if (boundQueue !== undefined) selected = selected.where(`${target}.queue`, '=', boundQueue)
       return this.addGenerated(name, narrow === null ? selected : selected.where(narrow), rows)
     }
     if (assignments.length === 0) {
@@ -518,10 +534,11 @@ export class FencedBatch {
     // UPDATE always emits provenance: this statement's stamp, at the instant of the rows
     // it follows. The correlation therefore occurs once in the instant subquery and once
     // in the row selection, and the caller supplies its arguments once.
-    const updated = generatedBuilder
+    let updated = generatedBuilder
       .updateTable(target)
       .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })
       .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+    if (boundQueue !== undefined) updated = updated.where(`${target}.queue`, '=', boundQueue)
     return this.addGenerated(name, narrow === null ? updated : updated.where(narrow), rows)
   }
 

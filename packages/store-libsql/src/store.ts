@@ -2033,9 +2033,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // without a caller-controlled stamping escape.
       fence: 'wake-runs',
       // The queue narrows the source to an index rather than scanning runs;
-      // `state = 'pending'` is what wake-runs just set on exactly these rows.
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      // `state = 'pending'` is what wake-runs just set on exactly these rows. The queue
+      // is bound on both sides and not correlated, or the source would run once for
+      // every task row: every batch that ends a task pays for this statement.
+      queue,
+      where: `f.state = 'pending'`,
       set: { state: `'pending'` },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',

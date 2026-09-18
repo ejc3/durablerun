@@ -1214,6 +1214,73 @@ describe('fence provenance', () => {
     }
   })
 
+  it('a generated relation that binds its queue holds both sides to it', async () => {
+    const f = await fixture()
+    try {
+      // The source run is in the bound queue and its task is not.
+      await insertTask(f.raw, { id: 'bound-foreign-task', state: 'pending', queue: 'other' })
+      await insertRun(f.raw, {
+        id: 'bound-foreign-task-run',
+        taskId: 'bound-foreign-task',
+        state: 'pending',
+      })
+      // The task is in the bound queue and its source run is not.
+      await insertTask(f.raw, { id: 'bound-foreign-run', state: 'pending' })
+      await insertRun(f.raw, {
+        id: 'bound-foreign-run-run',
+        taskId: 'bound-foreign-run',
+        state: 'pending',
+        queue: 'other',
+      })
+      // Both in the bound queue: the control the statement must still reach.
+      await insertTask(f.raw, { id: 'bound-same', state: 'pending' })
+      await insertRun(f.raw, { id: 'bound-same-run', taskId: 'bound-same', state: 'pending' })
+      const bound = new FencedBatch('relation:bound-queue', 'relation-seed', {
+        now: NOW_MS,
+        tree: TREE_DIALECT,
+      })
+      bound.casMany('source', 'runs', 3, `UPDATE runs SET ${FENCE_SET} WHERE run_id IN (?, ?, ?)`, [
+        'bound-foreign-task-run',
+        'bound-foreign-run-run',
+        'bound-same-run',
+      ])
+      bound.derived('target', {
+        relation: 'runs-to-tasks',
+        fence: 'source',
+        queue: Q,
+        set: { state: `'completed'` },
+        rows: 'source-keys',
+      })
+      await bound.run(f.raw)
+      const states = await query(
+        f.raw,
+        `SELECT task_id, state FROM tasks WHERE task_id LIKE 'bound-%' ORDER BY task_id`,
+      )
+      expect(states, 'mutation-verdict:behavior:generated-bound-queue-holds-both-sides').toEqual([
+        { task_id: 'bound-foreign-run', state: 'pending' },
+        { task_id: 'bound-foreign-task', state: 'pending' },
+        { task_id: 'bound-same', state: 'completed' },
+      ])
+      expect(() =>
+        new FencedBatch('relation:bound-unscoped', 'relation-seed', {
+          now: NOW_MS,
+          tree: TREE_DIALECT,
+        })
+          .cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
+            'bound-same-run',
+          ])
+          .derived('target', {
+            relation: 'runs-to-waits',
+            fence: 'source',
+            queue: Q,
+            rows: 'source-keys',
+          }),
+      ).toThrow(/not queue-scoped/)
+    } finally {
+      await f.close()
+    }
+  })
+
   it('generated cross-table relations cannot cross queue ownership', async () => {
     const f = await fixture()
     try {

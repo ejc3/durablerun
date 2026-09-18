@@ -74,8 +74,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -170,8 +170,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -230,8 +230,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -264,8 +264,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -316,8 +316,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -352,8 +352,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -396,8 +396,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
@@ -440,8 +440,8 @@
         "bindArity": 15
       },
       {
-        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"queue\" = \"tasks\".\"queue\" and \"f\".\"fence_stamp\" = ?) and (state IN ('pending','running','sleeping'))",
-        "bindArity": 5
+        "sql": "update \"tasks\" set \"state\" = ('pending'), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"runs\" as \"f\" where (f.state = 'pending') and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"tasks\".\"queue\" = ? and (state IN ('pending','running','sleeping'))",
+        "bindArity": 6
       },
       {
         "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.queue = ? AND f.state = 'pending') and \"f\".\"fence_stamp\" = ?) and (event_name = ? AND status = 'waiting')",
