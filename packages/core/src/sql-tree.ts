@@ -22,6 +22,7 @@ import {
   OrNode,
   OrderByItemNode,
   ParensNode,
+  PrimitiveValueListNode,
   type QueryCompiler,
   type QueryId,
   RawNode,
@@ -48,6 +49,7 @@ import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlStatement } from './primitives.js'
 import { children, someNode } from './tree-walk.js'
+import { LIVE_STATES, TERMINAL_STATES } from './types.js'
 
 // Task code shares this process and may replace a global such as `Map` while a pass
 // runs. What these checks keep across calls lives in collections captured at module
@@ -959,6 +961,84 @@ export function rawFragmentTexts(tree: OperationNode): string[] {
     return false
   })
   return texts
+}
+
+/**
+ * The sets of states a statement may name. A list of states defines a set of them, and a
+ * second definition drifts from the first: the claim once decided eligibility from its own
+ * list, which lacked what the shared one had gained. A store's text fragments spell these
+ * sets as SQL text, core's statements build them from nodes, and both are held to this
+ * one table, so a list that is none of these sets is refused wherever it is written.
+ */
+const QUEUED_STATES = ['pending', 'sleeping']
+const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES, TERMINAL_STATES]
+const STATE_NAMES: readonly string[] = [...LIVE_STATES, ...TERMINAL_STATES]
+
+/** Why a list of values is a second definition of a set of states, or null when it is not one. */
+function stateListProblem(values: readonly unknown[]): string | null {
+  // One state is a comparison with that state, which defines no set.
+  if (values.length < 2) return null
+  if (!values.some((value) => typeof value === 'string' && STATE_NAMES.includes(value))) return null
+  const defined = STATE_SETS.some(
+    (set) => set.length === values.length && set.every((state) => values.includes(state)),
+  )
+  return defined
+    ? null
+    : `the state list (${values.map((value) => String(value)).join(', ')}), which is none of the defined sets of states`
+}
+
+/** A parenthesized list of string literals in a fragment's text, whatever stands before it. */
+const LITERAL_LIST = /\(\s*'(?:[^']|'')*'(?:\s*,\s*'(?:[^']|'')*')*\s*\)/g
+const ORDERING_OPERATORS = ['<', '<=', '>', '>=']
+
+/**
+ * Why a statement holds a second definition of eligibility, or null when it holds none.
+ * These are the rules a scan of store SQL text applied to text alone, asked of the tree,
+ * where a condition built from nodes is as visible as one written as text.
+ *
+ * A list of states must be one of the defined sets, whether it is a value list built from
+ * nodes or a list of literals in a fragment's text. It is read wherever it stands, so the
+ * rule does not depend on the operator before it.
+ *
+ * The cancellation deadline is compared in one place for each dialect, the store's own
+ * fragments, which carry the bounds a stored deadline must be within. A comparison of
+ * `cancel_at_ms` built from nodes is a second one, and it is refused whichever side the
+ * column stands on and whatever arithmetic surrounds it. `IS NULL` orders nothing and stays.
+ */
+export function eligibilityDefinitionProblem(tree: OperationNode): string | null {
+  let problem: string | null = null
+  // A row of inserted values lists one value for each column, and no set of anything.
+  const rows: OperationNode[] = []
+  someNode(tree, (node) => {
+    if (ValuesNode.is(node)) {
+      rows.push(...node.values)
+    } else if (rows.includes(node)) {
+      return false
+    } else if (PrimitiveValueListNode.is(node)) {
+      problem = stateListProblem(node.values)
+    } else if (ValueListNode.is(node)) {
+      problem = stateListProblem(
+        node.values.map((value) => (ValueNode.is(value) ? value.value : undefined)),
+      )
+    } else if (RawNode.is(node)) {
+      for (const list of node.sqlFragments.join(' ').match(LITERAL_LIST) ?? []) {
+        problem ??= stateListProblem(readFragment(list).literals)
+      }
+    } else if (
+      BinaryOperationNode.is(node) &&
+      ORDERING_OPERATORS.includes(operatorName(node.operator) ?? '')
+    ) {
+      const compared = [node.leftOperand, node.rightOperand].some((operand) =>
+        someNode(operand, (inner) => columnName(inner) === 'cancel_at_ms'),
+      )
+      if (compared) {
+        problem =
+          "a comparison of cancel_at_ms built from nodes: the deadline is compared by the store's cancelDue and cancelNotDue fragments alone"
+      }
+    }
+    return problem !== null
+  })
+  return problem
 }
 
 const CLOCK_FUNCTIONS = [

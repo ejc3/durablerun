@@ -886,6 +886,178 @@ MUTATION_SPECS = [
         "a fragment in a follow-on insert's SELECT list may spell a call no rule reads, and the insert writes a row its fence did not match",
     ),
     (
+        "tree-state-list-built-from-nodes",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (PrimitiveValueListNode.is(node)) {",
+        "    } else if (false && PrimitiveValueListNode.is(node)) {",
+        "a second definition of a set of states passes when its list is built from nodes",
+    ),
+    (
+        "tree-state-list-of-value-nodes",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (ValueListNode.is(node)) {\n"
+        "      problem = stateListProblem(\n"
+        "        node.values.map((value) => (ValueNode.is(value) ? value.value : undefined)),",
+        "    } else if (ValueListNode.is(node)) {\n"
+        "      problem = stateListProblem(\n"
+        "        node.values.map((value) => (ValueNode.is(value) ? undefined : undefined)),",
+        "a second definition of a set of states passes when its values are value nodes",
+    ),
+    (
+        "tree-state-set-live",
+        "packages/core/src/sql-tree.ts",
+        "const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES, TERMINAL_STATES]",
+        "const STATE_SETS: readonly (readonly string[])[] = [QUEUED_STATES, TERMINAL_STATES]",
+        "the live states are no longer a set a statement may name",
+    ),
+    (
+        "tree-state-set-queued",
+        "packages/core/src/sql-tree.ts",
+        "const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES, TERMINAL_STATES]",
+        "const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, TERMINAL_STATES]",
+        "the queued states are no longer a set a statement may name",
+    ),
+    (
+        "tree-state-set-terminal",
+        "packages/core/src/sql-tree.ts",
+        "const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES, TERMINAL_STATES]",
+        "const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES]",
+        "the terminal states are no longer a set a statement may name",
+    ),
+    (
+        "tree-state-list-one-state",
+        "packages/core/src/sql-tree.ts",
+        "  if (values.length < 2) return null",
+        "  if (values.length < 1) return null",
+        "a comparison with one state is refused as a set that is not defined",
+    ),
+    (
+        "tree-state-list-names-a-state",
+        "packages/core/src/sql-tree.ts",
+        "  if (!values.some((value) => typeof value === 'string' && STATE_NAMES.includes(value))) return null",
+        "  if (false) return null",
+        "a list that names no state is refused as a set of states",
+    ),
+    (
+        "tree-state-list-length",
+        "packages/core/src/sql-tree.ts",
+        "    (set) => set.length === values.length && set.every((state) => values.includes(state)),",
+        "    (set) => set.every((state) => values.includes(state)),",
+        "a defined set with one state more passes as that set",
+    ),
+    (
+        "tree-state-list-members",
+        "packages/core/src/sql-tree.ts",
+        "  const defined = STATE_SETS.some(\n"
+        "    (set) => set.length === values.length && set.every((state) => values.includes(state)),",
+        "  const defined = STATE_SETS.some(\n"
+        "    (set) => set.length === values.length && set.every(() => true),",
+        "any list as long as a defined set passes as that set",
+    ),
+    (
+        "tree-state-list-skips-insert-rows",
+        "packages/core/src/sql-tree.ts",
+        "    if (ValuesNode.is(node)) {\n"
+        "      rows.push(...node.values)",
+        "    if (false && ValuesNode.is(node)) {\n"
+        "      rows.push(...node.values)",
+        "a row of inserted values that names a state is refused as a list of states",
+    ),
+    (
+        "tree-state-list-in-a-fragment",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (RawNode.is(node)) {\n"
+        "      for (const list of node.sqlFragments.join(' ').match(LITERAL_LIST) ?? []) {",
+        "    } else if (false && RawNode.is(node)) {\n"
+        "      for (const list of node.sqlFragments.join(' ').match(LITERAL_LIST) ?? []) {",
+        "a second definition of a set of states passes when it is written in a fragment's text",
+    ),
+    (
+        "tree-state-list-every-list-of-a-fragment",
+        "packages/core/src/sql-tree.ts",
+        "        problem ??= stateListProblem(readFragment(list).literals)",
+        "        problem = stateListProblem(readFragment(list).literals) ?? null",
+        "a defined list later in a fragment clears the problem of a list before it",
+    ),
+    (
+        "tree-eligibility-first-problem-stands",
+        "packages/core/src/sql-tree.ts",
+        "    return problem !== null\n"
+        "  })\n"
+        "  return problem\n"
+        "}",
+        "    return false\n"
+        "  })\n"
+        "  return problem\n"
+        "}",
+        "a defined list later in a statement clears the problem of a list before it",
+    ),
+    (
+        "tree-eligibility-asked-of-every-statement",
+        "packages/core/src/fenced-batch.ts",
+        "    if (second !== null) throw new Error(`${at} holds ${second}`)",
+        "    if (false && second !== null) throw new Error(`${at} holds ${second}`)",
+        "a batch admits a statement that holds a second definition of eligibility",
+    ),
+    (
+        "tree-deadline-operator-less",
+        "packages/core/src/sql-tree.ts",
+        "const ORDERING_OPERATORS = ['<', '<=', '>', '>=']",
+        "const ORDERING_OPERATORS = ['<=', '>', '>=']",
+        "a deadline compared with < passes when it is built from nodes",
+    ),
+    (
+        "tree-deadline-operator-less-or-equal",
+        "packages/core/src/sql-tree.ts",
+        "const ORDERING_OPERATORS = ['<', '<=', '>', '>=']",
+        "const ORDERING_OPERATORS = ['<', '>', '>=']",
+        "a deadline compared with <= passes when it is built from nodes",
+    ),
+    (
+        "tree-deadline-operator-greater",
+        "packages/core/src/sql-tree.ts",
+        "const ORDERING_OPERATORS = ['<', '<=', '>', '>=']",
+        "const ORDERING_OPERATORS = ['<', '<=', '>=']",
+        "a deadline compared with > passes when it is built from nodes",
+    ),
+    (
+        "tree-deadline-operator-greater-or-equal",
+        "packages/core/src/sql-tree.ts",
+        "const ORDERING_OPERATORS = ['<', '<=', '>', '>=']",
+        "const ORDERING_OPERATORS = ['<', '<=', '>']",
+        "a deadline compared with >= passes when it is built from nodes",
+    ),
+    (
+        "tree-deadline-either-side",
+        "packages/core/src/sql-tree.ts",
+        "      const compared = [node.leftOperand, node.rightOperand].some((operand) =>",
+        "      const compared = [node.leftOperand].some((operand) =>",
+        "a deadline comparison passes when the column stands on the right",
+    ),
+    (
+        "tree-deadline-under-arithmetic",
+        "packages/core/src/sql-tree.ts",
+        "        someNode(operand, (inner) => columnName(inner) === 'cancel_at_ms'),",
+        "        referencedColumn(operand) === 'cancel_at_ms',",
+        "a deadline comparison passes when arithmetic surrounds the column",
+    ),
+    (
+        "tree-deadline-orders",
+        "packages/core/src/sql-tree.ts",
+        "      ORDERING_OPERATORS.includes(operatorName(node.operator) ?? '')",
+        "      (operatorName(node.operator) ?? '') !== undefined",
+        "a test of the deadline that orders nothing is refused as a comparison",
+    ),
+    (
+        "tree-deadline-names-the-column",
+        "packages/core/src/sql-tree.ts",
+        "      if (compared) {\n"
+        "        problem =",
+        "      if (true || compared) {\n"
+        "        problem =",
+        "an ordering of any column is refused as a deadline comparison",
+    ),
+    (
         "tree-walk-reads-below-the-root",
         "packages/core/src/tree-walk.ts",
         "    for (const child of kids) visit(child)",
@@ -7158,6 +7330,138 @@ VERDICTS = {
         "the tree path a follow-on that inserts selects no fragment",
         "mutation-verdict:construction:tree-followon-insert-no-fragment",
     ),
+    "tree-state-list-built-from-nodes": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states refuses a list built from nodes that is none of the defined sets",
+        "mutation-verdict:construction:tree-state-list-built-from-nodes",
+    ),
+    "tree-state-list-of-value-nodes": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states refuses such a list when its values are value nodes",
+        "mutation-verdict:construction:tree-state-list-of-value-nodes",
+    ),
+    "tree-state-set-live": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states accepts the live states, in any order",
+        "mutation-verdict:construction:tree-state-set-live",
+    ),
+    "tree-state-set-queued": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states accepts the queued states, in any order",
+        "mutation-verdict:construction:tree-state-set-queued",
+    ),
+    "tree-state-set-terminal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states accepts the terminal states, in any order",
+        "mutation-verdict:construction:tree-state-set-terminal",
+    ),
+    "tree-state-list-one-state": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states accepts one state, which defines no set",
+        "mutation-verdict:construction:tree-state-list-one-state",
+    ),
+    "tree-state-list-names-a-state": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states accepts a list that names no state",
+        "mutation-verdict:construction:tree-state-list-names-a-state",
+    ),
+    "tree-state-list-length": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states refuses a defined set with one state more",
+        "mutation-verdict:construction:tree-state-list-length",
+    ),
+    "tree-state-list-members": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states refuses a list as long as a defined set that is not one",
+        "mutation-verdict:construction:tree-state-list-members",
+    ),
+    "tree-state-list-skips-insert-rows": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states reads a row of inserted values as a row, and as no list of states",
+        "mutation-verdict:construction:tree-state-list-skips-insert-rows",
+    ),
+    "tree-state-list-in-a-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states refuses such a list in the text of a fragment, whatever stands before it",
+        "mutation-verdict:construction:tree-state-list-in-a-fragment",
+    ),
+    "tree-state-list-every-list-of-a-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states reads every list of a fragment, and a defined one after it clears nothing",
+        "mutation-verdict:construction:tree-state-list-every-list-of-a-fragment",
+    ),
+    "tree-eligibility-first-problem-stands": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states keeps the first problem it finds, whatever the statement holds after it",
+        "mutation-verdict:construction:tree-eligibility-first-problem-stands",
+    ),
+    "tree-eligibility-asked-of-every-statement": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a list of states is asked of a statement of every kind",
+        "mutation-verdict:construction:tree-eligibility-asked-of-every-statement",
+    ),
+    "tree-deadline-operator-less": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses cancel_at_ms < a value, built from nodes",
+        "mutation-verdict:construction:tree-deadline-operator-less",
+    ),
+    "tree-deadline-operator-less-or-equal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses cancel_at_ms <= a value, built from nodes",
+        "mutation-verdict:construction:tree-deadline-operator-less-or-equal",
+    ),
+    "tree-deadline-operator-greater": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses cancel_at_ms > a value, built from nodes",
+        "mutation-verdict:construction:tree-deadline-operator-greater",
+    ),
+    "tree-deadline-operator-greater-or-equal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses cancel_at_ms >= a value, built from nodes",
+        "mutation-verdict:construction:tree-deadline-operator-greater-or-equal",
+    ),
+    "tree-deadline-either-side": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses it with the column on the right",
+        "mutation-verdict:construction:tree-deadline-either-side",
+    ),
+    "tree-deadline-under-arithmetic": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline refuses it with arithmetic around the column",
+        "mutation-verdict:construction:tree-deadline-under-arithmetic",
+    ),
+    "tree-deadline-orders": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline accepts a test of the column that orders nothing",
+        "mutation-verdict:construction:tree-deadline-orders",
+    ),
+    "tree-deadline-names-the-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "a second definition of eligibility a comparison of the cancellation deadline accepts an ordering of another column",
+        "mutation-verdict:construction:tree-deadline-names-the-column",
+    ),
     "tree-walk-reads-below-the-root": ExpectedVerdict(
         "construction",
         "packages/core/test/tree-walk.test.ts",
@@ -12830,6 +13134,7 @@ TREE_RULE_SPELLING_BLOCKS: tuple[tuple[str, str, str], ...] = (
         "  ].join('|'),\n",
     ),
     ("packages/core/src/sql-tree.ts", "const COUNTING_OPERATORS = ", "\n"),
+    ("packages/core/src/sql-tree.ts", "const ORDERING_OPERATORS = ", "\n"),
 )
 TREE_CONDITION_TOKEN = re.compile(
     r"\bif \(|&&|\|\||(?<!\?)\? |\.every\(|\.some\(|=== |!== |\.includes\(|\.filter\("
@@ -13102,6 +13407,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : tableName(source)": (
             "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
         ),
+        "BinaryOperationNode.is(node) &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 307 at the fewest"
+        ),
         "OrderByItemNode.is(parent) &&": (
             "a guard, and no shape tells it from the code: only an ORDER BY item has a direction field"
         ),
@@ -13194,6 +13502,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
         "if (!SelectQueryNode.is(query)) return []": (
             "a guard, and no shape tells it from the code: only a SELECT has one source that can be a derived table"
+        ),
+        "if (!values.some((value) => typeof value === 'string' && STATE_NAMES.includes(value))) return null": (
+            "changes nothing a statement can show: with the string test gone the state names are asked about a value that is no string, and they hold none"
         ),
         "if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
@@ -13455,6 +13766,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
         "} else if (operand !== null) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
+        ),
+        "} else if (rows.includes(node)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
         ),
         "} else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {": (
             "a guard, and no shape tells it from the code: the first two tests narrow a type before the row count is read"
@@ -15010,7 +15324,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 747:
+        if len(MUTATIONS) != 769:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

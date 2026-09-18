@@ -28,6 +28,7 @@ import {
   type TreeDialect,
   columnValue,
   defineStatement,
+  eligibilityDefinitionProblem,
   fenceValue,
   followOnInsertProvenance,
   fragmentBinds,
@@ -714,6 +715,8 @@ export class FencedBatch {
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
+    const second = eligibilityDefinitionProblem(tree)
+    if (second !== null) throw new Error(`${at} holds ${second}`)
     const isCas = kind === 'cas' || kind === 'casMany'
     if (kind === 'tail') {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
