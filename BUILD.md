@@ -1182,20 +1182,37 @@ these three things; nothing else in the system does I/O, time, or randomness.
   attempt is a stuttering step. The review round is
   `postmortems/pr3.4-sagas-spec-review.md`.
 
-- **PR3.12 concurrent PostgreSQL migrators**: a concurrent cold-start migrator
-  can be rejected, and the cause is not known yet. `lets concurrent cold-start
-  migrators converge on the current schema` failed PR #40's `verify` twice on
-  PostgreSQL, with two of eight migrators rejected, on code that PR does not
-  touch, and passed on a rerun. It passed in the eleven CI runs before and in
-  sixty local rounds of eight migrators each. PostgreSQL's log for a failed run
-  shows only the designed losers: `pg_type_typname_nsp_index` on `CREATE TABLE
-  IF NOT EXISTS meta`, then `meta_pkey` on each `applied:vN` sentinel, each
-  raised at the instant a winner committed. `applyVersionedWrite` forgives such
-  a loser when the recorded version has reached the write's version, which a
-  read after the winner's commit should see, so the log does not explain a
-  rejection. The test compared only fulfilled and rejected and threw the
-  reason away. It reports the reason now, so the next failure names its cause.
-  Fix it red first from that cause. Until then a rerun clears it.
+- **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
+  migrator could be rejected as facing a malformed database. `lets concurrent
+  cold-start migrators converge on the current schema` failed PR #40's
+  `verify` twice on PostgreSQL, with two of eight migrators rejected, and
+  passed on a rerun. The cause: the executor read the schema version under
+  REPEATABLE READ, which takes its snapshot before the statement resolves the
+  name, and PostgreSQL resolves a name against the newest catalog. A version
+  read racing a concurrent bootstrap's commit was answered with the `meta`
+  table and no `schema_version` row, which the admin calls a schema mismatch.
+  The server raises no error for that read, so PostgreSQL's log for a failed
+  run showed only the designed losers: `pg_type_typname_nsp_index` on `CREATE
+  TABLE IF NOT EXISTS meta`, then `meta_pkey` on each `applied:vN` sentinel,
+  each raised at the instant a winner committed. `applyVersionedWrite`
+  forgives those once the recorded version has reached the write's version,
+  and they are expected after a concurrent cold start. Raced through the real
+  migrator, 2 of 300 rounds rejected a migrator in the test's exact shape, and
+  18 and 22 of 300 with ten jittered migrators, every time with `got 1 results
+  and 0 rows`, the reason that test has reported since PR #40. The executor
+  now reads the version under READ COMMITTED, where the snapshot follows the
+  name lookup, and none of 3000 rounds rejected one. DESIGN.md states the
+  property for each dialect. `postgres-bootstrap-window.test.ts` shows both
+  isolation levels on the server, with one advisory lock ordering a
+  bootstrap's commit after the reader's first statement. No test can order the
+  inside of one statement, so the executor's unit test and its registered
+  mutation hold the isolation level, and the eight-migrator case still meets
+  the race in under one run in a hundred. A first fix, a confirming second
+  read in both admins, treated the symptom and was replaced in review. The
+  same review found that the libSQL admin ran its bootstrap bare, against
+  DESIGN.md, so a bootstrap that lost to a concurrent winner rejected the
+  loser. It is forgiven now once the metadata exists. The round is
+  `postmortems/pr3.12-migrator-race-review.md`.
 - **PR3.13 `verify` fails with every test passing**: three times on 2026-09-17
   the `verify` job exited 1 after every test had passed, on vitest's unhandled
   error `[vitest-worker]: Timeout calling "onTaskUpdate"`. Measured: a worker
@@ -1361,6 +1378,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   remains deferred by the current milestone.
 - **PR4.3 store-mysql**: token claim, READ COMMITTED, BIGINT epoch-ms, tx-per-
   transition; MySQL 8 container in CI; optional PlanetScale smoke job.
+  - **Owed from PR3.12:** MySQL commits each DDL statement on its own, so a
+    `meta` table without its version row is an ordinary state during every
+    cold start, and isolation alone cannot hide it. The adapter must serialize
+    bootstrap against version reads, and pass the eight-migrator and
+    lost-bootstrap schema/admin cases at volume.
 
 ## Phase 5 — operations + sharding
 
