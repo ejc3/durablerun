@@ -892,56 +892,77 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `postmortems/pr3.9e-part1-review.md`, is the third running whose findings
     trace to one cause: the corpus proves statements, and nothing compares
     what the tree rules refuse with what the text rules refused.
-    Part 3a, done: the tree rules have registered mutations, eighty of them,
-    in their own PR before the text path is deleted. Each removes one
-    condition in `addTree` or in `sql-tree.ts`, and each is caught by one test
-    in `packages/core/test/fenced-batch-tree-verdicts.test.ts`. They cover
-    stamping, the gate and where a fence may stand, a subquery that returns a
-    row whatever it matched, the tie of a subquery gate to the fenced source,
-    the follow-on insert, the inserting compare-and-set, counting assignments
-    and `excluded`, the clock, the open tail, fragment roles and a value
-    fragment's parentheses, the statement grammar, and the two compiler bind
-    errors. The registry went from 439 entries to 519 and no existing entry
-    changed. Part 3b follows: the text path and its scanners deleted, with
-    `cas`, `casMany`, `followOn`, `tail`, `openTail`, and `fenceSetAt`, one
-    pass over the tree for all checks, the corpus enrolled from label and
-    variant descriptors, and the bridge as one table of pinned file pairs.
-    Twelve registered mutations own text that part 3b deletes, and each now has
-    a tree-path successor, so part 3b retires them with a bridge arm:
+    Part 3a, done: the tree rules have registered mutations, two hundred and
+    fourteen of them, in their own PR before the text path is deleted. Each
+    removes one condition in `fenced-batch.ts` or in `sql-tree.ts`, and each is
+    caught by one test, in `fenced-batch-tree-verdicts.test.ts` for the rules a
+    batch applies and in `sql-tree-verdicts.test.ts` for the rules that read a
+    tree or a fragment's text. They cover stamping and which token a
+    provenance value is, the gate and where a fence may stand, a subquery that
+    returns a row whatever it matched, the tie of a subquery gate to the fenced
+    source, the follow-on insert, the inserting compare-and-set, counting
+    assignments, the clock, the open tail, the statement grammar and the shape
+    of an INSERT, the text of a fragment, where a fragment stands, the binds
+    of a statement, and the batch's own naming and lock rules. A spelling list
+    is a rule for each entry, so every clock function, clock keyword, and
+    counting operator has its own mutation. The registry gained 214 entries
+    and no entry of main changed. The first eighty went to review, and the
+    review's line map of every find showed whole ranges no mutation touched:
+    `postmortems/pr3.9e-part3a-review.md`. Giving each clock spelling its own
+    mutation showed clocks the rule accepted, so the grammar now lists the
+    functions a statement may call, which makes a clock called as a node
+    unwritable whatever it is named, and the scan of fragment text names a
+    date function with no argument and the literal `'now'`. That scan stays a
+    spelling list: `age(column)` reads the clock on PostgreSQL and passes it.
+    What has no mutation is derived, not listed here. The registry self-test,
+    `pnpm lint:mutation-verdicts`, reads every condition-bearing line of
+    `sql-tree.ts` and of the tree path in `fenced-batch.ts`, and fails when a
+    line holds more conditions than registered mutations touch it, unless
+    `TREE_CONDITIONS_WITHOUT_A_MUTATION` in `scripts/mutation-probe.py` lists
+    the line with what a run showed: deleting it fails ordinary tests, or no
+    shape can tell it from the code. One entry matters to part 3b by name:
+    `compiled.readsClock`. The comparison beside it,
+    `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refuses,
+    and also the batch clock's own text written into a fragment, which
+    `readsClock` does not see. Part 3b may delete `readsClock` and must keep
+    the comparison, which `tree-clock-text-in-followon` holds.
+    Part 3b follows: the text path and its scanners deleted, with `cas`,
+    `casMany`, `followOn`, `tail`, `openTail`, and `fenceSetAt`, one pass over
+    the tree for all checks, the corpus enrolled from label and variant
+    descriptors, and the bridge as one table of pinned file pairs. Its one pass
+    moves the lines the self-test reads, so it moves the region anchors and the
+    listed lines with them, and a condition it drops fails the self-test.
+    Twelve registered mutations own text that part 3b deletes, and each has a
+    tree-path successor, so part 3b retires them with a bridge arm:
     `followon-provenance-check`, `positive-fence-required`,
     `positive-fence-is-not`, `top-level-or-reach`, `clock-ban-in-followon`,
     `clock-ban-raw-dialect-in-followon`, `raw-fence-token-check`,
     `event-upsert-requires-preserved-instant`, and the four
     `testing-helper-bind-*` entries that mutate the text compiler's bind count
-    and undefined-argument errors. Their tests in `fenced-batch.test.ts` and
-    the bind-producer test in `testing.test.ts` build text statements, and move
-    to trees in the same PR. The other registered mutations of
-    `fenced-batch.ts` already mutate code the tree path runs: the generator,
-    `seal()`, `requireFenceSource`, the gate's table check, and the compiler
-    error's brand.
-  - Deferred to PR3.9e part 3b, with the one pass over the tree: six
-    conditions of the tree rules have no mutant, because deleting any one of
-    them leaves the same shape refused by the next rule, with another message.
-    They are the VALUES refusal of a follow-on insert, which the plain-selection
-    rule refuses next; the untied gate's own message, which the no-gate rule
-    refuses next; a follow-on's spelled-out clock, which the any-statement
-    clock rule refuses next; an unminted raw node's message, which the role
-    rule refuses next; the arithmetic count's message, which the fragment
-    count rule words differently; and `compiled.readsClock`, which answers the
-    question `compiled.sql.includes(this.now)` answers for the same token, so
-    the registered mutant removes the pair. The one pass keeps one of each
-    pair or gives the first its own shape.
-  - Deferred to PR3.9e part 3, with the text path's deletion: a batch's `tree`
+    and undefined-argument errors. `clock-ban-raw-dialect-in-followon` removes
+    the comparison with the batch clock's text, and its successor is
+    `tree-clock-text-in-followon`. The spelled-out clock and the clock called
+    as a function node are rules only the tree path has.
+    Twenty tests move to trees in that PR, not twelve: the twelve retirements'
+    tests in `fenced-batch.test.ts` and the bind-producer test in
+    `testing.test.ts`, and the tests of eight more registered mutations that
+    part 3b keeps. Those eight mutate code the tree path runs, and their tests
+    begin from the text `cas`, which part 3b deletes:
+    `generated-set-provenance-guard`, `generated-set-column-guard`,
+    `derived-source-table`, `seal-source-key`, `seal-intermediate-fence`,
+    `seal-lifecycle-transition`, `self-source-selection-materialized`, and
+    `self-source-instant-materialized`.
+  - Deferred to PR3.9e part 3b, with the text path's deletion: a batch's `tree`
     option is optional while text-only batches exist, and `derived()` needs
     one. It becomes required then, so a batch built without it fails to
     compile instead of failing when it runs.
-  - Deferred to PR3.9e part 3: a generated follow-on now costs about 159 µs to
+  - Deferred to PR3.9e part 3b: a generated follow-on now costs about 159 µs to
     build, check, and compile, where the text generator cost about 44 µs,
     measured on libSQL's compiler with a stub executor. Building the tree is
     about 28 µs and compiling it about 19 µs, so most of the rest is the tree
     checks, which walk the tree once each. A batch holds up to five generated
     statements. The one-pass item above owns this.
-  - Deferred to PR3.9e part 3: a hand-written follow-on costs more as a tree by
+  - Deferred to PR3.9e part 3b: a hand-written follow-on costs more as a tree by
     the same cause. The revival's run insert takes about 247 µs to build, check,
     and compile where its text took about 59 µs, and the `revived` tail about
     32 µs where its text took about 1 µs, measured on libSQL's compiler with a
