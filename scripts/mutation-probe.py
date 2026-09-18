@@ -11953,13 +11953,6 @@ for _verdict, _names in (
         ),
     ),
     (
-        VERDICTS["task-done-event-complete"],
-        (
-            "saga-lost-launch-cap-enters-only-with-a-rollback-owed",
-            "saga-claim-timeout-cap-enters-only-with-a-rollback-owed",
-        ),
-    ),
-    (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
@@ -11994,7 +11987,6 @@ for _verdict, _names in (
         (
             "saga-rolling-back-task-cannot-complete",
             "saga-forward-checkpoint-refused-in-the-phase",
-            "saga-rollback-checkpoint-refused-outside-the-phase",
             "saga-suspension-refused-in-the-phase",
             "saga-wait-refused-in-the-phase",
         ),
@@ -12216,6 +12208,31 @@ for _verdict, _names in (
         ),
         (
             "saga-replay-harness-reports-the-order",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] ends a task at a sweep cap when nothing is owed a rollback",
+            "mutation-verdict:behavior:saga-cap-with-nothing-owed-ends-the-task",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-lost-launch-cap-enters-only-with-a-rollback-owed",
+            "saga-claim-timeout-cap-enters-only-with-a-rollback-owed",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] freezes the forward phase, and admits a rollback only inside it",
+            "mutation-verdict:behavior:saga-rollback-only-inside-the-phase",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-rollback-checkpoint-refused-outside-the-phase",
         ),
     ),
 ):

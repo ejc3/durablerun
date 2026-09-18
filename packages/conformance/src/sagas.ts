@@ -218,44 +218,63 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       await f.admin.setFakeNowEpochMs(START_MS)
     })
 
-    afterEach(async () => {
+    afterEach(async ({ task }) => {
       const violations = {
         saga: await sagaViolations(f.raw),
         childTasks: await childTaskViolations(f.raw),
         engine: await engineInvariantViolations(f.raw),
       }
       await f.close()
+      // A case that already failed says why in its own assertion. The rows it leaves are
+      // the defect's, and a second failure here would blur which assertion caught it.
+      if (task.result?.state !== 'pass') return
       expect(violations).toEqual({ saga: [], childTasks: [], engine: [] })
     })
 
     // UserTerminal with AtomicEnter: the decision and the phase marker are one batch.
     it('enters the phase in the batch that decides the failure, and ends nothing', async () => {
-      const { taskId, forward, pass } = await rollingBack(f)
+      const spawned = await f.store.spawn(Q, 'saga', '{}')
+      const forward = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, forward, 'a', 1)
+      await checkpointOwned(f.store, Q, forward, 'a', '"a-result"', 60)
+      const decided = await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
+      // Read from the rows before anything claims the pass. A batch that also ended the task
+      // leaves no pass to claim, and this comparison must be what says so.
       expect(
         {
-          task: await taskRow(f, taskId),
-          passIsTheNextAttempt: pass.attempt === forward.attempt + 1 && pass.taskId === taskId,
-          checkpoints: await checkpointNames(f, taskId),
+          decided,
+          task: await taskRow(f, spawned.taskId),
+          runs: (
+            await rowsOf(
+              f.raw,
+              'SELECT attempt, state FROM runs WHERE task_id = ? ORDER BY attempt',
+              [spawned.taskId],
+            )
+          ).map((row) => `${Number(row.attempt)}:${String(row.state)}`),
+          checkpoints: await checkpointNames(f, spawned.taskId),
           marker: (
             await rowsOf(
               f.raw,
               'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-              [taskId, SAGA_PHASE_CHECKPOINT],
+              [spawned.taskId, SAGA_PHASE_CHECKPOINT],
             )
           )[0]?.state,
           completionEvents: await doneEvents(f),
-          result: await f.store.getTaskResult(Q, taskId),
+          result: await f.store.getTaskResult(Q, spawned.taskId),
         },
         'mutation-verdict:behavior:saga-phase-entry',
       ).toEqual({
+        decided: { rollingBack: true },
         // The pass runs past the user budget, so the budget is the pass's own ordinal.
-        task: { state: 'running', attempts: 1, maxAttempts: 2, failureReason: null },
-        passIsTheNextAttempt: true,
+        task: { state: 'pending', attempts: 1, maxAttempts: 2, failureReason: null },
+        runs: ['1:failed', '2:pending'],
         checkpoints: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a'].sort(),
         marker: CAUSE,
         completionEvents: 0,
-        result: { state: 'running' },
+        result: { state: 'pending' },
       })
+      const pass = await claimActivated(f.store, Q, 'w-pass')
+      expect(pass.taskId === spawned.taskId && pass.attempt === forward.attempt + 1).toBe(true)
     })
 
     it('a retry the user budget refuses is the same decision', async () => {
@@ -307,6 +326,11 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const before = await refusalName(
         checkpointOwned(f.store, Q, run, rollbackOf('a'), 'null', 60),
       )
+      // A rollback is recorded only for a task whose failure was decided. Asserted here, on
+      // its own: a rollback recorded this early would leave nothing owed, and no pass below.
+      expect(before, 'mutation-verdict:behavior:saga-rollback-only-inside-the-phase').toBe(
+        'LeaseLostError',
+      )
       await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
       const pass = await claimActivated(f.store, Q, 'w-pass')
       const frozen = {
@@ -331,7 +355,6 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       )
       expect(
         {
-          before,
           frozen,
           rollback,
           task: (await taskRow(f, spawned.taskId))?.state,
@@ -339,7 +362,6 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         },
         'mutation-verdict:behavior:saga-forward-phase-is-frozen',
       ).toEqual({
-        before: 'LeaseLostError',
         frozen: {
           step: 'LeaseLostError',
           start: 'LeaseLostError',
@@ -531,10 +553,23 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             )
           )[0]?.state,
         }
+        const [claimed] = await f.store.claim(Q, `w-${cap}-pass`, { leaseSeconds: 60, limit: 1 })
+        if (!claimed) {
+          // No pass is claimable, so the phase was not entered as this case expects. The
+          // comparison below says so, where the marker is, and nothing throws here.
+          observed[cap] = {
+            entered,
+            entering,
+            ended: 'no pass was claimable',
+            result: await f.store.getTaskResult(Q, spawned.taskId),
+          }
+          continue
+        }
         const pass =
           cap === 'relaunch'
-            ? await claimOne(f.store, Q, `w-${cap}-pass`)
-            : await claimActivated(f.store, Q, `w-${cap}-pass`)
+            ? claimed
+            : ((await f.store.activate(Q, claimed.runId, claimed.claimToken, claimed.claimGen)) ??
+              claimed)
         await seedCap(pass)
         if (cap === 'infra') {
           await f.raw.batch('seed-infra-cap-again', [
@@ -572,6 +607,62 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             failureReasonJson: REASON_INFRA_CAP,
             rollback: { outcome: 'failed' },
           },
+        },
+      })
+    })
+
+    // Only a rollback that is owed begins a saga. A cap that fails a task with no started
+    // step ends it as it always did, and its result says nothing of a rollback.
+    it('ends a task at a sweep cap when nothing is owed a rollback', async () => {
+      const observed: Record<string, unknown> = {}
+      let now = START_MS
+      for (const cap of ['relaunch', 'infra'] as const) {
+        const spawned = await f.store.spawn(Q, `plain-${cap}`, '{}')
+        const run =
+          cap === 'relaunch'
+            ? await claimOne(f.store, Q, `w-${cap}`)
+            : await claimActivated(f.store, Q, `w-${cap}`)
+        await f.raw.batch(
+          'seed-the-cap',
+          cap === 'relaunch'
+            ? [
+                {
+                  sql: 'UPDATE runs SET relaunch_count = ? WHERE run_id = ?',
+                  args: [RELAUNCH_CAP, run.runId],
+                },
+              ]
+            : [
+                {
+                  sql: 'UPDATE tasks SET infra_retries = ? WHERE task_id = ?',
+                  args: [INFRA_RETRY_CAP, run.taskId],
+                },
+                {
+                  sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+                  args: [INFRA_RETRY_CAP + 1, run.runId],
+                },
+              ],
+        )
+        now += 1_000_000
+        await f.admin.setFakeNowEpochMs(now)
+        observed[cap] = {
+          swept: (await f.store.sweep(Q, 10)).map((one) => one.kind),
+          result: await f.store.getTaskResult(Q, spawned.taskId),
+          checkpoints: await checkpointNames(f, spawned.taskId),
+        }
+      }
+      expect(
+        observed,
+        'mutation-verdict:behavior:saga-cap-with-nothing-owed-ends-the-task',
+      ).toEqual({
+        relaunch: {
+          swept: ['relaunch-cap-exhausted'],
+          result: { state: 'failed', failureReasonJson: REASON_RELAUNCH_CAP },
+          checkpoints: [],
+        },
+        infra: {
+          swept: ['infra-cap-exhausted'],
+          result: { state: 'failed', failureReasonJson: REASON_INFRA_CAP },
+          checkpoints: [],
         },
       })
     })

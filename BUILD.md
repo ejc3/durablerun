@@ -1369,7 +1369,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   is checkpoints under reserved names, so there is no migration. One batch
   label is new, `fail-rollback`, with its own port method, and DESIGN.md
   §3.10 maps each action of the model to its batch. Exit test item 5 is held
-  on libSQL and PostgreSQL by the `sagas` conformance surface, 17 cases on
+  on libSQL and PostgreSQL by the `sagas` conformance surface, 18 cases on
   each dialect, and by the SDK's saga suite, 14 cases on each dialect, which
   runs through a PostgreSQL twin of the SDK's test harness. Each owed twin,
   and the case that holds it:
