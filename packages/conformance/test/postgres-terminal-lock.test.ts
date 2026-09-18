@@ -1,3 +1,4 @@
+import type { SqlExecutor } from '@durablerun/core'
 import { encodeTaskOutcome, taskDoneEventName } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import { TERMINAL_BATCHES } from '../src/child-tasks.js'
@@ -156,3 +157,63 @@ it('an emit waits for an await of its event that has not committed', async () =>
     )
   })
 }, 60_000)
+
+/**
+ * An executor as every build before child tasks had it: the lock of an event is a row of
+ * `event_locks`, inserted when it is missing and then locked, and every statement is
+ * sent. A process of such a build keeps running after a newer build has migrated,
+ * because a store never reads the schema version. So for the length of a deploy both
+ * builds take the lock of one caller's event, and they have to exclude each other.
+ */
+function olderBuild(raw: SqlExecutor): SqlExecutor {
+  return {
+    batch: async (label, statements, control) => {
+      const lock = typeof control === 'object' ? control.transactionLock : undefined
+      if (lock === undefined || lock.kind !== 'event') return raw.batch(label, statements, control)
+      const coordinates = [lock.queue, lock.eventName]
+      const results = await raw.batch(label, [
+        {
+          sql: `INSERT INTO event_locks (queue, event_name) VALUES (?, ?)
+                ON CONFLICT (queue, event_name) DO NOTHING`,
+          args: coordinates,
+        },
+        {
+          sql: 'SELECT 1 FROM event_locks WHERE queue = ? AND event_name = ? FOR UPDATE',
+          args: coordinates,
+        },
+        ...statements.map(({ sql, args }) => ({ sql, args })),
+      ])
+      return results.slice(2)
+    },
+  }
+}
+
+it("an older build's emit and this build's await of one event exclude each other, and the other way round", async () => {
+  const observed: Record<string, unknown> = {}
+  for (const older of ['emits', 'awaits'] as const) {
+    await withFixture(makePostgresFixture, `mixed-build-lock-${older}`, async (f) => {
+      await f.admin.setFakeNowEpochMs(START_MS)
+      await f.raw.batch('hold-the-await-open', HOLD_THE_AWAIT_OPEN)
+      const old = f.storeOver(olderBuild(f.raw))
+      const [awaiter, emitter] = older === 'emits' ? [f.store, old] : [old, f.store]
+      await f.store.spawn('q', 'waiter', '{}')
+      const waiter = await claimActivated(f.store, 'q', 'w-waiter', 3600)
+      const awaiting = awaitOwned(awaiter, 'q', waiter, 's', 'go', null)
+      await pause(100)
+      await emitter.emitEvent('q', 'go', '{"n":1}')
+      const awaited = await awaiting
+      const run = await readOne(f.raw, 'SELECT state, event_payload FROM runs WHERE run_id = ?', [
+        waiter.runId,
+      ])
+      observed[`the older build ${older}`] = { awaited, waiter: run }
+    })
+  }
+  const woken = {
+    awaited: { emitted: false },
+    waiter: { state: 'pending', event_payload: '{"n":1}' },
+  }
+  expect(
+    observed,
+    'mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take',
+  ).toEqual({ 'the older build emits': woken, 'the older build awaits': woken })
+}, 120_000)
