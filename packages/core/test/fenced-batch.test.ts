@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
+  EventName,
   FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlBatchControl,
@@ -112,7 +113,10 @@ describe('closed transaction lock prelude', () => {
     const sqlShapedCoordinate = `q'; DELETE FROM events; --`
     const db = new FakeDb([1])
     const b = batch('emit-event')
-      .lockEvent({ queue: sqlShapedCoordinate, eventName: sqlShapedCoordinate })
+      .lockEvent({
+        queue: sqlShapedCoordinate,
+        eventName: EventName.fromPort('test', sqlShapedCoordinate),
+      })
       .casTree('win', statement(eventCas()))
     await b.run(db)
 
@@ -140,7 +144,7 @@ describe('closed transaction lock prelude', () => {
     const duplicate = batch().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
     expect(() => duplicate.lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(/already has/)
 
-    const readFirst = batch().lockEvent({ queue: 'q', eventName: 'e' })
+    const readFirst = batch().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
     expect(() => readFirst.openTailTree('probe', 'diagnostic read', statement(anyRun()))).toThrow(
       /followed immediately by a CAS/,
     )
@@ -148,7 +152,7 @@ describe('closed transaction lock prelude', () => {
 
   it('is available only to a write transaction', async () => {
     const b = batch()
-      .lockEvent({ queue: 'q', eventName: 'e' })
+      .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
       .casTree('win', statement(eventCas()))
     await expect(b.run(new FakeDb([1]), 'read')).rejects.toThrow(/requires a write batch/)
   })

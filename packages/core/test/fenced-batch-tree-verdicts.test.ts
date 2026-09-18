@@ -1,6 +1,7 @@
 import { sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
+  EventName,
   aliasedAs,
   treeBuilder as db,
   fenceValue,

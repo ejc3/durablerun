@@ -32,6 +32,16 @@ function stampRows(table: 'runs' | 'tasks' | 'waits', match: Record<string, stri
   })({})
 }
 
+/** A compare-and-set that stamps the rows of `table` whose `column` is one of `values`. */
+function stampRowsIn(table: 'runs' | 'tasks' | 'waits', column: string, values: readonly string[]) {
+  return defineStatement(`stamp-${table}-in`, () =>
+    stampBuilder
+      .updateTable(table)
+      .set(FENCE_ASSIGNMENTS)
+      .where(column, 'in', [...values]),
+  )({})
+}
+
 /**
  * Provenance regressions: a batch statement firing without proof that THIS
  * batch produced the state it keys on.
@@ -1239,11 +1249,15 @@ describe('fence provenance', () => {
         now: NOW_MS,
         tree: TREE_DIALECT,
       })
-      bound.casMany('source', 'runs', 3, `UPDATE runs SET ${FENCE_SET} WHERE run_id IN (?, ?, ?)`, [
-        'bound-foreign-task-run',
-        'bound-foreign-run-run',
-        'bound-same-run',
-      ])
+      bound.casManyTree(
+        'source',
+        stampRowsIn('runs', 'run_id', [
+          'bound-foreign-task-run',
+          'bound-foreign-run-run',
+          'bound-same-run',
+        ]),
+        3,
+      )
       bound.derived('target', {
         relation: 'runs-to-tasks',
         fence: 'source',
@@ -1273,9 +1287,7 @@ describe('fence provenance', () => {
         new FencedBatch('relation:bound-refusals', 'relation-seed', {
           now: NOW_MS,
           tree: TREE_DIALECT,
-        }).cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
-          'bound-same-run',
-        ])
+        }).casTree('source', stampRows('runs', { run_id: 'bound-same-run' }))
       expect(
         refused(() =>
           onRuns().derived('target', {

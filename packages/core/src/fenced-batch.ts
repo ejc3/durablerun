@@ -916,7 +916,10 @@ export class FencedBatch {
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
       atMost,
-      compiled: { sql: compiled.sql, args },
+      compiled:
+        gatedBy === undefined
+          ? { sql: compiled.sql, args }
+          : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
     })
     return this
   }

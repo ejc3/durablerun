@@ -7,6 +7,7 @@ import {
 } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
+  EventName,
   type SqlFragment,
   type SqlStatement,
   type StoreTables,
@@ -86,8 +87,7 @@ describe('FencedBatch tree statements', () => {
 
   it('tells the executor which statement gates each follow-on and tail, and nothing for the rest', async () => {
     const { captured, executor } = capturingExecutor(1)
-    const b = batch()
-    b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['r1'])
+    const b = withCas()
     b.derived('task', {
       relation: 'runs-to-tasks',
       fence: 'win',
@@ -135,8 +135,7 @@ describe('FencedBatch tree statements', () => {
   // batch whole, so such a tail is always sent.
   it('never skips a gated tail that answers with a row whatever it matched', async () => {
     const { captured, executor } = capturingExecutor(1)
-    const b = batch()
-    b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['r1'])
+    const b = withCas()
     b.tailTree(
       'counted',
       statement(
