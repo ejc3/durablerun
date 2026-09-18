@@ -6332,8 +6332,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-single-row-upsert-counts-once",
             "packages/store-mysql/src/executor.ts",
-            "  return info === '' && header.affectedRows === 2 ? 1 : header.affectedRows\n",
-            "  return info === 'MUTATION' && header.affectedRows === 2 ? 1 : header.affectedRows\n",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
+            "  const singleRowUpsert = info === 'MUTATION' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
             "a single-row upsert that updated reports two and trips the compare-and-set's one-row bound",
         ),
         (
@@ -6370,6 +6370,41 @@ MUTATION_SPECS.extend(
             "      if (version !== null && version >= minimumVersion) return\n",
             "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
             "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+        ),
+        (
+            "mysql-only-an-insert-counts-twice",
+            "packages/store-mysql/src/executor.ts",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 // MUTATION\n",
+            "a DELETE that removed exactly two rows reports one, and a follow-on that over-deleted passes the one-row audit on MySQL alone",
+        ),
+        (
+            "mysql-session-settings-once-per-connection",
+            "packages/store-mysql/src/executor.ts",
+            "      const physical: object = (connection as { connection?: object }).connection ?? connection\n",
+            "      const physical: object = (connection as { connection?: object }) ?? connection // MUTATION\n",
+            "the pool hands out a new wrapper on every checkout, so every batch pays a round trip to set the session again",
+        ),
+        (
+            "mysql-foreign-pool-found-rows-refused",
+            "packages/store-mysql/src/executor.ts",
+            "    if (typeof flags !== 'number' || (flags & CLIENT_FOUND_ROWS) !== 0) {\n",
+            "    if (typeof flags !== 'number') { // MUTATION\n",
+            "an application's own pool connects with FOUND_ROWS, and a compare-and-set that lost reads as one that won",
+        ),
+        (
+            "mysql-identifier-past-the-width-refused-in-the-store",
+            "packages/store-mysql/src/store.ts",
+            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > IDENTIFIER_CHARACTERS\n",
+            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > Number.MAX_SAFE_INTEGER // MUTATION\n",
+            "a name with trailing spaces past the indexed width reaches MySQL, which cuts it to a different name",
+        ),
+        (
+            "mysql-write-cut-to-fit-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (cut !== undefined) {\n",
+            "  if (cut !== undefined && cut === null) { // MUTATION\n",
+            "a write MySQL cut to fit its column commits, and the stored identifier is not the one that was sent",
         ),
     )
 )
@@ -10068,6 +10103,36 @@ VERDICTS.update(
             "schema/admin conformance [mysql] forgives a bootstrap that lost to a concurrent migrator, and only then",
             "mutation-verdict:behavior:bootstrap-loss-forgiven",
             "packages/conformance/src/schema-admin.ts",
+        ),
+        "mysql-only-an-insert-counts-twice": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions reports a DELETE of two rows as two rows",
+            "mutation-verdict:construction:mysql-only-an-insert-counts-twice",
+        ),
+        "mysql-session-settings-once-per-connection": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions sends the session settings once for each physical connection",
+            "mutation-verdict:construction:mysql-session-settings-once-per-connection",
+        ),
+        "mysql-foreign-pool-found-rows-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a pool that connects with FOUND_ROWS, or whose flags it cannot read",
+            "mutation-verdict:construction:mysql-foreign-pool-found-rows-refused",
+        ),
+        "mysql-identifier-past-the-width-refused-in-the-store": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/identifier-bound.test.ts",
+            "refuses an identifier past 255 characters at every entry, before anything is sent",
+            "mutation-verdict:construction:mysql-identifier-past-the-width-refused-in-the-store",
+        ),
+        "mysql-write-cut-to-fit-is-refused": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server refuses a write MySQL would cut to fit its column, and writes nothing",
+            "mutation-verdict:behavior:mysql-write-cut-to-fit-is-refused",
         ),
     }
 )
@@ -13835,7 +13900,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 672:
+        if len(MUTATIONS) != 677:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
