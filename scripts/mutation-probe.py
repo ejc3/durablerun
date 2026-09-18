@@ -11659,6 +11659,20 @@ MUTATION_SPECS.extend(
             "a saga halted by a handler's selective catch names only the step left unregistered",
         ),
         (
+            "saga-suspension-marker-is-in-its-phase",
+            "packages/store-libsql/src/store.ts",
+            "         AND ${checkpointInItsPhase('runs', '?')}\n",
+            "         AND ? IS NOT NULL\n",
+            "a suspension commits a rollback's name in the forward phase, and the step it names is never compensated",
+        ),
+        (
+            "mysql-saga-reserved-name-is-compared-exactly",
+            "packages/store-mysql/src/fragments.ts",
+            "const exactly = (reserved: string): string => `CAST('${reserved}' AS BINARY)`\n",
+            "const exactly = (reserved: string): string => `'${reserved}'`\n",
+            "MySQL compares a name with a reserved literal in the connection's collation, and answers for a name in another case as no other store does",
+        ),
+        (
             "saga-fail-enters-only-before-the-phase",
             "packages/store-libsql/src/store.ts",
             "        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,\n",
@@ -12445,6 +12459,30 @@ for _verdict, _names in (
         ),
         (
             "saga-halt-says-where-the-replay-ended",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] admits a reserved checkpoint name only at its door and in its phase, and matches it exactly",
+            "mutation-verdict:behavior:saga-caller-named-checkpoint-doors",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-suspension-marker-is-in-its-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [mysql] admits a reserved checkpoint name only at its door and in its phase, and matches it exactly",
+            "mutation-verdict:behavior:saga-reserved-names-match-exactly",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "mysql-saga-reserved-name-is-compared-exactly",
         ),
     ),
 ):
@@ -16327,7 +16365,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 829:
+        if len(MUTATIONS) != 831:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
