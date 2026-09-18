@@ -2,7 +2,6 @@ import {
   type Buggify,
   type Checkpoint,
   type CheckpointWrite,
-  ChildAwaitRefusedError,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   FencedBatch,
@@ -39,6 +38,7 @@ import {
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
+  childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
@@ -54,7 +54,9 @@ import {
   encodeTaskOutcome,
   failCas,
   failClaimTimeoutCas,
+  isTerminalState,
   mapLimit,
+  materializeTaskDoneCas,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -2093,7 +2095,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
     refuseReservedEventName('awaitEvent', eventName)
-    return this.awaitNamedEvent(
+    const answer = await this.awaitNamedEvent(
       queue,
       taskId,
       runId,
@@ -2101,13 +2103,20 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       stepName,
       eventName,
       timeoutSeconds,
+      null,
     )
+    if (answer === null) throw await this.refusal('awaitEvent', runId)
+    return answer
   }
 
   /**
-   * The child await (DESIGN.md §3.2): `await-event` for the completion event of
-   * `childTaskId`. The queue rule is decided first, from the child's queue, which never
-   * changes, so a refused await issues no batch and registers nothing.
+   * The child await (DESIGN.md §3.2, specs/ChildTasks.tla): `await-event` for the
+   * completion event of `childTaskId`. The batch decides everything the model's await
+   * does in one step: it hits an event that exists, and it registers only on a live
+   * child in this queue. An await that did neither reads the child, once, to say why.
+   * A child in another queue, or no such task, is refused. A child that ended with
+   * nothing recorded has its outcome recorded by the await itself, in a second batch
+   * fenced on the row that was read. Anything else is this run's own claim, lost.
    */
   async awaitTaskDone(
     queue: string,
@@ -2118,27 +2127,122 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    const eventName = taskDoneEventName(childTaskId)
+    // A child revived between the read and the batch that records it is live again, so
+    // the next round registers. Two rounds cover that, and a third is the claim's loss.
+    for (let round = 0; round < 2; round++) {
+      const answer = await this.awaitNamedEvent(
+        queue,
+        taskId,
+        runId,
+        claimToken,
+        stepName,
+        eventName,
+        timeoutSeconds,
+        childTaskId,
+      )
+      if (answer !== null) return answer
+      const child = await this.taskDoneState(childTaskId)
+      const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
+      if (refusal !== null) throw refusal
+      if (child === null || !isTerminalState(child.outcome.state)) break
+      const recorded = await this.recordTaskDone(
+        { queue, taskId, runId, claimToken },
+        childTaskId,
+        child.stamp,
+        child.outcome as TaskOutcome,
+      )
+      if (recorded !== null) return recorded
+    }
+    throw await this.refusal('awaitTaskDone', runId)
+  }
+
+  /**
+   * A task as its completion event sees it: its queue, its outcome, the stamp its row
+   * carries, and whether the event exists. Read only off the common path: by an await
+   * that neither registered nor hit, to say why.
+   */
+  private async taskDoneState(
+    taskId: string,
+  ): Promise<{
+    queue: string
+    outcome: TaskResult
+    stamp: string | null
+    recorded: boolean
+  } | null> {
     const [rows] = await this.db.batch(
-      'child-queue',
-      [{ sql: 'SELECT queue FROM tasks WHERE task_id = ?', args: [childTaskId] }],
+      'task-done-state',
+      [
+        {
+          sql: `SELECT queue, fence_stamp, ${TASK_RESULT_COLUMNS},
+                       CAST(CASE WHEN EXISTS (
+                         SELECT 1 FROM events e
+                         WHERE e.queue = tasks.queue AND e.event_name = ?
+                       ) THEN 1 ELSE 0 END AS BIGINT) AS recorded
+                FROM tasks WHERE task_id = ?`,
+          args: [taskDoneEventName(taskId), taskId],
+        },
+      ],
       'read',
     )
-    const childQueue = rows?.rows[0]?.queue
-    if (childQueue !== queue) {
-      throw new ChildAwaitRefusedError(
-        childTaskId,
-        childQueue === undefined ? 'no-such-task' : 'other-queue',
-      )
+    const row = rows?.rows[0]
+    if (row === undefined) return null
+    return {
+      queue: String(row.queue),
+      outcome: decodeTaskResult(taskId, row),
+      stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
+      recorded: Number(row.recorded) === 1,
     }
-    return this.awaitNamedEvent(
-      queue,
-      taskId,
-      runId,
-      claimToken,
-      stepName,
-      taskDoneEventName(childTaskId),
-      timeoutSeconds,
+  }
+
+  /**
+   * Record the outcome of a child that ended with no completion event, and answer the
+   * await with it (ChildTasks.tla's AwaitMaterialize). Null when the batch recorded
+   * nothing and found no event: the child's row is no longer the one that was read, or
+   * this run's claim is gone.
+   */
+  private async recordTaskDone(
+    claim: { queue: string; taskId: string; runId: string; claimToken: string },
+    childTaskId: string,
+    childStamp: string | null,
+    outcome: TaskOutcome,
+  ): Promise<{ emitted: true; payloadJson: string } | null> {
+    const { queue } = claim
+    const eventName = taskDoneEventName(childTaskId)
+    const b = new FencedBatch('await-event', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
+    b.casTree(
+      'materialize',
+      materializeTaskDoneCas({
+        ...awaiting,
+        childTaskId,
+        eventName,
+        payloadJson: encodeTaskOutcome(outcome),
+        childState: outcome.state,
+        childStamp,
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
     )
+    b.openTailTree(
+      'hit',
+      'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
+      emittedEventRead({
+        ...awaiting,
+        eventName,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
+    )
+    const { results } = await b.run(this.db)
+    const row = results.hit?.rows[0]
+    if (row === undefined) return null
+    if (row.payload_type !== 'text') {
+      throw new RangeError(`awaitTaskDone ${queue}/${eventName} found a non-TEXT stored payload`)
+    }
+    return { emitted: true, payloadJson: String(row.payload) }
   }
 
   /**
@@ -2158,7 +2262,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     stepName: string,
     eventName: string,
     timeoutSeconds: number | null,
-  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    awaitedTaskId: string | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const timeoutMs =
       timeoutSeconds === null
         ? null
@@ -2189,6 +2294,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         claimToken,
         stepName,
         eventName,
+        awaitedTaskId,
         timeoutAt: sqlFragment(`CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END`, [
           timeoutMs,
           timeoutMs,
@@ -2262,9 +2368,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }
-    if (won !== 'register') {
-      throw await this.refusal('awaitEvent', runId)
-    }
+    // Nothing registered and nothing emitted. The caller says why: for a user event it
+    // is this run's claim, and a child await reads the child first.
+    if (won !== 'register') return null
     return { emitted: false }
   }
 }

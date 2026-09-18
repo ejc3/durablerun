@@ -67,7 +67,7 @@ export const MATRIX_READ_LABELS = [
   'claimed-task-name',
   'refusal-state',
   'run-task',
-  'child-queue',
+  'task-done-state',
   'sweep:scan',
   'get-checkpoints',
   'task-result',
@@ -421,6 +421,18 @@ export async function runFaultMatrixCase(
       const childTask = await go(() => store.spawn(Q, 'child', '{}'))
       if (parentTask && childTask && parent?.taskId === parentTask.taskId) {
         await go(() => store.activate(Q, parent.runId, parent.claimToken, parent.claimGen))
+        // An await of no task at all neither registers nor hits, so it reads why.
+        await go(() =>
+          store.awaitTaskDone(
+            Q,
+            parent.taskId,
+            parent.runId,
+            parent.claimToken,
+            'w-no-child',
+            'no-such-task',
+            null,
+          ),
+        )
         await go(() =>
           store.awaitTaskDone(
             Q,

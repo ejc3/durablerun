@@ -270,7 +270,7 @@ jobs:
         # arm is pinned to one base lint hash and adds only the READS entries it
         # names, and only when this tree's own batch lint declares exactly them as
         # new reads. The first arm added claimed-task-name and refusal-state. The
-        # second adds run-task and child-queue, the two reads child tasks need. Any
+        # second adds run-task and task-done-state, the two reads child tasks need. Any
         # other base skips.
         run: |
           python3 - <<'PY'
@@ -281,7 +281,7 @@ jobs:
           previous = base.read_text()
           arms = {
               'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2': ('claimed-task-name', 'refusal-state'),
-              '7f3040ea2b8273256581bf37b97f691fda2e8df627e7ab955d7573180d212132': ('run-task', 'child-queue'),
+              '7f3040ea2b8273256581bf37b97f691fda2e8df627e7ab955d7573180d212132': ('run-task', 'task-done-state'),
           }
           labels = arms.get(hashlib.sha256(previous.encode()).hexdigest())
           if labels is None:

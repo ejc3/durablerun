@@ -175,3 +175,19 @@ export class RunTaskMemo {
     return this.#tasks.get(runId)
   }
 }
+
+/**
+ * Why an await of `childTaskId` from `queue` is refused, from the queue its task row
+ * was read in, or null when the rule allows it. Every dialect classifies here.
+ */
+export function childAwaitRefusal(
+  queue: string,
+  childTaskId: string,
+  childQueue: unknown,
+): ChildAwaitRefusedError | null {
+  if (childQueue === queue) return null
+  return new ChildAwaitRefusedError(
+    childTaskId,
+    childQueue === undefined ? 'no-such-task' : 'other-queue',
+  )
+}

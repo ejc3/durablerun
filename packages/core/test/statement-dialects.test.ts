@@ -107,6 +107,7 @@ const emit = () =>
   })
 const register = () =>
   registerWaitCas({
+    awaitedTaskId: null,
     queue: 'q',
     runId: 'r1',
     taskId: 't1',

@@ -12,6 +12,7 @@ import {
   stampValue,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { LIVE_STATES, type TerminalState } from '../types.js'
 
 /** The claim an awaiting worker presents: its run, in this queue and task, under its token. */
 type AwaitingClaim = {
@@ -62,6 +63,14 @@ export const registerWaitCas = defineStatement(
     taskOwnsRun: SqlFragment
     /** What the store requires of the task `t` for its run to suspend. */
     taskEligible: SqlFragment
+    /**
+     * The task whose completion event this is, for a child await, or null for any other
+     * event. A wait on a completion event registers only while that task is live and in
+     * this queue (specs/ChildTasks.tla's AwaitMiss). A task that has ended, in another
+     * queue, or that does not exist will never be ended by a batch that could wake the
+     * wait, so the wait would sleep forever.
+     */
+    awaitedTaskId: string | null
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
     const wait = {
@@ -76,26 +85,38 @@ export const registerWaitCas = defineStatement(
       ...FENCE_ASSIGNMENTS,
     }
     const { columns, selections } = insertedFrom(wait)
+    let guarded = treeBuilder
+      .selectNoFrom(selections)
+      .where((where) =>
+        where.not(
+          where.exists(
+            where
+              .selectFrom('events')
+              .select('events.queue')
+              .where('events.queue', '=', binds.queue)
+              .where('events.event_name', '=', binds.eventName),
+          ),
+        ),
+      )
+      .where((where) => where.exists(stillClaimed(binds, binds.taskEligible)))
+      .where(rawSql<boolean>(binds.timeoutFits, 'predicate'))
+    const awaitedTaskId = binds.awaitedTaskId
+    if (awaitedTaskId !== null) {
+      guarded = guarded.where((where) =>
+        where.exists(
+          treeBuilder
+            .selectFrom('tasks as c')
+            .select('c.task_id')
+            .where('c.task_id', '=', awaitedTaskId)
+            .where('c.queue', '=', binds.queue)
+            .where('c.state', 'in', [...LIVE_STATES]),
+        ),
+      )
+    }
     return treeBuilder
       .insertInto('waits')
       .columns(columns)
-      .expression(
-        treeBuilder
-          .selectNoFrom(selections)
-          .where((where) =>
-            where.not(
-              where.exists(
-                where
-                  .selectFrom('events')
-                  .select('events.queue')
-                  .where('events.queue', '=', binds.queue)
-                  .where('events.event_name', '=', binds.eventName),
-              ),
-            ),
-          )
-          .where((where) => where.exists(stillClaimed(binds, binds.taskEligible)))
-          .where(rawSql<boolean>(binds.timeoutFits, 'predicate')),
-      )
+      .expression(guarded)
       .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
   },
 )
@@ -285,6 +306,64 @@ export const taskDoneEventInsert = defineStatement(
               ),
             ),
           ),
+      )
+  },
+)
+
+/**
+ * `await-event`'s other compare-and-set, for a child that ended with nothing recorded
+ * (specs/ChildTasks.tla's AwaitMaterialize): a build older than the completion event
+ * ended it, so no terminal batch will ever write its event. The await writes the event
+ * itself, from the outcome the store read, and answers as a hit. The insert is fenced
+ * on the child's row being the one that was read: the same terminal state under the
+ * same stamp, which any transition since, such as a revival, would have replaced. It
+ * requires that no event exists, and that the awaiting run still holds its claim.
+ */
+export const materializeTaskDoneCas = defineStatement(
+  'await-event materialize',
+  (
+    binds: AwaitingClaim & {
+      childTaskId: string
+      eventName: string
+      payloadJson: string
+      childState: TerminalState
+      /** The stamp the child's row carried when its outcome was read, or null. */
+      childStamp: string | null
+      liveTask: SqlFragment
+    },
+  ) => {
+    const eb = expressionBuilder<{ c: StoreTables['tasks'] }, 'c'>()
+    const event = {
+      queue: eb.ref('c.queue'),
+      event_name: eb.val(binds.eventName),
+      payload: eb.val(binds.payloadJson),
+      emitted_at_ms: nowValue,
+      ...FENCE_ASSIGNMENTS,
+    }
+    const { columns, selections } = insertedFrom(event)
+    return treeBuilder
+      .insertInto('events')
+      .columns(columns)
+      .expression(
+        treeBuilder
+          .selectFrom('tasks as c')
+          .select(selections)
+          .where('c.task_id', '=', binds.childTaskId)
+          .where('c.queue', '=', binds.queue)
+          .where('c.state', '=', binds.childState)
+          .where('c.fence_stamp', 'is not distinct from', binds.childStamp)
+          .where((where) =>
+            where.not(
+              where.exists(
+                where
+                  .selectFrom('events as e')
+                  .select('e.queue')
+                  .whereRef('e.queue', '=', 'c.queue')
+                  .where('e.event_name', '=', binds.eventName),
+              ),
+            ),
+          )
+          .where((where) => where.exists(stillClaimed(binds, binds.liveTask))),
       )
   },
 )

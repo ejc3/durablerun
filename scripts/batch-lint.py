@@ -59,7 +59,7 @@ READS = {
     "claimed-task-name",
     "refusal-state",
     "run-task",
-    "child-queue",
+    "task-done-state",
     "get-checkpoints",
     "next-wake",
     "task-result",

@@ -1769,6 +1769,7 @@ describe('FencedBatch tree statements', () => {
       admission: sqlFragment('EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'),
     })
     const register = registerWaitCas({
+      awaitedTaskId: null,
       queue: 'q',
       runId: 'r1',
       taskId: 't1',
