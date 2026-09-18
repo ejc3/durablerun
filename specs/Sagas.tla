@@ -37,12 +37,18 @@
 \*  - The start marker is committed BEFORE the step body runs.  Today a step
 \*    commits only after its body returns, so a step that started and never
 \*    persisted leaves nothing to find.
-\*  - The ordering index is first-write-wins for a step and grows across saga
-\*    generations, so a restarted step keeps its place and no two steps share one.
+\*  - The ordering index is first-write-wins for a step within a saga generation,
+\*    so a step retried by a later attempt keeps its place, and no two started
+\*    steps share one.  A fresh revival forgets it with the step, so the SQL keys
+\*    it by generation: an index kept across a revival would order the next
+\*    saga's rollbacks by the last one's starts.
 \*  - The terminal decision and the phase marker are one batch.  As two steps, a
 \*    crash between them leaves a failed task that no worker will ever run again.
 \*  - Rollback passes are admitted past the task's user attempt budget, which is
 \*    spent by then, and each rollback's budget is durable with the rollback.
+\*    Within a generation its spent attempts are never given back.  A failed
+\*    attempt that is not counted at all is a stuttering step, which no property
+\*    here can see, so a conformance case owes that half.
 \*  - Under "fresh", the rollback checkpoints belong to a saga generation, so a
 \*    second saga does not find the first one's rollbacks memoized.
 \*
@@ -62,11 +68,14 @@
 \*  - A saga with nothing to roll back is complete at entry.  The SQL may skip
 \*    the phase for it.
 \*
-\* Ledger, modeled ahead of implementation (spec-first):
-\*   the step-start write -> StartStep;  'checkpoint' of a step -> FinishStep
+\* Ledger, modeled ahead of implementation (spec-first).  The quoted labels are
+\* today's batches.  The step-start write and the finishing pass are new batches
+\* with no label yet.  scripts/spec-ledger.py reads Scheduler.tla only, so
+\* nothing checks this block, and Scheduler.tla lists 'set-checkpoint' as excluded.
+\*   the step-start write -> StartStep;  'set-checkpoint' of a step -> FinishStep
 \*   'fail' with no retry -> UserTerminal  [cas-fenced]
 \*   'sweep:lost-launch' cap, 'sweep:claim-timeout' at the infra cap -> InfraCap
-\*   'checkpoint' of rollback:<step>#<count> -> RunRollback
+\*   'set-checkpoint' of rollback:<step>#<count> -> RunRollback
 \*   'fail' with a retry, in the phase -> RollbackRetry;  with none -> RollbackHalts
 \*   the pass that finds nothing left -> FinishSaga
 \*   'cancel-task', 'sweep:cancel' -> Cancel;  'retry-task' -> Revive

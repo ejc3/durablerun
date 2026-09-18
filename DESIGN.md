@@ -2045,8 +2045,10 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     ordering index, BEFORE its body runs. A step commits only after its body
     returns today, so without the marker a step that started and never
     persisted leaves nothing for a rollback to find. The index is
-    first-write-wins for a step, so a step retried by a later attempt keeps
-    its place, and no two steps share one.
+    first-write-wins for a step within a saga generation, so a step retried by
+    a later attempt keeps its place, and no two started steps share one. A
+    revival that starts a new generation forgets the index with the step, so
+    it is keyed by generation.
   - The terminal decision and the phase marker are ONE batch, whoever decides:
     the worker's `fail` with no retry, or a sweep. As two steps, a crash
     between them leaves a failed task that no worker will run again, and its
@@ -2057,12 +2059,12 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     derives the same sequence.
   - Rollback passes run after the task's user attempt budget is spent, so the
     phase admits runs past it. Each rollback's spent attempts are durable with
-    the rollback and only grow.
+    the rollback, and within a saga generation they are never given back.
   - A rollback that fails for good records itself as failed, sets the outcome
     to `failed`, and ends the task, in one batch. A rollback is recorded as
     done only when its compensation happened. An infrastructure cap that ends
-    a task inside the phase halts the saga the same way and says so in the
-    outcome.
+    a task inside the phase ends the saga there, and the outcome is `failed`
+    exactly when a step that started is left uncompensated.
   - A cancellation in the forward phase triggers no rollback: only a terminal
     failure does.
   - Reviving a failed task whose saga ran, without forgetting its rolled-back
@@ -2073,9 +2075,11 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   maintainer's decision before the SQL.** The recommended answer comes first,
   and the model is checked under both:
   - Cancelling a task that is rolling back HALTS the saga, the remaining
-    rollbacks never run, and the outcome is `failed`. This is what today's
-    cancellation does to any live task. The alternative refuses the
-    cancellation, which leaves a stuck rollback bounded only by its budgets.
+    rollbacks never run, and the outcome is `failed` exactly when a step that
+    started is left uncompensated. A cancellation that lands after the last
+    rollback records `complete`. This is what today's cancellation does to any
+    live task. The alternative refuses the cancellation, which leaves a stuck
+    rollback bounded only by its budgets.
   - `retry-task` REFUSES a task whose saga began. The alternative admits one
     whose saga completed, forgets every rolled-back step so it runs again, and
     starts a new saga generation that the rollback checkpoints are keyed by.
