@@ -163,7 +163,7 @@ export function childSpawnKey(parentTaskId: string, replayKey: string): string {
  */
 export function refuseReservedIdempotencyKey(operation: string, key: string): void {
   if (startsWith(key, RESERVED_EVENT_PREFIX)) {
-    throw new RangeError(
+    throw new TrustedRangeError(
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
@@ -178,7 +178,7 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
   const childOf = opts.childOf
   if (childOf !== undefined) {
     if (callerKey !== undefined) {
-      throw new RangeError('spawn takes idempotencyKey or childOf, never both')
+      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')
     }
     return childSpawnKey(
       requireDurableString('childOf.parentTaskId', childOf.parentTaskId),

@@ -78,11 +78,6 @@ export type SqlTransactionLock =
       readonly claimToken: string
     }
 
-export type SqlEventLockCoordinates = Omit<
-  Extract<SqlTransactionLock, { readonly kind: 'event' }>,
-  'kind'
->
-
 export type SqlClaimLockCoordinates = Omit<
   Extract<SqlTransactionLock, { readonly kind: 'claim' }>,
   'kind'

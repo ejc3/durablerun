@@ -206,7 +206,7 @@ describe('child tasks through the SDK', () => {
           return {
             name: seen.name,
             awaited: seen.taskId === child.taskId,
-            leaksTheEngineName: `${seen.message} ${seen.eventName}`.includes('$task-done'),
+            leaksTheEngineName: `${seen.message} ${seen.eventName}`.includes(taskDoneEventName('')),
           }
         }
       },
