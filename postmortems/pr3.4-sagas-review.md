@@ -84,8 +84,8 @@ None of the twelve was caused by a fix for another. One fix was incomplete: the 
 
 ## Evidence
 
-- Red tests: commit `50390d4`, seven tests, each run on libSQL and PostgreSQL against the unfixed code and seen to fail, 14 failures naming their own tests. Commit `bf2b164`, two more for the doors found afterwards, 4 failures.
-- Fixes, one commit for each finding: `bf76214` (1), `75b02f2` (2), `a3d300e` (3), `34dcb92` (4), `10890bc` (5), `664dd47` (6), `6bb4a2d` and `d2aaf30` (7), `386992f` (8, 9, and the stale statements of 12). Each fix commit names the test it turns green. Simplify candidates taken: `c83cdbb`. Mutations: `f81028b`.
+- Red tests: commit `f444375`, seven tests, each run on libSQL and PostgreSQL against the unfixed code and seen to fail, 14 failures naming their own tests. Commit `9d08404`, two more for the doors found afterwards, 4 failures.
+- Fixes, one commit for each finding: `7857835` (1), `f0fb288` (2), `12fca59` (3), `d37e2bf` (4), `a71ef31` (5), `a261669` (6), `1e9d265` and `5a86825` (7), `95927a2` (8, 9, and the stale statements of 12). Each fix commit names the test it turns green. Simplify candidates taken: `5d8b9bd`. Mutations: `431adab`.
 - Gate after the fixes: the filtered audit over the saga closure, a subset audit, caught 58 of 58 by an attributable verdict, 58 exact-only and none with collateral failures. The registry's self-test passes, and every find of 804 mutations occurs exactly once in the tree, read from an imported copy. The PR body carries the full gate run on the final head.
 - Finder: one outside review of the branch, quoted verdict: "Findings 1, 2, and 3 can skip rollbacks or run them out of reverse start order. I found no way to run a rollback twice beyond at-least-once re-execution, which DESIGN.md already requires handlers to tolerate."
 - The reviewer's reproductions ran on in-memory libSQL only. Every red test here ran on PostgreSQL too, and each defect reproduced on both.
