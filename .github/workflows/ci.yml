@@ -223,24 +223,52 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import tempfile
           from pathlib import Path
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
           )
-          for path, base_hash, head_hash, why in PAIRS:
-              base = Path('/tmp/base') / path
-              if not base.exists() or hashlib.sha256(base.read_bytes()).hexdigest() != base_hash:
-                  print(f'{path}: the base does not need this pair.')
-                  continue
-              candidate = Path(path).read_bytes()
-              if candidate == base.read_bytes():
-                  print(f'{path}: this tree leaves the file as the base has it.')
-                  continue
-              if hashlib.sha256(candidate).hexdigest() != head_hash:
-                  raise SystemExit(f'{path}: the pair is pinned to one head file; re-pin it with the change to that file.')
-              base.write_bytes(candidate)
-              print(f'{path}: installed the pinned head file over the pinned base file ({why}).')
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+          def bridge(pairs, base_root, head_root):
+              installed = []
+              for path, base_hash, head_hash, why in pairs:
+                  base = base_root / path
+                  if not base.exists() or sha(base.read_bytes()) != base_hash:
+                      print(f'{path}: the base does not need this pair.')
+                      continue
+                  candidate = (head_root / path).read_bytes()
+                  if candidate == base.read_bytes():
+                      print(f'{path}: this tree leaves the file as the base has it.')
+                      continue
+                  if sha(candidate) != head_hash:
+                      raise SystemExit(f'{path}: the pair is pinned to one head file; re-pin it with the change to that file.')
+                  base.write_bytes(candidate)
+                  installed.append(path)
+                  print(f'{path}: installed the pinned head file over the pinned base file ({why}).')
+              return installed
+          bridge(PAIRS, Path('/tmp/base'), Path('.'))
           print(f'{len(PAIRS)} pinned file pairs.')
+          # The table has no live row, so these controls are what runs its three answers on
+          # every pull request: another base skips, an unpinned head refuses, a pinned one installs.
+          with tempfile.TemporaryDirectory() as scratch:
+              base_root, head_root = Path(scratch) / 'base', Path(scratch) / 'head'
+              base_root.mkdir()
+              head_root.mkdir()
+              (base_root / 'f').write_bytes(b'old')
+              (head_root / 'f').write_bytes(b'new')
+              if bridge((('f', sha(b'another base'), sha(b'new'), 'control'),), base_root, head_root) or (base_root / 'f').read_bytes() != b'old':
+                  raise SystemExit('pinned pairs control: a base with another hash was not skipped.')
+              refused = False
+              try:
+                  bridge((('f', sha(b'old'), sha(b'a head nobody reviewed'), 'control'),), base_root, head_root)
+              except SystemExit:
+                  refused = True
+              if not refused or (base_root / 'f').read_bytes() != b'old':
+                  raise SystemExit('pinned pairs control: a head file other than the pinned one was not refused.')
+              if bridge((('f', sha(b'old'), sha(b'new'), 'control'),), base_root, head_root) != ['f'] or (base_root / 'f').read_bytes() != b'new':
+                  raise SystemExit('pinned pairs control: the pinned head file was not installed.')
+          print('pinned pairs controls: skipped, refused, and installed as pinned.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
@@ -249,7 +277,9 @@ jobs:
         # a base. The one arm is pinned to the base registry's hash and replaces or
         # adds only that data, never checker logic or verdicts. Any other base skips.
         # An arm is dead once its pull request is the base, and the next pull request
-        # that needs one replaces it, keeping the helpers.
+        # that needs one replaces it. The step holds only the helpers its arm calls. A
+        # helper that re-aims or retires a base entry comes back with the arm that
+        # needs it, from this file's history, so the required step runs no dead code.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -258,29 +288,6 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def entry(text, name):
-              key = f'            "{name}",\n'
-              if text.count(key) != 1:
-                  raise SystemExit(f'{name}: the re-aim bridge requires exactly one spec entry.')
-              start = text.rindex('        (\n', 0, text.index(key))
-              end = text.index('        ),\n', start) + len('        ),\n')
-              return start, end
-          def reaim(repaired, candidate, names):
-              # Replace each named top-level entry with this tree's, which may change
-              # only its find, replacement, and description.
-              for name in names:
-                  key = f'        "{name}",\n'
-                  blocks = []
-                  for text in (repaired, candidate):
-                      if text.count(key) != 1:
-                          raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
-                      start = text.rindex('    (\n', 0, text.index(key))
-                      blocks.append((start, text.index('    ),\n', start) + len('    ),\n')))
-                  (start, end), (new_start, new_end) = blocks
-                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                      raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-              return repaired
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -294,93 +301,6 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_moved(repaired, candidate, names):
-              # Replace each named top-level entry with this tree's, which may also change
-              # the file it mutates: the condition moved from store text into a shared
-              # statement. The name line must still match.
-              for name in names:
-                  key = f'        "{name}",\n'
-                  blocks = []
-                  for text in (repaired, candidate):
-                      if text.count(key) != 1:
-                          raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
-                      start = text.rindex('    (\n', 0, text.index(key))
-                      blocks.append((start, text.index('    ),\n', start) + len('    ),\n')))
-                  (start, end), (new_start, new_end) = blocks
-                  if repaired[start:end].splitlines()[:2] != candidate[new_start:new_end].splitlines()[:2]:
-                      raise SystemExit(f'{name}: the re-aim bridge may not rename an entry.')
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-              return repaired
-          def reaim_table(repaired, candidate, name):
-              # Replace one named top-level dict of the registry with this tree's, for
-              # a table keyed by mutation name whose keys moved with their mutations.
-              opening = f'{name} = {{\n'
-              spans = []
-              for text in (repaired, candidate):
-                  if text.count(opening) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one table.')
-                  start = text.index(opening)
-                  spans.append((start, text.index('\n}\n', start) + len('\n}\n')))
-              (start, end), (new_start, new_end) = spans
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          def reaim_consumer(repaired, candidate, name):
-              # Replace the tail anchor of one checkpoint conflict consumer pair, which the
-              # generated checkpoint conflict mutations of that consumer share.
-              table = 'CHECKPOINT_CONFLICT_CONSUMERS = (\n'
-              pair = f'        "{name}",\n'
-              anchors = []
-              for text in (repaired, candidate):
-                  if text.count(table) != 1:
-                      raise SystemExit('checkpoint conflict consumers: the bridge requires one table.')
-                  opened = text.index(table)
-                  closed = text.index('\n)\n', opened)
-                  if text.count(pair, opened, closed) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one consumer pair.')
-                  start = text.index(pair, opened, closed) + len(pair)
-                  anchors.append((start, text.index('    ),\n', start)))
-              (start, end), (new_start, new_end) = anchors
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          def retire(repaired, candidate, names, inventory):
-              # Remove each named top-level entry, its verdict, and any one-line row another
-              # table keys by its name, for a mutation whose code this tree deleted. The
-              # candidate must no longer register the name, and the inventory assertion
-              # drops by the number removed.
-              for name in names:
-                  if f'"{name}"' in candidate:
-                      raise SystemExit(f'{name}: the bridge retires only an entry this tree no longer registers.')
-                  key = f'        "{name}",\n'
-                  if repaired.count(key) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  start = repaired.rindex('    (\n', 0, repaired.index(key))
-                  if not repaired.startswith('    (\n' + key, start):
-                      raise SystemExit(f'{name}: the bridge retires only a top-level entry.')
-                  repaired = repaired[:start] + repaired[repaired.index('    ),\n', start) + len('    ),\n'):]
-                  verdict = f'    "{name}": ExpectedVerdict(\n'
-                  if repaired.count(verdict) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one verdict entry.')
-                  start = repaired.index(verdict)
-                  repaired = repaired[:start] + repaired[repaired.index('    ),\n', start) + len('    ),\n'):]
-                  row = f'    "{name}": '
-                  repaired = '\n'.join(
-                      line for line in repaired.split('\n') if not (line.startswith(row) and line.endswith(','))
-                  )
-                  if f'"{name}"' in repaired:
-                      raise SystemExit(f'{name}: the base registry still names the retired entry.')
-              size = f'        if len(MUTATIONS) != {inventory}:\n'
-              if repaired.count(size) != 1:
-                  raise SystemExit('the bridge requires the base inventory size assertion.')
-              return repaired.replace(size, f'        if len(MUTATIONS) != {inventory - len(names)}:\n')
-          def reaim_lines(repaired, name, old, new):
-              # Replace literal lines inside one named top-level entry, for an entry a base
-              # generator reads in a shape this tree's registry no longer has.
-              key = f'        "{name}",\n'
-              if repaired.count(key) != 1:
-                  raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
-              start = repaired.rindex('    (\n', 0, repaired.index(key))
-              end = repaired.index('    ),\n', start) + len('    ),\n')
-              if repaired[start:end].count(old) != 1:
-                  raise SystemExit(f'{name}: the re-aim bridge requires the pinned lines exactly once.')
-              return repaired[:start] + repaired[start:end].replace(old, new) + repaired[end:]
           def list_conditions(repaired, candidate, file, lines):
               # List condition lines of a tree rule whose mutations this tree registers and the
               # base predates, so the base's derived coverage check reads them as held.
@@ -437,20 +357,24 @@ jobs:
               ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
                   "if (values.length < 2) return null",
-                  "if (!values.some((value) => typeof value === 'string' && STATE_NAMES.includes(value))) return null",
+                  "if (!values.some((value) => isLiveState(value) || isTerminalState(value))) return null",
                   "const defined = STATE_SETS.some(",
                   "(set) => set.length === values.length && set.every((state) => values.includes(state)),",
-                  "if (ValuesNode.is(node)) {",
-                  "} else if (rows.includes(node)) {",
-                  "} else if (PrimitiveValueListNode.is(node)) {",
-                  "} else if (ValueListNode.is(node)) {",
-                  "node.values.map((value) => (ValueNode.is(value) ? value.value : undefined)),",
-                  "} else if (RawNode.is(node)) {",
-                  "BinaryOperationNode.is(node) &&",
-                  "ORDERING_OPERATORS.includes(operatorName(node.operator) ?? '')",
-                  "const compared = [node.leftOperand, node.rightOperand].some((operand) =>",
-                  "someNode(operand, (inner) => columnName(inner) === 'cancel_at_ms'),",
-                  "if (compared) {",
+                  "return defined ? null : STATE_LIST_PROBLEM",
+                  "item[1] === undefined ? bind++ : item[1].split(QUOTE + QUOTE).join(QUOTE),",
+                  "if (stateListTextCount < STATE_LIST_TEXT_CAP) {",
+                  "return node !== undefined && ValueNode.is(node) ? node.value : undefined",
+                  "if (SelectQueryNode.is(node)) return false",
+                  "return referencedColumn(node) === 'cancel_at_ms' || children(node).some(namesDeadline)",
+                  "if (RawNode.is(node)) {",
+                  "list.map((item) => (typeof item === 'number' ? boundValue(node.parameters[item]) : item)),",
+                  "if (problem !== null) return problem",
+                  "if (!BinaryOperationNode.is(node)) return null",
+                  "if (LIST_OPERATORS.includes(operator) && referencedColumn(node.leftOperand) === 'state') {",
+                  "if (PrimitiveValueListNode.is(list)) return stateListProblem(list.values)",
+                  "if (ValueListNode.is(list)) return stateListProblem(list.values.map(boundValue))",
+                  "const tested = namesDeadline(node.leftOperand) || namesDeadline(node.rightOperand)",
+                  "return tested && !DEADLINE_TESTS.includes(operator) ? DEADLINE_PROBLEM : null",
                   "return problem !== null",
               ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
@@ -466,19 +390,20 @@ jobs:
                   "mutation-verdict:construction:tree-state-list-names-a-state",
                   "mutation-verdict:construction:tree-state-list-length",
                   "mutation-verdict:construction:tree-state-list-members",
-                  "mutation-verdict:construction:tree-state-list-skips-insert-rows",
+                  "mutation-verdict:construction:tree-state-list-keys-on-the-column",
                   "mutation-verdict:construction:tree-state-list-in-a-fragment",
+                  "mutation-verdict:construction:tree-state-list-bound-in-a-fragment",
+                  "mutation-verdict:construction:tree-state-list-fragment-keys-on-the-column",
                   "mutation-verdict:construction:tree-state-list-every-list-of-a-fragment",
                   "mutation-verdict:construction:tree-eligibility-first-problem-stands",
                   "mutation-verdict:construction:tree-eligibility-asked-of-every-statement",
-                  "mutation-verdict:construction:tree-deadline-operator-less",
-                  "mutation-verdict:construction:tree-deadline-operator-less-or-equal",
-                  "mutation-verdict:construction:tree-deadline-operator-greater",
-                  "mutation-verdict:construction:tree-deadline-operator-greater-or-equal",
+                  "mutation-verdict:construction:tree-deadline-refuses-a-comparison",
                   "mutation-verdict:construction:tree-deadline-either-side",
                   "mutation-verdict:construction:tree-deadline-under-arithmetic",
-                  "mutation-verdict:construction:tree-deadline-orders",
+                  "mutation-verdict:construction:tree-deadline-test-is-null",
+                  "mutation-verdict:construction:tree-deadline-test-is-not-null",
                   "mutation-verdict:construction:tree-deadline-names-the-column",
+                  "mutation-verdict:construction:tree-deadline-stops-at-a-subquery",
                   "mutation-verdict:construction:tree-walk-reads-below-the-root",
               ))
           else:
