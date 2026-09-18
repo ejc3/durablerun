@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
-import { MysqlSchedulerStore, SWEEP_SCAN_CANCELS_SQL } from '../src/store.js'
+import { MysqlSchedulerStore, NEXT_WAKE_SQL, SWEEP_SCAN_CANCELS_SQL } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
 /**
@@ -86,6 +86,42 @@ describe('production sweep scans on MySQL (exact shipped SQL)', () => {
       const nothingDue = await measured(db, SWEEP_SCAN_CANCELS_SQL, [Q, 10])
       expect(nothingDue.rows).toEqual([])
       expect(nothingDue.walked, 'rows walked with nothing due').toBeLessThan(20)
+    } finally {
+      await db.close()
+    }
+  })
+})
+
+describe('the next-wake read on MySQL, which every driver tick runs', () => {
+  it('seeks the earliest instant of each wake source, whatever the queue holds', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'plan-wake', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const spawned = await store.spawn(Q, 'waiting', '{}', { startDelaySeconds: 5 })
+      const source = `src.run_id = '${spawned.runId}'`
+      // A busy queue: many runs waiting, many under a lease, and as many tasks.
+      await cloneRows(db, 'runs', source, {
+        run_id: "CONCAT('later-', seq.n)",
+        attempt: 'seq.n + 1',
+        available_at_ms: '2000000 + seq.n',
+      })
+      await cloneRows(db, 'runs', source, {
+        run_id: "CONCAT('leased-', seq.n)",
+        attempt: 'seq.n + 1000',
+        state: "'running'",
+        claimed_by: "'worker'",
+        claim_expires_at_ms: '3000000 + seq.n',
+      })
+      await cloneRows(db, 'tasks', `src.task_id = '${spawned.taskId}'`, {
+        task_id: "CONCAT('task-', seq.n)",
+        idempotency_key: 'NULL',
+        cancel_at_ms: '4000000 + seq.n',
+      })
+      expect(await store.nextWakeAtEpochMs(Q)).toBe(1_005_000)
+      const binds = Array.from({ length: countMysqlPlaceholders(NEXT_WAKE_SQL) }, () => Q)
+      const wake = await measured(db, NEXT_WAKE_SQL, binds)
+      expect(wake.rows).toEqual([{ wake_ms: 1_005_000 }])
+      expect(wake.walked, 'rows walked to find the next wake').toBeLessThan(20)
     } finally {
       await db.close()
     }
