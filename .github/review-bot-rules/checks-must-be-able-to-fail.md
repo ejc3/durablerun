@@ -99,8 +99,9 @@ Report a failure when the changed code introduces or materially expands any of t
 - **An oracle retyped rather than recovered from the shipped path.** SQL, a label set, a
   query plan, a schema or a statement list copied into a test and described as "the same as"
   or "structurally the same" as what ships. Recover it instead: a recording executor
-  (`shippedWakeStatement` in `packages/store-libsql/test/query-plans.test.ts`), an exported
-  constant (`NEXT_WAKE_SQL`), or the one harvester the other checkers already share
+  (`shippedBatch` and `shippedWakeStatement` in
+  `packages/store-libsql/test/query-plans.test.ts`), or the one harvester the other checkers
+  already share
   (`scripts/spec-ledger.py --labels`, consumed by
   `packages/conformance/test/label-inventory.test.ts`). A second representation can only
   drift, and finding 42 is what that costs.

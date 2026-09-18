@@ -994,6 +994,7 @@ are load-bearing):
    statement grammar: a node kind or clause the grammar does not list is
    refused, which excludes common table expressions, RETURNING,
    `UPDATE … FROM`, writes below the root, and schema-qualified tables. It
+   lists one set operation, UNION ALL, and only for a batch of reads. It
    lists the functions a statement may call as well, `coalesce` and the
    aggregates `avg`, `count`, `max`, `min`, and `sum`, so a call of anything
    else is refused by name. The
@@ -1185,8 +1186,31 @@ are load-bearing):
      claim receipt's identity is nodes and its admission is one store fragment.
      Spawn's receipt is one read of `tasks` whose store predicate joins its two
      disjoint legs with OR, ordered by a CASE on the task id, because the
-     grammar has no UNION. How a dialect names a stored payload's type is a
-     store fragment.
+     grammar of a transition has no UNION. How a dialect names a stored
+     payload's type is a store fragment.
+   - A store's reads outside a transition are batches of reads. `readTree`
+     takes a shared SELECT into a batch that holds nothing else: it has no
+     compare-and-set, stamps nothing, and runs in read mode whatever its
+     caller asks. A batch holds reads or a transition and never both, because
+     a read beside a write must be a tail that a fence gates. Every other tree
+     rule still reads a read. A read may hold the clock. Two statements of one
+     batch see different clocks on a real backend, so a batch's second read of
+     the clock must give `readTree` a reason why a disagreement between the
+     two is harmless. The sweep's two discovery reads give one: every item
+     they find is checked again under its own fence. That reason replaces the
+     entry `scripts/batch-lint.py` kept for the sweep among the batches that
+     may read the clock twice, and the read labels left that lint's tables,
+     which describe only the batches still sent as text. Every batch of reads
+     shares one seed, `READS_SEED`: it writes no stamp, and drawing an id
+     would shift the ids a seeded test predicts. The grammar lists UNION ALL
+     for a batch of reads alone, and `next-wake` uses it to keep each wake
+     source on its own index. A condition on a state or a stored instant stays
+     a store fragment, so a partial index still sees the literal it was
+     declared with. MySQL builds its own `next-wake`, because it does not
+     answer MIN from an index: each leg is a store fragment holding a scalar
+     subquery and its index hint, so the grammar lists no hint, as for the
+     claim. The query-plan suites pin these reads by recording the statements
+     a real sweep and a real `next-wake` send.
    - Only a compare-and-set may hold the clock token. A clock called as a
      function node is outside the grammar whatever it is named, because the
      grammar lists the functions a statement may call and lists no clock. Raw
@@ -1266,9 +1290,9 @@ are load-bearing):
    statement's text are deleted. A batch reads a statement's object graph
    once for all of its checks. `scripts/fragment-lint.py` and
    `scripts/clock-lint.py` still read store SQL text, because a store still
-   sends text that no tree holds: the sweep's discovery reads, the next-wake
-   read, the other reads, `expire-lease-now`, `driver-heartbeat`, `heartbeat`
-   on libSQL and PostgreSQL, and the admin's statements. MySQL builds
+   sends text that no tree holds: `expire-lease-now`, `driver-heartbeat`,
+   `heartbeat` on libSQL and PostgreSQL, and the admin's statements. A store's
+   reads are batches of reads built as trees. MySQL builds
    `heartbeat` as a fenced batch of trees, because it has no RETURNING. Their
    rules have a tree-level form for
    everything a tree holds, and the two scans stay for that text until it is
