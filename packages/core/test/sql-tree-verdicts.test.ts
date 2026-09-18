@@ -1,0 +1,761 @@
+import {
+  BinaryOperationNode,
+  ColumnNode,
+  OperatorNode,
+  QueryNode,
+  SelectModifierNode,
+  SelectQueryNode,
+  sql,
+} from 'kysely'
+import { describe, it } from 'vitest'
+import {
+  type SqlFragment,
+  aliasedAs,
+  treeBuilder as db,
+  defineStatement,
+  fenceValue,
+  nowValue,
+  rawSql,
+  sqlFragment,
+  stampValue,
+} from '../src/index.js'
+import {
+  type Builder,
+  type Loose,
+  accepts,
+  cas,
+  eventInsert,
+  followOn,
+  gate,
+  key,
+  loose,
+  predicate,
+  refuses,
+  refusesAs,
+  tail,
+  taskFollowOn,
+  taskInsert,
+  tasksWhere,
+  tiedKeys,
+  unguardedWaitInsert,
+  value,
+  winCas,
+} from './tree-fixtures.js'
+
+/**
+ * One test for each registered mutation of a rule that lives in `sql-tree.ts`: the text of
+ * a fragment, the binds of a statement, the statement grammar, where a fragment stands,
+ * and the spellings of a clock and of a count. `fenced-batch-tree-verdicts.test.ts` holds
+ * the rules a batch applies. Each test builds the nearest shape only its condition
+ * refuses, and carries that mutation's marker and no other.
+ *
+ * A spelling list is a rule for each entry, so each entry has a row in a table here, and
+ * each row is its own test.
+ */
+
+const fencedRuns = () =>
+  db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win'))
+const setting = (assigned: (eb: Loose) => object) =>
+  followOn((taskFollowOn() as Loose).set((eb: Loose) => assigned(eb)))
+const startedAt = (text: string) =>
+  followOn(taskFollowOn().set({ first_started_at_ms: value<number>(text) }))
+const attempts = (text: string) => followOn(taskFollowOn().set({ attempts: value<number>(text) }))
+const subquery = (text: string) => rawSql<string>(sqlFragment(text), 'subquery')
+/** A fragment declared a value, standing wherever the test puts it. */
+const asValue = (text = '1 = 1') => value<boolean>(text)
+
+describe('the tree rules', () => {
+  describe('the text of a fragment', () => {
+    it('refuses the stamp token', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-fragment-stamp-token',
+        /may not hold the stamp token/,
+        /plain single-quoted literals/,
+        () => predicate('fence_stamp = $STAMP$'),
+      )
+    })
+
+    it('refuses a line comment', () => {
+      refuses('mutation-verdict:construction:tree-fragment-line-comment', /comment/, () =>
+        predicate('x = 1 -- trailing'),
+      )
+    })
+
+    it('refuses a block comment', () => {
+      refuses('mutation-verdict:construction:tree-fragment-block-comment', /comment/, () =>
+        predicate('x = 1 /* trailing */'),
+      )
+    })
+
+    it('refuses a prefixed string literal', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fragment-prefixed-literal',
+        /plain single-quoted literals/,
+        () => predicate("x = E'escaped'"),
+      )
+    })
+
+    it('refuses a dollar-quoted string', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-fragment-dollar-quoted',
+        /plain single-quoted literals/,
+        /a stray \$/,
+        () => predicate('x = $q$ quoted $q$'),
+      )
+    })
+
+    it('refuses a stray dollar sign', () => {
+      refuses('mutation-verdict:construction:tree-fragment-stray-dollar', /a stray \$/, () =>
+        predicate('x = $1'),
+      )
+    })
+
+    it('refuses a malformed fence token', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-fragment-malformed-fence-token',
+        /malformed fence token$/,
+        /or a stray \$/,
+        () => predicate('x = $FENCE:not a name$'),
+      )
+    })
+
+    it('refuses a bind inside a string literal', () => {
+      refuses('mutation-verdict:construction:tree-fragment-bind-in-literal', /string literal/, () =>
+        predicate("task_name = 'why?'", ['bound']),
+      )
+    })
+
+    it('refuses the clock token inside a string literal', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fragment-clock-in-literal',
+        /string literal/,
+        () => predicate("failure_reason <> 'at $NOW$'"),
+      )
+    })
+
+    it('refuses a fence token inside a string literal', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fragment-fence-in-literal',
+        /string literal/,
+        () => predicate("failure_reason <> 'at $FENCE:win$'"),
+      )
+    })
+
+    it('refuses a subquery fragment that is not one group', () => {
+      refuses(
+        'mutation-verdict:construction:tree-subquery-fragment-one-group',
+        /one parenthesized group/,
+        () => subquery("SELECT 'job'"),
+      )
+    })
+
+    it('refuses text before the group of a subquery fragment', () => {
+      refuses(
+        'mutation-verdict:construction:tree-subquery-fragment-opens',
+        /one parenthesized group/,
+        () => subquery("'other', (SELECT 'job')"),
+      )
+    })
+
+    it('refuses text after the group of a subquery fragment', () => {
+      refuses(
+        'mutation-verdict:construction:tree-subquery-fragment-closes-at-end',
+        /one parenthesized group/,
+        () => subquery("(SELECT 'a') UNION (SELECT 'b')"),
+      )
+    })
+
+    it('validates a text again for each role it is placed in', () => {
+      // Valid as a predicate, and no parenthesized group, so not valid as a subquery.
+      const text = 'validated_once_for_each_role = 1'
+      predicate(text)
+      refuses(
+        'mutation-verdict:construction:tree-fragment-cache-keyed-by-role',
+        /one parenthesized group/,
+        () => subquery(text),
+      )
+    })
+
+    it('refuses an argument the text never binds', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fragment-unused-argument',
+        /binds 1 of its 2 arguments/,
+        () => predicate('queue = ?', ['q', 'extra']),
+      )
+    })
+
+    it('refuses a placeholder with no argument', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fragment-missing-argument',
+        /binds 2 of its 1 arguments/,
+        () => predicate('queue = ? AND task_name = ?', ['q']),
+      )
+    })
+  })
+
+  describe('the binds of a statement', () => {
+    const update = () => db.updateTable('runs').set({ state: 'completed' })
+
+    it('refuses an undefined bind', () => {
+      const keyed = defineStatement('keyed', (binds: { runId: string }) =>
+        update().where('run_id', '=', binds.runId),
+      )
+      refuses(
+        'mutation-verdict:construction:tree-bind-undefined',
+        /bind 'runId' is undefined/,
+        () => keyed({ runId: undefined as never }),
+      )
+    })
+
+    it('refuses an undefined bind below the first level', () => {
+      const nested = defineStatement('nested', (binds: { wake: { at: number } }) =>
+        db.updateTable('runs').set({ available_at_ms: binds.wake.at }).where('run_id', '=', 'r1'),
+      )
+      refuses(
+        'mutation-verdict:construction:tree-bind-undefined-nested',
+        /bind 'wake'\.at is undefined/,
+        () => nested({ wake: { at: undefined as never } }),
+      )
+    })
+
+    it('refuses a fragment the statement never places', () => {
+      const unplaced = defineStatement('unplaced', (_binds: { admission: SqlFragment }) =>
+        update().where('run_id', '=', 'r1'),
+      )
+      refuses('mutation-verdict:construction:tree-fragment-never-placed', /never places/, () =>
+        unplaced({ admission: sqlFragment('1 = 1') }),
+      )
+    })
+
+    it('counts one placement for one bind', () => {
+      const half = defineStatement('half', (binds: { first: SqlFragment; second: SqlFragment }) =>
+        update().where(rawSql<boolean>(binds.first, 'predicate')),
+      )
+      const shared = sqlFragment('1 = 1')
+      refuses(
+        'mutation-verdict:construction:tree-fragment-placement-consumed',
+        /bind 'second' is a fragment the statement never places/,
+        () => half({ first: shared, second: shared }),
+      )
+    })
+  })
+
+  describe('the statement grammar', () => {
+    const GRAMMAR = /outside the statement grammar/
+    /**
+     * A gated follow-on whose second conjunct requires the task to be IN a write. The
+     * builder binds a write as a value, so only a tree built from nodes holds this shape.
+     */
+    const nesting = (write: Builder) =>
+      followOn({
+        toOperationNode: () =>
+          QueryNode.cloneWithWhere(
+            tasksWhere((eb) => eb('task_id', 'in', tiedKeys(eb))).toOperationNode(),
+            BinaryOperationNode.create(
+              ColumnNode.create('task_id'),
+              OperatorNode.create('in'),
+              write.toOperationNode(),
+            ),
+          ),
+      })
+
+    it('refuses a node kind it does not list', () => {
+      refuses('mutation-verdict:construction:tree-grammar-node-kind', /node kind OverNode/, () =>
+        tail(
+          loose
+            .selectFrom('runs')
+            .select((eb: Loose) => eb.fn.countAll().over().as('n'))
+            .where('fence_stamp', '=', fenceValue('win')),
+        ),
+      )
+    })
+
+    it('refuses an UPDATE below the root', () => {
+      refuses('mutation-verdict:construction:tree-grammar-update-below-root', GRAMMAR, () =>
+        nesting(loose.updateTable('runs').set({ state: 'failed' })),
+      )
+    })
+
+    it('refuses a DELETE below the root', () => {
+      refuses('mutation-verdict:construction:tree-grammar-delete-below-root', GRAMMAR, () =>
+        nesting(loose.deleteFrom('runs')),
+      )
+    })
+
+    it('refuses an INSERT below the root', () => {
+      refuses('mutation-verdict:construction:tree-grammar-insert-below-root', GRAMMAR, () =>
+        nesting(loose.insertInto('runs').values({ run_id: 'r2' })),
+      )
+    })
+
+    it('refuses a query clause it does not list', () => {
+      // UPDATE … FROM holds only node kinds the grammar lists, so the clause list alone refuses it.
+      refuses(
+        'mutation-verdict:construction:tree-grammar-node-fields',
+        /UpdateQueryNode\.from/,
+        () =>
+          cas(
+            'win',
+            loose
+              .updateTable('runs')
+              .from('tasks')
+              .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: nowValue })
+              .where('run_id', '=', 'r1'),
+          ),
+      )
+    })
+
+    it('refuses a schema-qualified table', () => {
+      refuses(
+        'mutation-verdict:construction:tree-grammar-schema-qualified',
+        /a schema-qualified table/,
+        () =>
+          cas(
+            'win',
+            loose
+              .withSchema('other')
+              .updateTable('runs')
+              .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: nowValue })
+              .where('run_id', '=', 'r1'),
+          ),
+      )
+    })
+
+    it('refuses a SELECT modifier other than DISTINCT', () => {
+      const skipLocked = {
+        toOperationNode: () =>
+          SelectQueryNode.cloneWithFrontModifier(
+            fencedRuns().toOperationNode(),
+            SelectModifierNode.create('SkipLocked'),
+          ),
+      }
+      refuses(
+        'mutation-verdict:construction:tree-grammar-select-modifier',
+        /a SELECT modifier other than DISTINCT/,
+        () => tail(skipLocked),
+      )
+    })
+
+    it('refuses an assignment to something other than a column', () => {
+      refuses(
+        'mutation-verdict:construction:tree-grammar-assigns-a-column',
+        /an assignment to something other than a column/,
+        () => followOn((taskFollowOn() as Loose).set(value<string>('task_name'), 'job')),
+      )
+    })
+
+    it('reads the nodes below the root', () => {
+      refuses(
+        'mutation-verdict:construction:tree-grammar-reads-children',
+        /a schema-qualified table/,
+        () =>
+          followOn(
+            tasksWhere((eb) =>
+              eb(
+                'task_id',
+                'in',
+                loose.withSchema('other').selectFrom('runs as f').where(gate).select('f.task_id'),
+              ),
+            ),
+          ),
+      )
+    })
+
+    it('holds an INSERT to its shape', () => {
+      refuses('mutation-verdict:construction:tree-grammar-insert-shape', /names no columns/, () =>
+        cas(
+          'event',
+          (eventInsert() as Loose).onConflict((oc: Loose) => oc.doNothing()),
+        ),
+      )
+    })
+  })
+
+  describe('the shape of an INSERT', () => {
+    const PLAIN = /one plain selection for each column/
+    const EVENT = {
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    }
+    /** A follow-on insert into a table with no provenance, so only the grammar reads its list. */
+    const checkpointsFrom = (columns: string[], select: (from: Loose) => Loose) =>
+      followOn(
+        loose
+          .insertInto('checkpoints')
+          .columns(columns)
+          .expression(
+            select(loose.selectFrom('runs as f')).where((eb: Loose) => eb.and([key(eb), gate(eb)])),
+          ),
+      )
+
+    it('refuses a star', () => {
+      refuses('mutation-verdict:construction:tree-insert-shape-star', PLAIN, () =>
+        checkpointsFrom(['task_id'], (from) => from.selectAll()),
+      )
+    })
+
+    it('refuses a qualified star', () => {
+      refuses('mutation-verdict:construction:tree-insert-shape-qualified-star', PLAIN, () =>
+        checkpointsFrom(['task_id'], (from) => from.selectAll('f')),
+      )
+    })
+
+    it('refuses fewer selections than columns', () => {
+      refuses('mutation-verdict:construction:tree-insert-shape-selection-count', PLAIN, () =>
+        checkpointsFrom(['task_id', 'owner_attempt'], (from) => from.select('f.task_id')),
+      )
+    })
+
+    it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
+      refuses(
+        'mutation-verdict:construction:tree-insert-shape-conflict-needs-where',
+        /needs a WHERE/,
+        () => cas('register', unguardedWaitInsert()),
+      )
+    })
+
+    it('refuses an INSERT with neither VALUES nor a SELECT', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-insert-shape-values-or-select',
+        /exactly one row of values or one SELECT/,
+        /must insert fence_stamp as the stamp/,
+        () => cas('event', loose.insertInto('events')),
+      )
+    })
+
+    it('refuses two rows of VALUES', () => {
+      refuses(
+        'mutation-verdict:construction:tree-insert-shape-one-row',
+        /exactly one row of values/,
+        () => cas('event', loose.insertInto('events').values([EVENT, EVENT])),
+      )
+    })
+
+    it('refuses an ON CONFLICT that names no columns', () => {
+      refuses(
+        'mutation-verdict:construction:tree-insert-shape-conflict-names-columns',
+        /names no columns/,
+        () =>
+          cas(
+            'event',
+            (eventInsert() as Loose).onConflict((oc: Loose) => oc.doNothing()),
+          ),
+      )
+    })
+
+    it('refuses a fragment in an index predicate', () => {
+      refuses(
+        'mutation-verdict:construction:tree-insert-shape-index-predicate-fragment',
+        /an index predicate that holds a fragment/,
+        () =>
+          cas(
+            'task',
+            (taskInsert() as Loose).onConflict((oc: Loose) =>
+              oc
+                .columns(['queue', 'idempotency_key'])
+                .where(predicate('idempotency_key IS NOT NULL'))
+                .doNothing(),
+            ),
+          ),
+      )
+    })
+
+    it('refuses a bound value in an index predicate', () => {
+      refuses(
+        'mutation-verdict:construction:tree-insert-shape-index-predicate-bind',
+        /an index predicate that holds a bound value/,
+        () =>
+          cas(
+            'task',
+            (taskInsert() as Loose).onConflict((oc: Loose) =>
+              oc.columns(['queue', 'idempotency_key']).where('state', '=', 'pending').doNothing(),
+            ),
+          ),
+      )
+    })
+
+    it('refuses a provenance column listed twice', () => {
+      refuses(
+        'mutation-verdict:construction:tree-inserted-column-listed-once',
+        /must insert fence_stamp as the stamp/,
+        () =>
+          cas(
+            'register',
+            loose
+              .insertInto('waits')
+              .columns(['fence_stamp', 'fence_stamp', 'fence_at_ms'])
+              .expression(
+                loose
+                  .selectNoFrom(() => [
+                    aliasedAs(stampValue, 'fence_stamp'),
+                    aliasedAs(stampValue, 'again'),
+                    aliasedAs(nowValue, 'fence_at_ms'),
+                  ])
+                  .where(predicate('1 = 1')),
+              ),
+          ),
+      )
+    })
+  })
+
+  describe('where a fragment stands', () => {
+    const AS_PREDICATE = /a 'value' fragment standing as a predicate/
+    const AS_SUBQUERY = /a 'value' fragment standing as a subquery/
+    const selected = (): Loose => value<string>("(SELECT 'job')")
+
+    it('reads the operand of EXISTS as a subquery', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-role-operand-of-exists',
+        AS_SUBQUERY,
+        AS_PREDICATE,
+        () => followOn((taskFollowOn() as Loose).where((eb: Loose) => eb.exists(selected()))),
+      )
+    })
+
+    it('reads the operand of IN as a subquery', () => {
+      refuses('mutation-verdict:construction:tree-role-operand-of-in', AS_SUBQUERY, () =>
+        followOn((taskFollowOn() as Loose).where((eb: Loose) => eb('task_name', 'in', selected()))),
+      )
+    })
+
+    it('reads the operand of NOT IN as a subquery', () => {
+      refuses('mutation-verdict:construction:tree-role-operand-of-not-in', AS_SUBQUERY, () =>
+        followOn(
+          (taskFollowOn() as Loose).where((eb: Loose) => eb('task_name', 'not in', selected())),
+        ),
+      )
+    })
+
+    it('reads a whole WHERE as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-of-where', AS_PREDICATE, () =>
+        cas('win', winCas().clearWhere().where(asValue())),
+      )
+    })
+
+    it('reads a whole HAVING as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-of-having', AS_PREDICATE, () =>
+        tail(fencedRuns().groupBy('run_id').having(asValue('COUNT(*) = 1'))),
+      )
+    })
+
+    it('reads a whole ON as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-of-on', AS_PREDICATE, () =>
+        tail(
+          loose
+            .selectFrom('runs as f')
+            .innerJoin('tasks as t', (join: Loose) => join.on(asValue()))
+            .select('f.state')
+            .where('f.fence_stamp', '=', fenceValue('win')),
+        ),
+      )
+    })
+
+    it('reads a whole CASE condition as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-of-when', AS_PREDICATE, () =>
+        setting((eb) => ({ infra_retries: eb.case().when(asValue()).then(1).else(0).end() })),
+      )
+    })
+
+    it('reads a conjunct as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-under-and', AS_PREDICATE, () =>
+        followOn(taskFollowOn().where(asValue())),
+      )
+    })
+
+    it('reads a disjunct as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-under-or', AS_PREDICATE, () =>
+        followOn(
+          (taskFollowOn() as Loose).where((eb: Loose) =>
+            eb.or([asValue(), eb('task_name', '=', 'job')]),
+          ),
+        ),
+      )
+    })
+
+    it('reads the operand of NOT as a predicate', () => {
+      refuses('mutation-verdict:construction:tree-role-boolean-under-not', AS_PREDICATE, () =>
+        followOn((taskFollowOn() as Loose).where((eb: Loose) => eb.not(asValue()))),
+      )
+    })
+
+    it('reads a subquery only under IN, NOT IN, and EXISTS', () => {
+      refuses(
+        'mutation-verdict:construction:tree-role-operand-only-of-in-or-exists',
+        /a 'subquery' fragment standing as a value/,
+        () =>
+          followOn(
+            (taskFollowOn() as Loose).where((eb: Loose) =>
+              eb('task_name', '=', subquery("(SELECT 'job')")),
+            ),
+          ),
+      )
+    })
+
+    describe('the raw node the builder makes for an ORDER BY direction', () => {
+      const UNMINTED = /a raw fragment that rawSql did not mint/
+
+      it('is exempt only as the direction, never as the ORDER BY expression', () => {
+        accepts('control: a direction the builder made', () =>
+          tail(fencedRuns().orderBy('run_id', 'desc')),
+        )
+        refuses(
+          'mutation-verdict:construction:tree-builder-raw-stands-as-direction',
+          UNMINTED,
+          () => tail((fencedRuns() as Loose).orderBy(sql.raw('desc'))),
+        )
+      })
+
+      it('carries no parameter', () => {
+        refuses('mutation-verdict:construction:tree-builder-raw-has-no-parameters', UNMINTED, () =>
+          tail((fencedRuns() as Loose).orderBy('run_id', sql`desc ${1}`)),
+        )
+      })
+
+      it('reads asc or desc and nothing else', () => {
+        refuses('mutation-verdict:construction:tree-builder-raw-text', UNMINTED, () =>
+          tail((fencedRuns() as Loose).orderBy('run_id', sql.raw('desc nulls last'))),
+        )
+      })
+    })
+  })
+
+  describe('the spellings of a clock', () => {
+    const READS = /reads the clock/
+    const FUNCTION_NODES = [
+      ['unixepoch', 'mutation-verdict:construction:tree-clock-function-unixepoch'],
+      ['julianday', 'mutation-verdict:construction:tree-clock-function-julianday'],
+      ['strftime', 'mutation-verdict:construction:tree-clock-function-strftime'],
+      ['now', 'mutation-verdict:construction:tree-clock-function-now'],
+      ['sysdate', 'mutation-verdict:construction:tree-clock-function-sysdate'],
+      ['clock_timestamp', 'mutation-verdict:construction:tree-clock-function-clock-timestamp'],
+      [
+        'statement_timestamp',
+        'mutation-verdict:construction:tree-clock-function-statement-timestamp',
+      ],
+      [
+        'transaction_timestamp',
+        'mutation-verdict:construction:tree-clock-function-transaction-timestamp',
+      ],
+      ['getdate', 'mutation-verdict:construction:tree-clock-function-getdate'],
+      ['timeofday', 'mutation-verdict:construction:tree-clock-function-timeofday'],
+      ['utc_timestamp', 'mutation-verdict:construction:tree-clock-function-utc-timestamp'],
+      ['utc_date', 'mutation-verdict:construction:tree-clock-function-utc-date'],
+      ['utc_time', 'mutation-verdict:construction:tree-clock-function-utc-time'],
+      ['localtime', 'mutation-verdict:construction:tree-clock-function-localtime'],
+      ['localtimestamp', 'mutation-verdict:construction:tree-clock-function-localtimestamp'],
+      ['current_timestamp', 'mutation-verdict:construction:tree-clock-function-current-timestamp'],
+      ['curdate', 'mutation-verdict:construction:tree-clock-function-curdate'],
+      ['curtime', 'mutation-verdict:construction:tree-clock-function-curtime'],
+    ] as const
+    for (const [name, marker] of FUNCTION_NODES) {
+      it(`refuses ${name} called as a function node`, () => {
+        refuses(marker, READS, () => setting((eb) => ({ first_started_at_ms: eb.fn(name, []) })))
+      })
+    }
+
+    it('refuses a clock function node in upper case', () => {
+      refuses('mutation-verdict:construction:tree-clock-function-case-fold', READS, () =>
+        setting((eb) => ({ first_started_at_ms: eb.fn('UNIXEPOCH', []) })),
+      )
+    })
+
+    it('refuses a clock spelled in upper case in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-spelling-case-fold', READS, () =>
+        startedAt('SYSDATE()'),
+      )
+    })
+
+    it('refuses a clock function called in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-spelling-call-arm', READS, () =>
+        startedAt('sysdate()'),
+      )
+    })
+
+    it('refuses a bare clock keyword in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-spelling-keyword-arm', READS, () =>
+        startedAt('current_date'),
+      )
+    })
+
+    it('refuses a date function of now in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-clock-spelling-now-arm', READS, () =>
+        startedAt("datetime('now')"),
+      )
+    })
+
+    const KEYWORDS = [
+      ['current_timestamp', 'mutation-verdict:construction:tree-clock-keyword-current-timestamp'],
+      ['current_time', 'mutation-verdict:construction:tree-clock-keyword-current-time'],
+      ['current_date', 'mutation-verdict:construction:tree-clock-keyword-current-date'],
+      ['localtime', 'mutation-verdict:construction:tree-clock-keyword-localtime'],
+      ['localtimestamp', 'mutation-verdict:construction:tree-clock-keyword-localtimestamp'],
+      ['utc_timestamp', 'mutation-verdict:construction:tree-clock-keyword-utc-timestamp'],
+      ['utc_date', 'mutation-verdict:construction:tree-clock-keyword-utc-date'],
+      ['utc_time', 'mutation-verdict:construction:tree-clock-keyword-utc-time'],
+    ] as const
+    for (const [word, marker] of KEYWORDS) {
+      it(`refuses the bare keyword ${word} in a fragment`, () => {
+        refuses(marker, READS, () => startedAt(word))
+      })
+    }
+
+    const OF_NOW = [
+      ['datetime', 'mutation-verdict:construction:tree-clock-now-datetime'],
+      ['date', 'mutation-verdict:construction:tree-clock-now-date'],
+      ['time', 'mutation-verdict:construction:tree-clock-now-time'],
+    ] as const
+    for (const [word, marker] of OF_NOW) {
+      it(`refuses ${word} of now in a fragment`, () => {
+        refuses(marker, READS, () => startedAt(`${word}('now')`))
+      })
+    }
+  })
+
+  describe('the spellings of a count', () => {
+    const OPERATORS = [
+      ['plus', '+', 'mutation-verdict:construction:tree-counting-operator-plus'],
+      ['minus', '-', 'mutation-verdict:construction:tree-counting-operator-minus'],
+      ['times', '*', 'mutation-verdict:construction:tree-counting-operator-times'],
+      ['divide', '/', 'mutation-verdict:construction:tree-counting-operator-divide'],
+      ['modulo', '%', 'mutation-verdict:construction:tree-counting-operator-modulo'],
+      ['concat', '||', 'mutation-verdict:construction:tree-counting-operator-concat'],
+    ] as const
+    for (const [word, operator, marker] of OPERATORS) {
+      it(`refuses a count spelled with ${word}`, () => {
+        refuses(marker, /bumps a counter blindly/, () =>
+          setting((eb) => ({ attempts: eb('attempts', operator, 1) })),
+        )
+      })
+    }
+
+    const MENTIONS = /raw fragment that mentions 'attempts'/
+
+    it('sees an unqualified read of the assigned column in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-counting-mention-unqualified', MENTIONS, () =>
+        attempts('coalesce(attempts, 0)'),
+      )
+    })
+
+    it('sees a read of the assigned column through the written table in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-counting-mention-table-qualified', MENTIONS, () =>
+        attempts('coalesce(tasks.attempts, 0)'),
+      )
+    })
+
+    it('sees arithmetic after the column of another row in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-counting-mention-operator-after', MENTIONS, () =>
+        attempts('(SELECT t.attempts + 1 FROM tasks t)'),
+      )
+    })
+
+    it('sees arithmetic before the column of another row in a fragment', () => {
+      refuses('mutation-verdict:construction:tree-counting-mention-operator-before', MENTIONS, () =>
+        attempts('(SELECT 1 + t.attempts FROM tasks t)'),
+      )
+    })
+  })
+})

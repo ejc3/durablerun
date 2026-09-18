@@ -1,6 +1,7 @@
 import { sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
+  FencedBatch,
   aliasedAs,
   treeBuilder as db,
   fenceValue,
@@ -11,10 +12,13 @@ import {
   stampValue,
 } from '../src/index.js'
 import {
-  type Builder,
+  CLOCK,
   type Loose,
+  accepts,
   batch,
+  batchWithClock,
   capturingExecutor,
+  cas,
   checkpoint,
   eventInsert,
   eventRow,
@@ -23,13 +27,18 @@ import {
   followOn,
   gate,
   joined,
+  joinedRead,
   keyIn,
   loose,
+  many,
   predicate,
   recorded,
+  refuses,
+  refusesAs,
   stampedTasks,
   statement,
   successor,
+  tail,
   taskFollowOn,
   tasksSetting,
   tasksWhere,
@@ -50,33 +59,21 @@ import {
  * one marker and nothing a second mutant could trip first.
  */
 
-/** Fail with the marker when the refusal is gone. A different refusal fails as itself. */
-function refuses(marker: string, expected: RegExp, action: () => unknown): void {
-  try {
-    action()
-  } catch (error) {
-    expect(String(error)).toMatch(expected)
-    return
-  }
-  throw new Error(marker)
-}
-
-/** Fail with the marker when a shape the rule allows is refused. */
-function accepts(marker: string, action: () => unknown): void {
-  try {
-    action()
-  } catch {
-    throw new Error(marker)
-  }
-}
-
-const cas = (name: string, builder: Builder) => batch().casTree(name, statement(builder))
-const many = (builder: Builder) =>
-  withCas().followOnTree('task', statement(builder), { many: 'a test' })
-const tail = (builder: Builder) => withCas().tailTree('read', statement(builder))
-
 const NO_GATE = /has no fence gating every row/
 const UNTIED = /not tied to the rows it reads or writes/
+const PLAIN = /must select plain columns and values/
+
+// Refused shapes that more than one condition holds, each named once.
+/** A gate that compares the fence and ties nothing to the task it completes. */
+const untiedGate = () => tiedBy((select) => select.where('f.run_id', '=', 'r1'))
+/** A second FROM source beside the fenced run. */
+const besideTasks = () => loose.selectFrom(['runs as f', 'tasks as t2'])
+/** The stamp of the statement this one follows, inserted as its own. */
+const fenceAsStamp = () => successor({ stamp: fenceValue('win') })
+/** An aggregate where a plain column belongs. */
+const aggregated = () => successor({ task: (eb: Loose) => eb.fn.max('f.task_id') })
+/** A raw node nobody minted, standing as a predicate. */
+const unmintedPredicate = () => taskFollowOn().where(sql.raw<boolean>(`task_name = 'job'`))
 
 describe('the tree path', () => {
   describe('stamping', () => {
@@ -140,11 +137,70 @@ describe('the tree path', () => {
       )
     })
 
-    it('refuses a provenance column assigned twice', () => {
+    it('refuses a stamp assigned twice', () => {
       refuses(
-        'mutation-verdict:construction:tree-provenance-assigned-once',
+        'mutation-verdict:construction:tree-stamp-assigned-once',
         /must assign fence_stamp the stamp/,
         () => cas('win', winCas().set('fence_stamp', 'forged')),
+      )
+    })
+
+    it('refuses a follow-on instant assigned twice', () => {
+      refuses(
+        'mutation-verdict:construction:tree-followon-instant-assigned-once',
+        /does not stamp it/,
+        () =>
+          followOn(tasksSetting({ fence_stamp: stampValue, fence_at_ms: 5 }).set('fence_at_ms', 7)),
+      )
+    })
+
+    it('refuses a compare-and-set clock assigned twice', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-instant-assigned-once',
+        /must assign fence_stamp the stamp and fence_at_ms the clock/,
+        () => cas('win', winCas().set('fence_at_ms', 7)),
+      )
+    })
+
+    it('refuses a fence value assigned as the stamp of an update', () => {
+      refuses(
+        'mutation-verdict:construction:tree-update-stamp-is-the-stamp-token',
+        /does not stamp it/,
+        () => followOn(tasksSetting({ fence_stamp: fenceValue('win'), fence_at_ms: 5 })),
+      )
+    })
+
+    it('refuses the stamp assigned where the clock belongs', () => {
+      refuses(
+        'mutation-verdict:construction:tree-update-clock-is-the-clock-token',
+        /must assign fence_stamp the stamp and fence_at_ms the clock/,
+        () =>
+          cas(
+            'win',
+            loose
+              .updateTable('runs')
+              .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: stampValue })
+              .where('run_id', '=', 'r1'),
+          ),
+      )
+    })
+
+    it('refuses a compare-and-set that is a DELETE', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-refuses-delete',
+        /must be an UPDATE or an INSERT/,
+        () => cas('win', loose.deleteFrom('runs').where('run_id', '=', 'r1')),
+      )
+    })
+
+    it('refuses a follow-on that is a SELECT', () => {
+      refuses(
+        'mutation-verdict:construction:tree-statement-kind',
+        /must be an UPDATE, a DELETE, or an INSERT … SELECT/,
+        () =>
+          followOn(
+            db.selectFrom('runs').select('state').where('fence_stamp', '=', fenceValue('win')),
+          ),
       )
     })
   })
@@ -195,12 +251,6 @@ describe('the tree path', () => {
     })
 
     it('refuses an unqualified stamp when the statement reads two sources', () => {
-      const joinedRead = (stamp: string) =>
-        loose
-          .selectFrom('runs as f')
-          .innerJoin('tasks as t', 't.task_id', 'f.task_id')
-          .select('f.state')
-          .where(stamp, '=', fenceValue('win'))
       expect(() => tail(joinedRead('f.fence_stamp'))).not.toThrow()
       refuses('mutation-verdict:construction:tree-fence-equality-ambiguous-source', NO_GATE, () =>
         tail(joinedRead('fence_stamp')),
@@ -251,6 +301,117 @@ describe('the tree path', () => {
             statement(
               db.selectFrom('tasks').select('state').where('fence_stamp', '=', fenceValue('win')),
             ),
+          ),
+      )
+    })
+
+    it('refuses a gate that asks for no fenced row to exist', () => {
+      refuses('mutation-verdict:construction:tree-gate-exists-operator', NO_GATE, () =>
+        followOn(
+          tasksWhere((eb) =>
+            eb.unary(
+              'not exists',
+              fenced(eb).select('f.run_id').whereRef('f.task_id', '=', 'tasks.task_id'),
+            ),
+          ),
+        ),
+      )
+    })
+
+    it('refuses an unqualified stamp when a joined source shares the scope', () => {
+      refuses('mutation-verdict:construction:tree-scope-includes-joins', NO_GATE, () =>
+        tail(joinedRead('fence_stamp')),
+      )
+    })
+
+    it('refuses an unqualified stamp when a second FROM source shares the scope', () => {
+      refuses('mutation-verdict:construction:tree-scope-includes-every-from', NO_GATE, () =>
+        tail(
+          loose
+            .selectFrom(['runs as f', 'tasks as t'])
+            .select('f.state')
+            .where('fence_stamp', '=', fenceValue('win')),
+        ),
+      )
+    })
+
+    it('refuses a fence compared on the stamp of the outer row', () => {
+      refuses('mutation-verdict:construction:tree-fence-equality-qualifier-in-scope', NO_GATE, () =>
+        many(
+          tasksWhere((eb) =>
+            eb.exists(
+              eb
+                .selectFrom('runs as f')
+                .select('f.run_id')
+                .where('tasks.fence_stamp', '=', fenceValue('win'))
+                .whereRef('f.task_id', '=', 'tasks.task_id'),
+            ),
+          ),
+        ),
+      )
+    })
+
+    it('names the tie when a gate is refused for being untied', () => {
+      refusesAs('mutation-verdict:construction:tree-gate-untied-message', UNTIED, NO_GATE, () =>
+        many(untiedGate()),
+      )
+    })
+
+    it('refuses a fence on a name no statement of the batch has', () => {
+      refuses(
+        'mutation-verdict:construction:tree-fence-names-a-statement',
+        /names no statement of this batch/,
+        () =>
+          followOn(
+            loose
+              .updateTable('runs')
+              .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+              .where('run_id', '=', 'r1')
+              .where('fence_stamp', '=', fenceValue('missing')),
+          ),
+      )
+    })
+
+    it('refuses a fence on a statement that writes no stamp', () => {
+      const cleared = withCas().followOnTree(
+        'cleared',
+        statement(
+          loose
+            .deleteFrom('waits')
+            .where((eb: Loose) => eb('run_id', 'in', fenced(eb).select('f.run_id'))),
+        ),
+        { many: 'a test' },
+      )
+      refuses(
+        'mutation-verdict:construction:tree-fence-source-writes-a-stamp',
+        /which writes no stamp/,
+        () =>
+          cleared.followOnTree(
+            'after',
+            statement(
+              loose
+                .updateTable('runs')
+                .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+                .where('run_id', '=', 'r1')
+                .where('fence_stamp', '=', fenceValue('cleared')),
+            ),
+            'one',
+          ),
+      )
+    })
+
+    it('refuses the stamp compared with the stamp column as a gate', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-fence-equality-is-a-fence-token',
+        NO_GATE,
+        /names no statement of this batch/,
+        () =>
+          followOn(
+            loose
+              .updateTable('runs')
+              .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+              .where('run_id', '=', 'r1')
+              .where('fence_stamp', '=', stampValue),
           ),
       )
     })
@@ -310,6 +471,12 @@ describe('the tree path', () => {
         tail(through(false)),
       )
     })
+
+    it('reads every selection, so one plain column beside an aggregate gates nothing', () => {
+      refuses('mutation-verdict:construction:tree-no-row-every-selection', NO_GATE, () =>
+        followOn(counted((eb) => [eb.ref('f.run_id').as('run_id'), eb.fn.countAll().as('n')])),
+      )
+    })
   })
 
   describe('the tie of a subquery gate to the fenced source', () => {
@@ -318,13 +485,13 @@ describe('the tree path', () => {
         many(tiedBy((select) => select.whereRef('f.task_id', '=', 'tasks.task_id'))),
       ).not.toThrow()
       refuses('mutation-verdict:construction:tree-gate-counts-only-tied', UNTIED, () =>
-        many(tiedBy((select) => select.where('f.run_id', '=', 'r1'))),
+        many(untiedGate()),
       )
     })
 
     it('carries the tie of a subquery onto the fence inside it', () => {
       refuses('mutation-verdict:construction:tree-gate-requires-tie', UNTIED, () =>
-        many(tiedBy((select) => select.where('f.run_id', '=', 'r1'))),
+        many(untiedGate()),
       )
     })
 
@@ -412,18 +579,6 @@ describe('the tree path', () => {
       )
     })
 
-    it('ties EXISTS by a column of the fenced source on one side', () => {
-      refuses('mutation-verdict:construction:tree-tie-exists-inner-column', UNTIED, () =>
-        many(tiedBy((select) => select.where('tasks.task_name', '=', 'job'))),
-      )
-    })
-
-    it('ties EXISTS by a column of the outer row on the other side', () => {
-      refuses('mutation-verdict:construction:tree-tie-exists-outer-column', UNTIED, () =>
-        many(tiedBy((select) => select.where('f.run_id', '=', 'r1'))),
-      )
-    })
-
     it('reads a name the subquery shadows as the inner source', () => {
       refuses('mutation-verdict:construction:tree-tie-exists-shadowed-outer', UNTIED, () =>
         many(
@@ -439,17 +594,73 @@ describe('the tree path', () => {
         ),
       )
     })
+
+    it('refuses an untied subquery nested inside a tied one', () => {
+      refuses('mutation-verdict:construction:tree-gate-inner-tie-carried', UNTIED, () =>
+        many(
+          keyIn((eb) =>
+            eb
+              .selectFrom('runs as f')
+              .select('f.task_id')
+              .where((inner: Loose) =>
+                inner.exists(
+                  inner
+                    .selectFrom('runs as g')
+                    .select('g.run_id')
+                    .where('g.fence_stamp', '=', fenceValue('win'))
+                    .where('g.run_id', '=', 'r1'),
+                ),
+              ),
+          ),
+        ),
+      )
+    })
+
+    it('ties EXISTS by an outer column that names a source of the statement', () => {
+      refuses('mutation-verdict:construction:tree-tie-exists-outer-in-scope', UNTIED, () =>
+        many(tiedBy((select) => select.whereRef('f.task_id', '=', 'elsewhere.task_id'))),
+      )
+    })
+
+    const compared = (left: (eb: Loose) => Loose, right: (eb: Loose) => Loose) =>
+      many(tiedBy((select, eb) => select.where(eb(left(eb), '=', right(eb)))))
+    const bound = (eb: Loose) => eb.val('t1')
+    const innerColumn = (eb: Loose) => eb.ref('f.task_id')
+    const outerColumn = (eb: Loose) => eb.ref('tasks.task_id')
+
+    it('ties nothing by a value equal to an outer column', () => {
+      refuses('mutation-verdict:construction:tree-tie-exists-value-equals-outer', UNTIED, () =>
+        compared(bound, outerColumn),
+      )
+    })
+
+    it('ties nothing by a column of the fenced source equal to a value', () => {
+      refuses('mutation-verdict:construction:tree-tie-exists-inner-equals-value', UNTIED, () =>
+        compared(innerColumn, bound),
+      )
+    })
+
+    it('ties nothing by an outer column equal to a value', () => {
+      refuses('mutation-verdict:construction:tree-tie-exists-outer-equals-value', UNTIED, () =>
+        compared(outerColumn, bound),
+      )
+    })
+
+    it('ties nothing by a value equal to a column of the fenced source', () => {
+      refuses('mutation-verdict:construction:tree-tie-exists-value-equals-inner', UNTIED, () =>
+        compared(bound, innerColumn),
+      )
+    })
   })
 
   describe('a follow-on that inserts', () => {
-    const PLAIN = /must select plain columns and values/
     const ALONE = /must select from the fenced row alone/
     const INSTANT = /fence_at_ms as the fenced row's own fence_at_ms/
 
     it('selects plain columns and values', () => {
       expect(() => followOn(successor())).not.toThrow()
       refuses('mutation-verdict:construction:tree-followon-insert-plain', PLAIN, () =>
-        followOn(successor({ task: (eb: Loose) => eb.fn.max('f.task_id') })),
+        followOn(aggregated()),
       )
     })
 
@@ -465,7 +676,7 @@ describe('the tree path', () => {
 
     it('selects no aggregate node', () => {
       refuses('mutation-verdict:construction:tree-followon-insert-no-aggregate', PLAIN, () =>
-        followOn(successor({ task: (eb: Loose) => eb.fn.max('f.task_id') })),
+        followOn(aggregated()),
       )
     })
 
@@ -478,13 +689,13 @@ describe('the tree path', () => {
     it('selects from the fenced row alone', () => {
       expect(() => followOn(successor({ from: joined }))).not.toThrow()
       refuses('mutation-verdict:construction:tree-followon-insert-alone', ALONE, () =>
-        followOn(successor({ from: () => loose.selectFrom(['runs as f', 'tasks as t2']) })),
+        followOn(successor({ from: besideTasks })),
       )
     })
 
     it('selects from one FROM item', () => {
       refuses('mutation-verdict:construction:tree-followon-insert-one-from', ALONE, () =>
-        followOn(successor({ from: () => loose.selectFrom(['runs as f', 'tasks as t2']) })),
+        followOn(successor({ from: besideTasks })),
       )
     })
 
@@ -510,7 +721,7 @@ describe('the tree path', () => {
       refuses(
         'mutation-verdict:construction:tree-followon-insert-stamp',
         /must insert fence_stamp as the stamp/,
-        () => followOn(successor({ stamp: fenceValue('win') })),
+        () => followOn(fenceAsStamp()),
       )
     })
 
@@ -561,6 +772,23 @@ describe('the tree path', () => {
           followOn(
             successor().onConflict((conflict: Loose) => conflict.columns(['run_id']).doNothing()),
           ),
+      )
+    })
+
+    it('refuses a fence value inserted as the stamp', () => {
+      refuses(
+        'mutation-verdict:construction:tree-followon-insert-stamp-is-the-stamp-token',
+        /must insert fence_stamp as the stamp/,
+        () => followOn(fenceAsStamp()),
+      )
+    })
+
+    it('says a VALUES follow-on is refused for being VALUES', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-followon-insert-selects',
+        /takes a SELECT, never VALUES/,
+        PLAIN,
+        () => followOn(eventInsert()),
       )
     })
   })
@@ -669,6 +897,30 @@ describe('the tree path', () => {
           ),
       )
     })
+
+    it('refuses the clock token inserted as the stamp', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-insert-stamp-is-the-stamp-token',
+        /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+        () => cas('event', eventRow({ fence_stamp: nowValue })),
+      )
+    })
+
+    it('refuses the stamp inserted where the clock belongs', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-insert-clock-is-the-clock-token',
+        /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+        () => cas('event', eventRow({ fence_at_ms: stampValue })),
+      )
+    })
+
+    it('refuses the stamp inserted as a preserved first instant', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-insert-preserved-is-the-clock-token',
+        /must insert events\.emitted_at_ms as the clock/,
+        () => cas('event', eventRow({ emitted_at_ms: stampValue })),
+      )
+    })
   })
 
   describe('counting assignments', () => {
@@ -715,6 +967,36 @@ describe('the tree path', () => {
         followOn(checkpoint({ owner: () => value<number>('excluded.owner_attempt + 1') })),
       )
     })
+
+    it('refuses a count written column first', () => {
+      refuses(
+        'mutation-verdict:construction:tree-counting-left-operand',
+        /bumps a counter blindly/,
+        () => followOn(taskFollowOn().set((eb) => ({ attempts: eb('attempts', '+', 1) }))),
+      )
+    })
+
+    it('refuses a count written column last', () => {
+      refuses(
+        'mutation-verdict:construction:tree-counting-right-operand',
+        /bumps a counter blindly/,
+        () =>
+          followOn(
+            (taskFollowOn() as Loose).set((eb: Loose) => ({
+              attempts: eb(eb.val(1), '+', eb.ref('attempts')),
+            })),
+          ),
+      )
+    })
+
+    it('says a blind count is a blind count', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-counting-arithmetic-message',
+        /bumps a counter blindly/,
+        /raw fragment that mentions/,
+        () => followOn(taskFollowOn().set((eb) => ({ attempts: eb('attempts', '+', 1) }))),
+      )
+    })
   })
 
   describe('the clock', () => {
@@ -752,6 +1034,35 @@ describe('the tree path', () => {
         () => cas('win', winCas().where(predicate('lease_ms < unixepoch()'))),
       )
     })
+
+    it('refuses the text of the batch clock in a follow-on fragment', () => {
+      // A clock no spelling list names, so only the comparison with the batch's own text sees it.
+      const clock = '(SELECT 7)'
+      const started = (text: string) =>
+        batchWithClock(clock)
+          .casTree('win', statement(winCas()))
+          .followOnTree(
+            'task',
+            statement(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+            'one',
+          )
+      expect(() => started('(SELECT 8)')).not.toThrow()
+      refuses('mutation-verdict:construction:tree-clock-text-in-followon', /reads the clock/, () =>
+        started(clock),
+      )
+    })
+
+    it('says a follow-on that spells a clock reads the clock', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-followon-spelled-clock-message',
+        /reads the clock/,
+        /spells out a database clock/,
+        () =>
+          followOn(
+            taskFollowOn().set({ first_started_at_ms: value<number>(`unixepoch('subsec')*1000`) }),
+          ),
+      )
+    })
   })
 
   describe('the statement, its fragments, and its binds', () => {
@@ -771,11 +1082,11 @@ describe('the tree path', () => {
       )
     })
 
-    it('refuses a raw node rawSql did not mint', () => {
+    it('reads the problems of its raw fragments', () => {
       refuses(
-        'mutation-verdict:construction:tree-raw-fragment-order',
+        'mutation-verdict:construction:tree-raw-fragment-problems-read',
         /a raw fragment that rawSql did not mint/,
-        () => followOn(taskFollowOn().where(sql.raw<boolean>(`task_name = 'job'`))),
+        () => followOn(unmintedPredicate()),
       )
     })
 
@@ -821,8 +1132,10 @@ describe('the tree path', () => {
     }
 
     it('refuses a placeholder no argument binds', () => {
-      refuses('mutation-verdict:construction:tree-bind-placeholder-count', /placeholders/, () =>
-        unboundPlaceholder(),
+      refuses(
+        'mutation-verdict:construction:tree-bind-placeholder-count',
+        /placeholders/,
+        unboundPlaceholder,
       )
     })
 
@@ -837,7 +1150,7 @@ describe('the tree path', () => {
       refuses(
         'mutation-verdict:construction:tree-bind-argument-type',
         /argument \d+ is boolean/,
-        () => booleanBind(),
+        booleanBind,
       )
     })
 
@@ -846,6 +1159,69 @@ describe('the tree path', () => {
         isFencedBatchBindError(thrownBy(booleanBind)),
         'mutation-verdict:construction:tree-bind-argument-type-brand',
       ).toBe(true)
+    })
+
+    it('says an unminted raw node was never minted', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-raw-fragment-unminted-message',
+        /a raw fragment that rawSql did not mint/,
+        /fragment standing as a/,
+        () => followOn(unmintedPredicate()),
+      )
+    })
+
+    it('says a batch without a tree dialect has none', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-needs-a-dialect',
+        /the batch has no tree dialect/,
+        /Cannot read properties of null/,
+        () => new FencedBatch('b', 'seed', { now: CLOCK }).casTree('win', statement(winCas())),
+      )
+    })
+
+    it('refuses a many-row bound that is not a whole number', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-many-max-is-an-integer',
+        /max must be a positive integer/,
+        () => batch().casManyTree('win', statement(winCas()), 1.5),
+      )
+    })
+
+    it('refuses a many-row bound below one', () => {
+      refuses(
+        'mutation-verdict:construction:tree-cas-many-max-is-positive',
+        /max must be a positive integer/,
+        () => batch().casManyTree('win', statement(winCas()), 0),
+      )
+    })
+
+    it('refuses a statement name outside the stamp grammar', () => {
+      refuses('mutation-verdict:construction:tree-statement-name-grammar', /name must match/, () =>
+        cas('not a name', winCas()),
+      )
+    })
+
+    it('refuses a second statement of the same name', () => {
+      refuses(
+        'mutation-verdict:construction:tree-statement-name-unique',
+        /duplicate statement name 'win'/,
+        () => withCas().followOnTree('win', statement(taskFollowOn()), 'one'),
+      )
+    })
+
+    it('refuses a statement that is not a compare-and-set after a lock', () => {
+      refuses(
+        'mutation-verdict:construction:tree-lock-precedes-a-cas',
+        /followed immediately by a CAS/,
+        () =>
+          batch()
+            .lockEvent({ queue: 'q', eventName: 'e' })
+            .openTailTree(
+              'read',
+              'a reason',
+              statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
+            ),
+      )
     })
   })
 })

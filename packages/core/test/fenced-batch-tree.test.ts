@@ -45,8 +45,10 @@ import {
   statement,
   successor,
   taskFollowOn,
+  taskInsert,
   tasksWhere,
   throughDerived,
+  unguardedWaitInsert,
   value,
   waitInsert,
   widened,
@@ -944,18 +946,6 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('register', statement(leaveAlone))).not.toThrow()
   })
 
-  const WAIT_COLUMNS = [
-    'run_id',
-    'step_name',
-    'queue',
-    'task_id',
-    'event_name',
-    'status',
-    'created_at_ms',
-    'fence_stamp',
-    'fence_at_ms',
-  ] as const
-
   it('refuses an INSERT … SELECT whose star selection shifts the provenance positions', () => {
     // The star is one selection and many columns, so the stamp read at selection 1
     // lands in whatever column the expanded star pushes it to. Three columns for three
@@ -1104,23 +1094,6 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
   })
 
-  const taskInsert = () =>
-    db.insertInto('tasks').values({
-      task_id: 't1',
-      queue: 'q',
-      task_name: 'job',
-      params: '{}',
-      retry_strategy: '{}',
-      max_attempts: 1,
-      state: 'pending',
-      attempts: 0,
-      infra_retries: 0,
-      enqueue_at_ms: nowValue,
-      created_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-
   it('allows a conflict target narrowed by a partial-index predicate, and no other kind of target', async () => {
     const partial = taskInsert().onConflict((conflict) =>
       conflict
@@ -1163,25 +1136,7 @@ describe('FencedBatch tree statements', () => {
   })
   it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
     // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
-    const unguarded = db
-      .insertInto('waits')
-      .columns([...WAIT_COLUMNS])
-      .expression(
-        db
-          .selectFrom('runs')
-          .select((eb) => [
-            eb.ref('runs.run_id').as('run_id'),
-            eb.val('s').as('step_name'),
-            eb.ref('runs.queue').as('queue'),
-            eb.ref('runs.task_id').as('task_id'),
-            eb.val('e').as('event_name'),
-            eb.val('waiting').as('status'),
-            aliasedAs(nowValue, 'created_at_ms'),
-            aliasedAs(stampValue, 'fence_stamp'),
-            aliasedAs(nowValue, 'fence_at_ms'),
-          ]),
-      )
-      .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
+    const unguarded = unguardedWaitInsert()
     expect(() => batch().casTree('register', statement(unguarded))).toThrow(/needs a WHERE/)
   })
 

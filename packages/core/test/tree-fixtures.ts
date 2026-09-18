@@ -1,4 +1,5 @@
 import { type OperationNode, SqliteQueryCompiler } from 'kysely'
+import { expect } from 'vitest'
 import {
   FencedBatch,
   type SqlExecutor,
@@ -29,6 +30,11 @@ export const predicate = (text: string, args: SqlFragment['args'] = []) =>
   rawSql<boolean>(sqlFragment(text, args), 'predicate')
 export const value = <T>(text: string, args: SqlFragment['args'] = []) =>
   rawSql<T>(sqlFragment(text, args), 'value')
+
+/** A batch whose clock expression is the text given, for the rules that compare against it. */
+export function batchWithClock(now: string): FencedBatch {
+  return new FencedBatch('b', 'seed', { now, tree: dialect })
+}
 
 export function batch(): FencedBatch {
   return new FencedBatch('b', 'seed', { now: CLOCK, tree: dialect })
@@ -234,3 +240,108 @@ export const eventRow = (row: object) =>
     fence_at_ms: nowValue,
     ...row,
   })
+
+/** A tail that joins the fenced run to its task, comparing whichever stamp the test names. */
+export const joinedRead = (stamp: string) =>
+  loose
+    .selectFrom('runs as f')
+    .innerJoin('tasks as t', 't.task_id', 'f.task_id')
+    .select('f.state')
+    .where(stamp, '=', fenceValue('win'))
+
+export const taskInsert = () =>
+  db.insertInto('tasks').values({
+    task_id: 't1',
+    queue: 'q',
+    task_name: 'job',
+    params: '{}',
+    retry_strategy: '{}',
+    max_attempts: 1,
+    state: 'pending',
+    attempts: 0,
+    infra_retries: 0,
+    enqueue_at_ms: nowValue,
+    created_at_ms: nowValue,
+    fence_stamp: stampValue,
+    fence_at_ms: nowValue,
+  })
+
+/** A stamped wait selected from every run, with a conflict clause and no WHERE before it. */
+export const unguardedWaitInsert = () =>
+  db
+    .insertInto('waits')
+    .columns([
+      'run_id',
+      'step_name',
+      'queue',
+      'task_id',
+      'event_name',
+      'status',
+      'created_at_ms',
+      'fence_stamp',
+      'fence_at_ms',
+    ])
+    .expression(
+      db
+        .selectFrom('runs')
+        .select((eb) => [
+          eb.ref('runs.run_id').as('run_id'),
+          eb.val('s').as('step_name'),
+          eb.ref('runs.queue').as('queue'),
+          eb.ref('runs.task_id').as('task_id'),
+          eb.val('e').as('event_name'),
+          eb.val('waiting').as('status'),
+          aliasedAs(nowValue, 'created_at_ms'),
+          aliasedAs(stampValue, 'fence_stamp'),
+          aliasedAs(nowValue, 'fence_at_ms'),
+        ]),
+    )
+    .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
+
+// What a registered mutation's test asserts with. The marker is the first line of the
+// failure, which is how `scripts/mutation-probe.py` attributes a caught mutant.
+
+/** Fail with the marker when the refusal is gone. A different refusal fails as itself. */
+export function refuses(marker: string, expected: RegExp, action: () => unknown): void {
+  try {
+    action()
+  } catch (error) {
+    expect(String(error)).toMatch(expected)
+    return
+  }
+  throw new Error(marker)
+}
+
+/** Fail with the marker when a shape the rule allows is refused, and keep what refused it. */
+export function accepts(marker: string, action: () => unknown): void {
+  expect(action, marker).not.toThrow()
+}
+
+/**
+ * For a condition whose deletion leaves the shape refused by the next rule: the refusal
+ * must be `expected`, and the marker is the failure when it has become `replacement`.
+ * The message is what such a condition decides. An accepted shape, or a third refusal,
+ * fails as itself.
+ */
+export function refusesAs(
+  marker: string,
+  expected: RegExp,
+  replacement: RegExp,
+  action: () => unknown,
+): void {
+  let refusal: unknown
+  try {
+    action()
+  } catch (error) {
+    refusal = error
+  }
+  if (refusal === undefined) throw new Error('expected the shape to be refused')
+  if (expected.test(String(refusal))) return
+  if (replacement.test(String(refusal))) throw new Error(marker)
+  throw refusal
+}
+
+export const cas = (name: string, builder: Builder) => batch().casTree(name, statement(builder))
+export const many = (builder: Builder) =>
+  withCas().followOnTree('task', statement(builder), { many: 'a test' })
+export const tail = (builder: Builder) => withCas().tailTree('read', statement(builder))
