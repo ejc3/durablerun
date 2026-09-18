@@ -75,7 +75,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       const task = await f.store.spawn(Q, 'saga', '{}')
       const outcomes = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({ outcomes, effects, state: result?.state, rollback: result?.rollback }).toEqual({
+      expect(
+        { outcomes, effects, state: result?.state, rollback: result?.rollback },
+        'mutation-verdict:behavior:saga-sdk-order',
+      ).toEqual({
         outcomes: ['rolling-back', 'rolled-back'],
         effects: ['do:a', 'do:b', 'do:unregistered', 'undo:b', 'undo:a'],
         state: 'failed',
@@ -108,7 +111,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       })
       const task = await f.store.spawn(Q, 'saga', '{}')
       expect(await drive(f, reg, task.taskId)).toEqual(['completed'])
-      expect({ insideTheBody, after: await checkpointNames(f, task.taskId) }).toEqual({
+      expect(
+        { insideTheBody, after: await checkpointNames(f, task.taskId) },
+        'mutation-verdict:behavior:saga-sdk-marker-first',
+      ).toEqual({
         insideTheBody: ['$started:a'],
         after: ['$started:a', 'a'],
       })
@@ -135,7 +141,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         },
       })
       const task = await f.store.spawn(Q, 'saga', '{}')
-      expect(await drive(f, reg, task.taskId)).toEqual(['rolling-back', 'rolled-back'])
+      expect(
+        await drive(f, reg, task.taskId),
+        'mutation-verdict:behavior:saga-sdk-unpersisted-step',
+      ).toEqual(['rolling-back', 'rolled-back'])
       expect({
         outputs,
         rollback: (await f.store.getTaskResult(Q, task.taskId))?.rollback,
@@ -209,12 +218,15 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         ],
         'read',
       )
-      expect({
-        outcomes,
-        effects,
-        recorded: decodeRollbackTry(String(tries?.rows[0]?.state))?.tries,
-        rollback: (await f.store.getTaskResult(Q, task.taskId))?.rollback,
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          effects,
+          recorded: decodeRollbackTry(String(tries?.rows[0]?.state))?.tries,
+          rollback: (await f.store.getTaskResult(Q, task.taskId))?.rollback,
+        },
+        'mutation-verdict:behavior:saga-sdk-attempts-counted',
+      ).toEqual({
         outcomes: ['rolling-back', 'rolling-back', 'rolling-back', 'rolled-back'],
         effects: ['undo:a'],
         recorded: 2,
@@ -278,7 +290,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         },
       })
       const task = await f.store.spawn(Q, 'saga', '{}')
-      expect(await drive(f, reg, task.taskId)).toEqual(['rolling-back', 'rollback-failed'])
+      expect(
+        await drive(f, reg, task.taskId),
+        'mutation-verdict:behavior:saga-sdk-fatal-rollback',
+      ).toEqual(['rolling-back', 'rollback-failed'])
       expect({
         attempts,
         outcome: (await f.store.getTaskResult(Q, task.taskId))?.rollback?.outcome,
@@ -328,7 +343,7 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         await f.close()
       }
       const permanent = { outcomes: ['failed'], bodyRan: false, failure: 'FatalTaskError' }
-      expect(observed).toEqual(
+      expect(observed, 'mutation-verdict:behavior:saga-sdk-bad-registration').toEqual(
         Object.fromEntries(Object.keys(bad).map((what) => [what, permanent])),
       )
     })
@@ -357,15 +372,18 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       ])
       const outcomes = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({
-        outcomes,
-        rollbacks,
-        failure: (JSON.parse(result?.failureReasonJson ?? 'null') as { name?: string } | null)
-          ?.name,
-        outcome: result?.rollback?.outcome,
-        error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { name?: string } | null)
-          ?.name,
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          rollbacks,
+          failure: (JSON.parse(result?.failureReasonJson ?? 'null') as { name?: string } | null)
+            ?.name,
+          outcome: result?.rollback?.outcome,
+          error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { name?: string } | null)
+            ?.name,
+        },
+        'mutation-verdict:behavior:saga-sdk-corrupt-state',
+      ).toEqual({
         // The registration is refused for good, which decides the failure. The step did
         // start, so the phase is entered, and the pass halts on the same checkpoint.
         outcomes: ['rolling-back', 'rollback-failed'],
@@ -505,13 +523,16 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       registers = false
       const outcomes = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({
-        outcomes,
-        effects,
-        outcome: result?.rollback?.outcome,
-        error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { name?: string } | null)
-          ?.name,
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          effects,
+          outcome: result?.rollback?.outcome,
+          error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { name?: string } | null)
+            ?.name,
+        },
+        'mutation-verdict:behavior:saga-sdk-unregistered',
+      ).toEqual({
         outcomes: ['rollback-failed'],
         // b started last and cannot be compensated, and a is not compensated ahead of it.
         effects: ['do:a'],

@@ -88,7 +88,10 @@ describe('the saga row checker', () => {
 
   for (const [violation, defect] of Object.entries(DEFECTS)) {
     it(`names ${violation}, and nothing else`, async () => {
-      expect(await violationsOf(defect.rows, defect.taskState)).toEqual([violation])
+      expect(
+        await violationsOf(defect.rows, defect.taskState),
+        'mutation-verdict:behavior:saga-row-checker-names-the-defect',
+      ).toEqual([violation])
     })
   }
 })

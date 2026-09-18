@@ -11548,6 +11548,680 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+
+# Sagas (DESIGN.md S3.10, specs/Sagas.tla). One condition for each mutation. A guard the
+# compare-and-set a statement is fenced on already enforces is not repeated behind it, so
+# none of these is implied by another.
+MUTATION_SPECS.extend(
+    (
+        (
+            "saga-fail-enters-only-before-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,\n",
+            "        admission: `${rollbackPending('t')}${budgetSpent}`,\n",
+            "a failure inside the phase places another rollback pass, so the saga never ends",
+        ),
+        (
+            "saga-fail-enters-only-with-a-rollback-owed",
+            "packages/store-libsql/src/store.ts",
+            "        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,\n",
+            "        admission: `NOT ${sagaBegan('t')} AND 1 = 1${budgetSpent}`,\n",
+            "a task with nothing to roll back enters the phase when it should fail",
+        ),
+        (
+            "saga-matrix-attempt-cap-crossing",
+            "packages/store-libsql/src/store.ts",
+            "        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,\n",
+            "        admission: `1 = 0${budgetSpent}`,\n",
+            "a terminal failure at the attempt budget ends the task and its rollback never runs",
+        ),
+        (
+            "saga-retrying-failure-enters-only-with-the-budget-spent",
+            "packages/store-libsql/src/store.ts",
+            "      const budgetSpent = retry ? ' AND (f.attempt - t.infra_retries) >= t.max_attempts' : ''\n",
+            "      const budgetSpent = retry ? '' : ''\n",
+            "a failure with attempts left is rolled back, where it should be retried",
+        ),
+        (
+            "saga-failed-rollback-needs-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "        ...(rollback === undefined ? {} : { phase: sqlFragment(sagaBegan('runs')) }),\n",
+            "        ...(rollback === undefined ? {} : {}),\n",
+            "a failed rollback is accepted for a task that is not rolling back, and ends it",
+        ),
+        (
+            "saga-entering-batch-ends-nothing",
+            "packages/store-libsql/src/store.ts",
+            "        narrowArgs: [passId, runId],\n",
+            "        narrowArgs: ['no-such-pass', runId],\n",
+            "the batch that enters the phase also ends the task and writes its completion event",
+        ),
+        (
+            "saga-pass-budget-is-its-own-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "        max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))} + 1`,\n",
+            "        max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))}`,\n",
+            "a rollback pass runs with its task budget already spent, against the accounting invariants",
+        ),
+        (
+            "saga-lost-launch-cap-ends-a-saga-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `${rollbackPending('t')}`,\n",
+            "the relaunch cap inside the phase places another pass, where it should end the saga",
+        ),
+        (
+            "saga-lost-launch-cap-enters-only-with-a-rollback-owed",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND 1 = 1`,\n",
+            "the relaunch cap sends a task with nothing to roll back into the phase, and its parent is never woken",
+        ),
+        (
+            "saga-matrix-lost-launch-cap-crossing",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_RELAUNCH_CAP,\n      delayMs: 0,\n      admission: `1 = 0`,\n",
+            "the relaunch cap ends a task whose step is owed a rollback, and the rollback never runs",
+        ),
+        (
+            "saga-claim-timeout-cap-ends-a-saga-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `${rollbackPending('t')}`,\n",
+            "the infrastructure cap inside the phase places another pass, where it should end the saga",
+        ),
+        (
+            "saga-claim-timeout-cap-enters-only-with-a-rollback-owed",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND 1 = 1`,\n",
+            "the infrastructure cap sends a task with nothing to roll back into the phase, and its parent is never woken",
+        ),
+        (
+            "saga-matrix-claim-timeout-cap-crossing",
+            "packages/store-libsql/src/store.ts",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,\n",
+            "      enteringWith: REASON_INFRA_CAP,\n      delayMs: 0,\n      admission: `1 = 0`,\n",
+            "the infrastructure cap ends a task whose step is owed a rollback, and the rollback never runs",
+        ),
+        (
+            "saga-lost-launch-cap-entering-ends-nothing",
+            "packages/store-libsql/src/store.ts",
+            "      narrowArgs: [passId, item.runId],\n",
+            "      narrowArgs: ['no-such-pass', item.runId],\n",
+            "the relaunch cap enters the phase and ends the task in one batch",
+        ),
+        (
+            "saga-pass-needs-room-in-the-budget",
+            "packages/store-libsql/src/store.ts",
+            "           AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 't')}`,\n",
+            "           AND 1 = 1`,\n",
+            "a pass is placed for a task at the top of its budget, and the budget is stored past its bound",
+        ),
+        (
+            "saga-rolling-back-task-cannot-complete",
+            "packages/store-libsql/src/store.ts",
+            "    AND (t.state NOT IN ${LIVE} OR NOT ${sagaBegan('t')})\n",
+            "    AND 1 = 1\n",
+            "a task that is rolling back completes",
+        ),
+        (
+            "saga-forward-checkpoint-refused-in-the-phase",
+            "packages/store-libsql/src/fragments.ts",
+            "  `(${namedUnder(name, SAGA_ROLLBACK_PREFIX)}) = (${sagaBegan(task)})`\n",
+            "  `(NOT (${namedUnder(name, SAGA_ROLLBACK_PREFIX)})) OR (${sagaBegan(task)})`\n",
+            "a forward step commits after the saga began",
+        ),
+        (
+            "saga-rollback-checkpoint-refused-outside-the-phase",
+            "packages/store-libsql/src/fragments.ts",
+            "  `(${namedUnder(name, SAGA_ROLLBACK_PREFIX)}) = (${sagaBegan(task)})`\n",
+            "  `(${namedUnder(name, SAGA_ROLLBACK_PREFIX)}) OR NOT (${sagaBegan(task)})`\n",
+            "a rollback is recorded for a task whose failure was never decided",
+        ),
+        (
+            "saga-suspension-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "        phase: sqlFragment(`NOT ${sagaBegan('runs')}`),\n",
+            "        phase: sqlFragment('1 = 1'),\n",
+            "a rollback pass parks itself on a durable sleep and commits its marker",
+        ),
+        (
+            "saga-wait-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),\n",
+            "        phase: sqlFragment('? IS NOT NULL', [taskId]),\n",
+            "a rollback pass parks on an event that may never come",
+        ),
+        (
+            "saga-revival-refused-once-a-saga-began",
+            "packages/store-libsql/src/store.ts",
+            "         AND NOT ${sagaBegan('tasks')}\n",
+            "         AND 1 = 1\n",
+            "a task whose steps were rolled back is revived, and its replay skips them as done",
+        ),
+        (
+            "saga-outcome-only-for-an-ended-task",
+            "packages/store-libsql/src/fragments.ts",
+            "  `CASE WHEN ${task}.state NOT IN ${LIVE} AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${sagaBegan(task)}\n",
+            "a task still rolling back reports a rollback outcome",
+        ),
+        (
+            "saga-outcome-only-when-a-saga-began",
+            "packages/store-libsql/src/fragments.ts",
+            "  `CASE WHEN ${task}.state NOT IN ${LIVE} AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${task}.state NOT IN ${LIVE}\n",
+            "a task that failed with nothing to roll back reports a complete rollback",
+        ),
+        (
+            "saga-outcome-failed-only-with-a-rollback-owed",
+            "packages/store-libsql/src/fragments.ts",
+            "        THEN CASE WHEN ${rollbackPending(task)} THEN 'failed' ELSE 'complete' END\n",
+            "        THEN CASE WHEN 1 = 1 THEN 'failed' ELSE 'complete' END\n",
+            "a saga whose every rollback ran reports failed",
+        ),
+        (
+            "saga-a-rollback-that-ran-is-not-owed",
+            "packages/store-libsql/src/fragments.ts",
+            "             AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`\n",
+            "             AND 1 = 1)`\n",
+            "a step stays owed a rollback after its rollback ran",
+        ),
+        (
+            "saga-task-update-binds-its-queue",
+            "packages/store-libsql/src/store.ts",
+            "      // for every task row, and the update then walks the table to find one task.\n      queue,\n",
+            "      // for every task row, and the update then walks the table to find one task.\n",
+            "the task that follows a rollback pass is found by walking the tasks table",
+        ),
+        (
+            "saga-postgres-fail-rollback-takes-the-event-lock",
+            "packages/store-postgres/src/store.ts",
+            "      tree: TREE_DIALECT,\n    })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
+            "      tree: TREE_DIALECT,\n    })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
+            "a rollback that halts ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
+        ),
+        (
+            "saga-start-marker-before-the-body",
+            "packages/sdk/src/context.ts",
+            "      await this.markStarted(key)\n",
+            "      // MUTATION: the body runs with no start marker behind it\n",
+            "a step that started and never persisted leaves nothing for a rollback to find",
+        ),
+        (
+            "saga-rollbacks-run-in-reverse-start-order",
+            "packages/sdk/src/context.ts",
+            "      if (index > top) {\n",
+            "      if (top === 0 || index < top) {\n",
+            "rollbacks run in the order the steps started, the first one first",
+        ),
+        (
+            "saga-worker-reports-rolling-back",
+            "packages/sdk/src/run-worker.ts",
+            "        if (failed?.rollingBack === true) return { kind: 'rolling-back' }\n",
+            "        if (failed?.rollingBack === true) void 'MUTATION: the worker never says its task is rolling back'\n",
+            "a worker reports a task failed for good while its rollbacks are still owed",
+        ),
+        (
+            "saga-started-unpersisted-step-registers",
+            "packages/sdk/src/context.ts",
+            "      if (registration !== undefined && taskMapHas(this.startIndexes, key)) {\n",
+            "      if (registration !== undefined && false) {\n",
+            "a step that started and never persisted is never rolled back",
+        ),
+        (
+            "saga-failed-attempts-accumulate",
+            "packages/sdk/src/context.ts",
+            "    return (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1\n",
+            "    return (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) * 0 + 1\n",
+            "every failed rollback attempt is recorded as the first, so its budget is never spent",
+        ),
+        (
+            "saga-fatal-rollback-error-is-permanent",
+            "packages/sdk/src/context.ts",
+            "      thrown.fatal || registered === undefined\n",
+            "      registered === undefined\n",
+            "a rollback that failed for good is retried until its budget is spent",
+        ),
+        (
+            "saga-bad-registration-is-permanent",
+            "packages/sdk/src/context.ts",
+            "    if (typeof rollback !== 'function') return refuse('rollback must be a function')\n",
+            "    // MUTATION: a rollback that is no function is registered\n",
+            "a registration that can never run is accepted, and fails only when the saga needs it",
+        ),
+        (
+            "saga-corrupt-state-is-permanent",
+            "packages/sdk/src/context.ts",
+            "    if (corrupt !== undefined && this.#sagaCauseJson === undefined) {\n",
+            "    if (false) {\n",
+            "a saga checkpoint that cannot be read is a retried failure, where it should be a permanent one",
+        ),
+        (
+            "saga-unregistered-owed-rollback-halts",
+            "packages/sdk/src/context.ts",
+            "    if (!taskMapHas(this.registered, stepKey)) {\n",
+            "    if (false) {\n",
+            "a rollback the replay did not register fails with an error that names no cause",
+        ),
+        (
+            "saga-row-checker-start-index-not-a-positive-integer",
+            "packages/conformance/src/saga-rows.ts",
+            "      if (!Number.isSafeInteger(index) || index < 1 || String(index) !== String(row.state)) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/start-index-not-a-positive-integer",
+        ),
+        (
+            "saga-row-checker-start-index-shared",
+            "packages/conformance/src/saga-rows.ts",
+            "      if ([...started.values()].includes(index)) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/start-index-shared",
+        ),
+        (
+            "saga-row-checker-rollback-of-a-step-that-never-started",
+            "packages/conformance/src/saga-rows.ts",
+            "      if (index === undefined) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/rollback-of-a-step-that-never-started",
+        ),
+        (
+            "saga-row-checker-rollback-out-of-order",
+            "packages/conformance/src/saga-rows.ts",
+            "        if (laterIndex > index && !rolledBack.has(later)) {\n",
+            "        if (false) {\n",
+            "the saga row checker passes rows with the defect saga/rollback-out-of-order",
+        ),
+        (
+            "saga-row-checker-attempt-record-undecodable",
+            "packages/conformance/src/saga-rows.ts",
+            "      if (decodeRollbackTry(String(row.state)) === null) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/attempt-record-undecodable",
+        ),
+        (
+            "saga-row-checker-rollback-outside-the-phase",
+            "packages/conformance/src/saga-rows.ts",
+            "      if (rolledBack.size > 0 || named(SAGA_TRIES_PREFIX).length > 0) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/rollback-outside-the-phase",
+        ),
+        (
+            "saga-row-checker-completed-in-the-phase",
+            "packages/conformance/src/saga-rows.ts",
+            "    if (String(task.state) === 'completed')\n",
+            "    if (false)\n",
+            "the saga row checker passes rows with the defect saga/completed-in-the-phase",
+        ),
+        (
+            "saga-row-checker-forward-checkpoint-in-the-phase",
+            "packages/conformance/src/saga-rows.ts",
+            "      if (!ofThePhase && Number(row.owner_attempt) >= Number(marker.owner_attempt)) {\n",
+            "      if (false) {\n",
+            "the saga row checker passes rows with the defect saga/forward-checkpoint-in-the-phase",
+        ),
+        (
+            "saga-replay-harness-reports-the-order",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "      undone: [...new Set(undos)].map((line) => Number(line.slice('undo:'.length))),\n",
+            "      undone: [],\n",
+            "the replay harness compares no rollback order, so a reordered saga equals its reference",
+        ),
+    )
+)
+
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] caps a failure in the phase that carries no attempt record, which halts the saga",
+            "mutation-verdict:behavior:saga-phase-is-entered-once",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-fail-enters-only-before-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] a failure with budget left retries, and a task with nothing to roll back just fails",
+            "mutation-verdict:behavior:saga-only-an-owed-terminal-failure-enters",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-fail-enters-only-with-a-rollback-owed",
+            "saga-retrying-failure-enters-only-with-the-budget-spent",
+            "saga-outcome-only-when-a-saga-began",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "fault matrix [libsql] (label x fault x starting state, generated) owns saga-cap-edges across every generated label/fault cell and seed",
+            "mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "saga-matrix-attempt-cap-crossing",
+            "saga-matrix-lost-launch-cap-crossing",
+            "saga-matrix-claim-timeout-cap-crossing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a failed rollback of a task that is not rolling back, and writes nothing",
+            "mutation-verdict:behavior:saga-failed-rollback-needs-the-phase",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-failed-rollback-needs-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] enters the phase in the batch that decides the failure, and ends nothing",
+            "mutation-verdict:behavior:saga-phase-entry",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-entering-batch-ends-nothing",
+            "saga-pass-budget-is-its-own-ordinal",
+            "saga-outcome-only-for-an-ended-task",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] a parent awaiting a rolling-back child sees nothing until the saga ends, then one outcome",
+            "mutation-verdict:behavior:saga-endings",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-lost-launch-cap-ends-a-saga-in-the-phase",
+            "saga-claim-timeout-cap-ends-a-saga-in-the-phase",
+        ),
+    ),
+    (
+        VERDICTS["task-done-event-complete"],
+        (
+            "saga-lost-launch-cap-enters-only-with-a-rollback-owed",
+            "saga-claim-timeout-cap-enters-only-with-a-rollback-owed",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] a sweep cap enters the phase when a rollback is owed, and ends the saga inside it",
+            "mutation-verdict:behavior:saga-sweep-cap-enters",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-lost-launch-cap-entering-ends-nothing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] ends a task whose budget cannot be raised, and places no pass",
+            "mutation-verdict:behavior:saga-budget-boundary",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-needs-room-in-the-budget",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] freezes the forward phase, and admits a rollback only inside it",
+            "mutation-verdict:behavior:saga-forward-phase-is-frozen",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-rolling-back-task-cannot-complete",
+            "saga-forward-checkpoint-refused-in-the-phase",
+            "saga-rollback-checkpoint-refused-outside-the-phase",
+            "saga-suspension-refused-in-the-phase",
+            "saga-wait-refused-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] ends failed with the deciding failure and a complete outcome once every rollback ran",
+            "mutation-verdict:behavior:saga-finish-is-honest",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-revival-refused-once-a-saga-began",
+            "saga-outcome-failed-only-with-a-rollback-owed",
+            "saga-a-rollback-that-ran-is-not-owed",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "every batch a saga touches reaches every saga row by key with the task bound, and walks no backlog",
+            "mutation-verdict:behavior:saga-plans",
+        ),
+        (
+            "saga-task-update-binds-its-queue",
+        ),
+    ),
+    (
+        VERDICTS["postgres-lost-launch-takes-the-event-lock"],
+        (
+            "saga-postgres-fail-rollback-takes-the-event-lock",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] commits the start marker before the body runs",
+            "mutation-verdict:behavior:saga-sdk-marker-first",
+        ),
+        (
+            "saga-start-marker-before-the-body",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] runs every rollback once, in reverse order of step start, and ends failed with a complete outcome",
+            "mutation-verdict:behavior:saga-sdk-order",
+        ),
+        (
+            "saga-rollbacks-run-in-reverse-start-order",
+            "saga-worker-reports-rolling-back",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] hands a rollback no output when its step started and never persisted",
+            "mutation-verdict:behavior:saga-sdk-unpersisted-step",
+        ),
+        (
+            "saga-started-unpersisted-step-registers",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] counts each failed rollback attempt and retries it under its own budget, past the spent task budget",
+            "mutation-verdict:behavior:saga-sdk-attempts-counted",
+        ),
+        (
+            "saga-failed-attempts-accumulate",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] fails a rollback for good at once on a fatal error, whatever budget is left",
+            "mutation-verdict:behavior:saga-sdk-fatal-rollback",
+        ),
+        (
+            "saga-fatal-rollback-error-is-permanent",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] refuses a registration that cannot be kept, for good, before the body runs",
+            "mutation-verdict:behavior:saga-sdk-bad-registration",
+        ),
+        (
+            "saga-bad-registration-is-permanent",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts for good on a saga checkpoint it cannot read, and spends no rollback budget on it",
+            "mutation-verdict:behavior:saga-sdk-corrupt-state",
+        ),
+        (
+            "saga-corrupt-state-is-permanent",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts when the replay does not register a rollback that is owed",
+            "mutation-verdict:behavior:saga-sdk-unregistered",
+        ),
+        (
+            "saga-unregistered-owed-rollback-halts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/start-index-not-a-positive-integer, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-start-index-not-a-positive-integer",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/start-index-shared, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-start-index-shared",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/rollback-of-a-step-that-never-started, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-rollback-of-a-step-that-never-started",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/rollback-out-of-order, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-rollback-out-of-order",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/attempt-record-undecodable, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-attempt-record-undecodable",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/rollback-outside-the-phase, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-rollback-outside-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/completed-in-the-phase, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-completed-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/forward-checkpoint-in-the-phase, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-forward-checkpoint-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "saga replay equivalence (generated programs x fault points across the phase) says what a fixed program rolls back, in what order, and what each rollback is handed",
+            "mutation-verdict:behavior:saga-replay-harness-reports-the-order",
+        ),
+        (
+            "saga-replay-harness-reports-the-order",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -13069,6 +13743,57 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "saga-start-marker-before-the-body": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-rollbacks-run-in-reverse-start-order": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-worker-reports-rolling-back": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-started-unpersisted-step-registers": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-failed-attempts-accumulate": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-fatal-rollback-error-is-permanent": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-bad-registration-is-permanent": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-corrupt-state-is-permanent": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-unregistered-owed-rollback-halts": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-row-checker-start-index-not-a-positive-integer": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-start-index-shared": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-rollback-of-a-step-that-never-started": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-rollback-out-of-order": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-attempt-record-undecodable": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-rollback-outside-the-phase": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-completed-in-the-phase": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-forward-checkpoint-in-the-phase": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
     "legacy-wait-step-backfill": (
         "the Vitest title is generated from the migration-derived table, column, "
         "and version tuple"
@@ -15352,7 +16077,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 770:
+        if len(MUTATIONS) != 815:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

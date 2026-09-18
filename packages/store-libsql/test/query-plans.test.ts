@@ -544,7 +544,7 @@ describe('every batch a saga touches', () => {
       }
     }
     // Compared as text, so a failure prints every fault and not a count of them.
-    expect(faults.join('\n')).toBe('')
+    expect(faults.join('\n'), 'mutation-verdict:behavior:saga-plans').toBe('')
     // A pin over nothing passes. Every kind of saga read ran, in every touched label.
     expect({
       everyAliasWasPlanned: [reached.sp, reached.ss, reached.sr, reached.st].every((n) => n > 0),

@@ -591,7 +591,7 @@ export class ReplayContext implements TaskContext {
     thrown: TaskThrowableSnapshot,
   ): { readonly record: CheckpointWrite; readonly retry: { delaySeconds: number } | null } {
     const registered = taskMapGet(this.registered, stepKey)
-    const tries = (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
+    const tries = this.nextTry(stepKey)
     const decision =
       thrown.fatal || registered === undefined
         ? ({ retry: false } as const)
@@ -605,8 +605,16 @@ export class ReplayContext implements TaskContext {
     }
   }
 
+  /**
+   * The attempt a failure of this rollback is: one past those already recorded. A
+   * rollback's spent attempts are durable with it, and are never given back.
+   */
+  private nextTry(stepKey: string): number {
+    return (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
+  }
+
   private haltRecord(stepKey: string, name: string, message: string): CheckpointWrite {
-    const tries = (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
+    const tries = this.nextTry(stepKey)
     return {
       key: `${SAGA_TRIES_PREFIX}${stepKey}`,
       stateJson: encodeRollbackTry({

@@ -1165,7 +1165,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // At the cap the batch decides the task's failure, so it enters the rolling-back
     // phase when a registered step is owed its rollback (DESIGN.md §3.10, Sagas.tla
     // InfraCap). The pass takes the identity the refused successor would have had, so
-    // the terminal arm below yields to it as it yields to a successor.
+    // the terminal arm below yields to it as it yields to a successor. It follows the
+    // successor's insert and shares its id, so it is placed only when no retry was: below
+    // the cap the retry holds the id, and a death there is a retry, as it always was.
     this.sagaPass(b, {
       queue,
       failedRunId: item.runId,
@@ -1173,9 +1175,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       fence: 'fail',
       enteringWith: REASON_INFRA_CAP,
       delayMs: 0,
-      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}
-           AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 't')}
-           AND t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}`,
+      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,
       admissionArgs: [],
     })
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -1701,9 +1701,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
         delayMs: pass.delayMs,
         fence,
         taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+        // The pass runs one ordinal past the budget, so the budget must have room to be
+        // raised. Its ordinal then has room too: every compare-and-set a pass is fenced on
+        // vouches for the accounting identity, under which the run's ordinal is the task's
+        // attempts and infrastructure retries plus one, and its attempts are below its budget.
         admission: sqlFragment(
           `t.state IN ${LIVE} AND ${pass.admission}
-           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
            AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 't')}`,
           [...pass.admissionArgs],
         ),

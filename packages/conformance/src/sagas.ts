@@ -1,6 +1,7 @@
 import {
   type ClaimedRun,
   INFRA_RETRY_CAP,
+  MAX_COUNT,
   REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
@@ -230,20 +231,23 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
     // UserTerminal with AtomicEnter: the decision and the phase marker are one batch.
     it('enters the phase in the batch that decides the failure, and ends nothing', async () => {
       const { taskId, forward, pass } = await rollingBack(f)
-      expect({
-        task: await taskRow(f, taskId),
-        passIsTheNextAttempt: pass.attempt === forward.attempt + 1 && pass.taskId === taskId,
-        checkpoints: await checkpointNames(f, taskId),
-        marker: (
-          await rowsOf(
-            f.raw,
-            'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-            [taskId, SAGA_PHASE_CHECKPOINT],
-          )
-        )[0]?.state,
-        completionEvents: await doneEvents(f),
-        result: await f.store.getTaskResult(Q, taskId),
-      }).toEqual({
+      expect(
+        {
+          task: await taskRow(f, taskId),
+          passIsTheNextAttempt: pass.attempt === forward.attempt + 1 && pass.taskId === taskId,
+          checkpoints: await checkpointNames(f, taskId),
+          marker: (
+            await rowsOf(
+              f.raw,
+              'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+              [taskId, SAGA_PHASE_CHECKPOINT],
+            )
+          )[0]?.state,
+          completionEvents: await doneEvents(f),
+          result: await f.store.getTaskResult(Q, taskId),
+        },
+        'mutation-verdict:behavior:saga-phase-entry',
+      ).toEqual({
         // The pass runs past the user budget, so the budget is the pass's own ordinal.
         task: { state: 'running', attempts: 1, maxAttempts: 2, failureReason: null },
         passIsTheNextAttempt: true,
@@ -281,11 +285,14 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const plain = await f.store.spawn(Q, 'plain', '{}')
       const only = await claimActivated(f.store, Q, 'w-3')
       await f.store.fail(Q, only.runId, only.claimToken, CAUSE, null)
-      expect({
-        afterRetry,
-        plain: await f.store.getTaskResult(Q, plain.taskId),
-        plainCheckpoints: await checkpointNames(f, plain.taskId),
-      }).toEqual({
+      expect(
+        {
+          afterRetry,
+          plain: await f.store.getTaskResult(Q, plain.taskId),
+          plainCheckpoints: await checkpointNames(f, plain.taskId),
+        },
+        'mutation-verdict:behavior:saga-only-an-owed-terminal-failure-enters',
+      ).toEqual({
         afterRetry: [startMarker('a')],
         plain: { state: 'failed', failureReasonJson: CAUSE },
         plainCheckpoints: [],
@@ -322,13 +329,16 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const rollback = await refusalName(
         checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60),
       )
-      expect({
-        before,
-        frozen,
-        rollback,
-        task: (await taskRow(f, spawned.taskId))?.state,
-        checkpoints: await checkpointNames(f, spawned.taskId),
-      }).toEqual({
+      expect(
+        {
+          before,
+          frozen,
+          rollback,
+          task: (await taskRow(f, spawned.taskId))?.state,
+          checkpoints: await checkpointNames(f, spawned.taskId),
+        },
+        'mutation-verdict:behavior:saga-forward-phase-is-frozen',
+      ).toEqual({
         before: 'LeaseLostError',
         frozen: {
           step: 'LeaseLostError',
@@ -351,12 +361,15 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       await checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60)
       const eventsBefore = await doneEvents(f)
       await f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)
-      expect({
-        eventsBefore,
-        events: await doneEvents(f),
-        result: await f.store.getTaskResult(Q, taskId),
-        revived: await f.store.retryTask(Q, taskId),
-      }).toEqual({
+      expect(
+        {
+          eventsBefore,
+          events: await doneEvents(f),
+          result: await f.store.getTaskResult(Q, taskId),
+          revived: await f.store.retryTask(Q, taskId),
+        },
+        'mutation-verdict:behavior:saga-finish-is-honest',
+      ).toEqual({
         eventsBefore: 0,
         events: 1,
         result: { state: 'failed', failureReasonJson: CAUSE, rollback: { outcome: 'complete' } },
@@ -412,20 +425,26 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const spawned = await f.store.spawn(Q, 'saga', '{}')
       const run = await claimActivated(f.store, Q, 'w-forward')
       await startStep(f, run, 'a', 1)
-      expect({
-        refused: await refusalName(
-          f.store.failRollback(Q, run.runId, run.claimToken, CAUSE, null, triesOf('a', 1)),
-        ),
-        task: (await taskRow(f, spawned.taskId))?.state,
-        checkpoints: await checkpointNames(f, spawned.taskId),
-      }).toEqual({ refused: 'LeaseLostError', task: 'running', checkpoints: [startMarker('a')] })
+      expect(
+        {
+          refused: await refusalName(
+            f.store.failRollback(Q, run.runId, run.claimToken, CAUSE, null, triesOf('a', 1)),
+          ),
+          task: (await taskRow(f, spawned.taskId))?.state,
+          checkpoints: await checkpointNames(f, spawned.taskId),
+        },
+        'mutation-verdict:behavior:saga-failed-rollback-needs-the-phase',
+      ).toEqual({ refused: 'LeaseLostError', task: 'running', checkpoints: [startMarker('a')] })
       await f.store.cancelTask(Q, spawned.taskId)
     })
 
     it('caps a failure in the phase that carries no attempt record, which halts the saga', async () => {
       const { taskId, pass } = await rollingBack(f)
       await f.store.fail(Q, pass.runId, pass.claimToken, ROLLBACK_BOOM, { delaySeconds: 0 })
-      expect(await f.store.getTaskResult(Q, taskId)).toEqual({
+      expect(
+        await f.store.getTaskResult(Q, taskId),
+        'mutation-verdict:behavior:saga-phase-is-entered-once',
+      ).toEqual({
         state: 'failed',
         failureReasonJson: ROLLBACK_BOOM,
         rollback: { outcome: 'failed' },
@@ -533,7 +552,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           result: await f.store.getTaskResult(Q, spawned.taskId),
         }
       }
-      expect(observed).toEqual({
+      expect(observed, 'mutation-verdict:behavior:saga-sweep-cap-enters').toEqual({
         relaunch: {
           entered: ['rollback-started'],
           entering: { task: 'pending', marker: REASON_RELAUNCH_CAP },
@@ -587,6 +606,44 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         result: { state: 'pending' },
       })
       await f.store.cancelTask(Q, dies.taskId)
+    })
+
+    // The pass runs one ordinal past the budget, so placing it raises the budget by one. A
+    // task already at the top of the budget a task may have cannot be given a pass, and it
+    // ends where it stands, as it did before sagas, with no rollback outcome to report. The
+    // bound keeps a stored counter an exact integer. Nothing reaches it by running, so
+    // the rows are moved there by hand, and they stay a state the engine could have left.
+    it('ends a task whose budget cannot be raised, and places no pass', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: MAX_COUNT })
+      const run = await claimActivated(f.store, Q, 'w-last')
+      await f.raw.batch('the-last-attempt-the-budget-allows', [
+        {
+          sql: 'UPDATE tasks SET attempts = ? WHERE task_id = ?',
+          args: [MAX_COUNT - 1, spawned.taskId],
+        },
+        { sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?', args: [MAX_COUNT, run.runId] },
+      ])
+      await startStep(f, run, 'a', 1)
+      const decided = await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
+      expect(
+        {
+          decided,
+          task: await taskRow(f, spawned.taskId),
+          checkpoints: await checkpointNames(f, spawned.taskId),
+          result: await f.store.getTaskResult(Q, spawned.taskId),
+        },
+        'mutation-verdict:behavior:saga-budget-boundary',
+      ).toEqual({
+        decided: { rollingBack: false },
+        task: {
+          state: 'failed',
+          attempts: MAX_COUNT,
+          maxAttempts: MAX_COUNT,
+          failureReason: CAUSE,
+        },
+        checkpoints: [startMarker('a')],
+        result: { state: 'failed', failureReasonJson: CAUSE },
+      })
     })
 
     // A crash between batches changes nothing durable, and the next rollback is a function
@@ -734,7 +791,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           }
         })
       }
-      expect(observed).toEqual(expected)
+      expect(observed, 'mutation-verdict:behavior:saga-endings').toEqual(expected)
     })
 
     it('names the reason a finished pass ends its run with', () => {

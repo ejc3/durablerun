@@ -725,6 +725,28 @@ describe('saga replay equivalence (generated programs x fault points across the 
     expect(seen.registered).toBe(200)
   })
 
+  it('says what a fixed program rolls back, in what order, and what each rollback is handed', async () => {
+    // Two registered steps under one name, and an unregistered one between them.
+    const program: SagaProgram = {
+      ops: [
+        { kind: 'registered', nameIndex: 0, valueIndex: 0 },
+        { kind: 'step', nameIndex: 0, valueIndex: 1 },
+        { kind: 'registered', nameIndex: 1, valueIndex: 2 },
+      ],
+      failsAt: 3,
+    }
+    const run = await runSagaProgram(program, 'saga-fixed', 0)
+    expect(
+      { state: run.state, outcome: run.outcome, undone: run.undone, handed: run.handed },
+      'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
+    ).toEqual({
+      state: 'failed',
+      outcome: 'complete',
+      undone: [2, 0],
+      handed: { 0: fingerprint(VALUES[0]), 2: fingerprint(VALUES[2]) },
+    })
+  })
+
   for (let seed = 0; seed < 8; seed++) {
     it(`saga program ${seed}: rollbacks run in reverse start order, once each, at every fault point`, async () => {
       const program = generateSagaProgram(new Rng(`saga-program-${seed}`))
