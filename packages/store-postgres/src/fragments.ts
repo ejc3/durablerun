@@ -451,6 +451,14 @@ export const checkpointIsTheEngines = (name: string): string =>
   `(${name} = '${SAGA_PHASE_CHECKPOINT}'
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
 
+/**
+ * `name` is a rollback's attempt record, the one name the batch that fails a pass may
+ * commit for its caller. Under another name that write would replace the saga's cause,
+ * commit a forward step inside the frozen phase, or record a rollback that never ran.
+ */
+export const checkpointIsAnAttemptRecord = (name: string): string =>
+  namedUnder(name, SAGA_TRIES_PREFIX)
+
 /** The rollback of the step a saga checkpoint `marker` names has run. */
 const rollbackRan = (marker: string, prefix: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints sr

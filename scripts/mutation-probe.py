@@ -11683,8 +11683,8 @@ MUTATION_SPECS.extend(
         (
             "saga-suspension-refused-in-the-phase",
             "packages/store-libsql/src/store.ts",
-            "        phase: sqlFragment(`NOT ${sagaBegan('runs')}`),\n",
-            "        phase: sqlFragment('1 = 1'),\n",
+            "          `NOT ${sagaBegan('runs')}\n",
+            "          `1 = 1\n",
             "a rollback pass parks itself on a durable sleep and commits its marker",
         ),
         (

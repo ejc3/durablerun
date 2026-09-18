@@ -2548,8 +2548,12 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   come. Two names are the engine's alone in either phase: the phase marker,
   which only the batch that decides a failure writes, and a rollback's attempt
   record, which only the batch that fails a pass writes. A lease holder's
-  plain checkpoint write is refused both, so no caller of the port, a worker
-  in another language included, can forge a saga or spend a rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
+  plain checkpoint write is refused both, and so is the marker a suspension
+  commits for its caller. The attempt record a failed rollback commits for its
+  caller is refused every other name. Those are the three batches that take a
+  caller's checkpoint name, so no caller of the port, a worker in another
+  language included, can forge a saga, replace its cause, or spend a
+  rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
   the first durable call with no memo ends a pass's replay. An emit is the one
   durable call with no memo at all, and the store cannot freeze it, because an

@@ -98,6 +98,7 @@ import {
   LIVE,
   cancelDue,
   checkpointInItsPhase,
+  checkpointIsAnAttemptRecord,
   checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -1606,7 +1607,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'suspend',
       suspendCas({
         // A suspension commits a marker, and the forward phase is frozen once a saga began.
-        phase: sqlFragment(`NOT ${sagaBegan('runs')}`),
+        // The marker is the caller's checkpoint, so its name is checked as a plain
+        // checkpoint write's is: the engine's own names are refused it.
+        phase: sqlFragment(
+          `NOT ${sagaBegan('runs')}
+         AND NOT ${checkpointIsTheEngines('?')}`,
+          [checkpoint.key, checkpoint.key],
+        ),
         queue,
         runId,
         claimToken,
@@ -1872,8 +1879,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )`,
-          retryDelayMs === null ? [] : [retryDelayMs],
+         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
+          [
+            ...(retryDelayMs === null ? [] : [retryDelayMs]),
+            // The attempt record is the caller's checkpoint, and it may carry no other name.
+            ...(rollback === undefined ? [] : [rollback.tried.key]),
+          ],
         ),
       }),
     )
