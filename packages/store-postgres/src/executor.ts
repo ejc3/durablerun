@@ -174,6 +174,16 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
   )
 }
 
+// A read batch is one REPEATABLE READ snapshot. The canonical schema-version read is the
+// exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
+// takes its snapshot before the statement does that, so the read could see a concurrent
+// bootstrap's meta table and not the version row committed with it. READ COMMITTED takes
+// the execution snapshot after the lookup, and one statement needs no snapshot held
+// across statements. Raced through real migrators: rejected in 18 of 300 rounds under
+// REPEATABLE READ, and in none of 1800 under READ COMMITTED.
+const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
+const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
+
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -279,7 +289,7 @@ export class PgExecutor implements SqlExecutor {
     let activeStatementIndex: number | null = null
     try {
       await client.query(
-        mode === 'read' ? 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN',
+        mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
       )
       transactionStarted = true
 

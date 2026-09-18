@@ -317,7 +317,7 @@ describe('PgExecutor error classification', () => {
   it('classifies only the canonical missing-meta read as uninitialized', async () => {
     const missing = databaseError('42P01', 'relation "meta" does not exist')
     const client = new FakeClient((text) => {
-      if (text !== 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY') throw missing
+      if (!text.startsWith('BEGIN ')) throw missing
       return EMPTY_RESULT
     })
     const db = executor(new FakePool(client))
