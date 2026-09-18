@@ -134,7 +134,8 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
 
       // awaitEvent and emitEvent both lock this row before touching protocol
       // state. Keeping the sentinel distinct from events means "not emitted"
-      // still has a row that PostgreSQL can lock.
+      // still has a row that PostgreSQL can lock. A task's completion event,
+      // which the engine alone writes, is locked without a row (executor.ts).
       `CREATE TABLE event_locks (
         queue TEXT NOT NULL,
         event_name TEXT NOT NULL,

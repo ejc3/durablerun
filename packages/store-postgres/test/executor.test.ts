@@ -258,7 +258,7 @@ describe('PgExecutor transactions', () => {
     })
   })
 
-  it('acquires a scoped event advisory lock before protocol SQL without durable garbage', async () => {
+  it('acquires the event row lock before protocol SQL without adding a result', async () => {
     const client = new FakeClient((text) => {
       if (text === 'SELECT value FROM protocol_state') {
         return result([{ value: 'ready' }], [field('value', 25)])
@@ -277,15 +277,43 @@ describe('PgExecutor transactions', () => {
 
     expect(
       client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
-      'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+      'mutation-verdict:behavior:postgres-port-event-lock-is-the-row',
     ).toEqual([
       'BEGIN',
-      "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( current_database(), current_schema(), 'durablerun:event', $1::text, $2::text )::text, 0 ))",
+      'INSERT INTO event_locks (queue, event_name) VALUES ($1, $2) ON CONFLICT (queue, event_name) DO NOTHING',
+      'SELECT 1 FROM event_locks WHERE queue = $1 AND event_name = $2 FOR UPDATE',
       'SELECT value FROM protocol_state',
       'COMMIT',
     ])
-    expect(client.calls[1]?.args).toEqual(['q', `e'; SELECT 1; --`])
+    expect(client.calls.slice(1, 3).map(({ args }) => args)).toEqual([
+      ['q', `e'; SELECT 1; --`],
+      ['q', `e'; SELECT 1; --`],
+    ])
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it("locks a task's completion event with a scoped advisory lock, and leaves no row", async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+
+    await executor(new FakePool(client)).batch(
+      'locked-completion-event',
+      [{ sql: 'SELECT value FROM protocol_state', args: [] }],
+      {
+        mode: 'write',
+        transactionLock: { kind: 'event', queue: 'q', eventName: '$task-done:t1' },
+      },
+    )
+
+    expect(
+      client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+    ).toEqual([
+      'BEGIN',
+      "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( 'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text )::text, 0 ))",
+      'SELECT value FROM protocol_state',
+      'COMMIT',
+    ])
+    expect(client.calls[1]?.args).toEqual(['q', '$task-done:t1'])
   })
 
   it('acquires a scoped claim advisory lock before protocol SQL without durable garbage', async () => {

@@ -1,4 +1,5 @@
 import {
+  RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -148,29 +149,63 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
   }
 }
 
-/** The advisory-lock domain of each lock kind, so an event and a claim never share a key. */
-const LOCK_DOMAINS = Object.freeze({
-  event: 'durablerun:event',
-  claim: 'durablerun:claim',
-} as const)
-
 async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
-  // Both locks are transaction-scoped advisory locks, which have exactly the needed
-  // lifetime and leave nothing behind. A durable row sentinel would grow without
-  // bound: claim tokens are fresh per tick, and every task that ends locks the name
-  // of its own completion event, whether or not anyone ever awaits it. PostgreSQL
-  // computes the key from bound coordinates plus the database/schema and a fixed
-  // domain tag; a hash collision can only over-serialize unrelated transitions, never
-  // let equal coordinates overlap. Equal coordinates of one kind exclude each other,
-  // which is all an emit, an await, and a terminal batch of one event need.
+  if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {
+    // A caller's event takes the lock every build has taken for it: a row of
+    // `event_locks`, inserted when it is missing and then locked. A process of an older
+    // build keeps running after a newer one has migrated, because a store never reads
+    // the schema version, so for the length of a deploy both builds emit and await the
+    // same events. Two lock kinds would not exclude each other, and an emit could then
+    // slip between an await's read of no event and its wait row, which strands the
+    // waiter. The row can go once no build that takes it can still run (BUILD.md).
+    const args = [lock.queue, lock.eventName]
+    await client.query(
+      `INSERT INTO event_locks (queue, event_name)
+       VALUES ($1, $2)
+       ON CONFLICT (queue, event_name) DO NOTHING`,
+      args,
+    )
+    await client.query(
+      `SELECT 1 FROM event_locks
+       WHERE queue = $1 AND event_name = $2
+       FOR UPDATE`,
+      args,
+    )
+    return
+  }
+  if (lock.kind === 'event') {
+    // The engine's own event, which is the completion event of a task. No build before
+    // child tasks locks one, so nothing has to agree with a row, and a row would be a
+    // row for every task that ever ends, awaited or not, which nothing deletes. The
+    // lock is transaction-scoped and advisory. Its key is the identity of the `events`
+    // table as this session resolves it, so two pools that reach the same tables
+    // through different search paths still exclude each other. A hash collision can
+    // only over-serialize unrelated events.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended(
+         jsonb_build_array(
+           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text
+         )::text,
+         0
+       ))`,
+      [lock.queue, lock.eventName],
+    )
+    return
+  }
+
+  // Claim tokens are fresh per tick, so a durable row sentinel would grow
+  // without bound. A transaction-scoped advisory lock has exactly the needed
+  // lifetime. PostgreSQL computes the key from bound coordinates plus the
+  // database/schema and a fixed domain tag; a hash collision can only
+  // over-serialize unrelated claims, never let equal coordinates overlap.
   await client.query(
     `SELECT pg_advisory_xact_lock(hashtextextended(
        jsonb_build_array(
-         current_database(), current_schema(), '${LOCK_DOMAINS[lock.kind]}', $1::text, $2::text
+         current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text
        )::text,
        0
      ))`,
-    [lock.queue, lock.kind === 'event' ? lock.eventName : lock.claimToken],
+    [lock.queue, lock.claimToken],
   )
 }
 
