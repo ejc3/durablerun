@@ -147,7 +147,10 @@ describe('PgExecutor transactions', () => {
       'read',
     )
 
-    expect(client.calls.map(({ text }) => text)).toEqual([
+    expect(
+      client.calls.map(({ text }) => text),
+      'mutation-verdict:construction:postgres-version-read-isolation',
+    ).toEqual([
       'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY',
       SCHEMA_VERSION_READ_SQL,
       'COMMIT',

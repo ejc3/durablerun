@@ -215,10 +215,13 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
         }
       }
 
-      expect({
-        afterAWinner: await bootstrapFailing(true),
-        withNoWinner: await bootstrapFailing(false),
-      }).toEqual({
+      expect(
+        {
+          afterAWinner: await bootstrapFailing(true),
+          withNoWinner: await bootstrapFailing(false),
+        },
+        'mutation-verdict:behavior:bootstrap-loss-forgiven',
+      ).toEqual({
         afterAWinner: { migration: 'resolved', migrated: true },
         withNoWinner: { migration: 'Error: the bootstrap failed', migrated: false },
       })
