@@ -128,6 +128,31 @@ describe('FencedBatch tree statements', () => {
     ).toEqual([undefined, 0, 1, 0, 0, undefined, undefined])
   })
 
+  // A skipped statement answers with no rows. That is what an unmatched statement answers
+  // too, unless it answers with a row whatever it matched: a tail that counts the rows
+  // its own WHERE gates returns one row holding 0 when the gate lost. Skipped, it would
+  // return no row on the dialect that skips and that row on the dialect that sends the
+  // batch whole, so such a tail is always sent.
+  it('never skips a gated tail that answers with a row whatever it matched', async () => {
+    const { captured, executor } = capturingExecutor(1)
+    const b = batch()
+    b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['r1'])
+    b.tailTree(
+      'counted',
+      statement(
+        db
+          .selectFrom('runs')
+          .select((eb) => eb.fn.countAll<number>().as('n'))
+          .where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
+    await b.run(executor)
+    expect(
+      captured.map((sent) => sent.skipUnlessWrote),
+      'mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers',
+    ).toEqual([undefined, undefined])
+  })
+
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {
     const forged = { name: 'forged', tree: winCas().toOperationNode() }
     expect(() => batch().casTree('win', forged)).toThrow(/must come from defineStatement/)
