@@ -805,3 +805,317 @@ describe('the tree rules', () => {
     })
   })
 })
+
+/**
+ * The rules a scan of store SQL text applied to text alone, asked of the tree. Each test
+ * carries one mutation's marker, and each shape is the nearest one only its condition decides.
+ */
+describe('a second definition of eligibility', () => {
+  const STATE_LIST = /holds a list of states that is none of the defined sets/
+  const DEADLINE = /holds a test of cancel_at_ms built from nodes/
+  const runsWhere = (where: (eb: Loose) => Loose) =>
+    cas(
+      'win',
+      loose
+        .updateTable('runs')
+        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: nowValue })
+        .where('run_id', '=', 'r1')
+        .where(where),
+    )
+  const stateIn = (states: readonly unknown[]) => runsWhere((eb) => eb('state', 'in', states))
+
+  describe('a list of states', () => {
+    it('refuses a list built from nodes that is none of the defined sets', () => {
+      refuses('mutation-verdict:construction:tree-state-list-built-from-nodes', STATE_LIST, () =>
+        stateIn(['pending', 'running']),
+      )
+    })
+
+    it('refuses such a list when its values are value nodes', () => {
+      refuses('mutation-verdict:construction:tree-state-list-of-value-nodes', STATE_LIST, () =>
+        runsWhere((eb) => eb('state', 'in', [eb.val('pending'), eb.val('running')])),
+      )
+    })
+
+    const SETS = [
+      [
+        'live',
+        ['pending', 'running', 'sleeping'],
+        'mutation-verdict:construction:tree-state-set-live',
+      ],
+      ['queued', ['pending', 'sleeping'], 'mutation-verdict:construction:tree-state-set-queued'],
+      [
+        'terminal',
+        ['completed', 'failed', 'cancelled'],
+        'mutation-verdict:construction:tree-state-set-terminal',
+      ],
+    ] as const
+    for (const [name, states, marker] of SETS) {
+      it(`accepts the ${name} states, in any order`, () => {
+        accepts(marker, () => stateIn([...states].reverse()))
+      })
+    }
+
+    it('accepts one state, which defines no set', () => {
+      accepts('mutation-verdict:construction:tree-state-list-one-state', () => stateIn(['pending']))
+    })
+
+    it('accepts a list on a state column that names no state', () => {
+      accepts('mutation-verdict:construction:tree-state-list-names-a-state', () =>
+        stateIn(['{"step":1}', '{"step":2}']),
+      )
+    })
+
+    it('refuses a defined set with one state more', () => {
+      refuses('mutation-verdict:construction:tree-state-list-length', STATE_LIST, () =>
+        stateIn(['pending', 'running', 'sleeping', 'failed']),
+      )
+    })
+
+    it('refuses a list as long as a defined set that is not one', () => {
+      refuses('mutation-verdict:construction:tree-state-list-members', STATE_LIST, () =>
+        stateIn(['pending', 'running', 'failed']),
+      )
+      // Terminal states alone name states too.
+      refuses('two of the terminal states', STATE_LIST, () => stateIn(['completed', 'failed']))
+    })
+
+    it('reads a list only when it is compared with a state column, so caller data is never judged', () => {
+      accepts('mutation-verdict:construction:tree-state-list-keys-on-the-column', () =>
+        runsWhere((eb) => eb('queue', 'in', ['failed', 'orders'])),
+      )
+      // A row of inserted values names a state beside its other columns, and is no list of states.
+      accepts('a row of inserted values', () => cas('task', taskInsert()))
+    })
+
+    it('reads the state column through a cast or a call around it, as the deadline is read', () => {
+      refuses('a cast around the column', STATE_LIST, () =>
+        runsWhere((eb) => eb(eb.cast(eb.ref('state'), 'text'), 'in', ['pending', 'running'])),
+      )
+      refuses('a call around the column', STATE_LIST, () =>
+        runsWhere((eb) =>
+          eb(eb.fn('coalesce', [eb.ref('state'), eb.val('pending')]), 'in', ['pending', 'running']),
+        ),
+      )
+      accepts('the live states through a cast', () =>
+        runsWhere((eb) =>
+          eb(eb.cast(eb.ref('state'), 'text'), 'in', ['pending', 'running', 'sleeping']),
+        ),
+      )
+    })
+
+    it('reads a quoted state column in the text of a fragment', () => {
+      for (const text of [
+        `"state" IN ('pending','running')`,
+        "`state` IN ('pending','running')",
+        `t."state" not in ('pending','running')`,
+      ]) {
+        refuses(text, STATE_LIST, () => runsWhere(() => predicate(text)))
+      }
+      accepts('the live states on a quoted column', () =>
+        runsWhere(() => predicate(`"state" IN ('pending','running','sleeping')`)),
+      )
+    })
+
+    it('reads a qualified state column, and NOT IN as it reads IN', () => {
+      refuses('a qualified column', STATE_LIST, () =>
+        runsWhere((eb) => eb('runs.state', 'in', ['pending', 'running'])),
+      )
+      refuses('NOT IN', STATE_LIST, () =>
+        runsWhere((eb) => eb('state', 'not in', ['pending', 'running'])),
+      )
+    })
+
+    it('never quotes the list, which may hold bound data', () => {
+      expect(() => stateIn(['pending', 'a-customer-secret'])).toThrow(STATE_LIST)
+      expect(() => stateIn(['pending', 'a-customer-secret'])).not.toThrow(/a-customer-secret/)
+    })
+
+    it('refuses such a list in the text of a fragment', () => {
+      for (const text of [
+        "state IN ('pending','running')",
+        "t.state not in ( 'pending' , 'running' )",
+        "state = ANY ('pending','running')",
+      ]) {
+        refuses('mutation-verdict:construction:tree-state-list-in-a-fragment', STATE_LIST, () =>
+          runsWhere(() => predicate(text)),
+        )
+      }
+      accepts('a fragment that lists the live states', () =>
+        runsWhere(() => predicate("state IN ('pending','running','sleeping')")),
+      )
+    })
+
+    it('reads the binds a list in a fragment takes, after the binds before it', () => {
+      refuses('mutation-verdict:construction:tree-state-list-bound-in-a-fragment', STATE_LIST, () =>
+        runsWhere(() => predicate('queue = ? AND state IN (?, ?)', ['q', 'pending', 'running'])),
+      )
+      refuses('a partly bound list', STATE_LIST, () =>
+        runsWhere(() => predicate("state IN ('pending', ?)", ['running'])),
+      )
+      accepts('the queued states, bound', () =>
+        runsWhere(() => predicate('queue = ? AND state IN (?, ?)', ['q', 'sleeping', 'pending'])),
+      )
+    })
+
+    it('reads a list in a fragment only when it is compared with a state column', () => {
+      accepts('mutation-verdict:construction:tree-state-list-fragment-keys-on-the-column', () =>
+        runsWhere(() => predicate('queue IN (?, ?)', ['failed', 'orders'])),
+      )
+    })
+
+    it('reads every list of a fragment, and a defined one before it clears nothing', () => {
+      refuses(
+        'mutation-verdict:construction:tree-state-list-every-list-of-a-fragment',
+        STATE_LIST,
+        () =>
+          runsWhere(() =>
+            predicate("state IN ('pending','sleeping') OR state IN ('pending','running')"),
+          ),
+      )
+    })
+
+    it('keeps the first problem it finds, whatever the statement holds after it', () => {
+      refuses(
+        'mutation-verdict:construction:tree-eligibility-first-problem-stands',
+        STATE_LIST,
+        () =>
+          runsWhere((eb) =>
+            eb.and([
+              eb('state', 'in', ['pending', 'running']),
+              eb('state', 'in', ['pending', 'sleeping']),
+            ]),
+          ),
+      )
+    })
+
+    it('is asked of a statement of every kind', () => {
+      refuses(
+        'mutation-verdict:construction:tree-eligibility-asked-of-every-statement',
+        STATE_LIST,
+        () =>
+          tail(
+            loose
+              .selectFrom('runs')
+              .select('run_id')
+              .where('fence_stamp', '=', fenceValue('win'))
+              .where('state', 'in', ['pending', 'running']),
+          ),
+      )
+    })
+
+    it('does not read these spellings of a set, which is what a check of spellings cannot do', () => {
+      // The false negatives, run. Each defines the set {pending, running}, which is no
+      // defined set, and each passes.
+      const EXHIBITS: Readonly<Record<string, (eb: Loose) => Loose>> = {
+        'alternatives joined by OR': (eb) =>
+          eb.or([eb('state', '=', 'pending'), eb('state', '=', 'running')]),
+        'one-state lists joined by OR': (eb) =>
+          eb.or([eb('state', 'in', ['pending']), eb('state', 'in', ['running'])]),
+        'a chain of <>': (eb) =>
+          eb.and([
+            eb('state', '<>', 'sleeping'),
+            eb('state', '<>', 'completed'),
+            eb('state', '<>', 'failed'),
+            eb('state', '<>', 'cancelled'),
+          ]),
+        'CASE arms': (eb) =>
+          eb(
+            eb
+              .case()
+              .when('state', '=', 'pending')
+              .then(1)
+              .when('state', '=', 'running')
+              .then(1)
+              .else(0)
+              .end(),
+            '=',
+            1,
+          ),
+        'alternatives in a fragment': () => predicate("(state = 'pending' OR state = 'running')"),
+        'an array in a fragment': () => predicate("state = ANY(ARRAY['pending','running'])"),
+        'a join to a list of values in a fragment': () =>
+          predicate("state IN (SELECT v FROM (VALUES ('pending'), ('running')) AS s(v))"),
+      }
+      for (const [name, where] of Object.entries(EXHIBITS)) accepts(name, () => runsWhere(where))
+      // The complement of a defined set is that set's other half, and the rule reads it as
+      // the defined set it lists: NOT IN the terminal states defines the live states again.
+      accepts('the complement of a defined set', () =>
+        runsWhere((eb) => eb('state', 'not in', ['completed', 'failed', 'cancelled'])),
+      )
+    })
+  })
+
+  describe('a test of the cancellation deadline', () => {
+    it('refuses every comparison of cancel_at_ms built from nodes', () => {
+      for (const operator of ['<', '<=', '>', '>=', '=', '==', '!=', '<>', 'is distinct from']) {
+        refuses('mutation-verdict:construction:tree-deadline-refuses-a-comparison', DEADLINE, () =>
+          runsWhere((eb) => eb('cancel_at_ms', operator, 5)),
+        )
+      }
+      refuses('BETWEEN', DEADLINE, () => runsWhere((eb) => eb.between('cancel_at_ms', 0, 5)))
+    })
+
+    it('refuses it with the column on the right', () => {
+      refuses('mutation-verdict:construction:tree-deadline-either-side', DEADLINE, () =>
+        runsWhere((eb) => eb(eb.val(5), '>=', eb.ref('cancel_at_ms'))),
+      )
+    })
+
+    it('refuses it with arithmetic or a call around the column', () => {
+      // Arithmetic is an operator on the column, so it is refused as itself. A call is no
+      // operator, so only reading below the operand finds the column inside it.
+      refuses('arithmetic around the column', DEADLINE, () =>
+        runsWhere((eb) => eb(eb('cancel_at_ms', '-', 5), '<=', 0)),
+      )
+      refuses('mutation-verdict:construction:tree-deadline-under-a-call', DEADLINE, () =>
+        runsWhere((eb) => eb(eb.fn('coalesce', [eb.ref('cancel_at_ms'), eb.val(0)]), '<=', 5)),
+      )
+    })
+
+    it('accepts IS NULL', () => {
+      accepts('mutation-verdict:construction:tree-deadline-test-is-null', () =>
+        runsWhere((eb) => eb('cancel_at_ms', 'is', null)),
+      )
+    })
+
+    it('accepts IS NOT NULL', () => {
+      accepts('mutation-verdict:construction:tree-deadline-test-is-not-null', () =>
+        runsWhere((eb) => eb('cancel_at_ms', 'is not', null)),
+      )
+    })
+
+    it('accepts any operator on another column', () => {
+      accepts('mutation-verdict:construction:tree-deadline-names-the-column', () =>
+        runsWhere((eb) => eb('available_at_ms', '<=', 5)),
+      )
+    })
+
+    it('judges a subquery as its own statement, and not as an operand of the comparison that holds it', () => {
+      accepts('mutation-verdict:construction:tree-deadline-stops-at-a-subquery', () =>
+        runsWhere((eb) =>
+          eb(
+            'task_id',
+            'in',
+            eb.selectFrom('tasks').select('task_id').where('cancel_at_ms', 'is', null),
+          ),
+        ),
+      )
+      refuses('a comparison inside the subquery', DEADLINE, () =>
+        runsWhere((eb) =>
+          eb(
+            'task_id',
+            'in',
+            eb.selectFrom('tasks').select('task_id').where('cancel_at_ms', '<=', 5),
+          ),
+        ),
+      )
+    })
+
+    it('does not read a comparison written in a fragment, which is where a store compares the deadline', () => {
+      // The false negative, run: a second comparison of the deadline written as text in a
+      // core statement passes this rule. The scan of store SQL text cannot see core either.
+      accepts('a comparison in a fragment', () => runsWhere(() => predicate('cancel_at_ms <= 5')))
+    })
+  })
+})

@@ -22,6 +22,7 @@ import {
   OrNode,
   OrderByItemNode,
   ParensNode,
+  PrimitiveValueListNode,
   type QueryCompiler,
   type QueryId,
   RawNode,
@@ -47,6 +48,14 @@ import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlStatement } from './primitives.js'
+import { children, someNode } from './tree-walk.js'
+import {
+  LIVE_STATES,
+  QUEUED_STATES,
+  TERMINAL_STATES,
+  isLiveState,
+  isTerminalState,
+} from './types.js'
 
 // Task code shares this process and may replace a global such as `Map` while a pass
 // runs. What these checks keep across calls lives in collections captured at module
@@ -523,32 +532,6 @@ function unwrapParens(node: OperationNode): OperationNode {
   return current
 }
 
-function isNode(value: unknown): value is OperationNode {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { kind?: unknown }).kind === 'string'
-  )
-}
-
-/** Every child node. Kysely has no read-only walker, so this reads node fields generically. */
-function children(node: OperationNode): OperationNode[] {
-  if (ValueNode.is(node)) return []
-  const out: OperationNode[] = []
-  for (const value of Object.values(node)) {
-    if (Array.isArray(value)) {
-      for (const item of value) if (isNode(item)) out.push(item)
-    } else if (isNode(value)) {
-      out.push(value)
-    }
-  }
-  return out
-}
-
-function someNode(node: OperationNode, test: (node: OperationNode) => boolean): boolean {
-  return test(node) || children(node).some((child) => someNode(child, test))
-}
-
 function whereOf(query: OperationNode): OperationNode | null {
   if (UpdateQueryNode.is(query) || DeleteQueryNode.is(query) || SelectQueryNode.is(query)) {
     return query.where?.where ?? null
@@ -984,6 +967,136 @@ export function rawFragmentTexts(tree: OperationNode): string[] {
     return false
   })
   return texts
+}
+
+/**
+ * The sets of states a statement may name. A list of states defines a set of them, and a
+ * second definition drifts from the first: the claim once decided eligibility from its own
+ * list, which lacked what the shared one had gained. A store's text fragments spell these
+ * sets as SQL text, core's statements build them from nodes, and both are held to the
+ * lists in `types.ts`, so a list that is none of these sets is refused wherever it is written.
+ */
+const STATE_SETS: readonly (readonly string[])[] = [LIVE_STATES, QUEUED_STATES, TERMINAL_STATES]
+const STATE_LIST_PROBLEM =
+  'a list of states that is none of the defined sets: the live, the queued, or the terminal states'
+
+/**
+ * Why a list compared with a state column is a second definition of a set of states, or
+ * null when it is not one. The answer never quotes the list, which may hold bound data.
+ */
+function stateListProblem(values: readonly unknown[]): string | null {
+  // One state is a comparison with that state, which defines no set.
+  if (values.length < 2) return null
+  // A list that names no state compares the column with something else.
+  if (!values.some((value) => isLiveState(value) || isTerminalState(value))) return null
+  const defined = STATE_SETS.some(
+    (set) => set.length === values.length && set.every((state) => values.includes(state)),
+  )
+  return defined ? null : STATE_LIST_PROBLEM
+}
+
+/** One item of a list in a fragment's text: a literal's content, or the index of the bind it takes. */
+type TextListItem = string | number
+/** `state IN (…)`, `state NOT IN (…)`, or `state = ANY (…)` in a fragment's text, the column bare or quoted, where each item is a literal or a bind. */
+const STATE_LIST_IN_TEXT =
+  /\bstate["`]?\s*(?:(?:not\s+)?in|=\s*any)\s*(\(\s*(?:'(?:[^']|'')*'|\?)(?:\s*,\s*(?:'(?:[^']|'')*'|\?))*\s*\))/gi
+const LIST_ITEM = /'((?:[^']|'')*)'|\?/g
+/** A literal doubles a quote it holds. */
+const QUOTE = "'"
+const STATE_LIST_TEXT_CAP = 512
+const stateListsByText: Record<string, readonly (readonly TextListItem[])[]> = objectCreate(null)
+let stateListTextCount = 0
+
+/** The state lists a fragment's text holds, read once for each text. A `?` stands for each bind, in order. */
+function stateListsIn(text: string): readonly (readonly TextListItem[])[] {
+  const cached = stateListsByText[text]
+  if (cached !== undefined) return cached
+  const lists: TextListItem[][] = []
+  for (const found of text.matchAll(STATE_LIST_IN_TEXT)) {
+    const list = found[1] ?? ''
+    let bind = text.slice(0, found.index + found[0].length - list.length).split('?').length - 1
+    lists.push(
+      [...list.matchAll(LIST_ITEM)].map((item) =>
+        item[1] === undefined ? bind++ : item[1].split(QUOTE + QUOTE).join(QUOTE),
+      ),
+    )
+  }
+  if (stateListTextCount < STATE_LIST_TEXT_CAP) {
+    stateListsByText[text] = lists
+    stateListTextCount++
+  }
+  return lists
+}
+
+function boundValue(node: OperationNode | undefined): unknown {
+  return node !== undefined && ValueNode.is(node) ? node.value : undefined
+}
+
+const LIST_OPERATORS = ['in', 'not in']
+/** The tests of the deadline a statement may build from nodes. They order nothing. */
+const DEADLINE_TESTS = ['is', 'is not']
+const DEADLINE_PROBLEM =
+  "a test of cancel_at_ms built from nodes that is not IS NULL or IS NOT NULL: the deadline is compared by the store's cancelDue and cancelNotDue fragments alone"
+
+/** Whether an operand names a column: the column itself, or arithmetic, a call, or a cast around it. A subquery is its own statement. */
+function namesColumn(node: OperationNode, column: string): boolean {
+  if (SelectQueryNode.is(node)) return false
+  return (
+    referencedColumn(node) === column || children(node).some((child) => namesColumn(child, column))
+  )
+}
+const namesDeadline = (node: OperationNode): boolean => namesColumn(node, 'cancel_at_ms')
+
+function eligibilityProblemAt(node: OperationNode): string | null {
+  if (RawNode.is(node)) {
+    for (const list of stateListsIn(node.sqlFragments.join('?'))) {
+      const problem = stateListProblem(
+        list.map((item) => (typeof item === 'number' ? boundValue(node.parameters[item]) : item)),
+      )
+      if (problem !== null) return problem
+    }
+    return null
+  }
+  if (!BinaryOperationNode.is(node)) return null
+  const operator = operatorName(node.operator) ?? ''
+  if (LIST_OPERATORS.includes(operator) && namesColumn(node.leftOperand, 'state')) {
+    const list = unwrapParens(node.rightOperand)
+    if (PrimitiveValueListNode.is(list)) return stateListProblem(list.values)
+    if (ValueListNode.is(list)) return stateListProblem(list.values.map(boundValue))
+    return null
+  }
+  const tested = namesDeadline(node.leftOperand) || namesDeadline(node.rightOperand)
+  return tested && !DEADLINE_TESTS.includes(operator) ? DEADLINE_PROBLEM : null
+}
+
+/**
+ * Why a statement holds a second definition of eligibility, or null when it holds none.
+ * These are the rules a scan of store SQL text applied to text alone, asked of the tree,
+ * where a condition built from nodes is as visible as one written as text.
+ *
+ * A list compared with a `state` column by IN or NOT IN must be one of the defined sets,
+ * and the column is found through arithmetic, a call, or a cast around it. A
+ * list built from nodes is read as nodes. A list in a fragment's text is read as text, with
+ * each bind it takes read from the fragment's own arguments. The rule is keyed on the
+ * column, so a list of caller data compared with another column is never read. This is a
+ * check of spellings, and the verdict tests run the ones it does not read: a set spelled
+ * as alternatives joined by OR, as a chain of `<>`, as the complement of a defined set, as
+ * CASE arms, as `ARRAY[…]`, or as a join to a list of values.
+ *
+ * The cancellation deadline is compared in one place for each dialect, the store's own
+ * fragments, which carry the bounds a stored deadline must be within. So the only tests of
+ * `cancel_at_ms` a statement may build from nodes are IS NULL and IS NOT NULL. Any other
+ * operator with the column on either side is refused, through arithmetic, a call, or a
+ * cast around it, and a subquery is judged as its own statement. A fragment's text is
+ * where a store compares the deadline, so a comparison written there is not read.
+ */
+export function eligibilityDefinitionProblem(tree: OperationNode): string | null {
+  let problem: string | null = null
+  someNode(tree, (node) => {
+    problem = eligibilityProblemAt(node)
+    return problem !== null
+  })
+  return problem
 }
 
 const CLOCK_FUNCTIONS = [

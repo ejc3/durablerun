@@ -1197,6 +1197,29 @@ are load-bearing):
      `'now'`, whatever function takes it. That scan is a
      spelling proxy, confined to raw text, and a spelling nobody has listed
      passes it.
+   - A statement holds no second definition of eligibility.
+     `eligibilityDefinitionProblem` asks the rules `scripts/fragment-lint.py`
+     applies to store SQL text of the tree, where a condition built from nodes
+     is as visible as one written as text. A list that IN or NOT IN compares
+     with a `state` column is one of the defined sets: the live, the queued,
+     or the terminal states. It is read from nodes, or from a fragment's text
+     with the binds the list takes, and the column is found bare or quoted in
+     text, and through arithmetic, a call, or a cast in nodes. A list compared
+     with a column of any other name is never read, and the refusal never
+     quotes a value. The rule keys on the column's name, so it does read a list
+     compared with `checkpoints.state`, which holds caller JSON. A JSON string
+     carries its own quotes and cannot equal a state's name, so such a list
+     names no state and is not judged. This half is a check of spellings. It does not read a set
+     spelled as alternatives joined by OR, a chain of `<>`, CASE arms, the
+     complement of a defined set, an array, or a join to a list of values, and
+     the verdict tests run each of those as an exhibit that passes. The
+     deadline half is a closed list: the only tests of `cancel_at_ms` a
+     statement may build from nodes are IS NULL and IS NOT NULL. Any other
+     operator is refused with the column on either side, through arithmetic, a
+     call, or a cast, and a subquery is judged as its own statement. Each
+     dialect compares the deadline in its own `cancelDue` and `cancelNotDue`
+     fragments, which carry the bounds a stored deadline must be within, so a
+     comparison written in a fragment's text is not read.
    - A follow-on may not assign a column a value that combines that column
      with an arithmetic or concatenation operator, or that hides it in a raw
      fragment. The rule reads an UPDATE's SET list and an INSERT's conflict arm.
@@ -1240,9 +1263,16 @@ are load-bearing):
    column descriptor with every dialect's catalog. `FencedBatch` has no text
    path: every statement it holds is a tree, its constructor's type requires
    the dialect that compiles one, and the scanners that read a
-   statement's text are deleted. `scripts/fragment-lint.py` and
-   `scripts/clock-lint.py` still read store SQL text, until PR3.9e part 3c
-   gives the rules of theirs that still matter a tree-level form.
+   statement's text are deleted. A batch reads a statement's object graph
+   once for all of its checks. `scripts/fragment-lint.py` and
+   `scripts/clock-lint.py` still read store SQL text, because a store still
+   sends text that no tree holds: the sweep's discovery reads, the next-wake
+   read, the other reads, `expire-lease-now`, `driver-heartbeat`, `heartbeat`
+   on libSQL and PostgreSQL, and the admin's statements. MySQL builds
+   `heartbeat` as a fenced batch of trees, because it has no RETURNING. Their
+   rules have a tree-level form for
+   everything a tree holds, and the two scans stay for that text until it is
+   built as trees too.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

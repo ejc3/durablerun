@@ -47,6 +47,7 @@ import {
   clampLimit,
   coalesced,
   completeCas,
+  completeTaskMirror,
   decodeBoundedInteger,
   decodeTaskResult,
   deferLaunchCas,
@@ -1585,17 +1586,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         taskAdmitsCompletion: sqlFragment(TASK_ADMITS_COMPLETION),
       }),
     )
-    b.derived('task', {
-      relation: 'runs-to-tasks',
-      fence: 'complete',
-      queue,
-      where: 'f.run_id = ?',
-      whereArgs: [runId],
-      set: { state: `'completed'`, completed_payload: '?', cancel_at_ms: 'NULL' },
-      setArgs: [resultJson],
-      narrow: `state IN ${LIVE}`,
-      rows: 'one',
-    })
+    b.followOnTree('task', completeTaskMirror({ runId, queue, resultJson }), 'one')
     waitsGone(b, runId, 'complete')
     this.taskDone(b, queue, taskId, 'task', {
       state: 'completed',

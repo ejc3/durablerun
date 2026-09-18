@@ -32,6 +32,15 @@ const objectHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.
   value: object,
   key: PropertyKey,
 ) => boolean
+const weakMapGet = WeakMap.prototype.get.call.bind(WeakMap.prototype.get) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+) => V | undefined
+const weakMapSet = WeakMap.prototype.set.call.bind(WeakMap.prototype.set) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+) => WeakMap<K, V>
 const weakSetAdd = WeakSet.prototype.add.call.bind(WeakSet.prototype.add) as <T extends object>(
   set: WeakSet<T>,
   value: T,
@@ -76,6 +85,9 @@ export const TASK_INTRINSICS = freeze({
   StringIncludes: stringIncludes,
   StringStartsWith: stringStartsWith,
   TypeError,
+  WeakMap,
+  WeakMapGet: weakMapGet,
+  WeakMapSet: weakMapSet,
   WeakSet,
   WeakSetAdd: weakSetAdd,
   WeakSetDelete: weakSetDelete,

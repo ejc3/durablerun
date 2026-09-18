@@ -1,0 +1,23 @@
+{
+  "spawn": ["spawned", "spawned-child"],
+  "claim": ["claimed"],
+  "activate": ["activated"],
+  "heartbeat": {
+    "variants": ["extended"],
+    "dialects": ["mysql"]
+  },
+  "complete": ["completed"],
+  "defer-launch": ["deferred"],
+  "reschedule": ["rescheduled"],
+  "suspend": ["suspended"],
+  "await-event": ["registered", "registered-child"],
+  "record-task-done": ["recorded"],
+  "emit-event": ["emitted"],
+  "set-checkpoint": ["written"],
+  "fail": ["retrying", "final"],
+  "retry-task": ["revived"],
+  "cancel-task": ["cancelled"],
+  "sweep:cancel": ["cancelled"],
+  "sweep:lost-launch": ["swept"],
+  "sweep:claim-timeout": ["swept"]
+}

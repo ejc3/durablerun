@@ -28,6 +28,7 @@ import {
   type TreeDialect,
   columnValue,
   defineStatement,
+  eligibilityDefinitionProblem,
   fenceValue,
   followOnInsertProvenance,
   fragmentBinds,
@@ -47,6 +48,7 @@ import {
   writesStampAssignments,
 } from './sql-tree.js'
 import { treeBuilder } from './store-tables.js'
+import { readingOnce } from './tree-walk.js'
 
 /**
  * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
@@ -103,6 +105,18 @@ function bindCompilationError(message: string): TypeError {
   const error = new TrustedTypeError(message)
   weakSetAdd(bindCompilationErrors, error)
   return error
+}
+
+/** The statements a `FencedBatch` compiled from trees, by identity. */
+const treeBuilt = new TrustedWeakSet<object>()
+
+/**
+ * Whether a `FencedBatch` compiled this statement from a tree. It is asked of the statement
+ * an executor receives, so a recorder enrols a batch by how it was built and needs no list
+ * of labels kept beside the stores.
+ */
+export function isTreeBuiltStatement(statement: unknown): boolean {
+  return typeof statement === 'object' && statement !== null && weakSetHas(treeBuilt, statement)
 }
 
 /** True only for an authentic compiler bind failure from this module. */
@@ -691,6 +705,16 @@ export class FencedBatch {
     statement: DefinedStatement,
     atMost: number | null,
   ): this {
+    return readingOnce(() => this.admitTree(asked, name, statement, atMost))
+  }
+
+  /** `addTree`'s checks. They run under `readingOnce`, so the tree's object graph is read once for all of them. */
+  private admitTree(
+    asked: Kind | 'openTail',
+    name: string,
+    statement: DefinedStatement,
+    atMost: number | null,
+  ): this {
     // An open tail is a tail in every way but one: no fence has to gate it.
     const open = asked === 'openTail'
     const kind: Kind = open ? 'tail' : asked
@@ -703,6 +727,8 @@ export class FencedBatch {
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
+    const second = eligibilityDefinitionProblem(tree)
+    if (second !== null) throw new Error(`${at} holds ${second}`)
     const isCas = kind === 'cas' || kind === 'casMany'
     if (kind === 'tail') {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
@@ -911,7 +937,7 @@ export class FencedBatch {
         `${at} argument ${index} is ${value === undefined ? 'undefined' : typeof value}: bind a string, number, bigint, bytes, or null`,
       )
     })
-    this.statements.push({
+    const held = {
       name,
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
@@ -920,7 +946,9 @@ export class FencedBatch {
         gatedBy === undefined
           ? { sql: compiled.sql, args }
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
-    })
+    }
+    weakSetAdd(treeBuilt, held.compiled)
+    this.statements.push(held)
     return this
   }
 

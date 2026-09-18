@@ -7,6 +7,8 @@
 /** Canonical runtime partitions for every task/run state consumer. */
 export const LIVE_STATES = Object.freeze(['pending', 'running', 'sleeping'] as const)
 export const TERMINAL_STATES = Object.freeze(['completed', 'failed', 'cancelled'] as const)
+/** The live states a claim may take: a run that is waiting to start or to wake. */
+export const QUEUED_STATES = Object.freeze(['pending', 'sleeping'] as const)
 
 export type LiveState = (typeof LIVE_STATES)[number]
 export type TerminalState = (typeof TERMINAL_STATES)[number]
