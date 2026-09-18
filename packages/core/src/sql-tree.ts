@@ -1002,33 +1002,25 @@ const CLOCK_FUNCTIONS = [
   'current_timestamp',
   'curdate',
   'curtime',
+  'unix_timestamp',
 ]
 
 /**
  * A database clock spelled out in raw SQL text. This is a spelling list, the same one
  * `scripts/clock-lint.py` applies to store sources, because raw text is the one place a
- * tree cannot be read. The only clock a tree may hold is the clock token.
+ * tree cannot be read. A date function with no argument is on it, because SQLite reads
+ * `datetime()` as the current time, and so is the literal 'now', whatever function takes it. The only clock a tree may hold is the clock token, and
+ * a clock called as a function node is outside the grammar, which lists no clock.
  */
 export const CLOCK_SPELLING = new RegExp(
   [
     String.raw`\b(?:${CLOCK_FUNCTIONS.join('|')})\s*\(`,
     String.raw`\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b`,
-    String.raw`\b(?:datetime|date|time)\s*\(\s*'now'`,
+    String.raw`\b(?:datetime|date|time)\s*\(\s*\)`,
+    String.raw`'\s*now\s*'`,
   ].join('|'),
   'i',
 )
-
-/** Clock functions called as function nodes, which no text scan of a store source sees. */
-export function clockFunctionCalls(tree: OperationNode): string[] {
-  const calls: string[] = []
-  someNode(tree, (candidate) => {
-    if (FunctionNode.is(candidate) && CLOCK_FUNCTIONS.includes(candidate.func.toLowerCase())) {
-      calls.push(candidate.func)
-    }
-    return false
-  })
-  return calls
-}
 
 const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
   UpdateQueryNode: ['kind', 'table', 'where', 'updates'],
@@ -1092,6 +1084,14 @@ const GRAMMAR_NODES = [
 ]
 
 /**
+ * The functions a statement may call, closed like the node kinds. A clock is a function,
+ * and a list of clock spellings cannot name the next one, so a call the grammar does not
+ * list is refused whatever it is. A statement that needs another function adds it here.
+ */
+const GRAMMAR_FUNCTIONS = ['coalesce']
+const GRAMMAR_AGGREGATES = ['avg', 'count', 'max', 'min', 'sum']
+
+/**
  * What the grammar requires of an INSERT beyond its node kinds. The checks that read an
  * insert's provenance go by column position, so a SELECT lists one plain selection for
  * each column: a star is one selection and many columns. A conflict clause names its
@@ -1150,6 +1150,12 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
     if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
+    if (FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {
+      return `a call of ${node.func}, which the grammar does not list`
+    }
+    if (AggregateFunctionNode.is(node) && !GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())) {
+      return `an aggregate call of ${node.func}, which the grammar does not list`
+    }
     if (
       !isRoot &&
       (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))

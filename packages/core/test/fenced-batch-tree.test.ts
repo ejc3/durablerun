@@ -1,25 +1,14 @@
-import {
-  type ExpressionBuilder,
-  type OperationNode,
-  SelectModifierNode,
-  SelectQueryNode,
-  SqliteQueryCompiler,
-  sql,
-} from 'kysely'
+import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   FENCE_SET,
   FencedBatch,
-  type SqlExecutor,
   type SqlFragment,
-  type SqlResult,
   type SqlStatement,
   type StoreTables,
-  TreeDialect,
   aliasedAs,
   capLostLaunchCas,
   coalesced,
-  compileOnlyBuilder,
   treeBuilder as db,
   defineStatement,
   emitEventCas,
@@ -35,73 +24,42 @@ import {
   suspendCas,
 } from '../src/index.js'
 
+import {
+  type Builder,
+  CLOCK,
+  type Loose,
+  batch,
+  capturingExecutor,
+  checkpoint,
+  either,
+  eventInsert,
+  fenced,
+  followOn,
+  gate,
+  joined,
+  key,
+  keyIn,
+  loose,
+  predicate,
+  recorded,
+  statement,
+  successor,
+  taskFollowOn,
+  taskInsert,
+  tasksWhere,
+  throughDerived,
+  unguardedWaitInsert,
+  value,
+  waitInsert,
+  widened,
+  winCas,
+  withCas,
+} from './tree-fixtures.js'
+
 /**
  * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
  * must still allow, as `fenced-batch.test.ts` does for text statements.
  */
-const CLOCK = `CAST(unixepoch('subsec') * 1000 AS INTEGER)`
-const dialect = new TreeDialect(new SqliteQueryCompiler())
-
-type Builder = { toOperationNode(): OperationNode }
-
-/** A statement minted the way stores mint them, with no binds of its own. */
-const statement = (builder: Builder) => defineStatement('test', () => builder as never)({})
-const predicate = (text: string, args: SqlFragment['args'] = []) =>
-  rawSql<boolean>(sqlFragment(text, args), 'predicate')
-const value = <T>(text: string, args: SqlFragment['args'] = []) =>
-  rawSql<T>(sqlFragment(text, args), 'value')
-
-function batch(): FencedBatch {
-  return new FencedBatch('b', 'seed', { now: CLOCK, tree: dialect })
-}
-
-/** An executor that records what it was sent and reports `rowsAffected` for each statement. */
-function capturingExecutor(rowsAffected: number) {
-  const captured: SqlStatement[] = []
-  const executor: SqlExecutor = {
-    async batch(_label, statements) {
-      captured.push(...statements)
-      return statements.map(() => ({ rows: [], rowsAffected }) as SqlResult)
-    },
-  }
-  return { captured, executor }
-}
-
-const winCas = () =>
-  db
-    .updateTable('runs')
-    .set({
-      state: 'completed',
-      completed_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-    .where('run_id', '=', 'r1')
-    .where('state', '=', 'running')
-
-function withCas(b: FencedBatch = batch()): FencedBatch {
-  return b.casTree('win', statement(winCas()))
-}
-
-/** Tasks owned by the run this batch's compare-and-set stamped. */
-const taskFollowOn = () =>
-  db
-    .updateTable('tasks')
-    .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
-    .where((eb) =>
-      eb(
-        'task_id',
-        'in',
-        eb
-          .selectFrom('runs as f')
-          .select('f.task_id')
-          .where('f.run_id', '=', 'r1')
-          .where('f.fence_stamp', '=', fenceValue('win')),
-      ),
-    )
-
-const followOn = (builder: Builder) => withCas().followOnTree('task', statement(builder), 'one')
-
 describe('FencedBatch tree statements', () => {
   it('compiles a compare-and-set and a gated follow-on with every token bound', async () => {
     const { captured, executor } = capturingExecutor(1)
@@ -199,10 +157,67 @@ describe('FencedBatch tree statements', () => {
       taskFollowOn().set({ first_started_at_ms: nowValue }),
       taskFollowOn().set({ first_started_at_ms: value<number>(CLOCK) }),
       taskFollowOn().set({ first_started_at_ms: value<number>(`unixepoch('subsec')*1000`) }),
-      taskFollowOn().set((eb) => ({ first_started_at_ms: eb.fn<number>('unixepoch', []) })),
       taskFollowOn().set({ first_started_at_ms: value<number>('$NOW$ + ?', [5]) }),
     ]
     for (const spelling of spellings) expect(() => followOn(spelling)).toThrow(/reads the clock/)
+  })
+
+  it('refuses a clock no spelling list names: a function the grammar does not list, and a date function with no argument', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: the builder's types would not let a test call these by name
+    const started = (at: (eb: any) => unknown) =>
+      // biome-ignore lint/suspicious/noExplicitAny: as above
+      followOn((taskFollowOn() as any).set((eb: any) => ({ first_started_at_ms: at(eb) })))
+    // SQLite reads a date function with no argument as the current time, MySQL has
+    // UNIX_TIMESTAMP(), and CURRENT_DATE is a call in MySQL. None is in the list of clock
+    // functions, and a list cannot name the next one, so a tree statement calls only the
+    // functions the grammar lists.
+    const unlisted = /a call of \w+, which the grammar does not list/
+    for (const name of [
+      'current_date',
+      'current_time',
+      'datetime',
+      'date',
+      'time',
+      'unix_timestamp',
+    ]) {
+      expect(() => started((eb) => eb.fn(name, [])), name).toThrow(unlisted)
+    }
+    expect(() => started((eb) => eb.fn('datetime', [eb.val('now')]))).toThrow(unlisted)
+    expect(() => started((eb) => eb.fn('UNIXEPOCH', []))).toThrow(unlisted)
+    expect(() => started((eb) => eb.fn.agg('now'))).toThrow(
+      /an aggregate call of now, which the grammar does not list/,
+    )
+    expect(() => started((eb) => eb.fn.coalesce('first_started_at_ms', eb.val(5)))).not.toThrow()
+    // A fragment is text, so the spelling list is all that reads it.
+    for (const text of ['datetime()', 'date()', 'time( )', 'unix_timestamp()', 'DATETIME()']) {
+      expect(
+        () => followOn(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+        text,
+      ).toThrow(/reads the clock/)
+    }
+    // A date function of a stored column reads no clock.
+    expect(() =>
+      followOn(taskFollowOn().set({ first_started_at_ms: value<number>('date(created_at_ms)') })),
+    ).not.toThrow()
+  })
+
+  it("refuses the literal 'now' in a fragment, whatever function takes it", () => {
+    // SQLite's timediff('now', …) and PostgreSQL's 'now' cast to a timestamp both read the
+    // clock, and neither is a date function of 'now', which is what the list named.
+    for (const text of [
+      "timediff('now', '2000-01-01')",
+      "CAST('now' AS timestamptz)",
+      "strftime('%Y', ' NOW ')",
+    ]) {
+      expect(
+        () => followOn(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+        text,
+      ).toThrow(/reads the clock/)
+    }
+    // A literal that merely contains the word reads no clock.
+    expect(() =>
+      followOn(taskFollowOn().set({ last_attempt_run: value<string>("'not now'") })),
+    ).not.toThrow()
   })
 
   it('lets a compare-and-set carry the batch clock in a fragment, and no other clock', () => {
@@ -518,7 +533,7 @@ describe('FencedBatch tree statements', () => {
       ).not.toThrow()
       expect(() =>
         followOn(gatedBy((eb) => eb.fn('count', [eb.ref('f.run_id' as never)]).as('n'))),
-      ).toThrow(/fence/)
+      ).toThrow(/a call of count, which the grammar does not list/)
       expect(() => followOn(gatedBy(() => aliasedAs(value<number>('COUNT(*)'), 'n')))).toThrow(
         /fence/,
       )
@@ -920,16 +935,6 @@ describe('FencedBatch tree statements', () => {
     })
   })
 
-  const eventInsert = () =>
-    db.insertInto('events').values({
-      queue: 'q',
-      event_name: 'e',
-      payload: 'p',
-      emitted_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-
   it('stamps an inserting compare-and-set by position, and keeps a preserved instant on conflict', async () => {
     const upsert = eventInsert().onConflict((conflict) =>
       conflict
@@ -986,18 +991,6 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(conflict('none')))).toThrow(
       /must preserve events.emitted_at_ms while re-stamping/,
     )
-    const waitInsert = () =>
-      db.insertInto('waits').values({
-        run_id: 'r1',
-        step_name: 's',
-        queue: 'q',
-        task_id: 't1',
-        event_name: 'e',
-        status: 'waiting',
-        created_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      })
     const silentUpsert = waitInsert().onConflict((oc) =>
       oc.columns(['run_id', 'step_name']).doUpdateSet({ status: 'waiting' }),
     )
@@ -1009,18 +1002,6 @@ describe('FencedBatch tree statements', () => {
     )
     expect(() => batch().casTree('register', statement(leaveAlone))).not.toThrow()
   })
-
-  const WAIT_COLUMNS = [
-    'run_id',
-    'step_name',
-    'queue',
-    'task_id',
-    'event_name',
-    'status',
-    'created_at_ms',
-    'fence_stamp',
-    'fence_at_ms',
-  ] as const
 
   it('refuses an INSERT … SELECT whose star selection shifts the provenance positions', () => {
     // The star is one selection and many columns, so the stamp read at selection 1
@@ -1170,23 +1151,6 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
   })
 
-  const taskInsert = () =>
-    db.insertInto('tasks').values({
-      task_id: 't1',
-      queue: 'q',
-      task_name: 'job',
-      params: '{}',
-      retry_strategy: '{}',
-      max_attempts: 1,
-      state: 'pending',
-      attempts: 0,
-      infra_retries: 0,
-      enqueue_at_ms: nowValue,
-      created_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-
   it('allows a conflict target narrowed by a partial-index predicate, and no other kind of target', async () => {
     const partial = taskInsert().onConflict((conflict) =>
       conflict
@@ -1229,121 +1193,11 @@ describe('FencedBatch tree statements', () => {
   })
   it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
     // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
-    const unguarded = db
-      .insertInto('waits')
-      .columns([...WAIT_COLUMNS])
-      .expression(
-        db
-          .selectFrom('runs')
-          .select((eb) => [
-            eb.ref('runs.run_id').as('run_id'),
-            eb.val('s').as('step_name'),
-            eb.ref('runs.queue').as('queue'),
-            eb.ref('runs.task_id').as('task_id'),
-            eb.val('e').as('event_name'),
-            eb.val('waiting').as('status'),
-            aliasedAs(nowValue, 'created_at_ms'),
-            aliasedAs(stampValue, 'fence_stamp'),
-            aliasedAs(nowValue, 'fence_at_ms'),
-          ]),
-      )
-      .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
+    const unguarded = unguardedWaitInsert()
     expect(() => batch().casTree('register', statement(unguarded))).toThrow(/needs a WHERE/)
   })
 
   describe('a follow-on that inserts', () => {
-    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
-    type Loose = any
-    const loose = compileOnlyBuilder<Loose>()
-    const key = (eb: Loose) => eb('f.run_id', '=', 'r1')
-    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
-    const either = (eb: Loose) => eb.or([key(eb), gate(eb)])
-    const joined = (select: Loose) => select.innerJoin('tasks as t', 't.task_id', 'f.task_id')
-
-    /** A successor run, selected from the run this batch's compare-and-set stamped. */
-    const successor = (
-      shape: {
-        from?: (select: Loose) => Loose
-        task?: (eb: Loose) => Loose
-        stamp?: Loose
-        instant?: (eb: Loose) => Loose
-        where?: (eb: Loose) => Loose
-      } = {},
-    ) => {
-      const from = loose.selectFrom('runs as f')
-      return loose
-        .insertInto('runs')
-        .columns(['run_id', 'queue', 'task_id', 'fence_stamp', 'fence_at_ms'])
-        .expression(
-          (shape.from?.(from) ?? from)
-            .select((eb: Loose) => [
-              eb.val('r2').as('run_id'),
-              eb.ref('f.queue').as('queue'),
-              aliasedAs(shape.task?.(eb) ?? eb.ref('f.task_id'), 'task_id'),
-              aliasedAs(shape.stamp ?? stampValue, 'fence_stamp'),
-              aliasedAs(shape.instant?.(eb) ?? eb.ref('f.fence_at_ms'), 'fence_at_ms'),
-            ])
-            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
-        )
-    }
-
-    /** A checkpoint written from the fenced run. Checkpoints carry no provenance. */
-    const checkpoint = (
-      shape: {
-        where?: (eb: Loose) => Loose
-        owner?: (eb: Loose) => Loose
-        updatedAt?: (eb: Loose) => Loose
-      } = {},
-    ) => {
-      const insert = loose
-        .insertInto('checkpoints')
-        .columns(['task_id', 'owner_attempt', 'updated_at_ms'])
-        .expression(
-          loose
-            .selectFrom('runs as f')
-            .select((eb: Loose) => [
-              eb.ref('f.task_id').as('task_id'),
-              eb.ref('f.attempt').as('owner_attempt'),
-              aliasedAs(shape.updatedAt?.(eb) ?? eb.ref('f.fence_at_ms'), 'updated_at_ms'),
-            ])
-            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
-        )
-      const owner = shape.owner
-      return owner === undefined
-        ? insert
-        : insert.onConflict((conflict: Loose) =>
-            conflict
-              .columns(['task_id'])
-              .doUpdateSet((eb: Loose) => ({ owner_attempt: owner(eb) })),
-          )
-    }
-
-    /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
-    const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
-      loose
-        .insertInto('events')
-        .columns([
-          'queue',
-          'event_name',
-          'payload',
-          ...(emitted === null ? [] : ['emitted_at_ms']),
-          'fence_stamp',
-          'fence_at_ms',
-        ])
-        .expression(
-          loose
-            .selectFrom('runs as f')
-            .select((eb: Loose) => [
-              eb.ref('f.queue').as('queue'),
-              eb.val('e').as('event_name'),
-              eb.val('p').as('payload'),
-              ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
-              aliasedAs(stampValue, 'fence_stamp'),
-              eb.ref('f.fence_at_ms').as('fence_at_ms'),
-            ])
-            .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
-        )
-
     const refused = (builder: Builder, why: RegExp) => expect(() => followOn(builder)).toThrow(why)
 
     it('inserts a stamped row selected from the fenced row, and later statements fence on it', async () => {
@@ -1448,7 +1302,7 @@ describe('FencedBatch tree statements', () => {
     it('selects plain columns and values, so no row appears that the fence did not match', () => {
       const plain = /must select plain columns and values/
       refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
-      refused(successor({ task: (eb) => eb.fn('upper', [eb.ref('f.task_id')]) }), plain)
+      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), plain)
       refused(
         successor({
           from: (select) => select.having((eb: Loose) => eb(eb.fn.countAll(), '>=', 0)),
@@ -1656,20 +1510,6 @@ describe('FencedBatch tree statements', () => {
   })
 
   it('ties a subquery gate to the fenced source, and lets nothing widen it', () => {
-    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
-    type Loose = any
-    const loose = compileOnlyBuilder<Loose>()
-    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
-    const tasks = (where: (eb: Loose) => Loose) =>
-      loose
-        .updateTable('tasks')
-        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
-        .where(where)
-    const keyIn = (keys: (eb: Loose) => Loose) => tasks((eb) => eb('task_id', 'in', keys(eb)))
-    const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
-    const widened = (eb: Loose) => eb.selectFrom(['runs as f', 'tasks as t2']).where(gate)
-    const throughDerived = (inner: (eb: Loose) => Loose) =>
-      keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
     const shapes: { shape: string; query: Builder; tied: boolean }[] = [
       {
         shape: 'IN selects a column of the fenced source',
@@ -1715,14 +1555,14 @@ describe('FencedBatch tree statements', () => {
       },
       {
         shape: 'EXISTS equates the fenced source with the outer row',
-        query: tasks((eb) =>
+        query: tasksWhere((eb) =>
           eb.exists(fenced(eb).select('f.run_id').whereRef('f.task_id', '=', 'tasks.task_id')),
         ),
         tied: true,
       },
       {
         shape: 'EXISTS equates a second inner source with the outer row',
-        query: tasks((eb) =>
+        query: tasksWhere((eb) =>
           eb.exists(widened(eb).select('f.run_id').whereRef('t2.task_id', '=', 'tasks.task_id')),
         ),
         tied: false,

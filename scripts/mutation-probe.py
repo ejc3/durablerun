@@ -650,6 +650,1591 @@ MUTATION_SPECS = [
         "the event upsert primitive accepts the current statement instant",
     ),
     (
+        # The tree path's own mutations. Each removes one condition of a rule that reads a
+        # statement tree, and each has one test in fenced-batch-tree-verdicts.test.ts or in
+        # sql-tree-verdicts.test.ts. The text-path entries above that hold the same rules are
+        # retired with the text path.
+        "tree-cas-writes-fenced-table",
+        "packages/core/src/fenced-batch.ts",
+        "    if (isCas && stamped === null) {",
+        "    if (false && isCas && stamped === null) {",
+        "a tree compare-and-set may write a table that carries no provenance",
+    ),
+    (
+        "tree-cas-update-stamp",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!stamp.stamp || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "      if ((!isCas && !stamp.stamp) || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "a tree compare-and-set may update its table without the stamp",
+    ),
+    (
+        "tree-cas-update-clock-instant",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!stamp.stamp || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "      if (!stamp.stamp || (isCas ? false : !stamp.instant)) {",
+        "a tree compare-and-set may take its instant from something other than the clock",
+    ),
+    (
+        "tree-followon-update-stamp",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!stamp.stamp || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "      if ((isCas && !stamp.stamp) || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "a tree follow-on may write a fenced table without stamping it",
+    ),
+    (
+        "tree-followon-update-instant",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!stamp.stamp || (isCas ? !stamp.clockInstant : !stamp.instant)) {",
+        "      if (!stamp.stamp || (isCas ? !stamp.clockInstant : false)) {",
+        "a tree follow-on may stamp a fenced table and leave its instant stale",
+    ),
+    (
+        "tree-stamp-assigned-once",
+        "packages/core/src/sql-tree.ts",
+        "    stamp: tokenOf(only(assigned('fence_stamp'))?.value)?.kind === 'stamp',",
+        "    stamp: tokenOf(assigned('fence_stamp')[0]?.value)?.kind === 'stamp',",
+        "a second assignment may overwrite the stamp a tree statement writes",
+    ),
+    (
+        "tree-positive-fence-required",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!open && gates.length === 0) {",
+        "      if (false && !open && gates.length === 0) {",
+        "a tree follow-on may run with no fence at all",
+    ),
+    (
+        "tree-top-level-or-reach",
+        "packages/core/src/sql-tree.ts",
+        "  return AndNode.is(node) ? [...conjuncts(node.left), ...conjuncts(node.right)] : [node]",
+        "  return AndNode.is(node) || OrNode.is(node)\n"
+        "    ? [...conjuncts(node.left), ...conjuncts(node.right)]\n"
+        "    : [node]",
+        "a top-level OR lets a tree follow-on write rows that did not satisfy its fence",
+    ),
+    (
+        "tree-fence-equality-operator",
+        "packages/core/src/sql-tree.ts",
+        "  if (!BinaryOperationNode.is(node) || operatorName(node.operator) !== '=') return null",
+        "  if (!BinaryOperationNode.is(node)) return null",
+        "a fence on the right-hand side of IS NOT is mistaken for positive authority in a tree",
+    ),
+    (
+        "tree-fence-equality-column",
+        "packages/core/src/sql-tree.ts",
+        "    if (!ReferenceNode.is(reference) || columnName(reference.column) !== 'fence_stamp') continue",
+        "    if (!ReferenceNode.is(reference)) continue",
+        "a fence compared with any column counts as a gate",
+    ),
+    (
+        "tree-fence-equality-ambiguous-source",
+        "packages/core/src/sql-tree.ts",
+        "        : scope.length === 1\n"
+        "          ? scope[0]\n"
+        "          : undefined",
+        "        : scope.length >= 1\n"
+        "          ? scope[0]\n"
+        "          : undefined",
+        "an unqualified stamp among two sources is read as the first source's",
+    ),
+    (
+        "tree-gate-not-in",
+        "packages/core/src/sql-tree.ts",
+        "  if (BinaryOperationNode.is(node) && operatorName(node.operator) === 'in') {",
+        "  if (\n"
+        "    BinaryOperationNode.is(node) &&\n"
+        "    (operatorName(node.operator) === 'in' || operatorName(node.operator) === 'not in')\n"
+        "  ) {",
+        "a row required to be absent from the fenced keys counts as gated",
+    ),
+    (
+        "tree-raw-fence-token-check",
+        "packages/core/src/fenced-batch.ts",
+        "    for (const fence of compiled.fences) {",
+        "    for (const fence of [] as string[]) {",
+        "a fence token naming nothing compiles to a dead filter in a tree",
+    ),
+    (
+        "tree-tail-must-select",
+        "packages/core/src/fenced-batch.ts",
+        "      if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)",
+        "      void 0 // MUTATION",
+        "a tree tail may write",
+    ),
+    (
+        "tree-open-tail-reason",
+        "packages/core/src/fenced-batch.ts",
+        "    if (reason.trim() === '') {\n"
+        "      throw new Error(`FencedBatch[${this.label}] openTail '${name}' needs a reason`)\n"
+        "    }\n"
+        "    return this.addTree('openTail'",
+        "    return this.addTree('openTail'",
+        "an open tree tail may skip the gate without saying why",
+    ),
+    (
+        "tree-open-tail-table-check",
+        "packages/core/src/fenced-batch.ts",
+        "      for (const gate of positional) {",
+        "      for (const gate of positional.filter(() => !open)) {",
+        "an open tail skips the table check along with the gate",
+    ),
+    (
+        "tree-gate-subquery-may-return-no-row",
+        "packages/core/src/sql-tree.ts",
+        "          if (!mayReturnNoRow(subquery)) return []",
+        "          if (false && !mayReturnNoRow(subquery)) return []",
+        "a subquery that returns a row whatever it matched counts as a gate",
+    ),
+    (
+        "tree-no-row-having",
+        "packages/core/src/sql-tree.ts",
+        "  if (select.having !== undefined) return false",
+        "  if (false && select.having !== undefined) return false",
+        "an ungrouped HAVING makes a gating subquery return a row always",
+    ),
+    (
+        "tree-no-row-aggregate",
+        "packages/core/src/sql-tree.ts",
+        "        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node) || RawNode.is(node),",
+        "        (node) => FunctionNode.is(node) || RawNode.is(node),",
+        "an aggregate node makes a gating subquery return a row always",
+    ),
+    (
+        "tree-no-row-function",
+        "packages/core/src/sql-tree.ts",
+        "        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node) || RawNode.is(node),",
+        "        (node) => AggregateFunctionNode.is(node) || RawNode.is(node),",
+        "an aggregate called as a function node makes a gating subquery return a row always",
+    ),
+    (
+        "tree-no-row-raw",
+        "packages/core/src/sql-tree.ts",
+        "        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node) || RawNode.is(node),",
+        "        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node),",
+        "an aggregate spelled in a fragment makes a gating subquery return a row always",
+    ),
+    (
+        "tree-derived-gate-may-return-no-row",
+        "packages/core/src/sql-tree.ts",
+        "  return inner !== null && mayReturnNoRow(inner) ? gatingFences(inner) : []",
+        "  return inner !== null ? gatingFences(inner) : []",
+        "a derived table that returns a row whatever it matched counts as a gate",
+    ),
+    (
+        "tree-gate-counts-only-tied",
+        "packages/core/src/fenced-batch.ts",
+        "      const gates = positional.filter((gate) => gate.tied)",
+        "      const gates = positional.filter(() => true)",
+        "a gate that proves only that the batch won lets a follow-on write every row",
+    ),
+    (
+        "tree-gate-requires-tie",
+        "packages/core/src/sql-tree.ts",
+        "          return gatingFences(subquery).map((gate) => ({ ...gate, tied: gate.tied && tied }))",
+        "          return gatingFences(subquery).map((gate) => ({ ...gate, tied: gate.tied }))",
+        "a fence inside an untied subquery is reported as tied",
+    ),
+    (
+        "tree-one-source-froms",
+        "packages/core/src/sql-tree.ts",
+        "  return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null",
+        "  return only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null",
+        "a second FROM source beside the fenced one can supply rows to a gating subquery",
+    ),
+    (
+        "tree-one-source-joins",
+        "packages/core/src/sql-tree.ts",
+        "  return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null",
+        "  return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) >= 0 ? only : null",
+        "a joined source can supply rows to a gating subquery",
+    ),
+    (
+        "tree-tie-in-left-column",
+        "packages/core/src/sql-tree.ts",
+        "      ReferenceNode.is(unwrapParens(conjunct.leftOperand)) &&\n"
+        "      selectedSourceColumn(subquery) !== null",
+        "      selectedSourceColumn(subquery) !== null",
+        "IN with a value on its left ties nothing to the row",
+    ),
+    (
+        "tree-tie-in-selects-source-column",
+        "packages/core/src/sql-tree.ts",
+        "      ReferenceNode.is(unwrapParens(conjunct.leftOperand)) &&\n"
+        "      selectedSourceColumn(subquery) !== null",
+        "      ReferenceNode.is(unwrapParens(conjunct.leftOperand))",
+        "IN over a key the caller binds reaches a row the fenced row does not own",
+    ),
+    (
+        "tree-tie-in-one-selection",
+        "packages/core/src/sql-tree.ts",
+        "  if (source === null || selections.length !== 1 || only === undefined) return null",
+        "  if (source === null || only === undefined) return null",
+        "an IN subquery that selects two things is read by its first",
+    ),
+    (
+        "tree-tie-in-plain-column",
+        "packages/core/src/sql-tree.ts",
+        "  if (!ReferenceNode.is(selection)) return null\n",
+        "  if (!ReferenceNode.is(selection)) return 'key'\n",
+        "an expression or a bound value counts as a key of the fenced source",
+    ),
+    (
+        "tree-tie-in-source-qualifier",
+        "packages/core/src/sql-tree.ts",
+        "  if (qualifier !== undefined && qualifier !== sourceName) return null",
+        "  if (false && qualifier !== undefined && qualifier !== sourceName) return null",
+        "a column of the outer row, which every row satisfies, counts as a key of the fenced source",
+    ),
+    (
+        "tree-tie-in-derived-column",
+        "packages/core/src/sql-tree.ts",
+        "  if (derived !== null && selectedSourceColumn(derived) !== column) return null",
+        "  if (false && derived !== null && selectedSourceColumn(derived) !== column) return null",
+        "a derived table may hand IN a key that is not a column of the fenced source",
+    ),
+    (
+        "tree-tie-exists-one-source",
+        "packages/core/src/sql-tree.ts",
+        "  if (source === null) return false\n"
+        "  if (BinaryOperationNode.is(conjunct)) {",
+        "  if (false && source === null) return false\n"
+        "  if (BinaryOperationNode.is(conjunct)) {",
+        "a second source inside EXISTS can carry the tie in place of the fenced one",
+    ),
+    (
+        "tree-tie-exists-equality",
+        "packages/core/src/sql-tree.ts",
+        "    if (!BinaryOperationNode.is(candidate) || operatorName(candidate.operator) !== '=') {",
+        "    if (!BinaryOperationNode.is(candidate)) {",
+        "an inequality between the fenced source and the outer row counts as a tie",
+    ),
+    (
+        "tree-tie-exists-shadowed-outer",
+        "packages/core/src/sql-tree.ts",
+        "    name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)",
+        "    name !== null && outer.some((candidate) => candidate.name === name)",
+        "a name the subquery shadows is read as the outer row",
+    ),
+    (
+        "tree-followon-insert-plain",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!following.plain) {",
+        "      if (false && !following.plain) {",
+        "a follow-on insert may write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-no-having",
+        "packages/core/src/sql-tree.ts",
+        "      select.having === undefined &&\n",
+        "",
+        "a HAVING lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-no-aggregate",
+        "packages/core/src/sql-tree.ts",
+        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
+        "        someNode(selection, (node) => FunctionNode.is(node)),",
+        "an aggregate lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-no-function",
+        "packages/core/src/sql-tree.ts",
+        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
+        "        someNode(selection, (node) => AggregateFunctionNode.is(node)),",
+        "a function call lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-alone",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!following.alone) {",
+        "      if (false && !following.alone) {",
+        "a follow-on insert may write one row for every row of a second source",
+    ),
+    (
+        "tree-followon-insert-one-from",
+        "packages/core/src/sql-tree.ts",
+        "      froms.length === 1 &&\n"
+        "      (fenced.length === 0",
+        "      (fenced.length === 0",
+        "a second FROM item multiplies what a follow-on inserts",
+    ),
+    (
+        "tree-followon-insert-from-is-fenced",
+        "packages/core/src/sql-tree.ts",
+        "      (fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&\n",
+        "",
+        "a follow-on insert may read another table that the fenced row only joins",
+    ),
+    (
+        "tree-followon-insert-join-on",
+        "packages/core/src/sql-tree.ts",
+        "      (select.joins ?? []).every((join) => join.on !== undefined),",
+        "      (select.joins ?? []).every((join) => join.on !== undefined || true),",
+        "a join with no ON multiplies what a follow-on inserts",
+    ),
+    (
+        "tree-followon-insert-stamp",
+        "packages/core/src/fenced-batch.ts",
+        "        (!following.stamp || !following.fencedInstants.includes('fence_at_ms'))",
+        "        !following.fencedInstants.includes('fence_at_ms')",
+        "a follow-on may insert into a fenced table without the stamp",
+    ),
+    (
+        "tree-followon-insert-instant",
+        "packages/core/src/fenced-batch.ts",
+        "        (!following.stamp || !following.fencedInstants.includes('fence_at_ms'))",
+        "        !following.stamp",
+        "a follow-on may insert an instant that is not the fenced row's",
+    ),
+    (
+        "tree-followon-insert-instant-column",
+        "packages/core/src/sql-tree.ts",
+        "      columnName(instant.column) === 'fence_at_ms' &&\n",
+        "",
+        "a follow-on insert may take its instant from any column of the fenced row",
+    ),
+    (
+        "tree-followon-insert-instant-fenced-source",
+        "packages/core/src/sql-tree.ts",
+        "      qualifier !== undefined &&\n"
+        "      fenced.includes(qualifier)",
+        "      qualifier !== undefined",
+        "a follow-on insert may take its instant from a row no fence gates",
+    ),
+    (
+        "tree-followon-insert-instant-ambiguous",
+        "packages/core/src/sql-tree.ts",
+        "      instant.table?.table.identifier.name ?? (scope.length === 1 ? scope[0]?.name : undefined)",
+        "      instant.table?.table.identifier.name ?? (scope.length >= 1 ? scope[0]?.name : undefined)",
+        "an unqualified instant among two sources is read as the first source's",
+    ),
+    (
+        "tree-followon-insert-preserved-instant",
+        "packages/core/src/fenced-batch.ts",
+        "      if (preservedInstant !== undefined && !following.fencedInstants.includes(preservedInstant)) {",
+        "      if (false && preservedInstant !== undefined) {",
+        "a follow-on may insert a preserved first instant the caller chose",
+    ),
+    (
+        "tree-followon-insert-no-conflict",
+        "packages/core/src/fenced-batch.ts",
+        "      if (stamped !== null && following.conflict) {",
+        "      if (false && stamped !== null && following.conflict) {",
+        "a follow-on insert may pass over a foreign row in silence",
+    ),
+    (
+        "tree-cas-insert-stamp",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!inserted.stamp || !inserted.clockInstant) {",
+        "      if (!inserted.clockInstant) {",
+        "an inserting compare-and-set may leave its row unstamped",
+    ),
+    (
+        "tree-cas-insert-clock-instant",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!inserted.stamp || !inserted.clockInstant) {",
+        "      if (!inserted.stamp) {",
+        "an inserting compare-and-set may take its instant from something other than the clock",
+    ),
+    (
+        "tree-cas-insert-preserved-clock",
+        "packages/core/src/fenced-batch.ts",
+        "      if (column !== undefined && !inserted.clockColumns.includes(column)) {",
+        "      if (false && column !== undefined) {",
+        "an inserting compare-and-set may bind a preserved first instant",
+    ),
+    (
+        "tree-event-upsert-requires-preserved-instant",
+        "packages/core/src/fenced-batch.ts",
+        "            : copied?.table === stamped && copied.column === column",
+        "            : (copied?.table === stamped && copied.column === column) ||\n"
+        "              inserted.conflict.clockInstant",
+        "the event upsert tree accepts the current statement instant",
+    ),
+    (
+        "tree-upsert-preserved-instant-table",
+        "packages/core/src/fenced-batch.ts",
+        "            : copied?.table === stamped && copied.column === column",
+        "            : copied?.column === column",
+        "an upsert may copy the preserved instant from the incoming row",
+    ),
+    (
+        "tree-upsert-preserved-instant-column",
+        "packages/core/src/fenced-batch.ts",
+        "            : copied?.table === stamped && copied.column === column",
+        "            : copied?.table === stamped",
+        "an upsert may copy another column in place of the preserved instant",
+    ),
+    (
+        "tree-upsert-restamps",
+        "packages/core/src/fenced-batch.ts",
+        "        if (!inserted.conflict.stamp || !instant) {",
+        "        if (!instant) {",
+        "an upsert may leave the conflicting row's stamp alone",
+    ),
+    (
+        "tree-upsert-restamps-instant",
+        "packages/core/src/fenced-batch.ts",
+        "        if (!inserted.conflict.stamp || !instant) {",
+        "        if (!inserted.conflict.stamp) {",
+        "an upsert may re-stamp a row and leave its instant stale",
+    ),
+    (
+        "tree-upsert-preserved-fact-columns",
+        "packages/core/src/fenced-batch.ts",
+        "          inserted.conflict.columns.some((name) => name === null || !provenance.includes(name))",
+        "          false",
+        "an upsert may overwrite the preserved fact it re-stamps",
+    ),
+    (
+        "tree-counting-arithmetic",
+        "packages/core/src/sql-tree.ts",
+        "      if (arithmetic) return [{ column, how: 'arithmetic' }]",
+        "      if (false && arithmetic) return [{ column, how: 'arithmetic' }]",
+        "a tree follow-on may bump a counter that a replay bumps again",
+    ),
+    (
+        "tree-counting-raw-fragment",
+        "packages/core/src/sql-tree.ts",
+        "      return raw ? [{ column, how: 'raw' }] : []",
+        "      return false && raw ? [{ column, how: 'raw' }] : []",
+        "a fragment may hide a count on the column a follow-on assigns",
+    ),
+    (
+        "tree-counting-reads-conflict-arm",
+        "packages/core/src/sql-tree.ts",
+        "  if (InsertQueryNode.is(query)) return query.onConflict?.updates ?? []",
+        "  if (InsertQueryNode.is(query)) return (query.onConflict?.updates ?? []).slice(0, 0)",
+        "a follow-on insert may count in its conflict arm",
+    ),
+    (
+        "tree-counting-excluded-is-incoming",
+        "packages/core/src/sql-tree.ts",
+        "    incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)",
+        "    false && referenceQualifier(node) === incoming ? null : referencedColumn(node)",
+        "a count from the incoming row is refused as a count on the written row",
+    ),
+    (
+        "tree-counting-excluded-in-fragment",
+        "packages/core/src/sql-tree.ts",
+        "        incoming === null\n"
+        "          ? text",
+        "        incoming !== undefined\n"
+        "          ? text",
+        "a fragment's read of the incoming row is refused as a read of the written row",
+    ),
+    (
+        "tree-clock-ban-token-in-followon",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && spelledClock) {",
+        "a tree follow-on may resolve the clock token a second time",
+    ),
+    (
+        "tree-clock-spelling-in-fragment",
+        "packages/core/src/fenced-batch.ts",
+        "      CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
+        "      false && CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
+        "a tree follow-on may embed a dialect clock expression in a fragment",
+    ),
+    (
+        "tree-cas-second-clock",
+        "packages/core/src/fenced-batch.ts",
+        "    if (spelledClock) {",
+        "    if (false && spelledClock) {",
+        "a tree compare-and-set may read a second clock beside the batch's",
+    ),
+    (
+        "tree-statement-defined",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isDefinedStatement(statement)) {",
+        "    if (false && !isDefinedStatement(statement)) {",
+        "a batch takes a tree that defineStatement never checked for undefined binds",
+    ),
+    (
+        "tree-statement-grammar",
+        "packages/core/src/fenced-batch.ts",
+        "    if (grammar !== null) {",
+        "    if (false && grammar !== null) {",
+        "a tree outside the closed statement grammar reaches the checks that cannot read it",
+    ),
+    (
+        "tree-raw-fragment-problems-read",
+        "packages/core/src/fenced-batch.ts",
+        "    if (rawProblem !== null) throw new Error(`${at} holds ${rawProblem}`)",
+        "    void rawProblem // MUTATION",
+        "a batch stops reading the problems of its raw fragments",
+    ),
+    (
+        "tree-raw-fragment-placed-once",
+        "packages/core/src/sql-tree.ts",
+        "        else if (placed.includes(child))\n"
+        "          problem = 'a fragment placed twice: call rawSql once for each place'\n",
+        "",
+        "one fragment node may stand in two places of a tree",
+    ),
+    (
+        "tree-raw-fragment-role",
+        "packages/core/src/sql-tree.ts",
+        "        else if (role !== position) problem = `a '${role}' fragment standing as a ${position}`\n",
+        "",
+        "a fragment may stand outside the role it was parsed for",
+    ),
+    (
+        "tree-value-fragment-parens",
+        "packages/core/src/sql-tree.ts",
+        "  return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))",
+        "  return nodeExpression<T>(role === 'predicate' ? ParensNode.create(raw) : raw)",
+        "a value fragment compiles bare, so an operator around it rebinds what it computes",
+    ),
+    (
+        "tree-bind-placeholder-count",
+        "packages/core/src/fenced-batch.ts",
+        "    if (compiled.placeholders !== compiled.parameters.length) {",
+        "    if (false && compiled.placeholders !== compiled.parameters.length) {",
+        "a tree statement with a placeholder no argument binds bypasses the compiler bind-count check",
+    ),
+    (
+        "tree-bind-placeholder-count-brand",
+        "packages/core/src/fenced-batch.ts",
+        "      throw bindCompilationError(\n"
+        "        `${at} compiles to ${compiled.placeholders} placeholders",
+        "      throw new TrustedTypeError(\n"
+        "        `${at} compiles to ${compiled.placeholders} placeholders",
+        "the tree bind-count failure bypasses the authenticated compiler-error factory",
+    ),
+    (
+        "tree-bind-argument-type",
+        "packages/core/src/fenced-batch.ts",
+        "        value instanceof Uint8Array\n"
+        "      ) {",
+        "        value instanceof Uint8Array ||\n"
+        "        index >= 0\n"
+        "      ) {",
+        "a tree statement hands the driver an argument it cannot bind",
+    ),
+    (
+        "tree-bind-argument-type-brand",
+        "packages/core/src/fenced-batch.ts",
+        "      throw bindCompilationError(\n"
+        "        `${at} argument ${index} is",
+        "      throw new TrustedTypeError(\n"
+        "        `${at} argument ${index} is",
+        "the tree argument-type failure bypasses the authenticated compiler-error factory",
+    ),
+    (
+        # Added by the review of the first eighty: the conditions a line map of every find
+        # showed no mutation touched. A spelling list has one entry for each spelling.
+        "tree-clock-text-in-followon",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && (spelledClock || compiled.readsClock)) {",
+        "a tree follow-on may carry the batch clock's own text in a fragment",
+    ),
+    (
+        "tree-gate-inner-tie-carried",
+        "packages/core/src/sql-tree.ts",
+        "({ ...gate, tied: gate.tied && tied }))",
+        "({ ...gate, tied }))",
+        "an untied subquery nested inside a tied one is reported as tied",
+    ),
+    (
+        "tree-gate-exists-operator",
+        "packages/core/src/sql-tree.ts",
+        "  if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {\n"
+        "    return unwrapParens(node.operand)\n"
+        "  }\n"
+        "  if (BinaryOperationNode.is(node) && operatorName(node.operator) === 'in') {",
+        "  if (UnaryOperationNode.is(node)) {\n"
+        "    return unwrapParens(node.operand)\n"
+        "  }\n"
+        "  if (BinaryOperationNode.is(node) && operatorName(node.operator) === 'in') {",
+        "a row required to have NO fenced row counts as gated",
+    ),
+    (
+        "tree-statement-kind",
+        "packages/core/src/fenced-batch.ts",
+        "    } else if (\n"
+        "      tree.kind !== 'UpdateQueryNode' &&",
+        "    } else if (\n"
+        "      false &&\n"
+        "      tree.kind !== 'UpdateQueryNode' &&",
+        "a tree follow-on may be a SELECT",
+    ),
+    (
+        "tree-cas-refuses-delete",
+        "packages/core/src/fenced-batch.ts",
+        "      (isCas || tree.kind !== 'DeleteQueryNode')",
+        "      tree.kind !== 'DeleteQueryNode'",
+        "a tree compare-and-set may be a DELETE, which stamps nothing",
+    ),
+    (
+        "tree-followon-instant-assigned-once",
+        "packages/core/src/sql-tree.ts",
+        "    instant: instants.length === 1,",
+        "    instant: instants.length >= 1,",
+        "a second assignment may overwrite the instant a tree follow-on writes",
+    ),
+    (
+        "tree-cas-instant-assigned-once",
+        "packages/core/src/sql-tree.ts",
+        "  const instant = only(instants)?.value",
+        "  const instant = instants[0]?.value",
+        "a second assignment may overwrite the clock a tree compare-and-set writes",
+    ),
+    (
+        "tree-clock-now-literal",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`'\\s*now\\s*'`,\n",
+        "",
+        "the literal 'now' goes unseen in a fragment, so any function that takes it reads the clock",
+    ),
+    (
+        "tree-grammar-function-list",
+        "packages/core/src/sql-tree.ts",
+        "    if (FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {",
+        "    if (false && FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {",
+        "a tree statement calls a function the grammar does not list, which is how a clock nobody listed gets in",
+    ),
+    (
+        "tree-grammar-function-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "!GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())",
+        "!GRAMMAR_FUNCTIONS.includes(node.func)",
+        "a listed function spelled in upper case is refused",
+    ),
+    (
+        "tree-grammar-aggregate-list",
+        "packages/core/src/sql-tree.ts",
+        "    if (AggregateFunctionNode.is(node) && !GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())) {",
+        "    if (false && AggregateFunctionNode.is(node) && !GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())) {",
+        "a tree statement calls an aggregate the grammar does not list",
+    ),
+    (
+        "tree-grammar-aggregate-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "!GRAMMAR_AGGREGATES.includes(node.func.toLowerCase())",
+        "!GRAMMAR_AGGREGATES.includes(node.func)",
+        "a listed aggregate spelled in upper case is refused",
+    ),
+    (
+        "tree-clock-spelling-case-fold",
+        "packages/core/src/sql-tree.ts",
+        "  ].join('|'),\n"
+        "  'i',\n"
+        ")",
+        "  ].join('|'),\n"
+        "  '',\n"
+        ")",
+        "a clock spelled in upper case in a fragment goes unseen",
+    ),
+    (
+        "tree-clock-spelling-call-arm",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:${CLOCK_FUNCTIONS.join('|')})\\s*\\(`,\n",
+        "    String.raw`(?!)`,\n",
+        "a clock function called in a fragment goes unseen",
+    ),
+    (
+        "tree-clock-spelling-keyword-arm",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,\n",
+        "    String.raw`(?!)`,\n",
+        "a bare clock keyword in a fragment goes unseen",
+    ),
+    (
+        "tree-clock-spelling-no-argument-arm",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,\n",
+        "    String.raw`(?!)`,\n",
+        "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-function-unixepoch",
+        "packages/core/src/sql-tree.ts",
+        "  'unixepoch',\n",
+        "",
+        "the clock function unixepoch goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-julianday",
+        "packages/core/src/sql-tree.ts",
+        "  'julianday',\n",
+        "",
+        "the clock function julianday goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-strftime",
+        "packages/core/src/sql-tree.ts",
+        "  'strftime',\n",
+        "",
+        "the clock function strftime goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-now",
+        "packages/core/src/sql-tree.ts",
+        "  'now',\n",
+        "",
+        "the clock function now goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-sysdate",
+        "packages/core/src/sql-tree.ts",
+        "  'sysdate',\n",
+        "",
+        "the clock function sysdate goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-clock-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "  'clock_timestamp',\n",
+        "",
+        "the clock function clock_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-statement-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "  'statement_timestamp',\n",
+        "",
+        "the clock function statement_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-transaction-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "  'transaction_timestamp',\n",
+        "",
+        "the clock function transaction_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-getdate",
+        "packages/core/src/sql-tree.ts",
+        "  'getdate',\n",
+        "",
+        "the clock function getdate goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-timeofday",
+        "packages/core/src/sql-tree.ts",
+        "  'timeofday',\n",
+        "",
+        "the clock function timeofday goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-curdate",
+        "packages/core/src/sql-tree.ts",
+        "  'curdate',\n",
+        "",
+        "the clock function curdate goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-curtime",
+        "packages/core/src/sql-tree.ts",
+        "  'curtime',\n",
+        "",
+        "the clock function curtime goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-unix-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "  'unix_timestamp',\n",
+        "",
+        "the clock function unix_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-keyword-current-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword current_timestamp goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-current-time",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword current_time goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-current-date",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword current_date goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-localtime",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword localtime goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-localtimestamp",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|utc_timestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword localtimestamp goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-utc-timestamp",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_date|utc_time)\\b`,",
+        "the bare clock keyword utc_timestamp goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-utc-date",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_time)\\b`,",
+        "the bare clock keyword utc_date goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-keyword-utc-time",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
+        "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date)\\b`,",
+        "the bare clock keyword utc_time goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-no-argument-datetime",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:date|time)\\s*\\(\\s*\\)`,",
+        "datetime() with no argument goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-no-argument-date",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:datetime|time)\\s*\\(\\s*\\)`,",
+        "date() with no argument goes unseen in a fragment",
+    ),
+    (
+        "tree-clock-no-argument-time",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:datetime|date)\\s*\\(\\s*\\)`,",
+        "time() with no argument goes unseen in a fragment",
+    ),
+    (
+        "tree-grammar-node-kind",
+        "packages/core/src/sql-tree.ts",
+        "    if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`",
+        "    if (false && !GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`",
+        "a node kind outside the closed grammar reaches the checks that cannot read it",
+    ),
+    (
+        "tree-grammar-update-below-root",
+        "packages/core/src/sql-tree.ts",
+        "      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))",
+        "      (DeleteQueryNode.is(node) || InsertQueryNode.is(node))",
+        "an UPDATE may stand below the root of a tree statement",
+    ),
+    (
+        "tree-grammar-delete-below-root",
+        "packages/core/src/sql-tree.ts",
+        "      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))",
+        "      (UpdateQueryNode.is(node) || InsertQueryNode.is(node))",
+        "a DELETE may stand below the root of a tree statement",
+    ),
+    (
+        "tree-grammar-insert-below-root",
+        "packages/core/src/sql-tree.ts",
+        "      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))",
+        "      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node))",
+        "an INSERT may stand below the root of a tree statement",
+    ),
+    (
+        "tree-grammar-node-fields",
+        "packages/core/src/sql-tree.ts",
+        "      if (extra !== undefined) return `${node.kind}.${extra[0]}`",
+        "      if (false && extra !== undefined) return `${node.kind}.${extra[0]}`",
+        "a query clause the grammar does not list rides in a tree statement",
+    ),
+    (
+        "tree-grammar-schema-qualified",
+        "packages/core/src/sql-tree.ts",
+        "    if (TableNode.is(node) && node.table.schema !== undefined) return 'a schema-qualified table'",
+        "    if (false && TableNode.is(node)) return 'a schema-qualified table'",
+        "a tree statement may name a table in another schema",
+    ),
+    (
+        "tree-grammar-select-modifier",
+        "packages/core/src/sql-tree.ts",
+        "    if (SelectModifierNode.is(node) && node.modifier !== 'Distinct') {",
+        "    if (false && SelectModifierNode.is(node)) {",
+        "a tree SELECT may carry a modifier other than DISTINCT",
+    ),
+    (
+        "tree-grammar-insert-shape",
+        "packages/core/src/sql-tree.ts",
+        "      if (shape !== null) return shape",
+        "      if (false && shape !== null) return shape",
+        "an INSERT of any shape passes the grammar",
+    ),
+    (
+        "tree-grammar-assigns-a-column",
+        "packages/core/src/sql-tree.ts",
+        "    if (ColumnUpdateNode.is(node) && assignedColumn(node) === null) {",
+        "    if (false && ColumnUpdateNode.is(node)) {",
+        "an assignment to something other than a column hides from every rule that reads assignments",
+    ),
+    (
+        "tree-grammar-reads-children",
+        "packages/core/src/sql-tree.ts",
+        "      if (problem !== null) return problem\n"
+        "    }\n"
+        "    return null\n"
+        "  }\n"
+        "  return visit(tree, true)",
+        "      if (false && problem !== null) return problem\n"
+        "    }\n"
+        "    return null\n"
+        "  }\n"
+        "  return visit(tree, true)",
+        "a shape outside the grammar passes when it stands below the root",
+    ),
+    (
+        "tree-insert-shape-star",
+        "packages/core/src/sql-tree.ts",
+        "    if (!plain || selections.length !== (insert.columns?.length ?? 0)) {",
+        "    if (selections.length !== (insert.columns?.length ?? 0)) {",
+        "a star in an INSERT … SELECT shifts the positions provenance is read by",
+    ),
+    (
+        "tree-insert-shape-qualified-star",
+        "packages/core/src/sql-tree.ts",
+        "      SelectAllNode.is(node) || (ReferenceNode.is(node) && SelectAllNode.is(node.column))",
+        "      SelectAllNode.is(node)",
+        "a qualified star in an INSERT … SELECT shifts the positions provenance is read by",
+    ),
+    (
+        "tree-insert-shape-selection-count",
+        "packages/core/src/sql-tree.ts",
+        "    if (!plain || selections.length !== (insert.columns?.length ?? 0)) {",
+        "    if (!plain || selections.length < (insert.columns?.length ?? 0) - 99) {",
+        "an INSERT … SELECT may list fewer selections than columns",
+    ),
+    (
+        "tree-insert-shape-conflict-needs-where",
+        "packages/core/src/sql-tree.ts",
+        "    if (insert.onConflict !== undefined && values.where === undefined) {",
+        "    if (false && insert.onConflict !== undefined) {",
+        "an INSERT … SELECT with ON CONFLICT and no WHERE reaches SQLite, which misreads it",
+    ),
+    (
+        "tree-insert-shape-values-or-select",
+        "packages/core/src/sql-tree.ts",
+        "  } else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {",
+        "  } else if (values !== undefined && ValuesNode.is(values) && values.values.length !== 1) {",
+        "an INSERT with neither VALUES nor a SELECT passes the grammar",
+    ),
+    (
+        "tree-insert-shape-one-row",
+        "packages/core/src/sql-tree.ts",
+        "  } else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {",
+        "  } else if (values === undefined || !ValuesNode.is(values)) {",
+        "an INSERT of two rows passes, and provenance is read from the first",
+    ),
+    (
+        "tree-insert-shape-conflict-names-columns",
+        "packages/core/src/sql-tree.ts",
+        "  if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {",
+        "  if (false && insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {",
+        "an ON CONFLICT that names no columns swallows a violation of any unique index",
+    ),
+    (
+        "tree-insert-shape-index-predicate-fragment",
+        "packages/core/src/sql-tree.ts",
+        "    if (someNode(indexWhere, (node) => RawNode.is(node))) {",
+        "    if (false && someNode(indexWhere, (node) => RawNode.is(node))) {",
+        "a partial-index predicate may hold a fragment",
+    ),
+    (
+        "tree-insert-shape-index-predicate-bind",
+        "packages/core/src/sql-tree.ts",
+        "    if (someNode(indexWhere, (node) => ValueNode.is(node) && node.immediate !== true)) {",
+        "    if (false && someNode(indexWhere, (node) => ValueNode.is(node))) {",
+        "a partial-index predicate may hold a bound value, which SQLite refuses and PostgreSQL accepts",
+    ),
+    (
+        "tree-inserted-column-listed-once",
+        "packages/core/src/sql-tree.ts",
+        "  if (index < 0 || columns.lastIndexOf(name) !== index) return undefined",
+        "  if (index < 0) return undefined",
+        "a provenance column listed twice is read at its first position",
+    ),
+    (
+        "tree-fragment-unused-argument",
+        "packages/core/src/sql-tree.ts",
+        "  if (bound !== fragment.args.length) {",
+        "  if (bound > fragment.args.length) {",
+        "a fragment may carry an argument its text never binds",
+    ),
+    (
+        "tree-fragment-missing-argument",
+        "packages/core/src/sql-tree.ts",
+        "  if (bound !== fragment.args.length) {",
+        "  if (bound < fragment.args.length) {",
+        "a fragment may bind more placeholders than it has arguments",
+    ),
+    (
+        "tree-fragment-stamp-token",
+        "packages/core/src/sql-tree.ts",
+        "  if (sql.includes(STAMP)) {",
+        "  if (false && sql.includes(STAMP)) {",
+        "a fragment may carry the stamp token, which no stamping rule reads there",
+    ),
+    (
+        "tree-fragment-line-comment",
+        "packages/core/src/sql-tree.ts",
+        "  if (outside.includes('--') || outside.includes('/*')) {",
+        "  if (outside.includes('/*')) {",
+        "a line comment in a fragment hides a token from the split",
+    ),
+    (
+        "tree-fragment-block-comment",
+        "packages/core/src/sql-tree.ts",
+        "  if (outside.includes('--') || outside.includes('/*')) {",
+        "  if (outside.includes('--')) {",
+        "a block comment in a fragment hides a token from the split",
+    ),
+    (
+        "tree-fragment-prefixed-literal",
+        "packages/core/src/sql-tree.ts",
+        "  if (prefixed || /\\$\\w*\\$/.test(fenceless.replaceAll(NOW, ''))) {",
+        "  if (/\\$\\w*\\$/.test(fenceless.replaceAll(NOW, ''))) {",
+        "a prefixed string literal, with its own escape rules, is read as a plain one",
+    ),
+    (
+        "tree-fragment-stray-dollar",
+        "packages/core/src/sql-tree.ts",
+        "  if (fenceless.replaceAll(NOW, '').includes('$')) {",
+        "  if (false && fenceless.replaceAll(NOW, '').includes('$')) {",
+        "a stray $ or a second token run into the first compiles into SQL the database rejects",
+    ),
+    (
+        "tree-fragment-bind-in-literal",
+        "packages/core/src/sql-tree.ts",
+        "      (literal) => literal.includes('?') || literal.includes(NOW) || literal.includes(FENCE_PREFIX),",
+        "      (literal) => (literal.includes('?') && false) || literal.includes(NOW) || literal.includes(FENCE_PREFIX),",
+        "a ? inside a string literal becomes a bind",
+    ),
+    (
+        "tree-fragment-clock-in-literal",
+        "packages/core/src/sql-tree.ts",
+        "      (literal) => literal.includes('?') || literal.includes(NOW) || literal.includes(FENCE_PREFIX),",
+        "      (literal) => literal.includes('?') || literal.includes(FENCE_PREFIX),",
+        "the clock token inside a string literal is spliced as SQL",
+    ),
+    (
+        "tree-fragment-fence-in-literal",
+        "packages/core/src/sql-tree.ts",
+        "      (literal) => literal.includes('?') || literal.includes(NOW) || literal.includes(FENCE_PREFIX),",
+        "      (literal) => literal.includes('?') || literal.includes(NOW),",
+        "a fence token inside a string literal becomes a bind",
+    ),
+    (
+        "tree-subquery-fragment-one-group",
+        "packages/core/src/sql-tree.ts",
+        "  if (role === 'subquery' && !isOneGroup(outside)) {",
+        "  if (false && role === 'subquery') {",
+        "a subquery fragment without its own parentheses compiles bare",
+    ),
+    (
+        "tree-subquery-fragment-opens",
+        "packages/core/src/sql-tree.ts",
+        "  if (!text.startsWith('(')) return false\n",
+        "",
+        "a subquery fragment may hold text before its group",
+    ),
+    (
+        "tree-subquery-fragment-closes-at-end",
+        "packages/core/src/sql-tree.ts",
+        "      if (depth === 0) return i === text.length - 1",
+        "      if (depth === 0) return true",
+        "a subquery fragment may hold text after its group",
+    ),
+    (
+        "tree-fragment-cache-keyed-by-role",
+        "packages/core/src/sql-tree.ts",
+        "  const key = `${role}:${sql}`",
+        "  const key = `:${sql}`",
+        "a text validated as a predicate is reused as a subquery without the subquery's check",
+    ),
+    (
+        "tree-bind-undefined",
+        "packages/core/src/sql-tree.ts",
+        "    if (value === undefined) {\n"
+        "      throw new TypeError(\n",
+        "    if (false && value === undefined) {\n"
+        "      throw new TypeError(\n",
+        "an undefined bind reaches the builder, which drops the assignment in silence",
+    ),
+    (
+        "tree-bind-undefined-nested",
+        "packages/core/src/sql-tree.ts",
+        "  if (typeof value !== 'object' || value === null || arrayBufferIsView(value)) return",
+        "  if (typeof value !== 'object' || value === null || arrayBufferIsView(value) || path !== 'bind') return",
+        "an undefined bind below the first level reaches the builder",
+    ),
+    (
+        "tree-fragment-never-placed",
+        "packages/core/src/sql-tree.ts",
+        "    if (placement === null) {\n"
+        "      throw new Error(`${statement}: ${at} is a fragment the statement never places`)\n"
+        "    }",
+        "    if (placement === null) return true",
+        "a statement takes a fragment bind and never places it, so its predicate silently does not apply",
+    ),
+    (
+        "tree-fragment-placement-consumed",
+        "packages/core/src/sql-tree.ts",
+        "    placement.fragment = null\n",
+        "",
+        "one placement answers for two binds of the same fragment",
+    ),
+    (
+        "tree-scope-includes-joins",
+        "packages/core/src/sql-tree.ts",
+        "    sources.push(...(query.from?.froms ?? []), ...(query.joins ?? []).map((join) => join.table))",
+        "    sources.push(...(query.from?.froms ?? []), ...(query.joins ?? []).slice(0, 0).map((join) => join.table))",
+        "a joined source is left out of scope, so an unqualified stamp is read as the first source's",
+    ),
+    (
+        "tree-scope-includes-every-from",
+        "packages/core/src/sql-tree.ts",
+        "    sources.push(...(query.from?.froms ?? []), ...(query.joins ?? []).map((join) => join.table))",
+        "    sources.push(...(query.from?.froms ?? []).slice(0, 1), ...(query.joins ?? []).map((join) => join.table))",
+        "a second FROM source is left out of scope, so an unqualified stamp is read as the first source's",
+    ),
+    (
+        "tree-fence-equality-qualifier-in-scope",
+        "packages/core/src/sql-tree.ts",
+        "        ? scope.find((candidate) => candidate.name === qualifier)",
+        "        ? scope.find((candidate) => candidate.name === qualifier || candidate === scope[0])",
+        "a fence compared on the OUTER row's stamp is read as a gate on the subquery's own source",
+    ),
+    (
+        "tree-counting-left-operand",
+        "packages/core/src/sql-tree.ts",
+        "          writtenColumn(candidate.leftOperand) === column ||\n"
+        "          writtenColumn(candidate.rightOperand) === column",
+        "          writtenColumn(candidate.rightOperand) === column",
+        "a count written column first goes unseen",
+    ),
+    (
+        "tree-counting-right-operand",
+        "packages/core/src/sql-tree.ts",
+        "          writtenColumn(candidate.leftOperand) === column ||\n"
+        "          writtenColumn(candidate.rightOperand) === column",
+        "          writtenColumn(candidate.leftOperand) === column",
+        "a count written column last goes unseen",
+    ),
+    (
+        "tree-counting-operator-plus",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['-', '*', '/', '%', '||']",
+        "a count spelled with + goes unseen",
+    ),
+    (
+        "tree-counting-operator-minus",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['+', '*', '/', '%', '||']",
+        "a count spelled with - goes unseen",
+    ),
+    (
+        "tree-counting-operator-times",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['+', '-', '/', '%', '||']",
+        "a count spelled with * goes unseen",
+    ),
+    (
+        "tree-counting-operator-divide",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '%', '||']",
+        "a count spelled with / goes unseen",
+    ),
+    (
+        "tree-counting-operator-modulo",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '||']",
+        "a count spelled with % goes unseen",
+    ),
+    (
+        "tree-counting-operator-concat",
+        "packages/core/src/sql-tree.ts",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']",
+        "const COUNTING_OPERATORS = ['+', '-', '*', '/', '%']",
+        "a count spelled with || goes unseen",
+    ),
+    (
+        "tree-counting-mention-unqualified",
+        "packages/core/src/sql-tree.ts",
+        "    new RegExp(String.raw`(?<![\\w.\"])${name}`, 'i').test(text) ||\n",
+        "    new RegExp(String.raw`(?!)`, 'i').test(text) ||\n",
+        "a fragment's unqualified read of the assigned column goes unseen",
+    ),
+    (
+        "tree-counting-mention-table-qualified",
+        "packages/core/src/sql-tree.ts",
+        "    (table !== null && new RegExp(String.raw`(?<!\\w)\"?${table}\"?\\.${name}`, 'i').test(text)) ||\n",
+        "    (table !== null && new RegExp(String.raw`(?!)\"?\"?`, 'i').test(text)) ||\n",
+        "a fragment's read of the assigned column through the written table's name goes unseen",
+    ),
+    (
+        "tree-counting-mention-operator-after",
+        "packages/core/src/sql-tree.ts",
+        "    new RegExp(String.raw`${qualified}\\s*\\)*\\s*${operator}`, 'i').test(text) ||\n",
+        "    new RegExp(String.raw`\\b\\B`, 'i').test(text) ||\n",
+        "arithmetic after another row's column in a fragment goes unseen",
+    ),
+    (
+        "tree-counting-mention-operator-before",
+        "packages/core/src/sql-tree.ts",
+        "    new RegExp(String.raw`${qualified}\\s*\\)*\\s*${operator}`, 'i').test(text) ||\n"
+        "    new RegExp(String.raw`${operator}\\s*\\(*\\s*\"?${qualified}`, 'i').test(text)\n",
+        "    new RegExp(String.raw`${qualified}\\s*\\)*\\s*${operator}`, 'i').test(text) ||\n"
+        "    new RegExp(String.raw`(?!)`, 'i').test(text)\n",
+        "arithmetic before another row's column in a fragment goes unseen",
+    ),
+    (
+        "tree-builder-raw-stands-as-direction",
+        "packages/core/src/sql-tree.ts",
+        "    parent.direction === node &&\n",
+        "",
+        "an unminted raw node passes as the ORDER BY expression itself",
+    ),
+    (
+        "tree-builder-raw-has-no-parameters",
+        "packages/core/src/sql-tree.ts",
+        "    node.parameters.length === 0 &&\n",
+        "",
+        "an unminted ORDER BY direction may carry a parameter",
+    ),
+    (
+        "tree-builder-raw-text",
+        "packages/core/src/sql-tree.ts",
+        "    /^(?:asc|desc)$/i.test(node.sqlFragments.join('').trim())",
+        "    /^(?:)/i.test(node.sqlFragments.join('').trim())",
+        "any unminted text passes as an ORDER BY direction",
+    ),
+    (
+        "tree-role-operand-of-exists",
+        "packages/core/src/sql-tree.ts",
+        "  if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {\n"
+        "    return unwrapParens(node.operand)\n"
+        "  }\n"
+        "  const operator =",
+        "  const operator =",
+        "a value fragment stands as the operand of EXISTS",
+    ),
+    (
+        "tree-role-operand-of-in",
+        "packages/core/src/sql-tree.ts",
+        "(operator === 'in' || operator === 'not in')",
+        "(operator === 'not in')",
+        "a value fragment stands as the operand of IN",
+    ),
+    (
+        "tree-role-operand-of-not-in",
+        "packages/core/src/sql-tree.ts",
+        "(operator === 'in' || operator === 'not in')",
+        "(operator === 'in')",
+        "a value fragment stands as the operand of NOT IN",
+    ),
+    (
+        "tree-role-boolean-of-where",
+        "packages/core/src/sql-tree.ts",
+        "  if (WhereNode.is(node)) return node.where\n",
+        "",
+        "a value fragment stands as a whole WHERE",
+    ),
+    (
+        "tree-role-boolean-of-having",
+        "packages/core/src/sql-tree.ts",
+        "  if (HavingNode.is(node)) return node.having\n",
+        "",
+        "a value fragment stands as a whole HAVING",
+    ),
+    (
+        "tree-role-boolean-of-on",
+        "packages/core/src/sql-tree.ts",
+        "  if (OnNode.is(node)) return node.on\n",
+        "",
+        "a value fragment stands as a whole ON",
+    ),
+    (
+        "tree-role-boolean-of-when",
+        "packages/core/src/sql-tree.ts",
+        "  return WhenNode.is(node) ? node.condition : null",
+        "  return WhenNode.is(node) && false ? node.condition : null",
+        "a value fragment stands as a whole CASE condition",
+    ),
+    (
+        "tree-role-boolean-under-and",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (AndNode.is(inner) || OrNode.is(inner)) {",
+        "    } else if (OrNode.is(inner)) {",
+        "a value fragment stands as a conjunct",
+    ),
+    (
+        "tree-role-boolean-under-or",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (AndNode.is(inner) || OrNode.is(inner)) {",
+        "    } else if (AndNode.is(inner)) {",
+        "a value fragment stands as a disjunct",
+    ),
+    (
+        "tree-role-boolean-under-not",
+        "packages/core/src/sql-tree.ts",
+        "    } else if (UnaryOperationNode.is(inner)) {\n"
+        "      markBoolean(inner.operand)\n",
+        "    } else if (UnaryOperationNode.is(inner)) {\n"
+        "      void inner.operand\n",
+        "a value fragment stands under NOT",
+    ),
+    (
+        "tree-followon-insert-stamp-is-the-stamp-token",
+        "packages/core/src/sql-tree.ts",
+        "    stamp: tokenOf(insertedValue(tree, 'fence_stamp'))?.kind === 'stamp',\n"
+        "    fencedInstants",
+        "    stamp: tokenOf(insertedValue(tree, 'fence_stamp'))?.kind !== undefined,\n"
+        "    fencedInstants",
+        "a follow-on may insert a fence's value, another statement's stamp, as its own",
+    ),
+    (
+        "tree-update-stamp-is-the-stamp-token",
+        "packages/core/src/sql-tree.ts",
+        "    stamp: tokenOf(only(assigned('fence_stamp'))?.value)?.kind === 'stamp',",
+        "    stamp: tokenOf(only(assigned('fence_stamp'))?.value)?.kind !== undefined,",
+        "an update may assign a fence's value, another statement's stamp, as its own",
+    ),
+    (
+        "tree-update-clock-is-the-clock-token",
+        "packages/core/src/sql-tree.ts",
+        "    clockInstant: tokenOf(instant)?.kind === 'now',",
+        "    clockInstant: tokenOf(instant)?.kind !== undefined,",
+        "a compare-and-set update may assign the stamp where the clock belongs",
+    ),
+    (
+        "tree-cas-insert-stamp-is-the-stamp-token",
+        "packages/core/src/sql-tree.ts",
+        "    stamp: tokenOf(inserted('fence_stamp'))?.kind === 'stamp',",
+        "    stamp: tokenOf(inserted('fence_stamp'))?.kind !== undefined,",
+        "an inserting compare-and-set may insert the clock token as its stamp",
+    ),
+    (
+        "tree-cas-insert-clock-is-the-clock-token",
+        "packages/core/src/sql-tree.ts",
+        "    clockInstant: tokenOf(inserted('fence_at_ms'))?.kind === 'now',",
+        "    clockInstant: tokenOf(inserted('fence_at_ms'))?.kind !== undefined,",
+        "an inserting compare-and-set may insert the stamp where the clock belongs",
+    ),
+    (
+        "tree-cas-insert-preserved-is-the-clock-token",
+        "packages/core/src/sql-tree.ts",
+        "    clockColumns: columns.filter((name) => tokenOf(inserted(name))?.kind === 'now'),",
+        "    clockColumns: columns.filter((name) => tokenOf(inserted(name))?.kind !== undefined),",
+        "an inserting compare-and-set may insert the stamp as a preserved first instant",
+    ),
+    (
+        "tree-fence-names-a-statement",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!source) {\n"
+        "      throw new Error(\n",
+        "    if (!source) {\n"
+        "      return { target: 'runs', sealedBy: null }\n"
+        "    }\n"
+        "    if (!source) {\n"
+        "      throw new Error(\n",
+        "a fence that names no statement of the batch passes as a fence on runs",
+    ),
+    (
+        "tree-fence-source-writes-a-stamp",
+        "packages/core/src/fenced-batch.ts",
+        "    if (source.fence === null) {\n"
+        "      throw new Error(\n",
+        "    if (source.fence === null) {\n"
+        "      return { target: 'runs', sealedBy: null }\n"
+        "    }\n"
+        "    if (source.fence === null) {\n"
+        "      throw new Error(\n",
+        "a fence on a statement that writes no stamp passes, and never matches",
+    ),
+    (
+        "tree-cas-many-max-is-an-integer",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!Number.isSafeInteger(max) || max < 1) {",
+        "    if (max < 1) {",
+        "a many-row compare-and-set takes a bound that is not a whole number",
+    ),
+    (
+        "tree-cas-many-max-is-positive",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!Number.isSafeInteger(max) || max < 1) {",
+        "    if (!Number.isSafeInteger(max)) {",
+        "a many-row compare-and-set takes a bound below one",
+    ),
+    (
+        "tree-statement-name-grammar",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isFenceStatementName(name)) {",
+        "    if (false && !isFenceStatementName(name)) {",
+        "a statement name outside the stamp grammar is written into provenance",
+    ),
+    (
+        "tree-statement-name-unique",
+        "packages/core/src/fenced-batch.ts",
+        "    if (this.statements.some((x) => x.name === name)) {",
+        "    if (false && this.statements.some((x) => x.name === name)) {",
+        "two statements of a batch share a name, so a fence on it is ambiguous",
+    ),
+    (
+        "tree-lock-precedes-a-cas",
+        "packages/core/src/fenced-batch.ts",
+        "      this.transactionLocks.length !== 0 &&\n"
+        "      this.statements.length === 0 &&",
+        "      false &&\n"
+        "      this.transactionLocks.length !== 0 &&\n"
+        "      this.statements.length === 0 &&",
+        "a transaction lock may be followed by a statement that is not the compare-and-set it protects",
+    ),
+    (
+        "tree-needs-a-dialect",
+        "packages/core/src/fenced-batch.ts",
+        "    if (dialect === null) {\n"
+        "      throw new Error(`${at} is a tree statement, but the batch has no tree dialect`)\n"
+        "    }\n",
+        "",
+        "a batch without a tree dialect fails on a null read and no longer says why",
+    ),
+    (
+        "tree-followon-insert-selects",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!following.selects) {",
+        "      if (false && !following.selects) {",
+        "a VALUES follow-on is refused for its selection list, not for being VALUES",
+    ),
+    (
+        "tree-gate-untied-message",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!open && gates.length === 0 && positional.length !== 0) {",
+        "      if (false && !open && gates.length === 0) {",
+        "an untied gate is refused as no gate at all, and the message stops naming the tie",
+    ),
+    (
+        "tree-followon-spelled-clock-message",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && (compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "a follow-on's spelled-out clock is refused as a second clock, not as a follow-on reading the clock",
+    ),
+    (
+        "tree-raw-fragment-unminted-message",
+        "packages/core/src/sql-tree.ts",
+        "        if (role === undefined) problem = 'a raw fragment that rawSql did not mint'\n"
+        "        else if (placed.includes(child))",
+        "        if (placed.includes(child))",
+        "an unminted raw node is refused as a fragment out of its role, and the message stops saying it was never minted",
+    ),
+    (
+        "tree-counting-arithmetic-message",
+        "packages/core/src/fenced-batch.ts",
+        "      if (counting?.how === 'arithmetic') throw new Error(blindCounterRule(at))\n",
+        "      if (false && counting?.how === 'arithmetic') throw new Error(blindCounterRule(at))\n",
+        "a blind count is refused with the fragment rule's words",
+    ),
+    (
+        "tree-fragment-malformed-fence-token",
+        "packages/core/src/sql-tree.ts",
+        "  if (fenceless.includes(FENCE_PREFIX)) {",
+        "  if (false && fenceless.includes(FENCE_PREFIX)) {",
+        "a malformed fence token is refused as a stray $",
+    ),
+    (
+        "tree-fragment-dollar-quoted",
+        "packages/core/src/sql-tree.ts",
+        "  if (prefixed || /\\$\\w*\\$/.test(fenceless.replaceAll(NOW, ''))) {",
+        "  if (prefixed) {",
+        "a dollar-quoted string is refused as a stray $",
+    ),
+    (
+        "tree-fence-equality-is-a-fence-token",
+        "packages/core/src/sql-tree.ts",
+        "    if (token?.kind !== 'fence' || token.fence === null) continue",
+        "    if (token?.kind === undefined) continue",
+        "the stamp compared with the stamp column is read as a fence, and refused for naming no statement",
+    ),
+    (
+        "tree-tie-exists-outer-in-scope",
+        "packages/core/src/sql-tree.ts",
+        "    name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)",
+        "    name !== null && !isInner(name) && outer.length >= 0",
+        "a qualifier that names no source of the statement counts as the outer row",
+    ),
+    (
+        "tree-tie-exists-value-equals-outer",
+        "packages/core/src/sql-tree.ts",
+        "    return (isInner(left) && isOuter(right)) || (isOuter(left) && isInner(right))",
+        "    return (true && isOuter(right)) || (isOuter(left) && isInner(right))",
+        "a value compared with a column of the outer row counts as a tie",
+    ),
+    (
+        "tree-tie-exists-inner-equals-value",
+        "packages/core/src/sql-tree.ts",
+        "    return (isInner(left) && isOuter(right)) || (isOuter(left) && isInner(right))",
+        "    return (isInner(left) && true) || (isOuter(left) && isInner(right))",
+        "a column of the fenced source compared with a value counts as a tie",
+    ),
+    (
+        "tree-tie-exists-outer-equals-value",
+        "packages/core/src/sql-tree.ts",
+        "    return (isInner(left) && isOuter(right)) || (isOuter(left) && isInner(right))",
+        "    return (isInner(left) && isOuter(right)) || (isOuter(left) && true)",
+        "a column of the outer row compared with a value counts as a tie",
+    ),
+    (
+        "tree-tie-exists-value-equals-inner",
+        "packages/core/src/sql-tree.ts",
+        "    return (isInner(left) && isOuter(right)) || (isOuter(left) && isInner(right))",
+        "    return (isInner(left) && isOuter(right)) || (true && isInner(right))",
+        "a value compared with a column of the fenced source counts as a tie",
+    ),
+    (
+        "tree-no-row-every-selection",
+        "packages/core/src/sql-tree.ts",
+        "  return (select.selections ?? []).every(",
+        "  return (select.selections ?? []).some(",
+        "one plain selection beside an aggregate makes a gating subquery read as returning no row",
+    ),
+    (
+        "tree-role-operand-only-of-in-or-exists",
+        "packages/core/src/sql-tree.ts",
+        "  return BinaryOperationNode.is(node) && (operator === 'in' || operator === 'not in')",
+        "  return BinaryOperationNode.is(node) && (operator !== 'in' || operator !== 'not in')",
+        "a subquery fragment stands as the operand of any comparison",
+    ),
+    (
+        "tree-followon-insert-instants-are-filtered",
+        "packages/core/src/sql-tree.ts",
+        "      .filter(isFencedInstant),",
+        "      .filter(() => true),",
+        "every inserted column is read as taking the fenced row's instant, so none has to",
+    ),
+    (
+        "tree-clock-spelling-any-fragment",
+        "packages/core/src/fenced-batch.ts",
+        "    const spelledClock = rawTexts.some((text) =>",
+        "    const spelledClock = rawTexts.slice(0, 1).some((text) =>",
+        "a clock spelled in one fragment passes when another fragment of the statement spells none",
+    ),
+    (
         # Not correctness: the emit's access path. Correlating the driver is
         # logically redundant with its outer IN but makes SQLite scan the
         # largest table in the engine. Only a plan pinned to the SHIPPED
@@ -4721,6 +6306,1290 @@ VERDICTS = {
         "fence() names a statement, and the primitive supplies the value applies the same rules to a fence token written by hand",
         "mutation-verdict:construction:raw-fence-token-check",
     ),
+    "tree-cas-writes-fenced-table": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a compare-and-set of a table that carries no provenance",
+        "mutation-verdict:construction:tree-cas-writes-fenced-table",
+    ),
+    "tree-cas-update-stamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a compare-and-set update that assigns the clock and no stamp",
+        "mutation-verdict:construction:tree-cas-update-stamp",
+    ),
+    "tree-cas-update-clock-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a compare-and-set update whose instant is not the clock",
+        "mutation-verdict:construction:tree-cas-update-clock-instant",
+    ),
+    "tree-followon-update-stamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a follow-on update of a fenced table that assigns an instant and no stamp",
+        "mutation-verdict:construction:tree-followon-update-stamp",
+    ),
+    "tree-followon-update-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a follow-on update of a fenced table that assigns the stamp and no instant",
+        "mutation-verdict:construction:tree-followon-update-instant",
+    ),
+    "tree-stamp-assigned-once": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a stamp assigned twice",
+        "mutation-verdict:construction:tree-stamp-assigned-once",
+    ),
+    "tree-positive-fence-required": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a follow-on that compares no fence",
+        "mutation-verdict:construction:tree-positive-fence-required",
+    ),
+    "tree-top-level-or-reach": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence joined to the row by OR",
+        "mutation-verdict:construction:tree-top-level-or-reach",
+    ),
+    "tree-fence-equality-operator": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence compared with anything but equality",
+        "mutation-verdict:construction:tree-fence-equality-operator",
+    ),
+    "tree-fence-equality-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence compared with a column that is not the stamp",
+        "mutation-verdict:construction:tree-fence-equality-column",
+    ),
+    "tree-fence-equality-ambiguous-source": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses an unqualified stamp when the statement reads two sources",
+        "mutation-verdict:construction:tree-fence-equality-ambiguous-source",
+    ),
+    "tree-gate-not-in": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a gate that asks for the row to be absent from the fenced keys",
+        "mutation-verdict:construction:tree-gate-not-in",
+    ),
+    "tree-raw-fence-token-check": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence token that names no statement, wherever it stands",
+        "mutation-verdict:construction:tree-raw-fence-token-check",
+    ),
+    "tree-tail-must-select": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a tail that is not a SELECT",
+        "mutation-verdict:construction:tree-tail-must-select",
+    ),
+    "tree-open-tail-reason": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses an open tail that gives no reason",
+        "mutation-verdict:construction:tree-open-tail-reason",
+    ),
+    "tree-open-tail-table-check": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses an open tail whose fence is compared on a table that fence does not stamp",
+        "mutation-verdict:construction:tree-open-tail-table-check",
+    ),
+    "tree-gate-subquery-may-return-no-row": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through a subquery whose selection always returns a row",
+        "mutation-verdict:construction:tree-gate-subquery-may-return-no-row",
+    ),
+    "tree-no-row-having": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through an ungrouped HAVING",
+        "mutation-verdict:construction:tree-no-row-having",
+    ),
+    "tree-no-row-aggregate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through an aggregate node",
+        "mutation-verdict:construction:tree-no-row-aggregate",
+    ),
+    "tree-no-row-function": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through a function node",
+        "mutation-verdict:construction:tree-no-row-function",
+    ),
+    "tree-no-row-raw": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through a selection spelled in a fragment",
+        "mutation-verdict:construction:tree-no-row-raw",
+    ),
+    "tree-derived-gate-may-return-no-row": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads no gate through a derived table that always returns a row",
+        "mutation-verdict:construction:tree-derived-gate-may-return-no-row",
+    ),
+    "tree-gate-counts-only-tied": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source counts only the gates that are tied",
+        "mutation-verdict:construction:tree-gate-counts-only-tied",
+    ),
+    "tree-gate-requires-tie": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source carries the tie of a subquery onto the fence inside it",
+        "mutation-verdict:construction:tree-gate-requires-tie",
+    ),
+    "tree-one-source-froms": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source reads one FROM source in a gating subquery",
+        "mutation-verdict:construction:tree-one-source-froms",
+    ),
+    "tree-one-source-joins": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source reads no join in a gating subquery",
+        "mutation-verdict:construction:tree-one-source-joins",
+    ),
+    "tree-tie-in-left-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN by a column on its left",
+        "mutation-verdict:construction:tree-tie-in-left-column",
+    ),
+    "tree-tie-in-selects-source-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN by a selected column of the fenced source",
+        "mutation-verdict:construction:tree-tie-in-selects-source-column",
+    ),
+    "tree-tie-in-one-selection": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN by one selection and no more",
+        "mutation-verdict:construction:tree-tie-in-one-selection",
+    ),
+    "tree-tie-in-plain-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN by a plain column and never an expression over one",
+        "mutation-verdict:construction:tree-tie-in-plain-column",
+    ),
+    "tree-tie-in-source-qualifier": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN by a column the fenced source owns, never one of the outer row",
+        "mutation-verdict:construction:tree-tie-in-source-qualifier",
+    ),
+    "tree-tie-in-derived-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties IN through a derived table only by the column that table selects from the fenced source",
+        "mutation-verdict:construction:tree-tie-in-derived-column",
+    ),
+    "tree-tie-exists-one-source": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties EXISTS only when the subquery reads the fenced source alone",
+        "mutation-verdict:construction:tree-tie-exists-one-source",
+    ),
+    "tree-tie-exists-equality": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties EXISTS by an equality and no other comparison",
+        "mutation-verdict:construction:tree-tie-exists-equality",
+    ),
+    "tree-tie-exists-shadowed-outer": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source reads a name the subquery shadows as the inner source",
+        "mutation-verdict:construction:tree-tie-exists-shadowed-outer",
+    ),
+    "tree-followon-insert-plain": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects plain columns and values",
+        "mutation-verdict:construction:tree-followon-insert-plain",
+    ),
+    "tree-followon-insert-no-having": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects with no HAVING",
+        "mutation-verdict:construction:tree-followon-insert-no-having",
+    ),
+    "tree-followon-insert-no-aggregate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects no aggregate node",
+        "mutation-verdict:construction:tree-followon-insert-no-aggregate",
+    ),
+    "tree-followon-insert-no-function": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects no function node",
+        "mutation-verdict:construction:tree-followon-insert-no-function",
+    ),
+    "tree-followon-insert-alone": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects from the fenced row alone",
+        "mutation-verdict:construction:tree-followon-insert-alone",
+    ),
+    "tree-followon-insert-one-from": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects from one FROM item",
+        "mutation-verdict:construction:tree-followon-insert-one-from",
+    ),
+    "tree-followon-insert-from-is-fenced": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects from the source whose stamp it compares",
+        "mutation-verdict:construction:tree-followon-insert-from-is-fenced",
+    ),
+    "tree-followon-insert-join-on": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts carries an ON with every join",
+        "mutation-verdict:construction:tree-followon-insert-join-on",
+    ),
+    "tree-followon-insert-stamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts inserts the stamp",
+        "mutation-verdict:construction:tree-followon-insert-stamp",
+    ),
+    "tree-followon-insert-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts inserts an instant read from the fenced row",
+        "mutation-verdict:construction:tree-followon-insert-instant",
+    ),
+    "tree-followon-insert-instant-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts reads the instant from fence_at_ms and no other column",
+        "mutation-verdict:construction:tree-followon-insert-instant-column",
+    ),
+    "tree-followon-insert-instant-fenced-source": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts reads the instant from the source whose stamp it compares",
+        "mutation-verdict:construction:tree-followon-insert-instant-fenced-source",
+    ),
+    "tree-followon-insert-instant-ambiguous": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts reads an unqualified instant only when there is one source",
+        "mutation-verdict:construction:tree-followon-insert-instant-ambiguous",
+    ),
+    "tree-followon-insert-preserved-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts takes a preserved first instant from the fenced row",
+        "mutation-verdict:construction:tree-followon-insert-preserved-instant",
+    ),
+    "tree-followon-insert-no-conflict": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts carries no conflict clause into a stamped table",
+        "mutation-verdict:construction:tree-followon-insert-no-conflict",
+    ),
+    "tree-cas-insert-stamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts inserts the stamp",
+        "mutation-verdict:construction:tree-cas-insert-stamp",
+    ),
+    "tree-cas-insert-clock-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts inserts the clock as the instant",
+        "mutation-verdict:construction:tree-cas-insert-clock-instant",
+    ),
+    "tree-cas-insert-preserved-clock": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts inserts the clock as a preserved first instant",
+        "mutation-verdict:construction:tree-cas-insert-preserved-clock",
+    ),
+    "tree-event-upsert-requires-preserved-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts refuses an event upsert that re-stamps at the current statement instant",
+        "mutation-verdict:construction:tree-event-upsert-requires-preserved-instant",
+    ),
+    "tree-upsert-preserved-instant-table": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts copies the preserved instant from the row that is there",
+        "mutation-verdict:construction:tree-upsert-preserved-instant-table",
+    ),
+    "tree-upsert-preserved-instant-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts copies the preserved instant from its own column",
+        "mutation-verdict:construction:tree-upsert-preserved-instant-column",
+    ),
+    "tree-upsert-restamps": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts re-stamps the row a conflict leaves in place",
+        "mutation-verdict:construction:tree-upsert-restamps",
+    ),
+    "tree-upsert-restamps-instant": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts re-stamps the instant with the stamp",
+        "mutation-verdict:construction:tree-upsert-restamps-instant",
+    ),
+    "tree-upsert-preserved-fact-columns": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts assigns only provenance over a preserved fact",
+        "mutation-verdict:construction:tree-upsert-preserved-fact-columns",
+    ),
+    "tree-counting-arithmetic": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments refuses arithmetic on the column a follow-on assigns",
+        "mutation-verdict:construction:tree-counting-arithmetic",
+    ),
+    "tree-counting-raw-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments refuses a fragment that reads the column a follow-on assigns",
+        "mutation-verdict:construction:tree-counting-raw-fragment",
+    ),
+    "tree-counting-reads-conflict-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments reads the conflict arm of an insert",
+        "mutation-verdict:construction:tree-counting-reads-conflict-arm",
+    ),
+    "tree-counting-excluded-is-incoming": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments reads excluded as the incoming row when it is built from nodes",
+        "mutation-verdict:construction:tree-counting-excluded-is-incoming",
+    ),
+    "tree-counting-excluded-in-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments reads excluded as the incoming row when it is spelled in a fragment",
+        "mutation-verdict:construction:tree-counting-excluded-in-fragment",
+    ),
+    "tree-clock-ban-token-in-followon": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses the clock token in a follow-on",
+        "mutation-verdict:construction:tree-clock-ban-token-in-followon",
+    ),
+    "tree-clock-spelling-in-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses a clock spelled in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-in-fragment",
+    ),
+    "tree-cas-second-clock": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses a second clock in a compare-and-set",
+        "mutation-verdict:construction:tree-cas-second-clock",
+    ),
+    "tree-statement-defined": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a statement defineStatement did not mint",
+        "mutation-verdict:construction:tree-statement-defined",
+    ),
+    "tree-statement-grammar": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a shape outside the statement grammar",
+        "mutation-verdict:construction:tree-statement-grammar",
+    ),
+    "tree-raw-fragment-problems-read": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds reads the problems of its raw fragments",
+        "mutation-verdict:construction:tree-raw-fragment-problems-read",
+    ),
+    "tree-raw-fragment-placed-once": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses one fragment node placed twice",
+        "mutation-verdict:construction:tree-raw-fragment-placed-once",
+    ),
+    "tree-raw-fragment-role": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a fragment standing outside its declared role",
+        "mutation-verdict:construction:tree-raw-fragment-role",
+    ),
+    "tree-value-fragment-parens": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds compiles a value fragment inside parentheses",
+        "mutation-verdict:construction:tree-value-fragment-parens",
+    ),
+    "tree-bind-placeholder-count": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a placeholder no argument binds",
+        "mutation-verdict:construction:tree-bind-placeholder-count",
+    ),
+    "tree-bind-placeholder-count-brand": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds reports an unbound placeholder as a compiler bind error",
+        "mutation-verdict:construction:tree-bind-placeholder-count-brand",
+    ),
+    "tree-bind-argument-type": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses an argument the driver cannot bind",
+        "mutation-verdict:construction:tree-bind-argument-type",
+    ),
+    "tree-bind-argument-type-brand": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds reports an unbindable argument as a compiler bind error",
+        "mutation-verdict:construction:tree-bind-argument-type-brand",
+    ),
+    "tree-clock-text-in-followon": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses the text of the batch clock in a follow-on fragment",
+        "mutation-verdict:construction:tree-clock-text-in-followon",
+    ),
+    "tree-gate-inner-tie-carried": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source refuses an untied subquery nested inside a tied one",
+        "mutation-verdict:construction:tree-gate-inner-tie-carried",
+    ),
+    "tree-gate-exists-operator": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a gate that asks for no fenced row to exist",
+        "mutation-verdict:construction:tree-gate-exists-operator",
+    ),
+    "tree-statement-kind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a follow-on that is a SELECT",
+        "mutation-verdict:construction:tree-statement-kind",
+    ),
+    "tree-cas-refuses-delete": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a compare-and-set that is a DELETE",
+        "mutation-verdict:construction:tree-cas-refuses-delete",
+    ),
+    "tree-followon-instant-assigned-once": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a follow-on instant assigned twice",
+        "mutation-verdict:construction:tree-followon-instant-assigned-once",
+    ),
+    "tree-cas-instant-assigned-once": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a compare-and-set clock assigned twice",
+        "mutation-verdict:construction:tree-cas-instant-assigned-once",
+    ),
+    "tree-clock-now-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the literal now in a fragment, whatever function takes it",
+        "mutation-verdict:construction:tree-clock-now-literal",
+    ),
+    "tree-grammar-function-list": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a function it does not list",
+        "mutation-verdict:construction:tree-grammar-function-list",
+    ),
+    "tree-grammar-function-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar reads a function name in any case",
+        "mutation-verdict:construction:tree-grammar-function-case-fold",
+    ),
+    "tree-grammar-aggregate-list": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses an aggregate it does not list",
+        "mutation-verdict:construction:tree-grammar-aggregate-list",
+    ),
+    "tree-grammar-aggregate-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar reads an aggregate name in any case",
+        "mutation-verdict:construction:tree-grammar-aggregate-case-fold",
+    ),
+    "tree-clock-spelling-case-fold": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a clock spelled in upper case in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-case-fold",
+    ),
+    "tree-clock-spelling-call-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a clock function called in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-call-arm",
+    ),
+    "tree-clock-spelling-keyword-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a bare clock keyword in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-keyword-arm",
+    ),
+    "tree-clock-spelling-no-argument-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-no-argument-arm",
+    ),
+    "tree-clock-function-unixepoch": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses unixepoch called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-unixepoch",
+    ),
+    "tree-clock-function-julianday": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses julianday called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-julianday",
+    ),
+    "tree-clock-function-strftime": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses strftime called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-strftime",
+    ),
+    "tree-clock-function-now": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses now called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-now",
+    ),
+    "tree-clock-function-sysdate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses sysdate called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-sysdate",
+    ),
+    "tree-clock-function-clock-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses clock_timestamp called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-clock-timestamp",
+    ),
+    "tree-clock-function-statement-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses statement_timestamp called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-statement-timestamp",
+    ),
+    "tree-clock-function-transaction-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses transaction_timestamp called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-transaction-timestamp",
+    ),
+    "tree-clock-function-getdate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses getdate called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-getdate",
+    ),
+    "tree-clock-function-timeofday": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses timeofday called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-timeofday",
+    ),
+    "tree-clock-function-curdate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses curdate called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-curdate",
+    ),
+    "tree-clock-function-curtime": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses curtime called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-curtime",
+    ),
+    "tree-clock-function-unix-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses unix_timestamp called in a fragment",
+        "mutation-verdict:construction:tree-clock-function-unix-timestamp",
+    ),
+    "tree-clock-keyword-current-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword current_timestamp in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-current-timestamp",
+    ),
+    "tree-clock-keyword-current-time": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword current_time in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-current-time",
+    ),
+    "tree-clock-keyword-current-date": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword current_date in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-current-date",
+    ),
+    "tree-clock-keyword-localtime": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword localtime in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-localtime",
+    ),
+    "tree-clock-keyword-localtimestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword localtimestamp in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-localtimestamp",
+    ),
+    "tree-clock-keyword-utc-timestamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword utc_timestamp in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-utc-timestamp",
+    ),
+    "tree-clock-keyword-utc-date": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword utc_date in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-utc-date",
+    ),
+    "tree-clock-keyword-utc-time": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses the bare keyword utc_time in a fragment",
+        "mutation-verdict:construction:tree-clock-keyword-utc-time",
+    ),
+    "tree-clock-no-argument-datetime": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses datetime called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-datetime",
+    ),
+    "tree-clock-no-argument-date": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses date called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-date",
+    ),
+    "tree-clock-no-argument-time": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses time called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-time",
+    ),
+    "tree-grammar-node-kind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a node kind it does not list",
+        "mutation-verdict:construction:tree-grammar-node-kind",
+    ),
+    "tree-grammar-update-below-root": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses an UPDATE below the root",
+        "mutation-verdict:construction:tree-grammar-update-below-root",
+    ),
+    "tree-grammar-delete-below-root": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a DELETE below the root",
+        "mutation-verdict:construction:tree-grammar-delete-below-root",
+    ),
+    "tree-grammar-insert-below-root": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses an INSERT below the root",
+        "mutation-verdict:construction:tree-grammar-insert-below-root",
+    ),
+    "tree-grammar-node-fields": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a query clause it does not list",
+        "mutation-verdict:construction:tree-grammar-node-fields",
+    ),
+    "tree-grammar-schema-qualified": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a schema-qualified table",
+        "mutation-verdict:construction:tree-grammar-schema-qualified",
+    ),
+    "tree-grammar-select-modifier": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses a SELECT modifier other than DISTINCT",
+        "mutation-verdict:construction:tree-grammar-select-modifier",
+    ),
+    "tree-grammar-insert-shape": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar holds an INSERT to its shape",
+        "mutation-verdict:construction:tree-grammar-insert-shape",
+    ),
+    "tree-grammar-assigns-a-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar refuses an assignment to something other than a column",
+        "mutation-verdict:construction:tree-grammar-assigns-a-column",
+    ),
+    "tree-grammar-reads-children": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the statement grammar reads the nodes below the root",
+        "mutation-verdict:construction:tree-grammar-reads-children",
+    ),
+    "tree-insert-shape-star": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses a star",
+        "mutation-verdict:construction:tree-insert-shape-star",
+    ),
+    "tree-insert-shape-qualified-star": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses a qualified star",
+        "mutation-verdict:construction:tree-insert-shape-qualified-star",
+    ),
+    "tree-insert-shape-selection-count": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses fewer selections than columns",
+        "mutation-verdict:construction:tree-insert-shape-selection-count",
+    ),
+    "tree-insert-shape-conflict-needs-where": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses an INSERT … SELECT with ON CONFLICT and no WHERE",
+        "mutation-verdict:construction:tree-insert-shape-conflict-needs-where",
+    ),
+    "tree-insert-shape-values-or-select": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses an INSERT with neither VALUES nor a SELECT",
+        "mutation-verdict:construction:tree-insert-shape-values-or-select",
+    ),
+    "tree-insert-shape-one-row": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses two rows of VALUES",
+        "mutation-verdict:construction:tree-insert-shape-one-row",
+    ),
+    "tree-insert-shape-conflict-names-columns": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses an ON CONFLICT that names no columns",
+        "mutation-verdict:construction:tree-insert-shape-conflict-names-columns",
+    ),
+    "tree-insert-shape-index-predicate-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses a fragment in an index predicate",
+        "mutation-verdict:construction:tree-insert-shape-index-predicate-fragment",
+    ),
+    "tree-insert-shape-index-predicate-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses a bound value in an index predicate",
+        "mutation-verdict:construction:tree-insert-shape-index-predicate-bind",
+    ),
+    "tree-inserted-column-listed-once": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the shape of an INSERT refuses a provenance column listed twice",
+        "mutation-verdict:construction:tree-inserted-column-listed-once",
+    ),
+    "tree-fragment-unused-argument": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses an argument the text never binds",
+        "mutation-verdict:construction:tree-fragment-unused-argument",
+    ),
+    "tree-fragment-missing-argument": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a placeholder with no argument",
+        "mutation-verdict:construction:tree-fragment-missing-argument",
+    ),
+    "tree-fragment-stamp-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses the stamp token",
+        "mutation-verdict:construction:tree-fragment-stamp-token",
+    ),
+    "tree-fragment-line-comment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a line comment",
+        "mutation-verdict:construction:tree-fragment-line-comment",
+    ),
+    "tree-fragment-block-comment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a block comment",
+        "mutation-verdict:construction:tree-fragment-block-comment",
+    ),
+    "tree-fragment-prefixed-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a prefixed string literal",
+        "mutation-verdict:construction:tree-fragment-prefixed-literal",
+    ),
+    "tree-fragment-stray-dollar": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a stray dollar sign",
+        "mutation-verdict:construction:tree-fragment-stray-dollar",
+    ),
+    "tree-fragment-bind-in-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a bind inside a string literal",
+        "mutation-verdict:construction:tree-fragment-bind-in-literal",
+    ),
+    "tree-fragment-clock-in-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses the clock token inside a string literal",
+        "mutation-verdict:construction:tree-fragment-clock-in-literal",
+    ),
+    "tree-fragment-fence-in-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a fence token inside a string literal",
+        "mutation-verdict:construction:tree-fragment-fence-in-literal",
+    ),
+    "tree-subquery-fragment-one-group": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a subquery fragment that is not one group",
+        "mutation-verdict:construction:tree-subquery-fragment-one-group",
+    ),
+    "tree-subquery-fragment-opens": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses text before the group of a subquery fragment",
+        "mutation-verdict:construction:tree-subquery-fragment-opens",
+    ),
+    "tree-subquery-fragment-closes-at-end": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses text after the group of a subquery fragment",
+        "mutation-verdict:construction:tree-subquery-fragment-closes-at-end",
+    ),
+    "tree-fragment-cache-keyed-by-role": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment validates a text again for each role it is placed in",
+        "mutation-verdict:construction:tree-fragment-cache-keyed-by-role",
+    ),
+    "tree-bind-undefined": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the binds of a statement refuses an undefined bind",
+        "mutation-verdict:construction:tree-bind-undefined",
+    ),
+    "tree-bind-undefined-nested": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the binds of a statement refuses an undefined bind below the first level",
+        "mutation-verdict:construction:tree-bind-undefined-nested",
+    ),
+    "tree-fragment-never-placed": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the binds of a statement refuses a fragment the statement never places",
+        "mutation-verdict:construction:tree-fragment-never-placed",
+    ),
+    "tree-fragment-placement-consumed": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the binds of a statement counts one placement for one bind",
+        "mutation-verdict:construction:tree-fragment-placement-consumed",
+    ),
+    "tree-scope-includes-joins": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses an unqualified stamp when a joined source shares the scope",
+        "mutation-verdict:construction:tree-scope-includes-joins",
+    ),
+    "tree-scope-includes-every-from": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses an unqualified stamp when a second FROM source shares the scope",
+        "mutation-verdict:construction:tree-scope-includes-every-from",
+    ),
+    "tree-fence-equality-qualifier-in-scope": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence compared on the stamp of the outer row",
+        "mutation-verdict:construction:tree-fence-equality-qualifier-in-scope",
+    ),
+    "tree-counting-left-operand": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments refuses a count written column first",
+        "mutation-verdict:construction:tree-counting-left-operand",
+    ),
+    "tree-counting-right-operand": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments refuses a count written column last",
+        "mutation-verdict:construction:tree-counting-right-operand",
+    ),
+    "tree-counting-operator-plus": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with plus",
+        "mutation-verdict:construction:tree-counting-operator-plus",
+    ),
+    "tree-counting-operator-minus": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with minus",
+        "mutation-verdict:construction:tree-counting-operator-minus",
+    ),
+    "tree-counting-operator-times": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with times",
+        "mutation-verdict:construction:tree-counting-operator-times",
+    ),
+    "tree-counting-operator-divide": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with divide",
+        "mutation-verdict:construction:tree-counting-operator-divide",
+    ),
+    "tree-counting-operator-modulo": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with modulo",
+        "mutation-verdict:construction:tree-counting-operator-modulo",
+    ),
+    "tree-counting-operator-concat": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count refuses a count spelled with concat",
+        "mutation-verdict:construction:tree-counting-operator-concat",
+    ),
+    "tree-counting-mention-unqualified": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count sees an unqualified read of the assigned column in a fragment",
+        "mutation-verdict:construction:tree-counting-mention-unqualified",
+    ),
+    "tree-counting-mention-table-qualified": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count sees a read of the assigned column through the written table in a fragment",
+        "mutation-verdict:construction:tree-counting-mention-table-qualified",
+    ),
+    "tree-counting-mention-operator-after": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count sees arithmetic after the column of another row in a fragment",
+        "mutation-verdict:construction:tree-counting-mention-operator-after",
+    ),
+    "tree-counting-mention-operator-before": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a count sees arithmetic before the column of another row in a fragment",
+        "mutation-verdict:construction:tree-counting-mention-operator-before",
+    ),
+    "tree-builder-raw-stands-as-direction": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands the raw node the builder makes for an ORDER BY direction is exempt only as the direction, never as the ORDER BY expression",
+        "mutation-verdict:construction:tree-builder-raw-stands-as-direction",
+    ),
+    "tree-builder-raw-has-no-parameters": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands the raw node the builder makes for an ORDER BY direction carries no parameter",
+        "mutation-verdict:construction:tree-builder-raw-has-no-parameters",
+    ),
+    "tree-builder-raw-text": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands the raw node the builder makes for an ORDER BY direction reads asc or desc and nothing else",
+        "mutation-verdict:construction:tree-builder-raw-text",
+    ),
+    "tree-role-operand-of-exists": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads the operand of EXISTS as a subquery",
+        "mutation-verdict:construction:tree-role-operand-of-exists",
+    ),
+    "tree-role-operand-of-in": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads the operand of IN as a subquery",
+        "mutation-verdict:construction:tree-role-operand-of-in",
+    ),
+    "tree-role-operand-of-not-in": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads the operand of NOT IN as a subquery",
+        "mutation-verdict:construction:tree-role-operand-of-not-in",
+    ),
+    "tree-role-boolean-of-where": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a whole WHERE as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-of-where",
+    ),
+    "tree-role-boolean-of-having": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a whole HAVING as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-of-having",
+    ),
+    "tree-role-boolean-of-on": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a whole ON as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-of-on",
+    ),
+    "tree-role-boolean-of-when": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a whole CASE condition as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-of-when",
+    ),
+    "tree-role-boolean-under-and": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a conjunct as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-under-and",
+    ),
+    "tree-role-boolean-under-or": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a disjunct as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-under-or",
+    ),
+    "tree-role-boolean-under-not": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads the operand of NOT as a predicate",
+        "mutation-verdict:construction:tree-role-boolean-under-not",
+    ),
+    "tree-followon-insert-stamp-is-the-stamp-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts refuses a fence value inserted as the stamp",
+        "mutation-verdict:construction:tree-followon-insert-stamp-is-the-stamp-token",
+    ),
+    "tree-update-stamp-is-the-stamp-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses a fence value assigned as the stamp of an update",
+        "mutation-verdict:construction:tree-update-stamp-is-the-stamp-token",
+    ),
+    "tree-update-clock-is-the-clock-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path stamping refuses the stamp assigned where the clock belongs",
+        "mutation-verdict:construction:tree-update-clock-is-the-clock-token",
+    ),
+    "tree-cas-insert-stamp-is-the-stamp-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts refuses the clock token inserted as the stamp",
+        "mutation-verdict:construction:tree-cas-insert-stamp-is-the-stamp-token",
+    ),
+    "tree-cas-insert-clock-is-the-clock-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts refuses the stamp inserted where the clock belongs",
+        "mutation-verdict:construction:tree-cas-insert-clock-is-the-clock-token",
+    ),
+    "tree-cas-insert-preserved-is-the-clock-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a compare-and-set that inserts refuses the stamp inserted as a preserved first instant",
+        "mutation-verdict:construction:tree-cas-insert-preserved-is-the-clock-token",
+    ),
+    "tree-fence-names-a-statement": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence on a name no statement of the batch has",
+        "mutation-verdict:construction:tree-fence-names-a-statement",
+    ),
+    "tree-fence-source-writes-a-stamp": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses a fence on a statement that writes no stamp",
+        "mutation-verdict:construction:tree-fence-source-writes-a-stamp",
+    ),
+    "tree-cas-many-max-is-an-integer": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a many-row bound that is not a whole number",
+        "mutation-verdict:construction:tree-cas-many-max-is-an-integer",
+    ),
+    "tree-cas-many-max-is-positive": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a many-row bound below one",
+        "mutation-verdict:construction:tree-cas-many-max-is-positive",
+    ),
+    "tree-statement-name-grammar": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a statement name outside the stamp grammar",
+        "mutation-verdict:construction:tree-statement-name-grammar",
+    ),
+    "tree-statement-name-unique": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a second statement of the same name",
+        "mutation-verdict:construction:tree-statement-name-unique",
+    ),
+    "tree-lock-precedes-a-cas": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds refuses a statement that is not a compare-and-set after a lock",
+        "mutation-verdict:construction:tree-lock-precedes-a-cas",
+    ),
+    "tree-needs-a-dialect": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds says a batch without a tree dialect has none",
+        "mutation-verdict:construction:tree-needs-a-dialect",
+    ),
+    "tree-followon-insert-selects": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts says a VALUES follow-on is refused for being VALUES",
+        "mutation-verdict:construction:tree-followon-insert-selects",
+    ),
+    "tree-gate-untied-message": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate names the tie when a gate is refused for being untied",
+        "mutation-verdict:construction:tree-gate-untied-message",
+    ),
+    "tree-followon-spelled-clock-message": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock says a follow-on that spells a clock reads the clock",
+        "mutation-verdict:construction:tree-followon-spelled-clock-message",
+    ),
+    "tree-raw-fragment-unminted-message": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the statement, its fragments, and its binds says an unminted raw node was never minted",
+        "mutation-verdict:construction:tree-raw-fragment-unminted-message",
+    ),
+    "tree-counting-arithmetic-message": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path counting assignments says a blind count is a blind count",
+        "mutation-verdict:construction:tree-counting-arithmetic-message",
+    ),
+    "tree-fragment-malformed-fence-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a malformed fence token",
+        "mutation-verdict:construction:tree-fragment-malformed-fence-token",
+    ),
+    "tree-fragment-dollar-quoted": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the text of a fragment refuses a dollar-quoted string",
+        "mutation-verdict:construction:tree-fragment-dollar-quoted",
+    ),
+    "tree-fence-equality-is-a-fence-token": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the gate refuses the stamp compared with the stamp column as a gate",
+        "mutation-verdict:construction:tree-fence-equality-is-a-fence-token",
+    ),
+    "tree-tie-exists-outer-in-scope": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties EXISTS by an outer column that names a source of the statement",
+        "mutation-verdict:construction:tree-tie-exists-outer-in-scope",
+    ),
+    "tree-tie-exists-value-equals-outer": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties nothing by a value equal to an outer column",
+        "mutation-verdict:construction:tree-tie-exists-value-equals-outer",
+    ),
+    "tree-tie-exists-inner-equals-value": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties nothing by a column of the fenced source equal to a value",
+        "mutation-verdict:construction:tree-tie-exists-inner-equals-value",
+    ),
+    "tree-tie-exists-outer-equals-value": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties nothing by an outer column equal to a value",
+        "mutation-verdict:construction:tree-tie-exists-outer-equals-value",
+    ),
+    "tree-tie-exists-value-equals-inner": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the tie of a subquery gate to the fenced source ties nothing by a value equal to a column of the fenced source",
+        "mutation-verdict:construction:tree-tie-exists-value-equals-inner",
+    ),
+    "tree-no-row-every-selection": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a subquery that may not return a row whatever it matched reads every selection, so one plain column beside an aggregate gates nothing",
+        "mutation-verdict:construction:tree-no-row-every-selection",
+    ),
+    "tree-role-operand-only-of-in-or-exists": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules where a fragment stands reads a subquery only under IN, NOT IN, and EXISTS",
+        "mutation-verdict:construction:tree-role-operand-only-of-in-or-exists",
+    ),
+    "tree-followon-insert-instants-are-filtered": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts keeps only the columns that take the fenced instant",
+        "mutation-verdict:construction:tree-followon-insert-instants-are-filtered",
+    ),
+    "tree-clock-spelling-any-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock refuses a clock spelled in any one fragment of several",
+        "mutation-verdict:construction:tree-clock-spelling-any-fragment",
+    ),
     "generated-selection-fence": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/generated-selection.test.ts",
@@ -8574,6 +11443,685 @@ def verdict_inventory_problems(
     return problems
 
 
+# Where the rules that read a statement tree live. A region runs from its first anchor to
+# its second, and `None` is a whole file. Part 3b moves these rules, and moves the anchors
+# with them.
+TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]] = {
+    "packages/core/src/sql-tree.ts": ((None, None),),
+    "packages/core/src/fenced-batch.ts": (
+        (
+            "  private requireFenceSource(",
+            "  /**\n   * A statement that runs meaningfully only when a CAS of this batch won.",
+        ),
+        ("  /** `cas`, built as a tree.", "  private add(s: {"),
+    ),
+}
+# A spelling list is a rule for each entry, so every line of one needs a mutation.
+TREE_RULE_SPELLING_BLOCKS: tuple[tuple[str, str, str], ...] = (
+    ("packages/core/src/sql-tree.ts", "const CLOCK_FUNCTIONS = [\n", "]\n"),
+    (
+        "packages/core/src/sql-tree.ts",
+        "export const CLOCK_SPELLING = new RegExp(\n",
+        "  ].join('|'),\n",
+    ),
+    ("packages/core/src/sql-tree.ts", "const COUNTING_OPERATORS = ", "\n"),
+)
+TREE_CONDITION_TOKEN = re.compile(
+    r"\bif \(|&&|\|\||(?<!\?)\? |\.every\(|\.some\(|=== |!== |\.includes\(|\.filter\("
+)
+TREE_STRING_LITERAL = re.compile(r"`[^`]*`|'[^']*'|\"[^\"]*\"")
+
+
+def tree_condition_lines(
+    text: str,
+    regions: tuple[tuple[str | None, str | None], ...],
+    blocks: tuple[tuple[str, str], ...],
+) -> dict[int, int]:
+    """Each condition-bearing line of the regions, with how many conditions it holds.
+
+    This reads text, not TypeScript. A line holds a condition when it carries a
+    branch, a comparison, or a boolean operator outside a string, a comment, and the
+    message of a throw, and it holds one more for each `&&` or `||`. `??` is a default
+    and not a branch. A condition
+    spelled some other way is not counted: see the self-test's false negative.
+    """
+    lines = text.split("\n")
+
+    def span(first: str | None, second: str | None) -> tuple[int, int]:
+        if first is None or second is None:
+            return 1, len(lines)
+        start = text.index(first)
+        end = text.index(second, start + len(first))
+        return text.count("\n", 0, start) + 1, text.count("\n", 0, end) + 1
+
+    wanted: dict[int, int] = {}
+    for first, second in regions:
+        low, high = span(first, second)
+        depth = 0
+        in_throw = False
+        in_comment = False
+        for number in range(low, high + 1):
+            stripped = lines[number - 1].strip()
+            if stripped.startswith("/*"):
+                in_comment = True
+            if in_comment:
+                if "*/" in stripped:
+                    in_comment = False
+                continue
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            if in_throw:
+                depth += stripped.count("(") - stripped.count(")")
+                in_throw = depth > 0
+                continue
+            if re.search(r"\bthrow\b", stripped) and not stripped.startswith("if ("):
+                depth = stripped.count("(") - stripped.count(")")
+                in_throw = depth > 0
+                continue
+            code = TREE_STRING_LITERAL.sub("''", stripped)
+            # The operands of a condition opened on its own line, and the arms of a
+            # ternary, are read on the lines that hold them.
+            if code in ("if (", "} else if (") or code.startswith(("? ", ": ")):
+                continue
+            if TREE_CONDITION_TOKEN.search(code):
+                # An operator that ends or begins the line joins its operand to another
+                # line's, so it adds no condition here.
+                joins = code.endswith(("&&", "||")) + code.startswith(("&&", "||"))
+                wanted[number] = max(1, 1 + code.count("&&") + code.count("||") - joins)
+    for first, second in blocks:
+        low, high = span(first, second)
+        for number in range(low, high + 1):
+            stripped = lines[number - 1].strip()
+            if stripped and stripped not in ("[", "]", ")") and not stripped.endswith("["):
+                if not stripped.endswith("new RegExp("):
+                    wanted[number] = max(wanted.get(number, 0), 1)
+    return wanted
+
+
+def tree_rule_coverage_problems(
+    file: str,
+    text: str,
+    finds: list[tuple[str, str]],
+    regions: tuple[tuple[str | None, str | None], ...],
+    blocks: tuple[tuple[str, str], ...],
+    listed: dict[str, str],
+) -> list[str]:
+    """Hold every condition of a tree rule to a registered mutation or a listed reason.
+
+    The remainder is derived here, from the finds themselves, because a hand-kept list
+    of what has no mutation was read as complete when it was not.
+    """
+    lines = text.split("\n")
+    touching: dict[int, set[str]] = {}
+    for name, find in finds:
+        at = text.find(find)
+        if at < 0:
+            continue
+        first = text.count("\n", 0, at) + 1
+        for number in range(first, first + find.rstrip("\n").count("\n") + 1):
+            touching.setdefault(number, set()).add(name)
+    wanted = tree_condition_lines(text, regions, blocks)
+    problems: list[str] = []
+    short: set[str] = set()
+    for number in sorted(wanted):
+        have = len(touching.get(number, ()))
+        if have >= wanted[number]:
+            continue
+        line = lines[number - 1].strip()
+        short.add(line)
+        if line not in listed:
+            problems.append(
+                f"{file}:{number}: `{line}` holds {wanted[number]} condition(s) and "
+                f"{have} registered mutation(s) touch it; register one for each, or list "
+                "the line in TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
+            )
+    for line, reason in sorted(listed.items()):
+        if not reason.strip():
+            problems.append(f"{file}: listed condition `{line}` has no reason")
+        if line not in short:
+            problems.append(
+                f"{file}: listed condition `{line}` is stale: no such line is short of mutations"
+            )
+    return problems
+
+# Every condition-bearing line of the tree rules that holds more conditions than
+# registered mutations touch it, with what a run showed. An automatic sweep mutated each
+# such line and ran the core suite: where every mutant failed a test the line fails
+# closed, and where one survived the line was read by hand. A new line of this kind
+# fails the self-test until it has a mutation or an entry here.
+TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
+    "packages/core/src/fenced-batch.ts": {
+        "(isCas || tree.kind !== 'DeleteQueryNode')": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "column !== undefined &&": (
+            "refuses more: with it gone an upsert of a table with no preserved instant may assign only provenance, which refuses more"
+        ),
+        "column === undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 9 at the fewest"
+        ),
+        "const following = isCas ? null : followOnInsertProvenance(tree)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 24 at the fewest"
+        ),
+        "const isCas = kind === 'cas' || kind === 'casMany'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "const kind: Kind = open ? 'tail' : asked": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "const open = asked === 'openTail'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 245 at the fewest"
+        ),
+        "const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]": (
+            "a guard, and no shape tells it from the code: no table answers to null"
+        ),
+        "const source = this.statements.find((s) => s.name === name)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 175 at the fewest"
+        ),
+        "const stamped = FENCED_TABLES.find((table) => table === written) ?? null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 127 at the fewest"
+        ),
+        "const stamps = stamped !== null && (tree.kind === 'UpdateQueryNode' || inserted !== null)": (
+            "refuses more: with the table test gone an update of a table with no provenance must stamp it, which refuses more"
+        ),
+        "fence: stamps ? { target: stamped, sealedBy: null } : null,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {": (
+            "changes nothing a statement can show: `compiled.readsClock` is subsumed: the clock token compiles to the batch clock's text, which the comparison beside it finds, and deleting readsClock alone fails no test of 490"
+        ),
+        "if (!isCas) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 49 at the fewest"
+        ),
+        "if (!open && gates.length === 0 && positional.length !== 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!open && gates.length === 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 4 at the fewest"
+        ),
+        "if (column !== undefined && !inserted.clockColumns.includes(column)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (counting !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "if (following !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 28 at the fewest"
+        ),
+        "if (inserted.conflict !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "if (isCas && stamped !== null && inserted !== null) {": (
+            "a guard, and no shape tells it from the code: a compare-and-set that reaches this line has already been required to write a fenced table"
+        ),
+        "if (isCas && stamped === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (kind === 'followOn') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (kind === 'tail') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 22 at the fewest"
+        ),
+        "if (preservedInstant !== undefined && !following.fencedInstants.includes(preservedInstant)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (stamped !== null && following.conflict) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (stamps && inserted === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "inserted.conflict.columns.some((name) => name === null || !provenance.includes(name))": (
+            "a guard, and no shape tells it from the code: the grammar has already refused an assignment to something other than a column"
+        ),
+        "kind !== 'cas' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "kind !== 'casMany'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "stamped !== null &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "tree.kind !== 'InsertQueryNode' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 59 at the fewest"
+        ),
+        "typeof value === 'bigint' ||": (
+            "refuses more: with it gone a bigint argument is refused, which refuses more"
+        ),
+        "typeof value === 'number' ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 34 at the fewest"
+        ),
+        "typeof value === 'string' ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 222 at the fewest"
+        ),
+        "value === null ||": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+    },
+    "packages/core/src/sql-tree.ts": {
+        "!(select.selections ?? []).some((selection) =>": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "!isRoot &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 256 at the fewest"
+        ),
+        "'current_timestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'localtime',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'localtimestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_date',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_time',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "'utc_timestamp',": (
+            "changes nothing a statement can show: also a bare keyword, so the keyword arm refuses its call: deleting the entry fails no test of 499, with a test that calls it in place"
+        ),
+        "([field, value]) => value !== undefined && !fields.includes(field),": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 85 at the fewest"
+        ),
+        "(fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&": (
+            "a guard, and no shape tells it from the code: no fenced source answers to null"
+        ),
+        "(table !== null && new RegExp(String.raw`(?<!\\w)\"?${table}\"?\\.${name}`, 'i').test(text)) ||": (
+            "a guard, and no shape tells it from the code: every statement that assigns writes a table"
+        ),
+        "AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : tableName(source)": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "OrderByItemNode.is(parent) &&": (
+            "a guard, and no shape tells it from the code: only an ORDER BY item has a direction field"
+        ),
+        "RawNode.is(candidate) &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 55 at the fewest"
+        ),
+        "RawNode.is(node) &&": (
+            "a guard, and no shape tells it from the code: the one caller passes a raw node"
+        ),
+        "SelectAllNode.is(node) || (ReferenceNode.is(node) && SelectAllNode.is(node.column))": (
+            "refuses more: with the column test gone every unaliased column is read as a star, which refuses more"
+        ),
+        "conflict: tree.onConflict !== undefined,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 13 at the fewest"
+        ),
+        "conflict: updates === undefined ? null : assignedProvenance(updates),": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 9 at the fewest"
+        ),
+        "const assigned = (column: string) => updates.filter((update) => assignedColumn(update) === column)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 223 at the fewest"
+        ),
+        "const column = reference === undefined ? null : columnName(reference.column)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "const incoming = InsertQueryNode.is(query) ? 'excluded' : null": (
+            "changes nothing a statement can show: `excluded` names no row in an UPDATE, so no UPDATE the database accepts reads it"
+        ),
+        "const inner = AliasNode.is(node) ? node.node : node": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 130 at the fewest"
+        ),
+        "const inner = AliasNode.is(source) ? source.node : source": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "const inner = source === null ? null : derivedSelect(source)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "const name = AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "const only = (list: readonly ColumnUpdateNode[]) => (list.length === 1 ? list[0] : undefined)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "const plain = selections.every((selection) => !isStar(selection.selection))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "const position = predicates.includes(child)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 34 at the fewest"
+        ),
+        "const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 11 at the fewest"
+        ),
+        "const scope = select === null ? [] : tableScope(select)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "const select = selected !== undefined && SelectQueryNode.is(selected) ? selected : null": (
+            "a guard, and no shape tells it from the code: narrows a type"
+        ),
+        "const selection = AliasNode.is(aliased) ? aliased.node : aliased": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
+        ),
+        "const where = select === null ? null : whereOf(select)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "copiedInstant: column === null ? null : { table: tableName(reference?.table), column },": (
+            "a guard, and no shape tells it from the code: an instant that is no column reference names no column to compare"
+        ),
+        "else if (sql[i + 1] === \"'\") literal += sql[++i]": (
+            "changes nothing a statement can show: an escaped quote read as the end of one literal and the start of the next covers the same characters"
+        ),
+        "else if (text[i] === ')') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "for (const item of value) if (isNode(item)) out.push(item)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
+        ),
+        "from === undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 28 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(candidate) || operatorName(candidate.operator) !== '=') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(candidate)) return false": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 15 at the fewest"
+        ),
+        "if (!BinaryOperationNode.is(node) || operatorName(node.operator) !== '=') return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (!InsertQueryNode.is(tree)) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 18 at the fewest"
+        ),
+        "if (!ReferenceNode.is(reference) || columnName(reference.column) !== 'fence_stamp') continue": (
+            "a guard, and no shape tells it from the code: a node that is no reference has no column named fence_stamp"
+        ),
+        "if (!SelectQueryNode.is(query)) return []": (
+            "a guard, and no shape tells it from the code: only a SELECT has one source that can be a derived table"
+        ),
+        "if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (Array.isArray(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
+        ),
+        "if (ColumnUpdateNode.is(node) && assignedColumn(node) === null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (DeleteQueryNode.is(query)) sources.push(...query.from.froms)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (DeleteQueryNode.is(tree)) return tableName(tree.from.froms[0])": (
+            "changes nothing a statement can show: a DELETE stamps nothing, so no rule reads the table it writes"
+        ),
+        "if (InsertQueryNode.is(node)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 17 at the fewest"
+        ),
+        "if (InsertQueryNode.is(query)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 19 at the fewest"
+        ),
+        "if (InsertQueryNode.is(tree)) return tableName(tree.into)": (
+            "changes nothing a statement can show: a SELECT has no into field, and an absent table reads as null either way"
+        ),
+        "if (RawNode.is(candidate)) texts.push(candidate.sqlFragments.join(' '))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 21 at the fewest"
+        ),
+        "if (RawNode.is(child) && !isBuilderRaw(node, child)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (RawNode.is(inner)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 30 at the fewest"
+        ),
+        "if (RawNode.is(operand)) subqueries.push(operand)": (
+            "changes nothing a statement can show: an operand that is no raw node is never looked up in the list"
+        ),
+        "if (SelectModifierNode.is(node) && node.modifier !== 'Distinct') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (SelectQueryNode.is(query)) {": (
+            "refuses more: read for every query, a DELETE's FROM is counted twice, so its unqualified stamp is ambiguous and refused"
+        ),
+        "if (TableNode.is(node) && node.table.schema !== undefined) return 'a schema-qualified table'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (UpdateQueryNode.is(query) && query.table !== undefined) sources.push(query.table)": (
+            "changes nothing a statement can show: a query with no table field adds a source that names no table, which the next line drops"
+        ),
+        "if (UpdateQueryNode.is(query) || DeleteQueryNode.is(query) || SelectQueryNode.is(query)) {": (
+            "changes nothing a statement can show: an INSERT has no where field, and an absent WHERE reads as null either way"
+        ),
+        "if (UpdateQueryNode.is(tree)) return tableName(tree.table)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 39 at the fewest"
+        ),
+        "if (ValueNode.is(node)) return []": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
+        ),
+        "if (boolean !== null) markBoolean(boolean)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 37 at the fewest"
+        ),
+        "if (cached !== undefined) return cached": (
+            "changes nothing a statement can show: a cache hit returns what parsing the text again returns"
+        ),
+        "if (column === null) return []": (
+            "a guard, and no shape tells it from the code: the grammar has already refused an assignment to something other than a column"
+        ),
+        "if (column === null) return null": (
+            "changes nothing a statement can show: a star has no column name, and the name returned for it is null either way unless it is aliased, which a star cannot be"
+        ),
+        "if (derived !== null && selectedSourceColumn(derived) !== column) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (fence !== null) return [fence]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 139 at the fewest"
+        ),
+        "if (fields !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (index < 0 || columns.lastIndexOf(name) !== index) return undefined": (
+            "changes nothing a statement can show: a column that is not listed reads position -1, which holds undefined too"
+        ),
+        "if (indexWhere !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 4 at the fewest"
+        ),
+        "if (insert.onConflict !== undefined && values.where === undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (instant === undefined || !ReferenceNode.is(instant)) return false": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (node === undefined) return null": (
+            "a guard, and no shape tells it from the code: every caller passes a node the grammar has already required"
+        ),
+        "if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false": (
+            "refuses more: with either test gone a comparison of the written column counts as a count, which refuses more"
+        ),
+        "if (parsedFragmentCount < PARSED_FRAGMENT_CAP) {": (
+            "changes nothing a statement can show: the cap bounds memory and decides nothing about a statement"
+        ),
+        "if (placements !== null) placements.head = { fragment, next: placements.head }": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 15 at the fewest"
+        ),
+        "if (problem !== null) return": (
+            "changes nothing a statement can show: the first problem is reported either way"
+        ),
+        "if (qualifier !== undefined && qualifier !== sourceName) return null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (role === 'subquery' && !isOneGroup(outside)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (select.groupBy !== undefined) return true": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (someNode(indexWhere, (node) => ValueNode.is(node) && node.immediate !== true)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "if (source !== undefined) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "if (source === null || selections.length !== 1 || only === undefined) return null": (
+            "a guard, and no shape tells it from the code: a list of length one has a first element"
+        ),
+        "if (sql[i] !== \"'\") literal += sql[i]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "if (sql[i] !== \"'\") {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "if (subquery === null || !SelectQueryNode.is(subquery)) return []": (
+            "changes nothing a statement can show: a subquery that is a fragment has no WHERE a tree can read, so reading it for gates finds none"
+        ),
+        "if (table === null) return []": (
+            "refuses more: a derived table kept in scope names no table, so a fence on it fails the table check"
+        ),
+        "if (text[i] === '(') depth++": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "if (token === null || bindings === null) return super.transformNode(node, queryId)": (
+            "a guard, and no shape tells it from the code: bindings are null only outside bind(), where no token is transformed"
+        ),
+        "if (token.kind === 'now') {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 88 at the fewest"
+        ),
+        "if (token.kind === 'stamp') return ValueNode.create(bindings.stamp) as unknown as T": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 7 at the fewest"
+        ),
+        "if (token?.kind !== 'fence' || token.fence === null) continue": (
+            "a guard, and no shape tells it from the code: a fence token always names a fence: the second test narrows a type"
+        ),
+        "if (typeof value !== 'object' || value === null || !weakSetHas(knownFragments, value)) {": (
+            "a guard, and no shape tells it from the code: a weak set holds no primitive, so the membership test alone answers the same"
+        ),
+        "if (typeof value !== 'object' || value === null || arrayBufferIsView(value)) return": (
+            "changes nothing a statement can show: bytes hold no undefined bind and no fragment, so descending into them finds nothing"
+        ),
+        "if (value === undefined) throw new Error(`insertedFrom: column '${column}' has no value`)": (
+            "a guard, and no shape tells it from the code: the record's type already requires a value for every column"
+        ),
+        "if (values !== undefined && SelectQueryNode.is(values)) {": (
+            "a guard, and no shape tells it from the code: narrows a type: the grammar admits VALUES or a SELECT and nothing else"
+        ),
+        "if (values !== undefined && ValuesNode.is(values)) {": (
+            "a guard, and no shape tells it from the code: narrows a type"
+        ),
+        "if (visit(value, path)) return": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 13 at the fewest"
+        ),
+        "if (where === null) return false": (
+            "changes nothing a statement can show: an EXISTS with no WHERE holds no fence, so no gate reads whether it is tied"
+        ),
+        "incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
+        ),
+        "literals.some(": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 76 at the fewest"
+        ),
+        "match[0] === '?' ? 'bind' : match[0] === NOW ? 'now' : { fence: match[1] as string },": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 12 at the fewest"
+        ),
+        "name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)": (
+            "a guard, and no shape tells it from the code: no source answers to null"
+        ),
+        "name !== null && inner.some((candidate) => candidate.name === name)": (
+            "a guard, and no shape tells it from the code: no source answers to null"
+        ),
+        "path === 'bind' ? `bind '${name}'` : `${path}.${name}`,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
+        ),
+        "qualifier !== undefined": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 27 at the fewest"
+        ),
+        "return AliasNode.is(aliased) && IdentifierNode.is(aliased.alias) ? aliased.alias.name : column": (
+            "a guard, and no shape tells it from the code: the builder's alias is always an identifier"
+        ),
+        "return ColumnNode.is(node) ? node.column.name : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "return OperatorNode.is(node) ? node.operator : null": (
+            "a guard, and no shape tells it from the code: a node that is no operator has no operator field"
+        ),
+        "return ReferenceNode.is(inner) ? (inner.table?.table.identifier.name ?? null) : null": (
+            "a guard, and no shape tells it from the code: a node that is no reference has no table field"
+        ),
+        "return ReferenceNode.is(inner) ? columnName(inner.column) : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
+        ),
+        "return SelectQueryNode.is(inner) ? inner : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return TableNode.is(inner) ? inner.table.identifier.name : null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return UpdateQueryNode.is(query) ? (query.updates ?? []) : []": (
+            "a guard, and no shape tells it from the code: only an UPDATE has an updates field"
+        ),
+        "return conjuncts(where).some((candidate) => {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "return fence === null ? [] : [fence.source]": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 33 at the fewest"
+        ),
+        "return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null": (
+            "a guard, and no shape tells it from the code: a list of length one has a first element"
+        ),
+        "return inner !== null && mayReturnNoRow(inner) ? gatingFences(inner) : []": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "return node !== undefined && ValueNode.is(node) && node.value instanceof EngineToken": (
+            "a guard, and no shape tells it from the code: only a value node holds a token, so the instanceof test alone answers the same"
+        ),
+        "return row !== undefined && ValueListNode.is(row) ? row.values[index] : undefined": (
+            "a guard, and no shape tells it from the code: the grammar has already required one row of values"
+        ),
+        "return selected !== undefined && SelectQueryNode.is(selected) ? gatingFences(selected) : []": (
+            "changes nothing a statement can show: a row of VALUES has no WHERE, so reading it for gates finds none"
+        ),
+        "return selection !== undefined && AliasNode.is(selection) ? selection.node : selection": (
+            "a guard, and no shape tells it from the code: an unaliased selection is its own node"
+        ),
+        "return test(node) || children(node).some((child) => someNode(child, test))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 100 at the fewest"
+        ),
+        "return typeof value === 'object' && value !== null && weakSetHas(definedStatements, value)": (
+            "a guard, and no shape tells it from the code: a weak set holds no primitive, so the membership test alone answers the same"
+        ),
+        "select !== null &&": (
+            "a guard, and no shape tells it from the code: narrows a type: the VALUES refusal has already spoken for an insert with no SELECT"
+        ),
+        "selects: select !== null,": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 35 at the fewest"
+        ),
+        "token === 'bind'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 23 at the fewest"
+        ),
+        "typeof (value as { kind?: unknown }).kind === 'string'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
+        ),
+        "typeof value === 'object' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 251 at the fewest"
+        ),
+        "value !== null &&": (
+            "a guard, and no shape tells it from the code: the builder's nodes hold undefined and never null"
+        ),
+        "where === null": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 17 at the fewest"
+        ),
+        "while (placement !== null && placement.fragment !== value) placement = placement.next": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 10 at the fewest"
+        ),
+        "} else if (isNode(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 96 at the fewest"
+        ),
+        "} else if (operand !== null) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
+        ),
+        "} else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {": (
+            "a guard, and no shape tells it from the code: the first two tests narrow a type before the row count is read"
+        ),
+    },
+}
+
+
 def mutation_question_delta_diagnostic(
     name: str,
     find: str,
@@ -9623,6 +13171,119 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
             )
+    tree_coverage_source = (
+        "function gate(node) {\n"
+        "  if (node.a && node.b) return null\n"
+        "  // if (comment) is not code\n"
+        "  if (node.c) {\n"
+        "    throw new Error(\n"
+        "      `a message with a === b`,\n"
+        "    )\n"
+        "  }\n"
+        "  return node.kind === 'x'\n"
+        "}\n"
+        "const SPELLINGS = [\n"
+        "  'now',\n"
+        "  'sysdate',\n"
+        "]\n"
+    )
+    tree_coverage_regions = ((None, None),)
+    tree_coverage_blocks = (("const SPELLINGS = [\n", "]\n"),)
+    tree_coverage_cases = (
+        (
+            "every condition has a mutation or a reason",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+        (
+            "one mutation on a line of two conditions",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            ("fixture.ts:2:",),
+        ),
+        (
+            "a spelling with no mutation",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            ("fixture.ts:13:",),
+        ),
+        (
+            "a stale listing and an empty reason",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": " ", "if (node.c) {": "covered now"},
+            (
+                "fixture.ts: listed condition `if (node.c) {` is stale",
+                "fixture.ts: listed condition `return node.kind === 'x'` has no reason",
+            ),
+        ),
+        (
+            # A second false negative, kept on purpose: the count is of mutations that
+            # touch the line, not of operands removed. Two mutations that both remove
+            # `node.a` leave `node.b` unheld, and the check is clean.
+            "false negative: two mutations of one operand",
+            [
+                ("drops-a", "  if (node.a && node.b) return null"),
+                ("drops-a-again", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+        (
+            # The false negative, kept on purpose: a condition spelled with none of the
+            # tokens this reads is not a line it counts. `Boolean(node.d)` decides a
+            # return here, no mutation touches it, and the check is clean.
+            "false negative: a condition the token list does not name",
+            [
+                ("first", "  if (node.a && node.b) return null"),
+                ("second", "  if (node.a && node.b) return null"),
+                ("third", "  if (node.c) {"),
+                ("now", "  'now',\n"),
+                ("sysdate", "  'sysdate',\n"),
+            ],
+            {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
+            (),
+        ),
+    )
+    for label, finds, listed, wanted_prefixes in tree_coverage_cases:
+        source = tree_coverage_source
+        if label.startswith("false negative"):
+            source = source.replace(
+                "  return node.kind === 'x'\n",
+                "  while (Boolean(node.d)) return null\n  return node.kind === 'x'\n",
+            )
+        got = tree_rule_coverage_problems(
+            "fixture.ts", source, finds, tree_coverage_regions, tree_coverage_blocks, listed
+        )
+        if len(got) != len(wanted_prefixes) or any(
+            not problem.startswith(prefix) for problem, prefix in zip(got, wanted_prefixes)
+        ):
+            failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
     target_checker = mutation_target_diagnostic
     if fault == FROZEN_MIGRATION_TARGET_FAULT:
         target_checker = lambda _file: None
@@ -9948,7 +13609,26 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 443:
+        for tree_rule_file, tree_rule_regions in TREE_RULE_REGIONS.items():
+            failures.extend(
+                tree_rule_coverage_problems(
+                    tree_rule_file,
+                    (ROOT / tree_rule_file).read_text(),
+                    [
+                        (mutation.name, mutation.find)
+                        for mutation in MUTATIONS
+                        if mutation.file == tree_rule_file
+                    ],
+                    tree_rule_regions,
+                    tuple(
+                        (first, second)
+                        for block_file, first, second in TREE_RULE_SPELLING_BLOCKS
+                        if block_file == tree_rule_file
+                    ),
+                    TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
+                )
+            )
+        if len(MUTATIONS) != 657:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
