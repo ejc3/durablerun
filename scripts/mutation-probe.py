@@ -6899,6 +6899,20 @@ MUTATION_SPECS.extend(
             "    if (config?.resetOnRelease === null) { // MUTATION\n",
             "a pool that resets a connection on release loses the session settings, and every write after the first runs at REPEATABLE READ with no strict mode",
         ),
+        (
+            "mysql-gated-statement-skipped-when-its-gate-matched-nothing",
+            "packages/store-mysql/src/executor.ts",
+            "            if (gate !== undefined && results[gate]?.rowsAffected === 0) {\n",
+            "            if (gate !== undefined && results[gate]?.rowsAffected === -1) { // MUTATION\n",
+            "a statement whose gate matched no row is sent anyway, and every terminal batch pays the round trips of a wake that cannot match",
+        ),
+        (
+            "mysql-deadlocked-write-batch-runs-again",
+            "packages/store-mysql/src/executor.ts",
+            "            mode === 'write' &&\n",
+            "            mode === 'read' && // MUTATION\n",
+            "a write batch InnoDB rolled back as a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge an infrastructure retry",
+        ),
     )
 )
 
@@ -10554,6 +10568,18 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions refuses a pool that resets a connection on release, or that does not say",
             "mutation-verdict:construction:mysql-foreign-pool-reset-on-release-refused",
+        ),
+        "mysql-gated-statement-skipped-when-its-gate-matched-nothing": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server leaves a gated statement unsent when its gate matched no row, and sends it when the gate matched a row it did not change",
+            "mutation-verdict:behavior:mysql-gated-statement-skipped-when-its-gate-matched-nothing",
+        ),
+        "mysql-deadlocked-write-batch-runs-again": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions a deadlock runs a write batch again after a deadlock, under the named lock it already holds",
+            "mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again",
         ),
     }
 )
@@ -14953,7 +14979,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 744:
+        if len(MUTATIONS) != 746:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

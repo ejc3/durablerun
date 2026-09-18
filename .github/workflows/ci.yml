@@ -1160,6 +1160,7 @@ jobs:
                   'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
                   'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
                   'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
+                  'mutation-verdict:behavior:mysql-gated-statement-skipped-when-its-gate-matched-nothing',
                   'mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take',
                   'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
                   'mutation-verdict:behavior:postgres-event-lock-is-advisory',
@@ -1191,6 +1192,7 @@ jobs:
                   'mutation-verdict:behavior:terminal-batch-writes-the-completion-event',
                   'mutation-verdict:behavior:wake-sources-find-the-woken-runs',
                   'mutation-verdict:behavior:wake-tasks-binds-the-queue',
+                  'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again',
               ))
               repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
                   "const gateName = open ? undefined : gates[0]?.fence",
