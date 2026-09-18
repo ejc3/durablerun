@@ -448,55 +448,6 @@ def behavioral_verdict_title_diagnostic(
 # (name, file, find, replace, what removing it should break)
 MUTATION_SPECS = [
     (
-        "followon-provenance-check",
-        "packages/core/src/fenced-batch.ts",
-        "      assertWritesStamp(at, bare, head, target, false)",
-        "      void 0 // MUTATION",
-        "a follow-on may write a fenced table without stamping it",
-    ),
-    (
-        "positive-fence-required",
-        "packages/core/src/fenced-batch.ts",
-        "function hasPositiveFence(sql: string): boolean {",
-        "function hasPositiveFence(sql: string): boolean {\n  if (sql) return true // MUTATION",
-        "a follow-on may run with no fence at all",
-    ),
-    (
-        "positive-fence-is-not",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!matchesWord(sql, i, 'NOT')) continue",
-        "    if (!matchesWord(sql, i, 'NOT') || /\\bIS\\s*$/i.test(sql.slice(0, i))) continue",
-        "a fence inside the right-hand side of IS NOT is mistaken for positive authority",
-    ),
-    (
-        "top-level-or-reach",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && s.open === undefined && hasTopLevelOr(bare)) {",
-        "    if (false && !isCas && s.open === undefined && hasTopLevelOr(bare)) {",
-        "a top-level OR lets a follow-on write rows that did not satisfy its fence",
-    ),
-    (
-        "clock-ban-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "    if (!isCas && (false || sql.includes(this.now))) { // MUTATION",
-        "a follow-on may resolve the clock token a second time",
-    ),
-    (
-        "clock-ban-raw-dialect-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "    if (!isCas && (sql.includes(NOW) || false)) { // MUTATION",
-        "a follow-on may embed the dialect clock expression directly",
-    ),
-    (
-        "raw-fence-token-check",
-        "packages/core/src/fenced-batch.ts",
-        "      new RegExp(`\\\\$FENCE:(${FENCE_STATEMENT_NAME_SOURCE})\\\\$`, 'g'),",
-        "      new RegExp('(?!)', 'g'),",
-        "a hand-written fence token naming nothing compiles to a dead filter",
-    ),
-    (
         # Replaces the two per-call-site fence mutations. Those statements no
         # longer CONTAIN a fence a caller could remove — the primitive builds
         # the selection — so the mutation moves to the generator, where one
@@ -640,14 +591,6 @@ MUTATION_SPECS = [
         "      AND w.queue = ${run}.queue\n",
         "",
         "two wait rows, each disqualifying, combine into a wake",
-    ),
-    (
-        "event-upsert-requires-preserved-instant",
-        "packages/core/src/fenced-batch.ts",
-        "        !containsCompleteSet(conflictUpdate, required)",
-        "        !containsCompleteSet(conflictUpdate, required) &&\n"
-        "        !containsCompleteSet(conflictUpdate, FENCE_SET)",
-        "the event upsert primitive accepts the current statement instant",
     ),
     (
         # The tree path's own mutations. Each removes one condition of a rule that reads a
@@ -2319,38 +2262,6 @@ MUTATION_SPECS = [
         "    weakSetHas(bindCompilationErrors, value)\n",
         "    false // MUTATION: ignore the private compiler-error brand\n",
         "the compiler-error predicate stops reading its private brand",
-    ),
-    (
-        "testing-helper-bind-count-missing-argument",
-        "packages/core/src/fenced-batch.ts",
-        "    if (argIndex !== s.args.length) {",
-        "    if (argIndex < s.args.length) {",
-        "a statement with more placeholders than explicit args bypasses the compiler bind-count check",
-    ),
-    (
-        "testing-helper-bind-count-unused-argument",
-        "packages/core/src/fenced-batch.ts",
-        "    if (argIndex !== s.args.length) {",
-        "    if (argIndex > s.args.length) {",
-        "a statement with fewer placeholders than explicit args bypasses the compiler bind-count check",
-    ),
-    (
-        "testing-helper-bind-count-factory",
-        "packages/core/src/fenced-batch.ts",
-        "      throw bindCompilationError(\n"
-        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
-        "      throw new TrustedTypeError(\n"
-        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
-        "the bind-count failure bypasses the authenticated compiler-error factory",
-    ),
-    (
-        "testing-helper-bind-undefined-brand",
-        "packages/core/src/fenced-batch.ts",
-        "          throw bindCompilationError(\n"
-        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
-        "          throw new TrustedTypeError(\n"
-        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
-        "the explicit-undefined bind failure bypasses the authenticated compiler-error factory",
     ),
     (
         "testing-helper-bind-error-constructor",
@@ -6417,48 +6328,6 @@ MUTATION_SPECS.extend(
 )
 
 VERDICTS = {
-    "followon-provenance-check": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a CAS must write its own provenance rejects every follow-on write that omits complete provenance",
-        "mutation-verdict:construction:followon-provenance-check",
-    ),
-    "positive-fence-required": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
-        "mutation-verdict:construction:positive-fence-required",
-    ),
-    "positive-fence-is-not": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
-        "mutation-verdict:construction:positive-fence-is-not",
-    ),
-    "top-level-or-reach": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects a top-level OR but accepts alternation inside a fenced conjunct",
-        "mutation-verdict:construction:top-level-or-reach",
-    ),
-    "clock-ban-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
-        "mutation-verdict:construction:clock-ban-in-followon",
-    ),
-    "clock-ban-raw-dialect-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
-        "mutation-verdict:construction:clock-ban-raw-dialect-in-followon",
-    ),
-    "raw-fence-token-check": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "fence() names a statement, and the primitive supplies the value applies the same rules to a fence token written by hand",
-        "mutation-verdict:construction:raw-fence-token-check",
-    ),
     "tree-cas-writes-fenced-table": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -7834,12 +7703,6 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
-    "event-upsert-requires-preserved-instant": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a CAS must write its own provenance rejects an event upsert that re-stamps at the current statement instant",
-        "mutation-verdict:construction:event-upsert-requires-preserved-instant",
-    ),
     "emit-index-driver": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/query-plans.test.ts",
@@ -7899,30 +7762,6 @@ VERDICTS = {
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-brand-read": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-missing-argument": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-unused-argument": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-factory": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-undefined-brand": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
         "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
@@ -10233,7 +10072,6 @@ QUESTION_TOKEN_DELTA_REASONS = {
     "poison-targeted-settlement-owner": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
-    "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
     "generated-selection-fence": (
         "replacement adds a TypeScript conditional around a label-scoped SQL mutation"
     ),
@@ -13913,7 +13751,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 678:
+        if len(MUTATIONS) != 666:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

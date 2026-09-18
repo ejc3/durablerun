@@ -1,7 +1,6 @@
 import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
-  FENCE_SET,
   FencedBatch,
   type SqlFragment,
   type SqlStatement,
@@ -372,10 +371,7 @@ describe('FencedBatch tree statements', () => {
   })
 
   describe('generated follow-ons are trees', () => {
-    const generated = () =>
-      batch().cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, [
-        'r',
-      ])
+    const generated = () => withCas()
     const mirror = (set: Record<string, unknown>, setArgs: SqlStatement['args'] = []) =>
       generated().derived('mirror', {
         relation: 'runs-to-tasks',
@@ -805,16 +801,14 @@ describe('FencedBatch tree statements', () => {
     let thrown: unknown
     try {
       ;(globalThis as { Set: unknown }).Set = PoisonedSet
-      batch()
-        .cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, ['r'])
-        .derived('task', {
-          relation: 'runs-to-tasks',
-          fence: 'win',
-          where: 'f.run_id = ?',
-          whereArgs: ['r'],
-          set: { state: `'completed'` },
-          rows: 'one',
-        })
+      withCas().derived('task', {
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        where: 'f.run_id = ?',
+        whereArgs: ['r'],
+        set: { state: `'completed'` },
+        rows: 'one',
+      })
     } catch (error) {
       thrown = error
     } finally {
