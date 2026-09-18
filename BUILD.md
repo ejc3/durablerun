@@ -1476,6 +1476,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     version read and versioned write, the fixture's corruption-table switch,
     and the store's dialect-free declarations are now in three packages.
     Hoisting them is one change to all three stores.
+  - Deferred from PR4.3: a generated conformance surface that runs every store
+    call concurrently with itself on every dialect. PR #50 and PR4.3 each
+    found a transition no concurrent case reached, and each added a case for
+    that one transition, so the class is expected again until the surface is
+    generated.
 
 ## Phase 5 — operations + sharding
 
