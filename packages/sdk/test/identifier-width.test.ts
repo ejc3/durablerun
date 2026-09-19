@@ -1,4 +1,4 @@
-import { FatalTaskError } from '@durablerun/core'
+import { FatalTaskError, childSpawnKey } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { SAGA_DIALECTS, drive, runNext } from './saga-harness.js'
 import { Q, registry } from './worker-harness.js'
@@ -106,6 +106,69 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         'mutation-verdict:behavior:sdk-holds-an-emitted-event-name',
       ).toEqual({ outcomes: ['failed'], state: 'failed', namesWhatTheTaskPassed: true })
       await f.close()
+    })
+
+    it('holds each key at its last fitting length, and refuses it one character past', async () => {
+      // The numbers DESIGN.md gives for the SDK's keys, held so they cannot drift from the
+      // code: an awaited event name 248, a registered step 239, a step used twice 253, and
+      // a child task name whatever the stored child key leaves its replay key.
+      // One past its room, a key fails the task on that first pass: nothing is retried.
+      const firstPass = async (seed: string, job: Parameters<typeof registry>[0][string]) => {
+        const f = await open(seed)
+        await f.store.spawn(Q, 'job', '{}', THREE_TRIES)
+        const outcome = await runNext(f, registry({ job }), 'w-first')
+        const parent = await f.raw.batch(
+          'parent',
+          [{ sql: "SELECT task_id FROM tasks WHERE task_name = 'job'", args: [] }],
+          'read',
+        )
+        await f.close()
+        return { outcome, parentTaskId: String(parent[0]?.rows[0]?.task_id) }
+      }
+      const awaiting = (length: number) =>
+        firstPass(`width-await-${length}`, async (ctx) => {
+          await ctx.awaitEvent('e'.repeat(length), { timeoutSeconds: 5 })
+        })
+      const registered = (length: number) =>
+        firstPass(`width-registered-${length}`, async (ctx) => {
+          await ctx.step('k'.repeat(length), () => 1, { rollback: () => {} })
+        })
+      const twice = (length: number) =>
+        firstPass(`width-twice-${length}`, async (ctx) => {
+          await ctx.step('n'.repeat(length), () => 1)
+          await ctx.step('n'.repeat(length), () => 2)
+        })
+      // The room a child task name has under this harness's parent id, by the same sum
+      // DESIGN.md does for a 36 character id.
+      const roomUnder = (parentTaskId: string) =>
+        255 - [...childSpawnKey(parentTaskId, '')].length - '$spawn:'.length
+      const probe = await firstPass('width-parent-id', async () => {})
+      const room = roomUnder(probe.parentTaskId)
+      const spawning = (length: number) =>
+        firstPass(`width-spawn-${length}`, async (ctx) => {
+          await ctx.spawn('c'.repeat(length), {})
+        })
+      expect({
+        documentedRoomUnderA36CharacterParentId: roomUnder('x'.repeat(36)),
+        await248: (await awaiting(248)).outcome,
+        await249: (await awaiting(249)).outcome,
+        registered239: (await registered(239)).outcome,
+        registered240: (await registered(240)).outcome,
+        twice253: (await twice(253)).outcome,
+        twice254: (await twice(254)).outcome,
+        spawnAtItsRoom: (await spawning(room)).outcome,
+        spawnOnePast: (await spawning(room + 1)).outcome,
+      }).toEqual({
+        documentedRoomUnderA36CharacterParentId: 201,
+        await248: 'suspended',
+        await249: 'failed',
+        registered239: 'completed',
+        registered240: 'failed',
+        twice253: 'completed',
+        twice254: 'failed',
+        spawnAtItsRoom: 'completed',
+        spawnOnePast: 'failed',
+      })
     })
 
     it('still finishes a task in flight whose step name was stored before the rule and is longer than the width', async () => {
