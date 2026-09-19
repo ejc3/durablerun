@@ -129,7 +129,13 @@ a last docs PR gives a live owner to every open bullet that is left.
    ranges the checkpoint key serves, and their plan pins refuse the walk.
    PostgreSQL keeps the walk, which is keyed by task, because a range over a
    name is not sound under a linguistic collation. The hosted inspect route
-   shows the rollback outcome.
+   shows the rollback outcome. This is met. PR3.4b reads the attempt record
+   that the task's last run wrote, so a cancellation or a cap after a failed
+   attempt with budget left names no rollback: a `sagas` case committed
+   failing holds it on three dialects, and the fuzz walk holds it over every
+   saga it ends. The plan pins of `store-libsql` and `store-mysql` refuse the
+   walk, the one in `store-postgres` accepts the task-keyed walk and refuses a
+   name compared by order, and a hosted router case holds the inspect route.
 10. PR3.10a: the attestation refuses a postmortem that the pull request adds
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
@@ -1741,12 +1747,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     have no infrastructure retries, so a guard that ignored them would pass.
   - A parent that awaits a child does not see the child's rollback outcome.
     PR3.4b put the outcome on the hosted inspect route and left this half
-    open. The wire is not the obstacle: an older build ignores a field of the
-    completion payload that it does not know. The writer is: a terminal batch
-    binds a payload built before it runs, the outcome is a fact only that
-    batch's SQL knows, and choosing among bound payloads in SQL needs the saga
-    predicates as tree nodes in the follow-on insert's select list, where the
-    tree refuses raw fragments (DESIGN.md §3.10).
+    open, because the obstacle is the writer and not the wire: a terminal
+    batch binds its completion payload before it runs, and the outcome is a
+    fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
+    and what would lift it, which is the saga predicates as tree nodes.
   - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
     and attempt records are found by a test of each name among the task's own
     checkpoints, because a range of names is not sound under the database's
@@ -1774,7 +1778,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     fails its run, and a failure with budget left places a pass, which becomes
     the task's last run. The read now names the record the task's last run
     wrote, on all three stores. A case in the `sagas` surface builds both
-    histories, and it failed on three dialects before the change.
+    histories, and it failed on three dialects before the change. The fuzz
+    walk now reads the result of every saga task at its end, and requires a
+    rollback error exactly when a rollback's failure ended the task, and that
+    rollback's: the class ran green under the fuzz before, because no row
+    invariant can see a value that is derived when it is read.
   - A saga's start markers and attempt records were found by a test of each
     name, which the checkpoints key cannot serve, so the failure of any task
     and every read of a result walked all the checkpoints the task has. libSQL
@@ -1784,20 +1792,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     its own collation, which is binary, so the literals are plain, and a
     binary cast was measured to stop the key from serving the range.
     PostgreSQL keeps the test of each name, because a name there orders under
-    the database's collation and the range is not sound: under the ICU root
-    collation the range from `$started:` to `$started;` is empty. DESIGN.md
-    §3.4 records that difference, which neither the local server nor CI's can
-    show, because both sort by byte. The attempt record is read only for a
-    failed task whose saga began, on every dialect, so the result read of a
-    plain task touches no checkpoint but the phase marker's row. The plan pins
-    hold each dialect to what it does. libSQL's refuses the walk it used to
-    accept and lets nothing sort. MySQL's counts the rows walked beside 2,000
-    checkpoints of the task, which was 2,030 for a plain task's failure.
-    PostgreSQL's accepts a walk keyed by the task, refuses a name compared by
-    order, and requires that no attempt record is read when no saga began or a
-    cancellation ended it. Medians in ms beside the task's own checkpoints,
-    main and then this change, from one harness run in a worktree of each,
-    three processes a side, interleaved, 200 timed reads in each:
+    the database's collation and the range is not sound. DESIGN.md §3.4
+    records that difference with the measured miss, which neither the local
+    server nor CI's can show, because both sort by byte. The attempt record is
+    read only for a failed task whose saga began, on every dialect, so the
+    result read of a plain task touches no checkpoint but the phase marker's
+    row. The plan pins hold each dialect to what it does. libSQL's refuses the
+    walk it used to accept and lets nothing sort. MySQL's counts the rows
+    walked beside 2,000 checkpoints of the task, which was 2,030 for a plain
+    task's failure. PostgreSQL's accepts a walk keyed by the task, refuses a
+    name compared by order, and requires that no attempt record is read when
+    no saga began or a cancellation ended it. Medians in ms beside the task's
+    own checkpoints, main and then this change, from one harness run in a
+    worktree of each, three processes a side, interleaved, 200 timed reads in
+    each:
 
     | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
     |---|---|---|---|
