@@ -843,6 +843,14 @@ describe('the tree rules', () => {
       )
     })
 
+    it('refuses a read of the fake clock row in a fragment', () => {
+      // The test clock lives in meta. A fragment that reads it has read the clock, by a
+      // door no clock function names.
+      expect(() =>
+        startedAt("(SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms')"),
+      ).toThrow(READS)
+    })
+
     it('refuses the literal now in a fragment, whatever function takes it', () => {
       refuses('mutation-verdict:construction:tree-clock-now-literal', READS, () =>
         startedAt("timediff('now', '2000-01-01')"),
