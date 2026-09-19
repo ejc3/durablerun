@@ -63,6 +63,8 @@ import {
   encodeTaskOutcome,
   failCas,
   failClaimTimeoutCas,
+  heartbeatCas,
+  heartbeatRemainingRead,
   isTerminalState,
   mapLimit,
   materializeTaskDoneCas,
@@ -934,28 +936,29 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
-    const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
-    // ONE statement. It was two — the extend, then a SELECT computing
-    // `claim_expires_at_ms - <clock>` — which read the clock twice in one
-    // batch, so the answer was off by however far the two reads drifted.
-    // RETURNING makes the row count the proof that the lease was extended and
-    // computes the remainder in the same statement, where the clock is stable.
-    // A batch of one statement cannot have the two-clock-reads problem at all,
-    // which is a better guarantee than getting the arithmetic right.
-    const [extended] = await this.db.batch('heartbeat', [
-      {
-        sql: `UPDATE runs SET
-                claim_expires_at_ms = ${NOW_MS} + ?,
-                heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
-                AND ${epochAdditionFits(NOW_MS, '?')}
-              RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms`,
-        args: [extendMs, runId, queue, claimToken, extendMs],
-      },
-    ])
-    const row = extended?.rows[0]
+    const extensionMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
+    // Two statements under one fence, the shape every dialect sends. The compare-and-set
+    // extends the lease from one read of the clock and stamps the run. The read keys on
+    // that stamp and subtracts the two instants the update stored. It touches no clock,
+    // so the answer cannot drift from the write.
+    const b = new FencedBatch('heartbeat', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.casTree(
+      'extend',
+      heartbeatCas({
+        queue,
+        runId,
+        claimToken,
+        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extensionMs]),
+        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extensionMs]),
+        taskIsLive: sqlFragment(
+          `EXISTS (SELECT 1 FROM tasks t
+                   WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
+        ),
+      }),
+    )
+    b.tailTree('remaining', heartbeatRemainingRead({ runId }))
+    const { won, results } = await b.run(this.db)
+    const row = won === 'extend' ? results.remaining?.rows[0] : undefined
     if (!row) return refusedLease(this.refusalState(runId))
     return {
       held: true,

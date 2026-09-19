@@ -1389,8 +1389,129 @@ export class S {
 """
 )
 
+def tree_store(text_statement: str, fragment: str) -> dict[str, str]:
+    """A store file that builds a tree, holds a fragment for it, and sends one text statement."""
+    return store(
+        "import { FencedBatch } from '@durablerun/core'\n"
+        f"const FRAGMENT = `{fragment}`\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    return new FencedBatch('claim', token(), {})\n"
+        "  }\n"
+        "  async text() {\n"
+        f"    await this.db.batch('expire-lease-now', [{{ sql: `{text_statement}`, args: [] }}])\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def tree_store_sending_a_constant(text: str) -> dict[str, str]:
+    """A store file that builds a tree, and sends by a listed raw batch text written outside the call."""
+    return store(
+        "import { FencedBatch } from '@durablerun/core'\n"
+        f"const TEXT = `{text}`\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    return new FencedBatch('claim', token(), {})\n"
+        "  }\n"
+        "  async text() {\n"
+        "    await this.db.batch('expire-lease-now', [{ sql: TEXT, args: [] }])\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def tree_store_with_a_typed_fragment(fragment: str) -> dict[str, str]:
+    """A store file whose tree-built statement carries a fragment typed in place."""
+    return store(
+        "import { FencedBatch, sqlFragment } from '@durablerun/core'\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    const b = new FencedBatch('claim', token(), {})\n"
+        f"    b.casTree('claim', claimCas({{ liveTask: sqlFragment(`{fragment}`) }}))\n"
+        "    return b\n"
+        "  }\n"
+        "}\n"
+    )
+
+
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
+    (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "reed", "why": "x"}}}',
+        },
+        "has shape 'reed'",
+        "a listed statement's shape is one of the shapes this lint classifies by",
+    ),
+    (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "token-fenced", "why": "x"}}}',
+        },
+        "is token-fenced and names no fence",
+        "a token-fenced statement says which token fences it",
+    ),
+    (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "read", "why": " "}}}',
+        },
+        "gives no reason it cannot be a tree",
+        "every listed statement says why it is text",
+    ),
+    (
+        "clock-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET claim_expires_at_ms = unixepoch() * 1000 WHERE run_id = ?"
+        ),
+        "raw wall-clock function in store SQL",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET x = 1 WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.cancel_at_ms <= 5)"
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET x = 1 WHERE state IN ('pending', 'running')"
+        ),
+        "raw state list outside fragments.ts",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_with_a_typed_fragment("t.state IN ${LIVE} AND t.cancel_at_ms < ${NOW}"),
+        "cancellation-deadline comparison outside fragments.ts",
+        "no tree rule reads a comparison typed into a fragment, so this lint must",
+    ),
+    (
+        "clock-lint.py",
+        tree_store_with_a_typed_fragment("r.claim_expires_at_ms < unixepoch() * 1000"),
+        "raw wall-clock function in store SQL",
+        "a clock call typed into a fragment is refused at build time, before any test builds the statement",
+    ),
+    (
+        "clock-lint.py",
+        tree_store("UPDATE runs SET claim_expires_at_ms = NOW()", "x = 1"),
+        "raw wall-clock function in store SQL",
+        "a text statement stays in scope in a file that builds trees",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store("UPDATE tasks SET x = 1 WHERE cancel_at_ms <= 5", "x = 1"),
+        "cancellation-deadline comparison outside fragments.ts",
+        "a text statement stays in scope in a file that builds trees",
+    ),
     (
         "batch-lint.py",
         store(
@@ -1433,7 +1554,7 @@ export class S {
             """
 export class S {
   async probe(suffix: string) {
-    await this.db.batch('heartbeat' + suffix, [
+    await this.db.batch('admin:set-fake-now' + suffix, [
       { sql: `UPDATE tasks SET a = 1`, args: [] },
     ])
   }
@@ -1525,7 +1646,7 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: `UPDATE runs SET a = 1 WHERE id = ?`, args: [q] },
       { sql: `UPDATE tasks SET state = 'running'`, args: [] },
     ])
@@ -1533,7 +1654,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "a label declared a SINGLE write must fail once it grows a second statement",
     ),
     (
@@ -1542,7 +1663,7 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: `UPDATE runs SET note = ']})' WHERE id = ?`, args: [q] },
       { sql: `UPDATE tasks SET state = 'running'`, args: [] },
     ])
@@ -1550,7 +1671,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "a bracket inside SQL must not truncate the batch shape",
     ),
     (
@@ -1559,7 +1680,7 @@ export class S {
             r"""
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: 'x', args: [/\]\}\]\)/.test(q)] },
       { sql: 'y', args: [] },
     ])
@@ -1567,7 +1688,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "delimiter-looking regex tokens must not hide a later statement",
     ),
     (
@@ -3895,6 +4016,56 @@ ENV_BAD_INVOCATIONS = [
     ),
 ]
 
+# The fixtures above are small files, and a lint can lose text in a way only a real store
+# file shows: one narrowing read a file that builds a FencedBatch only inside its raw batch
+# calls, and every fixture of the day passed. So the two text lints are also held on the
+# store sources themselves. Each file a lint reads gets one line planted at its end, a
+# constant such as a raw batch could send, and each file that types a fragment gets a
+# comparison planted in its first one. The clean files pass in the real gate, so a refusal
+# here is the planted text.
+REAL_STORE_SOURCES = sorted(
+    path
+    for path in (SCRIPTS.parent / "packages").glob("store-*/src/**/*.ts")
+    if path.name not in {"fragments.ts", "schema.ts", "time.ts"}
+)
+if len(REAL_STORE_SOURCES) < 9:
+    raise SystemExit("lint-selftest: found too few real store sources to plant text in")
+PLANTED = (
+    (
+        "clock-lint.py",
+        "UPDATE runs SET claim_expires_at_ms = unixepoch() * 1000",
+        "r.claim_expires_at_ms < unixepoch() * 1000 AND ",
+        "raw wall-clock function in store SQL",
+    ),
+    (
+        "fragment-lint.py",
+        "UPDATE runs SET x = 1 WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.cancel_at_ms <= 5)",
+        "t.cancel_at_ms < 5 AND ",
+        "cancellation-deadline comparison outside fragments.ts",
+    ),
+)
+for real in REAL_STORE_SOURCES:
+    rel = real.relative_to(SCRIPTS.parent).as_posix()
+    text = real.read_text()
+    for lint, statement, comparison, marker in PLANTED:
+        BAD_CASES.append(
+            (
+                lint,
+                {rel: text + f"\nconst PLANTED_TEXT = `{statement}`\n"},
+                marker,
+                f"text at the end of the real {rel} is read",
+            )
+        )
+        if "sqlFragment(`" in text:
+            BAD_CASES.append(
+                (
+                    lint,
+                    {rel: text.replace("sqlFragment(`", "sqlFragment(`" + comparison, 1)},
+                    marker,
+                    f"text typed into a fragment of the real {rel} is read",
+                )
+            )
+
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
 # case above while being useless — but the real repo already covers that
 # direction, because `pnpm verify` runs every checker over it and the build is
@@ -3940,7 +4111,7 @@ export class Store {
 export class S {
   async ok(q: string) {
     await this.db.batch(
-      'heartbeat',
+      'admin:set-fake-now',
       [{ sql: `UPDATE runs SET a = 1`, args: [/sql:/.test(q), q.length / 2] }],
     )
   }
@@ -4252,6 +4423,9 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
+        listed = root / "scripts" / "text-statements.json"
+        if lint == "batch-lint.py" and not listed.exists():
+            listed.write_text((SCRIPTS / "text-statements.json").read_text())
         if lint == "mutation-probe.py":
             (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(
                 (SCRIPTS / "typescript-verdict-analyzer.cjs").read_text()

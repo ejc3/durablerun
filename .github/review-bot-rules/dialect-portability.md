@@ -180,7 +180,8 @@ Allowed cases (do NOT flag these):
   structural-enforcement list REQUIRES them there — *"what 'live', 'cancellation
   due', and 'eligible to proceed' mean is spelled once per dialect"* — and
   `scripts/fragment-lint.py` fails the build if a state list appears anywhere
-  else in store source (`EXEMPT = {'fragments.ts', 'schema.ts'}`). Core owns the
+  else in store source (`EXEMPT = {'fragments.ts', 'schema.ts'}`), and
+  `eligibilityDefinitionProblem` refuses a second definition in any statement tree. Core owns the
   values a dialect cannot respell (caps, reason JSON, `FENCED_TABLES`); a store
   owns how its dialect spells a predicate over them.
 

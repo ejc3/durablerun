@@ -25,6 +25,7 @@ DURABLERUN_CONFORMANCE_DIALECTS="$dialect" pnpm exec vitest run \
   packages/conformance/test/libsql.test.ts \
   packages/conformance/test/sql-corpus.test.ts \
   packages/conformance/test/store-tables-schema.test.ts \
+  packages/conformance/test/text-statements.test.ts \
   "packages/store-$dialect/test" \
   --reporter=default --reporter=json --outputFile.json="$report" || code=$?
 

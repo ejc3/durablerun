@@ -36,7 +36,7 @@ failing a task permanently one attempt early. Both were fixed by deleting one sp
 making the two agree.
 
 <!-- review-bot-synopsis:start -->
-Flag a second copy of something that already has a definition — a query plan EXPLAINed against SQL typed into the test instead of the imported or executor-recorded shipped statement, a copy justified by "structurally the same"/"mirrors"/"kept in sync" with nothing in the diff that fails on divergence, a contract constant or fragment or attempt-ordinal formula respelled (even arithmetically equivalently) where a single definition is importable, a hand-maintained list of labels/checkers/columns/placeholders with no reconciliation against its source, one value handed to two sinks raw on one path and validated-or-canonical on the other, a routine libSQL fixture constructing or ignoring a second `IdSource` instead of sharing `openTestDb().ids`, and two branches applying different conditions to the same column set. Pass for negative controls asserting the degraded plan, deliberately independent oracles (wake-witness-surface, conformance invariants), copies that report their own staleness (mutation-probe MUTATIONS), classification lists whose harvest is total (fault-matrix MATRIX_*, batch-lint READS/TOKEN_FENCED/MULTI_CLOCK, gate-lint NOT_IN_GATE, lint-selftest EXEMPT), per-dialect SQL and schema.ts DDL, raw fixture SQL that reads or builds engine state in tests, deliberately colliding or scripted `IdSource`s when the collision or sequence is the assertion, contract literals asserted (not constructed) in the conformance suite, error messages echoing raw user input, and per-query row decoders.
+Flag a second copy of something that already has a definition — a query plan EXPLAINed against SQL typed into the test instead of the imported or executor-recorded shipped statement, a copy justified by "structurally the same"/"mirrors"/"kept in sync" with nothing in the diff that fails on divergence, a contract constant or fragment or attempt-ordinal formula respelled (even arithmetically equivalently) where a single definition is importable, a hand-maintained list of labels/checkers/columns/placeholders with no reconciliation against its source, one value handed to two sinks raw on one path and validated-or-canonical on the other, a routine libSQL fixture constructing or ignoring a second `IdSource` instead of sharing `openTestDb().ids`, and two branches applying different conditions to the same column set. Pass for negative controls asserting the degraded plan, deliberately independent oracles (wake-witness-surface, conformance invariants), copies that report their own staleness (mutation-probe MUTATIONS), classification lists whose harvest is total (fault-matrix MATRIX_*, batch-lint READS/TOKEN_FENCED, gate-lint NOT_IN_GATE, lint-selftest EXEMPT), per-dialect SQL and schema.ts DDL, raw fixture SQL that reads or builds engine state in tests, deliberately colliding or scripted `IdSource`s when the collision or sequence is the assertion, contract literals asserted (not constructed) in the conformance suite, error messages echoing raw user input, and per-query row decoders.
 <!-- review-bot-synopsis:end -->
 
 Report a failure when the changed code introduces or materially expands any of these:
@@ -107,9 +107,10 @@ Allowed cases (do NOT flag these):
 - **A classification list whose harvest is total, or that a machine reconciles.** `MATRIX_WRITE_LABELS`
   / `MATRIX_READ_LABELS` / `MATRIX_EXEMPT_LABELS` (`fault-matrix.ts`) duplicate the store's
   labels on purpose — they classify them — and `packages/conformance/test/label-inventory.test.ts`
-  asserts equality against the same harvester the spec ledger uses. Likewise `READS`,
-  `SINGLE_WRITES`, `TOKEN_FENCED`, `MULTI_CLOCK`, `DYNAMIC` in `scripts/batch-lint.py`
-  (an unclassified label fails the lint), `NOT_IN_GATE` in `scripts/gate-lint.py` (deliberately in
+  asserts equality against the same harvester the spec ledger uses. Likewise `scripts/text-statements.json`, from
+  which `scripts/batch-lint.py` derives `READS`, `SINGLE_WRITES` and `TOKEN_FENCED`, and its `DYNAMIC`
+  (an unclassified label fails the lint, and `packages/conformance/test/text-statements.test.ts`
+  holds every store to the list), `NOT_IN_GATE` in `scripts/gate-lint.py` (deliberately in
   the script, not the tree, and checked in both directions), `EXEMPT` in
   `scripts/lint-selftest.py`, and key lists the type system reconciles (`FuzzStats` totals in
   `packages/conformance/test/fuzz-shard-runner.ts`). Adding an entry to one of these is how

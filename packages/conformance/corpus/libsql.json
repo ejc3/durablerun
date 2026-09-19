@@ -65,6 +65,18 @@
       }
     ]
   },
+  "heartbeat": {
+    "extended": [
+      {
+        "sql": "update \"runs\" set \"claim_expires_at_ms\" = (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) + ?), \"heartbeat_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and (EXISTS (SELECT 1 FROM tasks t\n                   WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping'))) and ((typeof(COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) = 'integer'\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) <= 253402300799000 - ((?))))",
+        "bindArity": 7
+      },
+      {
+        "sql": "select \"claim_expires_at_ms\" - \"heartbeat_at_ms\" as \"remaining_ms\" from \"runs\" where \"run_id\" = ? and \"fence_stamp\" = ?",
+        "bindArity": 2
+      }
+    ]
+  },
   "complete": {
     "completed": [
       {

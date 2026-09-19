@@ -19,7 +19,6 @@ import {
   type CorpusSignature,
   type VariantNamers,
   enrolCorpus,
-  enrolledFor,
   recordingTreeBatches,
 } from '../src/sql-corpus.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
@@ -72,7 +71,6 @@ describe('generated SQL corpus', () => {
         )
         await store.spawn('q', 'job', '{}')
         const run = await claimActivated(store, 'q', 'w1')
-        // MySQL builds the heartbeat as a fenced batch, because it has no RETURNING.
         expect((await store.heartbeat('q', run.runId, run.claimToken, 30)).held).toBe(true)
         // The reads, beside a live run. A read changes nothing, so where it stands is free.
         // An activated claim has no name left to learn, and the statement is sent all the same.
@@ -287,7 +285,6 @@ describe('corpus enrolment', () => {
     const stores = readdirSync(packages).filter((name) => name.startsWith('store-'))
     expect(stores.length).toBeGreaterThanOrEqual(3)
     for (const store of stores) {
-      const dialect = store.slice('store-'.length)
       const sources = new URL(`${store}/src/`, packages)
       // Every source file, in subdirectories too. This is a read of text: a store that
       // aliases the class (`const B = FencedBatch`), renames it on import, or extends it and
@@ -304,7 +301,7 @@ describe('corpus enrolment', () => {
       )
       expect(labels.length).toBeGreaterThan(0)
       expect([...new Set(labels)].sort(), `${store}'s FencedBatch labels`).toEqual(
-        Object.keys(enrolledFor(DESCRIPTOR, dialect)).sort(),
+        Object.keys(DESCRIPTOR).sort(),
       )
     }
   })
@@ -314,7 +311,7 @@ describe('corpus enrolment', () => {
       const corpus = JSON.parse(
         readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'),
       )
-      const enrolled = enrolledFor(DESCRIPTOR, dialect)
+      const enrolled = DESCRIPTOR
       expect(Object.keys(corpus)).toEqual(Object.keys(enrolled))
       for (const [label, variants] of Object.entries(enrolled)) {
         for (const variant of Object.keys(corpus[label])) expect(variants).toContain(variant)

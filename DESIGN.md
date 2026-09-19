@@ -1241,7 +1241,9 @@ are load-bearing):
      the batch clock's text and for the clock spellings
      `scripts/clock-lint.py` lists, which include a date function called with
      no argument, SQLite's spelling of the current time, and the literal
-     `'now'`, whatever function takes it. That scan is a
+     `'now'`, whatever function takes it. The tree's own list adds
+     `fake_now_ms`, the column a store's clock reads under test, which a
+     fragment could read with no clock call at all. That scan is a
      spelling proxy, confined to raw text, and a spelling nobody has listed
      passes it.
    - A statement holds no second definition of eligibility.
@@ -1312,14 +1314,28 @@ are load-bearing):
    the dialect that compiles one, and the scanners that read a
    statement's text are deleted. A batch reads a statement's object graph
    once for all of its checks. `scripts/fragment-lint.py` and
-   `scripts/clock-lint.py` still read store SQL text, because a store still
-   sends text that no tree holds: `expire-lease-now`, `driver-heartbeat`,
-   `heartbeat` on libSQL and PostgreSQL, and the admin's statements. A store's
-   reads are batches of reads built as trees. MySQL builds
-   `heartbeat` as a fenced batch of trees, because it has no RETURNING. Their
-   rules have a tree-level form for
-   everything a tree holds, and the two scans stay for that text until it is
-   built as trees too.
+   `scripts/clock-lint.py` still read every store source file whole, because
+   two kinds of text reach no tree rule. One is the statements no tree holds:
+   `expire-lease-now`, `driver-heartbeat`, and the admin's statements. That
+   text is one list, `scripts/text-statements.json`, with the reason each
+   statement cannot be a tree. `scripts/batch-lint.py` classifies a store's
+   raw batches from it, and `packages/conformance/test/text-statements.test.ts`
+   fails when a store's source, or a store on a real backend, sends SQL text
+   under a label that is not on the list, and when a listed statement is no
+   longer sent. The other is a comparison hand-written inside a fragment. A
+   tree carries a fragment as text, and `eligibilityDefinitionProblem` does
+   not read a comparison written there, so `fragment-lint` is what refuses a
+   cancellation deadline compared outside `fragments.ts`. The lints read a
+   file and not a call, so text that a raw batch sends is read wherever in
+   the file it is written. A store's reads are batches of reads built as
+   trees. `heartbeat` is a fenced batch of two trees on every dialect, the
+   shape MySQL needs because it has no RETURNING: the compare-and-set extends
+   the lease and stamps the run, and a gated read subtracts the two instants
+   it stored, so the remainder reads no clock. The three that remain are
+   writes that stamp nothing, which `FencedBatch` does not have:
+   `expire-lease-now` may change one column of a run and no provenance, and
+   `drivers` and `meta` carry none. The lints' rules have a tree-level form
+   for everything a tree holds, and the two scans stay for that text.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:
@@ -2119,9 +2135,11 @@ realized in the store's compiler, executor, fragments, or schema:
   named, and walks fewer than 20. The store has its own measured plan tests,
   `query-plans.test.ts`, which read the session's handler counters around the
   exact production SQL.
-- **No RETURNING.** `heartbeat` is a fenced batch of two tree statements here:
-  the extension stamps the run, and the remainder is read under that stamp
-  from the two instants the extension stored, so it reads no clock.
+- **No RETURNING.** That is why `heartbeat` is a fenced batch of two tree
+  statements, on every dialect: the extension stamps the run, and the
+  remainder is read under that stamp from the two instants the extension
+  stored, so it reads no clock. The statements are core's, shared by all
+  three stores.
 - **DDL commits on its own**, so a migration batch is not atomic and a
   sentinel row cannot roll one back. The bootstrap is one statement, so the
   version table never exists without its row (rule 9). Every migration

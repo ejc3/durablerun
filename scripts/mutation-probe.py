@@ -1478,6 +1478,20 @@ MUTATION_SPECS = [
         "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
     ),
     (
+        "tree-clock-spelling-fake-clock-arm",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\bfake_now_ms\\b`,\n",
+        "    String.raw`[^\\s\\S]`,\n",
+        "a fragment reads the fake clock's row in meta, a read of the clock no function names, and goes unseen",
+    ),
+    (
+        "text-statement-list-holds-every-raw-batch",
+        "packages/store-libsql/src/admin.ts",
+        "        await this.db.batch('migrate:bootstrap', [\n",
+        "        await this.db.batch('migrate:bootstrapped', [\n",
+        "a store sends SQL text under a label that scripts/text-statements.json does not list",
+    ),
+    (
         "tree-clock-function-unixepoch",
         "packages/core/src/sql-tree.ts",
         "  'unixepoch',\n",
@@ -4285,12 +4299,10 @@ MUTATION_SPECS = [
     (
         "heartbeat-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "                AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
-        "                AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
+        "                   WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,\n",
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
+        "                   WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,\n",
         "heartbeat extends a run after its task crosses the immutable queue boundary",
     ),
     (
@@ -4726,12 +4738,10 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "heartbeat-lease",
         "heartbeat lease deadline",
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n"
-        "              RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms",
-        "epochAdditionFits(NOW_MS, '?')",
-        "                claim_expires_at_ms = ${NOW_MS} + ?,\n"
-        "                heartbeat_at_ms = ${NOW_MS}",
-        "${NOW_MS} + ?",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extensionMs]),",
+        "epochAdditionFits(NOW, '?')",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extensionMs]),",
+        "${NOW} + ?",
     ),
     (
         "lost-launch-relaunch",
@@ -7997,6 +8007,18 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
         "mutation-verdict:construction:tree-clock-spelling-no-argument-arm",
+    ),
+    "tree-clock-spelling-fake-clock-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a read of the fake clock row in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-fake-clock-arm",
+    ),
+    "text-statement-list-holds-every-raw-batch": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/text-statements.test.ts",
+        "the statements a store sends as text are the raw batches of every store, read from its sources, and no others",
+        "mutation-verdict:behavior:text-statement-list-holds-every-raw-batch",
     ),
     "tree-clock-function-unixepoch": ExpectedVerdict(
         "construction",
@@ -16925,7 +16947,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 871:
+        if len(MUTATIONS) != 873:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

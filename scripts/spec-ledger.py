@@ -2,7 +2,11 @@
 """Batch-label ledger check (see scripts/spec-ledger.sh history): every
 labeled batch in the store must be accounted for INSIDE the spec's ledger
 block, as a quoted 'label'. Multiline-tolerant harvest; dynamic labels are
-declared here and asserted present in the source so they cannot rot."""
+declared here and asserted present in the source so they cannot rot.
+
+`--labels` prints every static label. `--text-labels` prints, for each store, the
+labels of its raw batches, which are the statements it sends as SQL text and not
+as trees; a template label is its prefix and a star."""
 import json
 import re
 import sys
@@ -20,11 +24,13 @@ from source_lex import (
 )
 
 arguments = list(sys.argv[1:])
-if arguments.count("--labels") > 1:
-    sys.exit("spec-ledger.py: --labels may appear at most once")
-labels_only = "--labels" in arguments
-if labels_only:
-    arguments.remove("--labels")
+asked = [flag for flag in ("--labels", "--text-labels") if flag in arguments]
+if len(asked) > 1 or any(arguments.count(flag) > 1 for flag in asked):
+    sys.exit("spec-ledger.py: --labels or --text-labels may appear at most once")
+labels_only = asked == ["--labels"]
+text_labels_only = asked == ["--text-labels"]
+for flag in asked:
+    arguments.remove(flag)
 try:
     root = validated_root(
         arguments,
@@ -58,6 +64,7 @@ SETUP_LABEL_FAMILIES = {
 }
 
 labels: set[str] = set()
+text_labels: dict[str, set[str]] = {}
 try:
     call_inventory = batch_calls(root, source_paths, "spec-ledger.py")
 except ValueError as error:
@@ -68,6 +75,12 @@ for path in source_paths:
     source = path.read_text()
     calls = call_inventory[rel]
     parsed_calls = [(call, batch_label(source, call)) for call in calls]
+    store_text = text_labels.setdefault(rel.split("/")[1], set())
+    store_text.update(
+        parsed.value + ("*" if parsed.kind == "template" else "")
+        for call, parsed in parsed_calls
+        if call.kind == "raw" and parsed.kind != "opaque"
+    )
     opaque_identities = [
         (call.kind, parsed.value)
         for call, parsed in parsed_calls
@@ -100,6 +113,9 @@ for path in source_paths:
 
 if labels_only:
     print(json.dumps(sorted(labels)))
+    sys.exit(0)
+if text_labels_only:
+    print(json.dumps({store: sorted(found) for store, found in sorted(text_labels.items())}))
     sys.exit(0)
 
 spec = (root / "specs" / "Scheduler.tla").read_text()
