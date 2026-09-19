@@ -134,7 +134,15 @@ a last docs PR gives a live owner to every open bullet that is left.
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
     not an ancestor of its green. A postmortem that cites the copy of a commit
-    from before a rebase is refused.
+    from before a rebase is refused. This is met. PR3.10a made
+    `scripts/review-attest.sh` read the commits an added postmortem cites, in
+    `--check-postmortem` and in the whole attestation, and 24 cases in
+    `scripts/lint-selftest.py` hold each refusal over a git history with a
+    real rebase in it, the copy a rebase leaves behind among them; the
+    postmortems that PR #55 to PR #60 added pass it. It also built the opt-in
+    proof that a red fails: `--prove-reds` runs the probe a red test names, at
+    the red commit, where it must fail by name, and at the head, where it
+    must pass.
 11. PR2.4a: the chaos process test,
     `packages/driver/test/chaos-process.test.ts`, picks no port. A host that
     binds starts on port 0 and reports the port it bound in its ready message,
@@ -1411,10 +1419,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   audit is required to prove those current declarations; even that receipt
   cannot prove that a future semantic arm is enrolled. PR3.10 must derive both
   the cases and their mutation/verdict ownership from the same layer descriptor.
-  The same gate must verify each postmortem's cited red and green hashes are
-  distinct, ordered commits and that the red commit demonstrably leaves the
-  named probe failing; the final attribution closeout showed that prose-only
-  evidence still permits repair findings to be bundled into a green commit.
+  The final attribution closeout showed that prose-only evidence still permits
+  repair findings to be bundled into a green commit, so this entry also asked
+  the gate to verify that each postmortem's cited red and green hashes are
+  distinct, ordered commits and that the red commit leaves the named probe
+  failing. PR3.10a built both. What stays open here: the required attestation
+  runs no probe and a red test may name none, so a red commit that holds its
+  own fix is seen only by an attester who asks for `--prove-reds`.
   - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
     profile for a running, unactivated claim, so the `activate` and
     `defer-launch` cells reach their corruption guards instead of refusing on
@@ -1423,6 +1434,65 @@ these three things; nothing else in the system does I/O, time, or randomness.
     profile for a failed task, so the `retry-task` cells reach the counter
     guards behind its state condition. The conformance cases pin each guard
     today.
+  - Deferred from PR3.10a: `--check-postmortem` checks a postmortem's tables
+    and the commits it cites, and the whole attestation also checks its
+    sections, its placeholder lines and its unfilled markers, inline. One
+    function for both entry points would make the offline answer the
+    attestation's. It tightens the offline mode and rebuilds two older
+    fixtures, so PR3.10a did not take it.
+
+- **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
+  postmortem cites its red tests and its fixes by commit id, and an id does
+  not survive a rebase. `postmortems/pr3.3-child-tasks-spec-review.md` merged
+  citing eleven commits that were never on its branch, each with a twin there
+  under the same subject, and nothing read them. `scripts/review-attest.sh`,
+  in `--check-postmortem <path> [<head>]` and in the whole attestation, now
+  refuses an ADDED postmortem when a backticked commit id anywhere in it names
+  a commit the head does not descend from, reports every such id in one run,
+  and names the twin to cite when the branch holds exactly one commit with the
+  same subject and the same patch. An id that names no commit of the
+  repository is left alone outside the evidence lines, because a digest is
+  written the same way, and a commit that is rightly elsewhere is written
+  without backticks. On the template's two evidence lines that carry a
+  `<hash>` slot an id must also resolve, none may be both a red test and a
+  fix, and some cited fix must descend from each red test: a postmortem of
+  several findings cites several of each, a fix line also names the commit a
+  defect came in with, and a later round's red follows the first round's
+  fixes, so "its fix" is any fix cited. The lines are found by the first word
+  of the template's own labels, which the script reads and never spells, so
+  `- Fixes, one commit for each finding:` is a fixes line and a template that
+  renames a line renames the demand. An id straight after the word that comes
+  before the template's `<buggy commit>` slot, today "against", is the code a
+  red ran against and is neither, which matters because a fix is often the
+  code a later red ran against. Run as they would have run at their merges,
+  the postmortems added by PR #55, #56, #57, #59 and #60 pass, and PR #58
+  added none. Over all 54 that merges added, 15 pass, the one with stale ids
+  is refused for each of them, and the rest predate the template's labels;
+  postmortems already on main are not judged again.
+  `--prove-reds` is the other half and is opt-in, because it needs the
+  attester's toolchain and servers. A red test names a probe on its line, a
+  test file and then a test name, and the script runs it in a scratch
+  worktree with its own offline install: at the red commit a test must fail
+  by name, and at the head the same probe must pass, or the failure was never
+  the defect's. The probe is named and not derived: choosing the test files a
+  red commit changed refused a real red, whose case lives in a generated
+  surface under `src/` that an unchanged test file runs. A scratch copy that
+  borrows another tree's `node_modules` directories runs that tree's workspace
+  packages (measured: 4 of the 10 tests of a real red pass falsely), so every
+  dependency link is held to the copy before anything runs. Every copy
+  installs offline from the store of the checkout the script runs from, as
+  the mutation probe's worktrees do, because pnpm picks a store by mount point
+  and the one it picks for a copy elsewhere may hold nothing. A probe's name
+  is matched as it is written, because vitest reads `-t` as a regular
+  expression and a conformance title holds `[libsql]`. Measured on
+  libSQL, PostgreSQL and MySQL with the reds of two merged rounds given
+  probes: the nine-finding postmortem of PR #60, three reds, 31 seconds, and
+  the fourteen-finding one of PR #56, three reds, 40 seconds, at 4 to 8
+  seconds a red and the rest at the head. A run that proves no red exits 1,
+  and a red that names no probe is counted on the line that sums up.
+  `lint-selftest.py` holds 24 cases over a git history that git builds with a
+  real rebase in it, through both entry points, and each of 21 deletions of a
+  condition of the new code fails a named case.
 
 - **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
   other entry owned.
