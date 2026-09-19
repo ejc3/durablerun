@@ -617,15 +617,28 @@ cited_commits() {
 # A rebase keeps a commit's subject and its patch and gives it a new id. When
 # exactly one commit of the branch is that twin, the refusal names it, because
 # the repair is to cite it.
+patch_of() {
+  git -C "$REPO" show "$1" | git patch-id --stable | cut -d' ' -f1
+}
+
 moved_hint() {
   local id="$1" head_id="$2" subject twin patch
   subject=$(git -C "$REPO" log -1 --format=%s "$id")
   twin=$(git -C "$REPO" log --format='%H %s' "$head_id" \
     | SUBJECT="$subject" awk '{ id = $1; sub(/^[^ ]+ /, ""); if ($0 == ENVIRON["SUBJECT"]) print id }')
   [[ -n "$twin" && "$twin" != *$'\n'* ]] || return 0
-  patch=$(git -C "$REPO" show "$id" | git patch-id --stable | cut -d' ' -f1)
-  [[ -n "$patch" && "$patch" == "$(git -C "$REPO" show "$twin" | git patch-id --stable | cut -d' ' -f1)" ]] || return 0
+  patch=$(patch_of "$id")
+  [[ -n "$patch" && "$patch" == "$(patch_of "$twin")" ]] || return 0
   echo " ${twin:0:7} on the branch has the same subject and the same patch, so the branch moved after this was written: cite ${twin:0:7}."
+}
+
+refuse_postmortem() {
+  local path="$1" problem
+  shift
+  for problem in "$@"; do
+    echo "SEV rule: postmortem $path $problem" >&2
+  done
+  [[ $# -eq 0 ]]
 }
 
 # Refuses a postmortem that cites a commit the head does not descend from. On
@@ -646,8 +659,8 @@ CITED_HEAD=""
 CITED_SUMMARY=""
 check_postmortem_commits() {
   local path="$1" content="$2" head="$3"
-  local head_id cited record first second third id where red fix ordered index problem last_red=""
-  local -a labels=() words=() problems=() reds=() fixes=()
+  local head_id cited record first second third id where red index last_red=""
+  local -a labels=() words=() problems=() reds=()
   local -A lines_on=() commits_on=() red_cited=() fix_cited=() others=()
 
   head_id=$(git -C "$REPO" rev-parse --verify --quiet "${head}^{commit}" 2>/dev/null) || {
@@ -664,7 +677,7 @@ check_postmortem_commits() {
         labels[first]="$third"
         ;;
       line)
-        lines_on[$first]=$((${lines_on[$first]:-0} + 1))
+        lines_on[$first]=1
         ;;
       probe)
         [[ -z "$last_red" ]] || CITED_PROBE_FILE[$last_red]="$first"
@@ -679,7 +692,7 @@ check_postmortem_commits() {
           where="after \"$third\""
         else
           where="on its '${labels[first]}' line"
-          commits_on[$first]=$((${commits_on[$first]:-0} + 1))
+          commits_on[$first]=1
         fi
         id=$(git -C "$REPO" rev-parse --verify --quiet "${second}^{commit}" 2>/dev/null) || {
           [[ "$first" -lt 0 ]] \
@@ -696,17 +709,16 @@ check_postmortem_commits() {
           [[ -n "${red_cited[$id]:-}" ]] || reds+=("$id")
           red_cited[$id]="$second"
         elif [[ "$first" -eq 2 ]]; then
-          [[ -n "${fix_cited[$id]:-}" ]] || fixes+=("$id")
-          fix_cited[$id]="$second"
+          fix_cited[$id]=1
         fi
         ;;
     esac
   done <<<"$cited"
 
   for index in "${!labels[@]}"; do
-    if [[ "${lines_on[$index]:-0}" -eq 0 ]]; then
+    if [[ -z "${lines_on[$index]:-}" ]]; then
       problems+=("has no Evidence line that begins '- ${words[index]}', the template's '${labels[index]}' line, so what it cites there cannot be read.")
-    elif [[ "${commits_on[$index]:-0}" -eq 0 ]]; then
+    elif [[ -z "${commits_on[$index]:-}" ]]; then
       problems+=("cites no commit on a line that begins '- ${words[index]}'. The template's '${labels[index]}' line carries one.")
     fi
   done
@@ -719,27 +731,18 @@ check_postmortem_commits() {
         problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line and on its '${labels[2]}' line: a red test and its fix are two commits.")
         continue
       fi
-      ordered=0
-      for fix in "${fixes[@]}"; do
-        if git -C "$REPO" merge-base --is-ancestor "$red" "$fix" 2>/dev/null; then
-          ordered=1
-          break
-        fi
-      done
-      [[ "$ordered" -eq 1 ]] \
+      # How much of the red's history is left once every fix's history is taken
+      # away: 0 when some fix descends from it. A git that cannot say answers
+      # nothing, which is not 0.
+      [[ "$(git -C "$REPO" rev-list --count -1 "$red" --not "${!fix_cited[@]}" 2>/dev/null)" == 0 ]] \
         || problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line, and no commit on its '${labels[2]}' line descends from it: a red test comes before its fix.")
     done
   fi
 
-  if [[ ${#problems[@]} -gt 0 ]]; then
-    for problem in "${problems[@]}"; do
-      echo "SEV rule: postmortem $path $problem" >&2
-    done
-    return 1
-  fi
+  refuse_postmortem "$path" "${problems[@]}" || return 1
   CITED_REDS=("${reds[@]}")
   CITED_HEAD="$head_id"
-  CITED_SUMMARY="on ${head_id:0:7}: ${#reds[@]} red, ${#fixes[@]} fix, $((${#others[@]} - ${#reds[@]} - ${#fixes[@]})) other cited; each red is before a fix"
+  CITED_SUMMARY="on ${head_id:0:7}: ${#reds[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#reds[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
 }
 
 # --- --prove-reds: a cited red test fails where it is cited ------------------
@@ -784,12 +787,9 @@ scratch_copy() {
   }
 }
 
+# A scratch copy is gone once its directory is, and pruning forgets it.
 remove_scratch_copies() {
-  local work="$1" copy
-  for copy in "$work"/*/; do
-    [[ -e "$copy.git" ]] && git -C "$REPO" worktree remove --force "${copy%/}" >/dev/null 2>&1
-  done
-  rm -rf "$work"
+  rm -rf "$1"
   git -C "$REPO" worktree prune || true
 }
 
@@ -805,7 +805,7 @@ run_probe() {
 }
 
 prove_reds() {
-  local path="$1" work red short file name probe copy report counts passed failed problem
+  local path="$1" work red short file name probe copy report counts passed failed
   local head_short="${CITED_HEAD:0:7}"
   local -a proven=() unnamed=() problems=()
 
@@ -881,12 +881,7 @@ prove_reds() {
 
   [[ ${#proven[@]} -gt 0 || ${#problems[@]} -gt 0 ]] \
     || problems+=("none of its ${#CITED_REDS[@]} cited reds names a probe, so this run proved nothing.")
-  if [[ ${#problems[@]} -gt 0 ]]; then
-    for problem in "${problems[@]}"; do
-      echo "SEV rule: postmortem $path $problem" >&2
-    done
-    return 1
-  fi
+  refuse_postmortem "$path" "${problems[@]}" || return 1
   echo "proved ${#proven[@]} of ${#CITED_REDS[@]} cited reds: each fails at its own commit and passes at $head_short${unnamed:+; ${#unnamed[@]} named no probe and were not run: ${unnamed[*]}}"
 }
 

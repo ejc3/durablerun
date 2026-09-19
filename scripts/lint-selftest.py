@@ -4439,13 +4439,15 @@ def cited_history() -> tuple[Path, dict[str, str]]:
 
 
 POSTMORTEM_TEMPLATE = (SCRIPTS.parent / "postmortems" / "TEMPLATE.md").read_text()
-FINDINGS_HEADER = """| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
-|---|--------|--------|----------------------------------|------------------|-------------------------|
-"""
-LEDGER_HEADER = """| Detector | Findings | Ours? |
-|----------|----------|-------|
-"""
 FILLED_IN = "Filled in for the fixture.\n"
+
+
+def template_table_header(section: str) -> str:
+    """The header and separator of the table the real template puts under `section`, so a header
+    the template changes and the script does not is a refusal here."""
+    lines = POSTMORTEM_TEMPLATE.split(f"\n{section}\n", 1)[1].splitlines()
+    first = next(index for index, line in enumerate(lines) if line.startswith("|"))
+    return "\n".join(lines[first : first + 2]) + "\n"
 
 
 def fixture_postmortem(evidence: str, findings: int, ledger: str, severity: str) -> str:
@@ -4453,12 +4455,12 @@ def fixture_postmortem(evidence: str, findings: int, ledger: str, severity: str)
     accepts it and a section added to the template reaches these fixtures without an edit here."""
     bodies = {
         "## Severity": severity,
-        "## Findings": FINDINGS_HEADER
+        "## Findings": template_table_header("## Findings")
         + "".join(
             f"| {number} | defect | impact | layer | reason | mechanism |\n"
             for number in range(1, findings + 1)
         ),
-        "## Detection ledger": LEDGER_HEADER + ledger,
+        "## Detection ledger": template_table_header("## Detection ledger") + ledger,
         "## Evidence": evidence.strip() + "\n",
     }
     sections = [line for line in POSTMORTEM_TEMPLATE.splitlines() if line.startswith("## ")]
@@ -4558,16 +4560,25 @@ class CitedCommitsCase:
     evidence: str
     refusal: str | None
     args: tuple[str, ...] = CHECK_POSTMORTEM
-    files: tuple[tuple[str, str], ...] = ()
+    also: tuple[tuple[str, str], ...] = ()
     findings: int = 1
     ledger: str = "| outside review | 1 | no |\n"
     severity: str = FILLED_IN
     says: str = ""
 
-    def prepare(self, root: Path) -> None:
-        shutil.copytree(cited_history()[0] / ".git", root / ".git")
+    def files(self) -> dict[str, str]:
+        """The fixture's whole tree. What a case adds comes last, so it may replace the template."""
         text = fixture_postmortem(self.evidence, self.findings, self.ledger, self.severity)
-        tree(root, {FIXTURE_POSTMORTEM: with_commit_ids(text)})
+        return {
+            "postmortems/TEMPLATE.md": POSTMORTEM_TEMPLATE,
+            "fake-tools.sh": FAKE_TOOLS,
+            FIXTURE_POSTMORTEM: with_commit_ids(text),
+            **dict(self.also),
+        }
+
+
+def place_cited_history(root: Path) -> None:
+    shutil.copytree(cited_history()[0] / ".git", root / ".git")
 
 
 CITED_COMMIT_CASES = (
@@ -4704,7 +4715,7 @@ CITED_COMMIT_CASES = (
         "for the new name",
         ONE_RED_AND_ITS_FIX,
         "has no Evidence line that begins '- Failing'",
-        files=(
+        also=(
             (
                 "postmortems/TEMPLATE.md",
                 POSTMORTEM_TEMPLATE.replace("- Red tests: commit", "- Failing tests: commit"),
@@ -4770,14 +4781,14 @@ CITED_COMMIT_CASES = (
         ONE_PROBED_RED,
         "resolves outside the scratch copy",
         args=PROVE_REDS,
-        files=(("link-outside", ""),),
+        also=(("link-outside", ""),),
     ),
     CitedCommitsCase(
         "a probe that fails at the head as well fails for a reason no fix removed",
         ONE_PROBED_RED,
         "also fails at the head",
         args=PROVE_REDS,
-        files=(("always-fail", ""),),
+        also=(("always-fail", ""),),
     ),
 )
 
@@ -4787,10 +4798,10 @@ def cited_commit_problems() -> list[str]:
     for case in CITED_COMMIT_CASES:
         result = run(
             "review-attest.sh",
-            {"fake-tools.sh": FAKE_TOOLS, **dict(case.files)},
+            case.files(),
             case.args,
             environment={"BASH_ENV": "{root}/fake-tools.sh"},
-            prepare=case.prepare,
+            prepare=place_cited_history,
         )
         output = result.stdout + result.stderr
         if case.refusal is not None:
@@ -4849,8 +4860,6 @@ def run(
             (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(
                 (SCRIPTS / "typescript-verdict-analyzer.cjs").read_text()
             )
-        if lint == "review-attest.sh" and not (root / "postmortems" / "TEMPLATE.md").exists():
-            tree(root, {"postmortems/TEMPLATE.md": POSTMORTEM_TEMPLATE})
         if prepare is not None:
             prepare(root)
         if lint == "review-bot-lint.py":

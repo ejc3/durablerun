@@ -86,15 +86,15 @@ were re-reviewed as new code or merely re-tested.>
 - <The attestation script reads the commits cited here. Any backticked commit
   id in this document that the repository holds must be on the pull request's
   branch; write one that is rightly elsewhere without backticks. A line that
-  begins `- Red` or `- Fixes` is read as the line above of that name, so give
-  each round's red tests and each round's fixes such a line: there every id
-  must resolve, none may be both, and some cited fix must descend from each
-  red test. An id straight after the word "against" is the code a red test
-  ran against, and is neither. A red test that names a probe, the test file
-  and then a test name if the file holds more, is run by `--prove-reds`: it
-  must fail at the red commit and pass at the head. A rebase gives every
-  commit a new id, so cite them last, and again whenever the branch moves.
-  Delete this bullet.>
+  begins with the first word of either line above is read as that line, so
+  give each round's red tests and each round's fixes such a line: there every
+  id must resolve, none may be both, and some cited fix must descend from each
+  red test. An id straight after the word that stands before the buggy commit
+  above is the code a red test ran against, and is neither. A red test that
+  names a probe as the first line above does, the test file and then a test
+  name if the file holds more, is run by `--prove-reds`: it must fail at the
+  red commit and pass at the head. A rebase gives every commit a new id, so
+  cite them last, and again whenever the branch moves. Delete this bullet.>
 - Finder: <which review round / tool>, quoted verdict: "<...>".
 - <Links or quoted excerpts sufficient for an outside reader to audit the
   round. Never cite session-local or machine-local paths — quote the
