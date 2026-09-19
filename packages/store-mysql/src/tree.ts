@@ -1,7 +1,8 @@
 import { TreeDialect } from '@durablerun/core'
 import {
   AliasNode,
-  type BinaryOperationNode,
+  AndNode,
+  BinaryOperationNode,
   type ColumnUpdateNode,
   type DeleteQueryNode,
   FromNode,
@@ -120,6 +121,87 @@ function readersBeforeWriters(
 }
 
 /**
+ * The index a keyed write reaches its table through, by table and key column.
+ *
+ * A keyed write is an UPDATE or DELETE whose WHERE requires `column IN (subquery)`: a
+ * follow-on keyed by the rows its batch stamped, the claim keyed by its candidates, a wake
+ * keyed by its waiters. To MySQL that is a join, and the server picks the order. Over a
+ * small table, or when the keys are a large part of the table, it read the written table
+ * FIRST, by a scan or through another index, and the write then held a lock on every row
+ * it had read. Measured on MySQL 8.4, inside each batch, from
+ * `performance_schema.data_locks`: the claim's update locked every run of a table of one
+ * to five rows at a limit of one, and of 20, 120, and 400 rows at a limit of half the
+ * table, so two claimers, each holding the run its locking leg chose, waited for each
+ * other and one was rolled back. 16 of the 165 keyed writes a small database sent did not
+ * take their key, and an emit held four runs to write one.
+ *
+ * So the written table is read LAST, through the index of its key. The order is an
+ * optimizer hint that names the statement's own table, so it always resolves. The index is
+ * an index hint, which the server refuses when the index is gone. Neither is enough alone:
+ * with the index alone the claim still scanned at one and two rows, and four updates of
+ * `tasks` that had gone through another index became scans. With the order alone one
+ * update still scanned its table. With both, all 165 took their key, and the claim held
+ * exactly the runs it took from one row to 400, at limits from one to the whole table,
+ * under fresh statistics and stale ones. A semijoin materialization hint, and first match
+ * switched off, each held a small table and lost a limit of half the table, where the
+ * server scans the written table and looks each row up in the materialized keys.
+ */
+const KEY_INDEXES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  runs: { run_id: 'primary', task_id: 'runs_task_attempt' },
+  tasks: { task_id: 'primary' },
+  waits: { run_id: 'primary' },
+}
+
+/** Read this table after every other: it names the statement's own table, so it resolves. */
+const targetLast = (target: string): string => `/*+ JOIN_SUFFIX(\`${target}\`) */`
+
+/** The conditions a WHERE requires together: its chain of ANDs, flattened. */
+function requiredConditions(node: OperationNode | undefined): readonly OperationNode[] {
+  if (node === undefined) return []
+  return AndNode.is(node)
+    ? [...requiredConditions(node.left), ...requiredConditions(node.right)]
+    : [node]
+}
+
+/**
+ * The column a write of `target` is keyed by: the one required `column IN (subquery)` of
+ * its WHERE, wherever it stands among the conditions. A list of values is no subquery. A
+ * fragment in a subquery's place arrives bare, where a value or a predicate arrives in
+ * parentheses.
+ */
+function keyColumn(where: OperationNode | undefined, target: string): string | null {
+  const keys = requiredConditions(where).flatMap((condition) => {
+    if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return []
+    const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
+    const subquery =
+      SelectQueryNode.is(condition.rightOperand) || RawNode.is(condition.rightOperand)
+    if (operator !== 'in' || !subquery) return []
+    const table = condition.leftOperand.table?.table.identifier.name
+    const name = (condition.leftOperand.column as { column?: { name?: unknown } }).column?.name
+    return typeof name === 'string' && (table === undefined || table === target) ? [name] : []
+  })
+  if (keys.length > 1) {
+    throw new Error(
+      `store-mysql: a write of ${target} is keyed by ${keys.join(' and by ')}, and one index reaches it`,
+    )
+  }
+  return keys[0] ?? null
+}
+
+/** The index a write reaches its table through, or null for a write no subquery keys. */
+function keyIndex(target: string | null, where: OperationNode | undefined): string | null {
+  const key = target === null ? null : keyColumn(where, target)
+  if (target === null || key === null) return null
+  const index = KEY_INDEXES[target]?.[key]
+  if (index === undefined) {
+    throw new Error(
+      `store-mysql: a write of ${target} keyed by ${key} names no index to reach it through`,
+    )
+  }
+  return index
+}
+
+/**
  * MySQL's spelling of a shared statement tree.
  *
  * - An upsert is `ON DUPLICATE KEY UPDATE`. It has no conflict target, no WHERE, and no
@@ -139,6 +221,9 @@ function readersBeforeWriters(
  * - MySQL refuses a subquery that reads the table its statement writes (error 1093)
  *   unless the read goes through a derived table. A self-read built from nodes is
  *   wrapped in one here. A store fragment wraps its own.
+ * - A write keyed by a subquery reads its table last, through the index of its key
+ *   (`KEY_INDEXES`). A DELETE takes an index hint only in its multiple-table form, so a
+ *   keyed DELETE is written in it.
  */
 class MysqlTreeCompiler extends MysqlQueryCompiler {
   #insertTarget: TableNode | null = null
@@ -292,13 +377,76 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
       target === null || node.updates === undefined
         ? node.updates
         : readersBeforeWriters(node.updates, target)
-    this.writing(target, () =>
-      super.visitUpdateQuery(updates === undefined ? node : { ...node, updates }),
-    )
+    const index = keyIndex(target, node.where?.where)
+    this.writing(target, () => {
+      if (index === null || target === null || node.table === undefined) {
+        super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
+        return
+      }
+      const { with: common, top, output, from, joins, returning, orderBy, limit, explain } = node
+      this.requireKeyedGrammar(
+        [node.table],
+        [common, top, output, from, joins, returning, orderBy, limit, explain, node.endModifiers],
+      )
+      this.append(`update ${targetLast(target)} `)
+      this.visitNode(node.table)
+      this.append(` force index (${index}) set `)
+      this.compileList(updates ?? [])
+      this.visitKeyedWhere(node.where)
+    })
   }
 
   protected override visitDeleteQuery(node: DeleteQueryNode): void {
-    this.writing(tableName(node.from.froms[0]), () => super.visitDeleteQuery(node))
+    const [table] = node.from.froms
+    const target = tableName(table)
+    const index = keyIndex(target, node.where?.where)
+    this.writing(target, () => {
+      if (index === null || target === null || table === undefined) {
+        super.visitDeleteQuery(node)
+        return
+      }
+      const { with: common, top, output, using, joins, returning, orderBy, limit, explain } = node
+      this.requireKeyedGrammar(node.from.froms, [
+        common,
+        top,
+        output,
+        using,
+        joins,
+        returning,
+        orderBy,
+        limit,
+        explain,
+        node.endModifiers,
+      ])
+      this.append(`delete ${targetLast(target)} `)
+      this.visitNode(table)
+      this.append(' from ')
+      this.visitNode(table)
+      this.append(` force index (${index})`)
+      this.visitKeyedWhere(node.where)
+    })
+  }
+
+  /** A keyed write is one plain table, its assignments, and its WHERE. Anything more is refused. */
+  private requireKeyedGrammar(tables: readonly OperationNode[], clauses: readonly unknown[]): void {
+    const [table, ...others] = tables
+    const present = (clause: unknown) =>
+      clause !== undefined && !(Array.isArray(clause) && clause.length === 0)
+    if (
+      this.parentNode !== undefined ||
+      table === undefined ||
+      !TableNode.is(table) ||
+      others.length > 0 ||
+      clauses.some(present)
+    ) {
+      throw new Error('store-mysql: a keyed write outside the statement grammar')
+    }
+  }
+
+  private visitKeyedWhere(where: OperationNode | undefined): void {
+    if (where === undefined) throw new Error('store-mysql: a keyed write with no WHERE')
+    this.append(' ')
+    this.visitNode(where)
   }
 
   private writing(target: string | null, visit: () => void): void {

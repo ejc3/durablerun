@@ -7,6 +7,7 @@ import {
   checkpointWrite,
   claimCas,
   emitEventCas,
+  rawSql,
   registerWaitCas,
   reopenLostLaunchCas,
   sqlFragment,
@@ -127,7 +128,9 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(statement.sql, 'mutation-verdict:construction:mysql-self-read-derived-table').toContain(
       'not exists (select `held`.`run_id` from (select * from `runs`) as `held` where',
     )
-    expect(statement.sql.startsWith('update `runs` set ')).toBe(true)
+    expect(statement.sql.startsWith('update /*+ JOIN_SUFFIX(`runs`) */ `runs` force index')).toBe(
+      true,
+    )
     expect(binds(statement)).toBe(statement.args.length)
   })
 
@@ -207,5 +210,88 @@ describe('MySQL spelling of the shared statement trees', () => {
     // owner_attempt is what the condition reads, so it is the last assignment.
     expect(statement.sql.trimEnd().endsWith('`checkpoints`.`owner_attempt`)')).toBe(true)
     expect(binds(statement)).toBe(statement.args.length)
+  })
+
+  it('reads a keyed update last, through the index of its key', async () => {
+    const statement = await sent(
+      'casMany',
+      'claim',
+      claimCas({
+        queue: 'q',
+        claimToken: 'tok',
+        leaseMs: 1000,
+        candidateRunIds: sqlFragment(
+          '(SELECT run_id FROM (SELECT r.run_id FROM runs r LIMIT ?) AS c)',
+          [2],
+        ),
+        legacyWaitStep: sqlFragment('NULL'),
+        leaseExpiresAt: sqlFragment('$NOW$ + ?', [1000]),
+        leaseFits: sqlFragment('1 = 1'),
+      }),
+    )
+    expect(
+      statement.sql,
+      'mutation-verdict:construction:mysql-keyed-write-names-its-key-index',
+    ).toContain('`runs` force index (primary) set ')
+    expect(statement.sql.startsWith('update /*+ JOIN_SUFFIX(`runs`) */ `runs` ')).toBe(true)
+    expect(binds(statement)).toBe(statement.args.length)
+  })
+
+  it('writes a keyed delete in the form that takes an index', () => {
+    const { sql } = compiled(
+      treeBuilder
+        .deleteFrom('waits')
+        .where((eb) => eb('run_id', 'in', eb.selectFrom('runs as f').select('f.run_id'))),
+    )
+    expect(sql).toBe(
+      'delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f`)',
+    )
+  })
+
+  it('finds the key of a write wherever it stands among the conditions', () => {
+    const { sql } = compiled(
+      treeBuilder
+        .updateTable('runs')
+        .set({ state: 'pending' })
+        .where('state', '=', 'sleeping')
+        .where((eb) =>
+          eb(
+            'run_id',
+            'in',
+            rawSql<string>(sqlFragment('(SELECT w.run_id FROM waits w)'), 'subquery'),
+          ),
+        ),
+    )
+    expect(sql, 'mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere').toContain(
+      '`runs` force index (primary) set ',
+    )
+  })
+
+  it('takes no list of values for a key', () => {
+    const listed = () =>
+      compiled(
+        treeBuilder
+          .updateTable('tasks')
+          .set({ state: 'failed' })
+          .where('state', 'in', ['pending', 'running']),
+      )
+    expect(
+      listed,
+      'mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery',
+    ).not.toThrow()
+    expect(listed().sql).toBe('update `tasks` set `state` = ? where `state` in (?, ?)')
+  })
+
+  it('refuses a write keyed by a column that names no index', () => {
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .updateTable('runs')
+            .set({ state: 'pending' })
+            .where((eb) => eb('queue', 'in', eb.selectFrom('tasks as t').select('t.queue'))),
+        ),
+      'mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused',
+    ).toThrow('a write of runs keyed by queue names no index to reach it through')
   })
 })
