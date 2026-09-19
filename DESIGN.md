@@ -772,6 +772,17 @@ One invocation executes one claimed run to its next suspension point:
     `ChildAwaitRefusedError`, classified in core. A child that ended with
     nothing recorded is recorded, as above. A live child means the awaiting
     run's own claim is gone. A child in the parent's queue is never refused.
+    The await's rounds, the classification of a refusal, its read and the read
+    of a run's task before a terminal batch (`run-task`), and the batch that
+    records an unrecorded ending are core's (`awaitTaskDone` and `endingTask`,
+    beside `addTaskDone`), so every dialect runs one protocol and none writes
+    it again. A dialect supplies facts. It opens and runs each of the three
+    batches, so that every batch label stays a literal in a store and every
+    batch reaches the executor from a store, which is where the label ledger,
+    the batch lint, and the fault matrix read them. It supplies its
+    `await-event` batch, how it says why a fence refused a write, and three
+    fragments. Core cannot read what a fragment means, so a dialect's facts
+    are held by the conformance suite on that dialect.
     This departs from Absurd, which refuses the same-queue await because its
     await polls and holds a worker slot, so a parent and its child can
     deadlock a small pool. Ours suspends and holds nothing. The model isolates

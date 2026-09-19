@@ -6646,9 +6646,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-raises-its-refusal",
-            "packages/store-libsql/src/store.ts",
-            "      if (refusal !== null) throw refusal\n",
-            "      // MUTATION: a refusal is never raised\n",
+            "packages/core/src/task-done.ts",
+            "    if (refusal !== null) throw refusal\n",
+            "    // MUTATION: a refusal is never raised\n",
             "an await of a child in another queue is reported as a lost lease and retried for ever",
         ),
         (
@@ -7003,9 +7003,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-recording-error-names-the-task",
-            "packages/store-libsql/src/store.ts",
-            "        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
-            "        `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
+            "packages/core/src/task-done.ts",
+            "      `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
+            "      `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that records an outcome and reads a corrupt stored payload hands the task the engine's event name",
         ),
         (
@@ -7073,9 +7073,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-registers-on-a-revived-child",
-            "packages/store-libsql/src/store.ts",
-            "      if (child === null || !isTerminalState(child.outcome.state)) continue\n",
-            "      if (child === null || !isTerminalState(child.outcome.state)) break\n",
+            "packages/core/src/task-done.ts",
+            "    if (child === null || !isTerminalState(child.outcome.state)) continue\n",
+            "    if (child === null || !isTerminalState(child.outcome.state)) break\n",
             "a parent whose claim is live is told its lease is lost, because its child was revived before the read that says why",
         ),
         (

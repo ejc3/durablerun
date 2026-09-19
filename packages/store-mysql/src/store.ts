@@ -34,18 +34,19 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  type TaskDoneDialect,
   type TaskOutcome,
   type TaskResult,
   type WakeSpec,
   activateCas,
   activatedRunRead,
   addTaskDone,
+  awaitTaskDone,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
   checkpointsRead,
-  childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
@@ -61,14 +62,12 @@ import {
   durationToMs,
   emitEventCas,
   emittedEventRead,
-  encodeTaskOutcome,
+  endingTask,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
   heartbeatRemainingRead,
-  isTerminalState,
   mapLimit,
-  materializeTaskDoneCas,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -91,7 +90,6 @@ import {
   reviveCas,
   revivedRunRead,
   rollbackPassInsert,
-  runTaskRead,
   serializeTaskHeaders,
   serializeTaskValue,
   spawnIdempotencyKey,
@@ -105,7 +103,6 @@ import {
   suspendCas,
   sweepDueCancelsRead,
   sweepExpiredClaimsRead,
-  taskDoneStateRead,
   taskResultRead,
   taskStateValue,
   userRetrySuccessorInsert,
@@ -480,13 +477,6 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
  */
 const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
   refusalStateRead(binds),
-)
-const RUN_TASK = prepareRead(
-  { queue: 'string', runId: 'string' },
-  (binds: { queue: string; runId: string }) => runTaskRead(binds),
-)
-const TASK_DONE_STATE = prepareRead({ taskId: 'string' }, (binds: { taskId: string }) =>
-  taskDoneStateRead(binds),
 )
 const TASK_RESULT = prepareRead(
   { queue: 'string', taskId: 'string' },
@@ -1808,7 +1798,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     resultJson: string,
   ): Promise<void> {
     requireIdentifiersFit({ queue, runId })
-    const taskId = await this.endingTask('complete', queue, runId)
+    const taskId = await endingTask(this.taskDoneDialect(), this.runTasks, 'complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
       'complete',
@@ -1932,7 +1922,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
-    const taskId = await this.endingTask('fail', queue, runId)
+    const taskId = await endingTask(this.taskDoneDialect(), this.runTasks, 'fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     return this.failInto(b, {
       operation: 'fail',
@@ -1966,7 +1956,13 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
-    const taskId = await this.endingTask('failRollback', queue, runId)
+    const taskId = await endingTask(
+      this.taskDoneDialect(),
+      this.runTasks,
+      'failRollback',
+      queue,
+      runId,
+    )
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -2366,23 +2362,36 @@ export class MysqlSchedulerStore implements SchedulerStore {
     }
   }
 
-  /**
-   * A run's task, read before the batch that ends the run. A terminal batch names its
-   * task's completion event, and `complete` and `fail` are handed only the run. The
-   * task of a run never changes, so an unfenced read is safe, and so is the answer
-   * `activate` gave this store a moment ago, which costs no read. A run remembered
-   * under another queue still loses, because the batch's compare-and-set names the
-   * queue. A run this queue does not have is refused here as the batch would refuse it.
-   */
-  private async endingTask(operation: string, queue: string, runId: string): Promise<string> {
-    const remembered = this.runTasks.recall(runId)
-    if (remembered !== undefined) return remembered
-    const b = new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', RUN_TASK, { queue, runId })
-    const rows = await this.rows(b, 'task')
-    const taskId = rows[0]?.task_id
-    if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
-    return taskId
+  /** What this dialect supplies to core's side of a task's ending and of a child await. */
+  private taskDoneDialect(): TaskDoneDialect {
+    return {
+      run: (batch: FencedBatch) => batch.run(this.db),
+      open: {
+        runTask: () => new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        taskDoneState: () =>
+          new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        recordTaskDone: () =>
+          new FencedBatch('record-task-done', this.ids.token(), {
+            now: NOW_MS,
+            tree: TREE_DIALECT,
+          }),
+      },
+      awaitNamedEvent: (awaited, name, awaitedTaskId) =>
+        this.awaitNamedEvent(
+          awaited.queue,
+          awaited.taskId,
+          awaited.runId,
+          awaited.claimToken,
+          awaited.stepName,
+          name,
+          awaited.timeoutSeconds,
+          awaitedTaskId,
+        ),
+      refusal: (operation, runId) => this.refusal(operation, runId),
+      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      storedPayloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+    }
   }
 
   /**
@@ -2598,110 +2607,15 @@ export class MysqlSchedulerStore implements SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
     requireIdentifiersFit({ queue, taskId, runId, stepName })
-    const name = EventName.awaitedTaskDone(childTaskId)
-    // A child revived before the read, or between the read and the batch that records it,
-    // is live again, so the next round registers. Two rounds cover that. A live child that
-    // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
-    // the claim is lost, the task is cancelled, or the timeout does not fit.
-    for (let round = 0; round < 2; round++) {
-      const answer = await this.awaitNamedEvent(
-        queue,
-        taskId,
-        runId,
-        claimToken,
-        stepName,
-        name,
-        timeoutSeconds,
-        childTaskId,
-      )
-      if (answer !== null) return answer
-      const child = await this.taskDoneState(childTaskId)
-      const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
-      if (refusal !== null) throw refusal
-      // A live child was revived since the batch looked, and the next round registers on it.
-      if (child === null || !isTerminalState(child.outcome.state)) continue
-      const recorded = await this.recordTaskDone(
-        { queue, taskId, runId, claimToken },
-        childTaskId,
-        child.stamp,
-        child.outcome as TaskOutcome,
-      )
-      if (recorded !== null) return recorded
-    }
-    throw await this.refusal('awaitTaskDone', runId)
-  }
-
-  /**
-   * A task as a child await sees it: its queue, its outcome, and the stamp its row
-   * carries. Read only off the common path: by an await that neither registered nor
-   * hit, to say why.
-   */
-  private async taskDoneState(taskId: string): Promise<{
-    queue: string
-    outcome: TaskResult
-    stamp: string | null
-  } | null> {
-    const b = new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', TASK_DONE_STATE, { taskId })
-    const rows = await this.rows(b, 'task')
-    const row = rows[0]
-    if (row === undefined) return null
-    return {
-      queue: String(row.queue),
-      outcome: decodeTaskResult(taskId, row),
-      stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
-    }
-  }
-
-  /**
-   * Record the outcome of a child that ended with no completion event, and answer the
-   * await with it (ChildTasks.tla's AwaitMaterialize). Null when the batch recorded
-   * nothing and found no event: the child's row is no longer the one that was read, or
-   * this run's claim is gone.
-   */
-  private async recordTaskDone(
-    claim: { queue: string; taskId: string; runId: string; claimToken: string },
-    childTaskId: string,
-    childStamp: string | null,
-    outcome: TaskOutcome,
-  ): Promise<{ emitted: true; payloadJson: string } | null> {
-    const { queue } = claim
-    const name = EventName.taskDone(childTaskId)
-    const b = new FencedBatch('record-task-done', this.ids.token(), {
-      now: NOW_MS,
-      tree: TREE_DIALECT,
+    return awaitTaskDone(this.taskDoneDialect(), {
+      queue,
+      taskId,
+      runId,
+      claimToken,
+      stepName,
+      childTaskId,
+      timeoutSeconds,
     })
-    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
-    b.casTree(
-      'materialize',
-      materializeTaskDoneCas({
-        ...awaiting,
-        childTaskId,
-        eventName: name,
-        payloadJson: encodeTaskOutcome(outcome),
-        childStamp,
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    b.openTailTree(
-      'hit',
-      'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
-      emittedEventRead({
-        ...awaiting,
-        eventName: name,
-        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const row = results.hit?.rows[0]
-    if (row === undefined) return null
-    if (row.payload_type !== 'text') {
-      throw new RangeError(
-        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
-      )
-    }
-    return { emitted: true, payloadJson: String(row.payload) }
   }
 
   /**

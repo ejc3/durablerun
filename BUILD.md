@@ -1666,14 +1666,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     with every test green. The property is that no write scans a table once
     for each row of another, and a check generated from the corpus would hold
     it for every statement. It is its own change.
-  - Deferred to PR3.3b, the hoists the second review named. Core declares the
-    event lock, so that the eight lines that take it leave the dialect store and
-    a batch that adds a completion event without it is refused, and it decides
-    there whether a batch that ends no task needs the lock. A tree rule refuses a
-    statement that writes a terminal `tasks.state` unless the batch carries the
-    completion event's follow-on. The child await's engine logic, which is the
-    same text in both stores, and its two reads move into core beside
-    `addTaskDone`, so that a third dialect inherits them.
+  - Delivered in PR3.3b, the hoists the second review named, on three stores.
+    A statement that records an event or registers a wait names that event's
+    lock where core defines it, and a batch holds the lock of a statement it
+    admits. The eighteen lines that took the lock left the two server stores,
+    and an INSERT into `events` or `waits` whose definition names no lock, or
+    another event's, is refused when the batch is built. Whether a batch that
+    ends no task needs the lock is decided once, where the completion event
+    names it: it does, because a lock is taken before the transaction's first
+    statement. A batch that writes a terminal `tasks.state` and records no
+    completion event under that statement's stamp is refused when it runs.
+    The child await's rounds, its refusal, its two reads, and the batch that
+    records an unrecorded ending are core's (`awaitTaskDone`, `endingTask`),
+    and a dialect supplies facts. On the prevention ladder the first is rung 1
+    for a store and rung 2 for a new statement, the second is rung 2, and the
+    third is rung 1. Each has its false negative written and run as an
+    accepted exhibit in core's tests: a lock that names the event in another
+    queue, a task state copied from a run the batch ended, and a dialect fact
+    that is wrong. What holds those is what held them before: the PostgreSQL
+    and MySQL lock cases, `childTaskViolations`, and the conformance suite on
+    each dialect.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
