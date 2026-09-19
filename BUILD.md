@@ -1948,6 +1948,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   surface, which libSQL and PostgreSQL failed before the fix. Rows written
   before the rule are left alone, and what that means is in rule 10 and held
   by two cases in `legacy-rows.test.ts`.
+  - The conformance fixture for MySQL hashed the seed into its id namespace and
+    the other two spelled it out in hexadecimal. The hashing cannot go. Measured:
+    spelled out, 12 of the 50 poison target cases mint ids of 258 to 276
+    characters and 19 leave no room for a completion event name, while the
+    longest fault matrix id is 201. Those ids are minted inside the store for a
+    successor run and stored, and no case passes one back: across the 50 cases
+    on libSQL the rule refused nothing, and the longest string through the port
+    was 12 characters. A poison case also throws unless its label crossed the
+    executor and changed durable state, so a refusal at the entry could not pass
+    for containment. The three fixtures now share one namespace
+    (`fixture-id-namespace.ts`): spelled out when the ids leave 64 characters of
+    room in the width, hashed when they would not, so no fixture mints an id the
+    contract says cannot exist.
 - **PR5.1 registry + fan-out**: status semantics (active/draining/paused),
   routing with versioned cache, multi-shard tick fan-out, driver adoption caps.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics

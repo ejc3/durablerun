@@ -8,6 +8,7 @@ import type {
   StoreFixture,
   StoreFixtureOptions,
 } from '../src/index.js'
+import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 function sqlStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`
@@ -122,11 +123,8 @@ export async function makeLibsqlFixture(
   // that resumes from setImmediate, which Clock.yieldTurn uses, meets the deadline first.
   // fixture-libsql-yields.test.ts holds this line.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
-  const encodedSeed = [...String(seed)]
-    .map((character) => character.codePointAt(0)?.toString(16))
-    .join('_')
   const { raw, admin, ids } = await openTestDb({
-    idNamespace: `conformance-${encodedSeed || 'empty'}`,
+    idNamespace: conformanceIdNamespace(seed),
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   return {

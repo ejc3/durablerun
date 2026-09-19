@@ -10,6 +10,7 @@ import type {
   StoreFixture,
   StoreFixtureOptions,
 } from '../src/index.js'
+import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
   '22003', // numeric_value_out_of_range
@@ -106,11 +107,8 @@ export async function makePostgresFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
 ): Promise<StoreFixture> {
-  const encodedSeed = [...String(seed)]
-    .map((character) => character.codePointAt(0)?.toString(16))
-    .join('_')
   const opened = await openPostgresTestDb({
-    idNamespace: `conformance-${encodedSeed || 'empty'}`,
+    idNamespace: conformanceIdNamespace(seed),
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   const { raw, admin, ids } = opened

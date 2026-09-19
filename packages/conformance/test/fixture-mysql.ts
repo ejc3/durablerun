@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { META_TABLE_SQL, MysqlSchedulerStore, MysqlStoreAdmin } from '@durablerun/store-mysql'
 import {
@@ -11,6 +10,7 @@ import type {
   StoreFixture,
   StoreFixtureOptions,
 } from '../src/index.js'
+import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 /** MySQL errors that mean a column's type refused the value, under the strict mode every session sets. */
 const STRUCTURAL_VALUE_ERRNOS = new Set([
@@ -127,12 +127,8 @@ export async function makeMysqlFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
 ): Promise<StoreFixture> {
-  // The other fixtures spell the seed into every id. Here it is hashed, because this
-  // schema indexes its identifiers and an indexed MySQL string is at most 255
-  // characters, which the longest seeds of the shared suite would pass.
-  const seedDigest = createHash('sha256').update(String(seed)).digest('hex').slice(0, 24)
   const opened = await openMysqlTestDb({
-    idNamespace: `conformance-${seedDigest}`,
+    idNamespace: conformanceIdNamespace(seed),
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   const { raw, admin, ids } = opened
