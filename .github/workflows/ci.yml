@@ -333,7 +333,7 @@ jobs:
               # the read needed. The base entry that mutated the line choosing that
               # transaction is re-aimed at the rule, and its mutant is the one it was: the
               # version read runs under a snapshot again. The rule's conditions and the
-              # claim's plan test register mutations the base predates, so their verdict
+              # claim's plan tests register mutations the base predates, so their verdict
               # markers are exempted.
               repaired = reaim_spec(previous, candidate, 'mysql-version-read-is-read-committed')
               repaired = exempt(repaired, candidate, (
@@ -342,6 +342,7 @@ jobs:
                   "mutation-verdict:behavior:mysql-lone-read-begins-with-select",
                   "mutation-verdict:behavior:mysql-lone-write-binds-no-trailing-space",
                   "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
+                  "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
                   "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
                   "mutation-verdict:construction:postgres-lone-statement-carries-no-lock",
                   "mutation-verdict:behavior:postgres-lone-read-begins-with-select",

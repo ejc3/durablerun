@@ -7387,6 +7387,13 @@ MUTATION_SPECS.extend(
             "        AND ? IS NOT NULL\n        ORDER BY r.available_at_ms, r.run_id\n        FOR UPDATE SKIP LOCKED)`\n",
             "a claim leg reads and locks every due run of its state, so concurrent claimers skip runs this claim never takes",
         ),
+        (
+            "mysql-claim-leg-names-its-index",
+            "packages/store-mysql/src/store.ts",
+            "        FROM runs r FORCE INDEX (runs_poll)\n",
+            "        FROM runs r\n",
+            "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
+        ),
     )
 )
 
@@ -11450,6 +11457,12 @@ VERDICTS.update(
             "packages/store-mysql/test/query-plans.test.ts",
             "the claim's candidate legs on MySQL walks each state in claim order and stops at the limit, locking only the runs it takes, beside a backlog of due runs",
             "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
+        ),
+        "mysql-claim-leg-names-its-index": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
+            "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
         ),
     }
 )
@@ -17259,7 +17272,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 890:
+        if len(MUTATIONS) != 891:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
