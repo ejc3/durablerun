@@ -1718,6 +1718,9 @@ are load-bearing):
    and treats the write as complete only when metadata now exists at or beyond
    that batch's target. An absent or behind version rethrows the original
    failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
+   On PostgreSQL a version's batch first takes a lock on `meta` that a second
+   migrator waits on, so the loser's error is the sentinel's unique violation
+   and never a deadlock (rule 11).
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
@@ -1930,15 +1933,36 @@ are load-bearing):
    rows, where a table rebuilds in about that second, that version still
    committed in 15 of 16 runs. At four million it failed in 6 of 6, each time
    after the executor's three attempts, and left the schema at version 6.
+   Those runs sent the sentinel ahead of every lock. Measured again with the
+   runner's lock on `meta` first (below): 12 of 12 at a million rows (4.7 to
+   7.1 seconds, once on its second attempt) and 6 of 6 at four million (15.5
+   to 18.1 seconds), again with no error at any caller.
 
-   Migrators that race on one database converge as they did (rule 9). Version
-   7 is the first version to take a table lock on `meta`, and a second
-   migrator holds a weaker lock on it while it waits for the first one's
-   sentinel row, so the two can deadlock. PostgreSQL takes its one second
-   timeout to abort the second, which the executor runs again and which then
-   finds the version applied. Measured with eight migrators racing on a fresh
-   schema, ten rounds a side: 36 to 51 ms where they took 23 to 41 before, and
-   one round of 1,038 ms. None was rejected.
+   Migrators that race on one database converge as they did (rule 9), and the
+   second one waits. Every version's batch begins with `LOCK TABLE meta IN
+   SHARE ROW EXCLUSIVE MODE`, ahead of its sentinel row. That lock conflicts
+   with itself and with the lock a sentinel insert takes, so a second migrator
+   stops there holding nothing, and when the first has committed it loses to
+   the committed sentinel and finds the version written. A read does not
+   conflict with it, so the clock's row stays readable, and the sentinel still
+   comes before every statement of the version. Version 7 is why the lock is
+   there: it is the first version to take a table lock on `meta`. With the
+   sentinel written first, a second migrator blocks on that uncommitted row
+   while it holds its own row-exclusive lock on `meta`, the first then waits
+   for that lock, and PostgreSQL takes its one second deadlock timeout to
+   abort one of them, which the executor runs again where nobody sees it.
+
+   Measured with warmed migrators racing on a fresh schema, 100 rounds, by the
+   server's own deadlock counter in a database nothing else used. Without the
+   lock: 61 deadlocks with four migrators and 121 with eight, and 46 and 33
+   rounds over a second. With it: none with either, a median round of 40 ms
+   with four and 47 with eight, and no round over 77 ms. Main, whose last
+   version is 6, takes 23 ms. `store-postgres/test/racing-migrators.test.ts`
+   holds it without a race: two connections replay each version's batch as the
+   admin builds it, and the second starts once the first has written its
+   sentinel. The first must commit, and the second must wait, end in a unique
+   violation, and find the version written. It fails at version 7 without the
+   lock.
 
    An operator's own view over one of these tables stops the version.
    PostgreSQL refuses to change the type of a column that a view reads, so

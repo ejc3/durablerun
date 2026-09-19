@@ -57,10 +57,14 @@ describe('PostgresStoreAdmin', () => {
     )
     for (const [index, call] of migrationCalls.entries()) {
       const migration = MIGRATIONS[index]
-      expect(call?.statements).toHaveLength((migration?.statements.length ?? 0) + 2)
-      expect(call?.statements[0]?.sql).toBe(
+      // The lock that makes a second migrator wait, then the sentinel, which comes before
+      // every statement of the version, then the version's statements and nothing else.
+      expect(call?.statements).toHaveLength((migration?.statements.length ?? 0) + 3)
+      expect(call?.statements[0]?.sql).toBe('LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE')
+      expect(call?.statements[1]?.sql).toBe(
         `INSERT INTO meta (key, value) VALUES ('applied:v${migration?.version}', '1')`,
       )
+      expect(call?.statements.slice(2, -1).map(({ sql }) => sql)).toEqual(migration?.statements)
       expect(call?.statements.at(-1)).toEqual({
         sql: `UPDATE meta SET value = ? WHERE key = 'schema_version' AND value = ?`,
         args: [String(migration?.version), String((migration?.version ?? 0) - 1)],
