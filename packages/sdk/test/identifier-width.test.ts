@@ -110,8 +110,9 @@ for (const { dialect, open } of SAGA_DIALECTS) {
 
     it('holds each key at its last fitting length, and refuses it one character past', async () => {
       // The numbers DESIGN.md gives for the SDK's keys, held so they cannot drift from the
-      // code: an awaited event name 248, a registered step 239, a step used twice 253, and
-      // a child task name whatever the stored child key leaves its replay key.
+      // code: an awaited event name 248, an awaited child id 243, a registered step 239, a
+      // step used twice 253, and a child task name whatever the stored child key leaves
+      // its replay key.
       // One past its room, a key fails the task on that first pass: nothing is retried.
       const firstPass = async (seed: string, job: Parameters<typeof registry>[0][string]) => {
         const f = await open(seed)
@@ -122,8 +123,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           [{ sql: "SELECT task_id FROM tasks WHERE task_name = 'job'", args: [] }],
           'read',
         )
+        const parentTaskId = String(parent[0]?.rows[0]?.task_id)
+        const result = await f.store.getTaskResult(Q, parentTaskId)
         await f.close()
-        return { outcome, parentTaskId: String(parent[0]?.rows[0]?.task_id) }
+        return { outcome, parentTaskId, failure: failureOf(result) }
       }
       const awaiting = (length: number) =>
         firstPass(`width-await-${length}`, async (ctx) => {
@@ -138,6 +141,20 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           await ctx.step('n'.repeat(length), () => 1)
           await ctx.step('n'.repeat(length), () => 2)
         })
+      // A child's id is the engine's, so the key of its await is reached only through a
+      // forged handle. At 243 the key fits and the store is asked, which knows no such
+      // task. One past it the SDK refuses first, in the task's own terms.
+      const awaitingTask = async (length: number) => {
+        const pass = await firstPass(`width-await-task-${length}`, async (ctx) => {
+          await ctx.awaitTask({ taskId: 'x'.repeat(length), queue: Q } as never, {
+            timeoutSeconds: 1,
+          })
+        })
+        return {
+          outcome: pass.outcome,
+          refusedByTheSdk: pass.failure.includes('child task id is too long'),
+        }
+      }
       // The room a child task name has under this harness's parent id, by the same sum
       // DESIGN.md does for a 36 character id.
       const roomUnder = (parentTaskId: string) =>
@@ -152,6 +169,8 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         documentedRoomUnderA36CharacterParentId: roomUnder('x'.repeat(36)),
         await248: (await awaiting(248)).outcome,
         await249: (await awaiting(249)).outcome,
+        awaitTask243: await awaitingTask(243),
+        awaitTask244: await awaitingTask(244),
         registered239: (await registered(239)).outcome,
         registered240: (await registered(240)).outcome,
         twice253: (await twice(253)).outcome,
@@ -162,6 +181,8 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         documentedRoomUnderA36CharacterParentId: 201,
         await248: 'suspended',
         await249: 'failed',
+        awaitTask243: { outcome: 'failed', refusedByTheSdk: false },
+        awaitTask244: { outcome: 'failed', refusedByTheSdk: true },
         registered239: 'completed',
         registered240: 'failed',
         twice253: 'completed',
@@ -318,10 +339,13 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         await f.close()
         return { first, rest, ran, state: result?.state }
       }
-      expect({
-        storedKeyOf300: await startedAndNeverPersisted(300),
-        storedKeyOf250: await startedAndNeverPersisted(250),
-      }).toEqual({
+      expect(
+        {
+          storedKeyOf300: await startedAndNeverPersisted(300),
+          storedKeyOf250: await startedAndNeverPersisted(250),
+        },
+        'mutation-verdict:behavior:sdk-started-key-held-to-the-width',
+      ).toEqual({
         // The body is not run again. The task fails for good, and the pass that follows
         // runs the rollback the first body is owed, once. It cannot be recorded.
         storedKeyOf300: {

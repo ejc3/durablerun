@@ -12899,15 +12899,15 @@ MUTATION_SPECS.extend(
         (
             "sdk-durable-key-held-before-the-body-runs",
             "packages/sdk/src/context.ts",
-            "      requireRoom(what, key, room)\n",
-            "      // MUTATION: the key is not held\n",
+            "    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "    // MUTATION: the key is not held\n",
             "a name that fits is stored under a key that does not, every store refuses it on every pass, and the step's body runs again on each retry until the budget is gone",
         ),
         (
             "sdk-key-already-stored-is-not-held",
             "packages/sdk/src/context.ts",
-            "    if (!taskMapHas(this.seen, key) && !taskMapHas(this.startIndexes, key)) {\n",
-            "    if (!taskMapHas(this.startIndexes, key)) { // MUTATION\n",
+            "    if (taskMapHas(this.seen, key)) return key\n",
+            "    // MUTATION: a memoized key is held like any other\n",
             "a task in flight whose step name was stored before the rule fails for good where it used to finish",
         ),
         (
@@ -12916,6 +12916,13 @@ MUTATION_SPECS.extend(
             "    requireRoom('event name', parsed.value, IDENTIFIER_CHARACTERS)\n",
             "    // MUTATION: an emitted name is not held\n",
             "an emit of a name past the width is refused by the store on every pass, and the task is retried until its budget is gone",
+        ),
+        (
+            "sdk-started-key-held-to-the-width",
+            "packages/sdk/src/context.ts",
+            "    if (started && this.#sagaCauseJson !== undefined) return key\n",
+            "    if (started) return key // MUTATION\n",
+            "a step that started under an older build and never persisted, under a stored key past the width, runs its body again on every remaining attempt before a write that can never succeed",
         ),
         (
             "driver-identifiers-held-at-construction",
@@ -12998,6 +13005,17 @@ for _verdict, _names in (
         ),
         (
             "sdk-emitted-event-name-held",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] does not run the body again when a step that started before the rule and never persisted has a stored key past the width, and still completes one whose stored key fits",
+            "mutation-verdict:behavior:sdk-started-key-held-to-the-width",
+        ),
+        (
+            "sdk-started-key-held-to-the-width",
         ),
     ),
     (
@@ -14616,6 +14634,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "sdk-emitted-event-name-held": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-started-key-held-to-the-width": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "legacy-wait-step-backfill": (
@@ -16904,7 +16925,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 870:
+        if len(MUTATIONS) != 871:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

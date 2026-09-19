@@ -402,13 +402,20 @@ export class ReplayContext implements TaskContext {
     const use = (taskMapGet(this.nameUses, raw) ?? 0) + 1
     taskMapSet(this.nameUses, raw, use)
     const key = use === 1 ? raw : `${raw}#${use}`
-    // The width is held on the way in. A key that is already stored, as a memo or as a
-    // started step, was admitted by whatever build stored it, and has to replay: refusing
-    // it would fail a task in flight for good where it used to finish. Every other key is
-    // refused here, before the body it names can run.
-    if (!taskMapHas(this.seen, key) && !taskMapHas(this.startIndexes, key)) {
-      requireRoom(what, key, room)
-    }
+    // The width is held on the way in. A memoized key was admitted by whatever build
+    // stored it, and nothing is written under it again, so it replays: refusing it would
+    // fail a task in flight for good where it used to finish.
+    if (taskMapHas(this.seen, key)) return key
+    // A step that started and never persisted is stored too, as its start marker, but its
+    // body runs again and its result must then be written under the same key. It is
+    // excused the saga room, which its stored marker already passed, and is still held to
+    // the width: past it the write can never succeed, so running the body first would
+    // only repeat its side effect on every remaining attempt. Once the task is rolling
+    // back no body runs, and the key is only what the step's rollback registers under,
+    // so nothing is held there and the rollback the first body is owed still runs.
+    const started = taskMapHas(this.startIndexes, key)
+    if (started && this.#sagaCauseJson !== undefined) return key
+    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)
     return key
   }
 

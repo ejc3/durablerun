@@ -341,7 +341,7 @@ jobs:
               # The width of a durable identifier moved from the MySQL store into core. The two
               # mutations that broke the store's own checks are retired with the code they
               # named. The mutations that replace them, in core, the SDK and the driver, carry
-              # seven verdict markers this registry predates. Nothing is re-aimed: every other find of this registry
+              # eight verdict markers this registry predates. Nothing is re-aimed: every other find of this registry
               # still occurs exactly once in this tree. The arm is keyed on main's registry as
               # of the merge that made a store's reads batches of reads, whose own arm it replaces.
               repaired = retire(previous, candidate, (
@@ -355,6 +355,7 @@ jobs:
                   'mutation-verdict:behavior:sdk-holds-the-durable-key-before-the-body-runs',
                   'mutation-verdict:behavior:sdk-replays-a-key-already-stored',
                   'mutation-verdict:behavior:sdk-holds-an-emitted-event-name',
+                  'mutation-verdict:behavior:sdk-started-key-held-to-the-width',
                   'mutation-verdict:construction:driver-holds-its-identifiers-at-construction',
               ))
           else:

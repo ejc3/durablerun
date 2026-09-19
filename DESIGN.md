@@ -1728,7 +1728,12 @@ are load-bearing):
    its replay key. An emitted event name has no key and is held as it is. A
    key past its room fails the task for good, with a `FatalTaskError` that
    names what the task passed, before the step's body runs and before any
-   store call, and it is never retried. The store's own refusal would be
+   store call, and it is never retried. A child task name is the one
+   exception to where and how. The SDK holds only its own key, `$spawn:` and
+   the name, and the longer child key is built and held by the store. So a
+   name past its 201 is refused by `spawn`, in a message that names
+   `childOf.replayKey`, and `ctx.spawn` turns that refusal into the same
+   permanent failure on the first pass. The store's own refusal would be
    retried: the SDK reads it as an ordinary failure, so every earlier side
    effect would run again on each attempt until the budget was gone.
 
@@ -1736,10 +1741,18 @@ are load-bearing):
    before the rule can hold a longer name only on libSQL or PostgreSQL, since
    MySQL never could. What is already stored still works where the engine
    hands it back, and is refused where a caller must pass it in again.
-   - A key that is already stored, as a memo or as a started step, replays.
-     The SDK looks the memo up before it holds a key, so a task in flight
-     under a longer step name finishes. A read returns a longer checkpoint
-     name, and the port's `complete` still ends the task.
+   - A key that is already stored as a memo replays, because nothing is
+     written under it again. The SDK looks the memo up before it holds a key,
+     so a task in flight under a longer step name finishes. A read returns a
+     longer checkpoint name, and the port's `complete` still ends the task.
+   - A step that started and never persisted is stored too, as its start
+     marker, but its body runs again and its result must then be written under
+     the same key. It is excused the 239 of a saga key, which its stored
+     marker already passed, so under a stored key of 240 to 255 characters it
+     runs again and completes. It is still held to the width: under a longer
+     key the task fails for good before the body runs again, because the
+     write that would follow can never succeed. The pass that follows still
+     runs the rollback the first body is owed, once, and cannot record it.
    - A saga in flight under a step key of 240 to 245 characters still rolls
      back, records that each rollback ran, and ends with the failure that
      began it. It cannot record a rollback that fails, because the attempt
