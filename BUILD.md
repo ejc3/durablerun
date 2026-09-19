@@ -169,6 +169,18 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+13. PR4.6: `getCheckpoints` returns a caller's names in byte order on every
+    dialect. CI's PostgreSQL service is created with a linguistic collation, so
+    the suite sees what a managed server may show. The order case writes names
+    that separate the orders and was committed failing on PostgreSQL alone.
+    Version 7 of the PostgreSQL schema declares every text column
+    `COLLATE "C"`, and a test that reads the catalog fails for a text column or
+    an index key that does not, and for a version that rewrites a table.
+    This is met. The case was seen red by name against a server created with
+    ICU's `en-US` and green against the same image without it, the PostgreSQL
+    conformance leg passes against both servers, and two registered mutations,
+    one that drops a column from the version and one that makes it rewrite a
+    table, are each caught by that test.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -2508,6 +2520,62 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An option, not built: read PostgreSQL's `event_locks`, which holds
     identifiers outside the six snapshot tables. Each of its rows has a sibling
     row in `events` or `waits` that the condition reads.
+
+- **PR4.6 PostgreSQL compares and orders names by bytes**: DONE. `getCheckpoints`
+  returned a caller's names in byte order on libSQL, on MySQL, and on a
+  PostgreSQL whose C library sorts by bytes, in glibc's order on an
+  `en_US.UTF-8` PostgreSQL, and in a third order under ICU. The identical suite
+  could not see it. CI's PostgreSQL image sorts by bytes whatever locale its
+  database names, and the one order case wrote `a-step` and `b-step`, which
+  every collation orders alike. Measured before anything changed: against
+  glibc's `en_US.UTF-8`, against ICU's `en-US` on the Debian image, and against
+  ICU's `en-US` on the image CI uses, the PostgreSQL store's suite, the corpus
+  case, and the PostgreSQL conformance leg passed with the counts of the
+  byte-ordered control, 42, 7, and 3,395 tests.
+  The rule is DESIGN.md §3.4 rule 11: a name compares and orders by its bytes
+  on every dialect, as it already did on libSQL, which compares bytes, and on
+  MySQL, whose schema declares a binary collation on every string column.
+  CI's three PostgreSQL service blocks and the README's command create the
+  database with ICU's `en-US`. The order case writes eight names that separate
+  the orders and was committed failing on PostgreSQL alone: red by name against
+  the ICU server, and green against the same image without the arguments, on
+  libSQL, and on MySQL. Version 7 of the PostgreSQL schema declares
+  `COLLATE "C"` on all 48 text columns of its eight tables, and libSQL and MySQL
+  take an empty version 7 so the numbering stays aligned.
+  `store-postgres/test/text-collation.test.ts` reads the catalog: no text
+  column and no index key keeps its database's collation, and no version
+  rewrites a table. Two registered mutations hold it, one that drops a column
+  from the version and one that makes it rewrite a table, and the registry
+  moves from 873 to 875. No statement changed, so the corpus is main's.
+  What it costs, measured on one machine. With a million rows in each of
+  `tasks`, `runs` and `checkpoints` and the data directory in memory, version 7
+  commits in 3.2 seconds with nothing else running: no table is rewritten and
+  all fifteen indexes are rebuilt. The `CHECK` constraint on `state` costs a
+  scan and little else, 1,449 ms against 1,390 ms for the same table without
+  it. The version's first statement takes every table's lock before any index
+  is built, and that was measured as well. Under live traffic from four
+  workers of an older build it committed in 16 of 16 runs at a million rows a
+  table and in 6 of 6 at four million, and the same version without that
+  statement committed in 15 of 16 and in 0 of 6, because the migration was
+  then the deadlock victim after it had built indexes. No caller saw an error
+  in any run. On a fresh database the version costs PostgreSQL 17 ms where
+  opening and migrating a fixture took 27, about a minute over the 3,342
+  fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
+  read and one more locked batch, 4 ms where it took 39, until PR4.4b crosses
+  the empty versions in one batch. libSQL showed no difference. Creating CI's
+  database with ICU cost the conformance leg nothing one run could show, 471
+  seconds against 465.
+  - The task result's tie between two attempt records of one attempt is broken
+    by the bytes of the checkpoint name from version 7 on, like every other
+    order. No way to reach such a tie was found: the batch that fails a
+    rollback writes one record and ends its run.
+  - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
+    key. Those reads walk a task's checkpoints because a range over a name was
+    not sound under a linguistic collation. From version 7 on the range is
+    sound on PostgreSQL too. It is another PR's to build.
+  - An option, not built: a check of the database's encoding. Byte order is
+    code point order for UTF-8 text, which is the encoding of every server
+    this was run against, and nothing reads `server_encoding`.
 
 ## Phase 5 — operations + sharding
 
