@@ -1745,8 +1745,10 @@ are load-bearing):
      began it. It cannot record a rollback that fails, because the attempt
      record, `$rollback-tries:` and the key, is past the width: such a saga
      ends failed in one pass, with a failed rollback outcome and the store's
-     refusal in place of its cause. Under a key of 246 it cannot record a
-     rollback at all.
+     refusal in place of its cause. Under a key of 246 even a rollback that
+     succeeds cannot be recorded, because `$rollback:` and the key are 256
+     characters: the rollback runs once, its record is refused, and the saga
+     ends the same way.
    - An await parked under a key past the width, which takes an event name
      past 248, cannot record its wake, so its task fails for good when it
      wakes.

@@ -1554,6 +1554,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
+  - Deferred from `postmortems/pr4.5-identifier-width-review.md`: a name-length
+    axis for the replay-equivalence harness. It draws every name from a list of
+    six, the longest six characters, so no generated program builds a key near
+    the 255 character width of a durable identifier, and a refusal the store
+    gives by a name's length is met by no generated SDK program. The axis is,
+    for every keyed call the harness generates, a name at its room, one under,
+    and one past.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
