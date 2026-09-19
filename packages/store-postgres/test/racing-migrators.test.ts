@@ -119,7 +119,10 @@ describe('racing PostgreSQL migrators', () => {
     }
     // The second migrator waited, and then lost to the first one's committed sentinel
     // (23505, unique_violation). 40P01 in either column is a deadlock.
-    expect(outcomes).toEqual(
+    expect(
+      outcomes,
+      'mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel',
+    ).toEqual(
       MIGRATIONS.map(({ version }) => ({
         version,
         first: 'committed',

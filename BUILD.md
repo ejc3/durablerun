@@ -2545,8 +2545,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `store-postgres/test/text-collation.test.ts` reads the catalog: no text
   column and no index key keeps its database's collation, and no version
   rewrites a table. Two registered mutations hold it, one that drops a column
-  from the version and one that makes it rewrite a table, and the registry
-  moves from 873 to 875. No statement changed, so the corpus is main's.
+  from the version and one that makes it rewrite a table. No statement
+  changed, so the corpus is main's.
   What it costs, measured on one machine. With a million rows in each of
   `tasks`, `runs` and `checkpoints` and the data directory in memory, version 7
   commits in 3.2 seconds with nothing else running: no table is rewritten and
@@ -2568,10 +2568,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   465. With version 7 the leg took 554 and 556 seconds in one run and 609 and
   612 in another, on a byte-ordered and an ICU server each time and under more
   load than the runs before, so the fixture figure is the comparison to trust.
-  Eight migrators racing on a fresh schema took 36 to 51 ms where main took 23
-  to 41, and one round in ten took a second: version 7 is the first version to
-  lock `meta`, so two migrators can deadlock there, and PostgreSQL takes its
-  timeout to abort the second, which then finds the version applied. An
+  Version 7 is the first version to lock `meta`, and as first built two racing
+  migrators deadlocked there: the second blocked on the first one's uncommitted
+  sentinel while it held its own lock on `meta`, and PostgreSQL took its one
+  second timeout to abort one of them. With warmed migrators racing on a fresh
+  schema for 100 rounds, the server counted 61 deadlocks with four migrators
+  and 121 with eight, and 46 and 33 rounds took over a second. Every version's
+  batch now takes `meta`'s lock in SHARE ROW EXCLUSIVE mode ahead of its
+  sentinel, so a second migrator waits holding nothing. The same probe then
+  counts no deadlock, a round takes 40 ms with four migrators and 47 with
+  eight, where main's six versions take 23, and none took over 77 ms. A case
+  that replays each version's batch on two connections holds it, committed
+  failing at version 7, with a third registered mutation that removes the
+  lock, so the registry moves from 873 to 876. Under live traffic the version
+  still commits with the lock ahead of the sentinel: 12 of 12 runs at a
+  million rows a table and 6 of 6 at four million, with no error at any
+  caller. The lock is a statement of PostgreSQL's
+  runner. When PR4.4b carries the migration lock as a lock coordinate,
+  PostgreSQL's coordinate can replace that statement. An
   operator's own view over a store table stops the version: PostgreSQL refuses
   to change the type of a column a view reads, `migrate()` fails and leaves
   version 6, and it commits once the view is dropped.

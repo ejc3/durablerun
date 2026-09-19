@@ -3844,6 +3844,13 @@ MUTATION_SPECS = [
         "a migration rewrites a table, which a read batch's older snapshot then sees as empty",
     ),
     (
+        "postgres-migrator-locks-meta-before-its-sentinel",
+        "packages/store-postgres/src/admin.ts",
+        "    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },\n",
+        "",
+        "a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9879,6 +9886,12 @@ VERDICTS = {
         "packages/store-postgres/test/text-collation.test.ts",
         "PostgreSQL text collation migrates without rewriting a table",
         "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
+    ),
+    "postgres-migrator-locks-meta-before-its-sentinel": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/racing-migrators.test.ts",
+        "racing PostgreSQL migrators make the second wait for the first at every version, and never deadlock",
+        "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -17155,7 +17168,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 882:
+        if len(MUTATIONS) != 883:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

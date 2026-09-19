@@ -321,11 +321,14 @@ jobs:
               # PostgreSQL's schema gained a version that declares the byte collation on
               # every text column, and a server test reads the catalog to hold it: no text
               # column or index key keeps its database's collation, and no migration
-              # rewrites a table. Its two mutations are newer than the base registry, so
-              # their verdict markers are exempted there. No base entry is re-aimed.
+              # rewrites a table. A second server test holds that a second migrator waits
+              # for the first and never deadlocks with it. Their three mutations are newer
+              # than the base registry, so their verdict markers are exempted there. No
+              # base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
                   "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
+                  "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
