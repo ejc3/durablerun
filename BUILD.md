@@ -1739,15 +1739,88 @@ these three things; nothing else in the system does I/O, time, or randomness.
     both would make a foreign name unwritable and close the limit above.
   - The pass's budget guard is held at the bound by two cases whose tasks
     have no infrastructure retries, so a guard that ignored them would pass.
-  - `rollback_error` is the latest attempt record of any step not rolled
-    back, which names the wrong rollback when a cancellation follows a failed
-    attempt that had budget left.
-  - The rollback outcome reaches `getTaskResult` only. A parent that awaits
-    the child and the hosted inspect route do not see it.
-  - Saga reads find checkpoints by a prefix test that cannot use the key's
-    second column, so `rollbackPending` walks a task's checkpoints, the plan
-    pin accepts that walk, and the `rollback_error` subquery runs for every
-    result read.
+  - A parent that awaits a child does not see the child's rollback outcome.
+    PR3.4b put the outcome on the hosted inspect route and left this half
+    open. The wire is not the obstacle: an older build ignores a field of the
+    completion payload that it does not know. The writer is: a terminal batch
+    binds a payload built before it runs, the outcome is a fact only that
+    batch's SQL knows, and choosing among bound payloads in SQL needs the saga
+    predicates as tree nodes in the follow-on insert's select list, where the
+    tree refuses raw fragments (DESIGN.md §3.10).
+  - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
+    and attempt records are found by a test of each name among the task's own
+    checkpoints, because a range of names is not sound under the database's
+    collation (DESIGN.md §3.4). Two partial indexes would make each read one
+    seek: `checkpoints (task_id, checkpoint_name) WHERE
+    substr(checkpoint_name, 1, 9) = '$started:'`, and the same for
+    `$rollback-tries:`. Each predicate is the text the fragments already
+    spell, so no statement changes and the planner proves it. Measured on
+    PostgreSQL 17 beside 10,000 checkpoints of the task, without the indexes
+    and then with them, three interleaved processes a side: the result of a
+    rolled back saga 6.2 ms and 0.76 ms, of a halted saga 4.5 ms and 0.77 ms,
+    and the rollback-owed predicate of a plain task's failure 4.2 ms and
+    0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
+    every dialect, an empty one on libSQL and MySQL. The trigger is a real
+    task with thousands of checkpoints, or result reads showing up in a
+    profile.
+
+- **PR3.4b saga reads and results**: DONE. Three findings of the saga review
+  that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,
+  findings 10 to 12).
+  - The rollback error named the wrong rollback. It was the latest attempt
+    record of any step not rolled back, so a rollback that failed with budget
+    left was read as the halt when a cancellation or a capped failure ended
+    the task afterwards. An attempt record is written only by the batch that
+    fails its run, and a failure with budget left places a pass, which becomes
+    the task's last run. The read now names the record the task's last run
+    wrote, on all three stores. A case in the `sagas` surface builds both
+    histories, and it failed on three dialects before the change.
+  - A saga's start markers and attempt records were found by a test of each
+    name, which the checkpoints key cannot serve, so the failure of any task
+    and every read of a result walked all the checkpoints the task has. libSQL
+    and MySQL now read the names under a prefix as a range of the key, from
+    the prefix to the first name past it, which core derives once
+    (`firstNamePast`). MySQL keeps its byte comparison: a column compares in
+    its own collation, which is binary, so the literals are plain, and a
+    binary cast was measured to stop the key from serving the range.
+    PostgreSQL keeps the test of each name, because a name there orders under
+    the database's collation and the range is not sound: under the ICU root
+    collation the range from `$started:` to `$started;` is empty. DESIGN.md
+    §3.4 records that difference, which neither the local server nor CI's can
+    show, because both sort by byte. The attempt record is read only for a
+    failed task whose saga began, on every dialect, so the result read of a
+    plain task touches no checkpoint but the phase marker's row. The plan pins
+    hold each dialect to what it does. libSQL's refuses the walk it used to
+    accept and lets nothing sort. MySQL's counts the rows walked beside 2,000
+    checkpoints of the task, which was 2,030 for a plain task's failure.
+    PostgreSQL's accepts a walk keyed by the task, refuses a name compared by
+    order, and requires that no attempt record is read when no saga began or a
+    cancellation ended it. Medians in ms beside the task's own checkpoints,
+    main and then this change, from one harness run in a worktree of each,
+    three processes a side, interleaved, 200 timed reads in each:
+
+    | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
+    |---|---|---|---|
+    | result of a plain task, 10 | 0.130, 0.131 | 0.741, 0.712 | 0.345, 0.361 |
+    | result of a plain task, 1,000 | 0.198, 0.134 | 0.947, 0.712 | 0.705, 0.303 |
+    | result of a plain task, 10,000 | 0.854, 0.117 | 2.630, 0.864 | 3.834, 0.309 |
+    | result of a rolled back saga, 10,000 | 1.543, 0.122 | 5.714, 5.211 | 9.554, 0.326 |
+    | result of a halted saga, 10,000 | 0.911, 0.123 | 4.205, 3.749 | 12.329, 0.324 |
+    | rollback owed, plain task, 10,000 | 0.758, 0.060 | 3.724, 3.649 | 1.950, 0.274 |
+    | rollback owed, rolled back saga, 10,000 | 0.762, 0.060 | 3.661, 3.694 | 6.114, 0.278 |
+
+    Beside 10 checkpoints every read is the same on both sides. "Rollback
+    owed" is the predicate a failure evaluates, read alone. On PostgreSQL what
+    moved is the plain task's result, by the guard. The walk stays, and the
+    option under PR3.4 above says what would remove it.
+  - The rollback outcome reached `getTaskResult` only. The hosted inspect
+    route now shows it: `rollback.outcome`, and `rollback.error` when a
+    rollback's failure ended the task. The parent's view stays open under
+    PR3.4 above, with the reason.
+  - Six mutations hold the new lines, and the registry holds 879. The base
+    gate's one live arm is this entry's, keyed on main's registry, and it
+    exempts four verdict markers the base predates. It must be keyed again if
+    main's registry changes before this entry merges.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
