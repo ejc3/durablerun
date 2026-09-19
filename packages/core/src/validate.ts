@@ -10,7 +10,7 @@
  * milliseconds are computed (and rounded) here.
  */
 
-import { INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
+import { IDENTIFIER_CHARACTERS, INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
 import { FatalTaskError, InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 
@@ -34,6 +34,7 @@ const {
   RangeError: TrustedRangeError,
   ReflectGet: reflectGet,
   RegExpExec: regexpExec,
+  StringCharCodeAt: charCodeAt,
   StringFrom: stringFrom,
   StringIncludes: stringIncludes,
   StringStartsWith: stringStartsWith,
@@ -746,6 +747,49 @@ export function requireDurableString(what: string, raw: unknown): string {
   return raw
 }
 
+/**
+ * Whether a string has at most `width` characters, counted in Unicode code points, which
+ * is how MySQL counts a VARCHAR and how the contract counts an identifier. A surrogate
+ * pair is one character and so is a lone surrogate. A string of at most `width` UTF-16
+ * units cannot have more code points than that, so the common case reads only a length.
+ */
+export function fitsCharacters(raw: string, width: number): boolean {
+  if (raw.length <= width) return true
+  let characters = raw.length
+  for (let index = 0; index + 1 < raw.length; index++) {
+    const unit = charCodeAt(raw, index)
+    if (unit < 0xd800 || unit > 0xdbff) continue
+    const next = charCodeAt(raw, index + 1)
+    if (next < 0xdc00 || next > 0xdfff) continue
+    characters--
+    index++
+  }
+  return characters <= width
+}
+
+/**
+ * Hold every identifier a port call carries to the width of a durable identifier
+ * (`IDENTIFIER_CHARACTERS`), before any statement is sent. Every entry of every store
+ * calls this first, so the same name is refused by the same call on every dialect, and
+ * the conformance suite holds that for each method of the port. Each identifier is keyed
+ * by what the caller passed, so a name the engine derives from an identifier is refused
+ * in the caller's own terms. A value that is not a string is left to the validation that
+ * already owns it.
+ */
+export function requireIdentifiersFit(identifiers: Readonly<Record<string, unknown>>): void {
+  const names = objectKeys(identifiers)
+  for (let index = 0; index < names.length; index++) {
+    const what = names[index]
+    if (what === undefined) continue
+    const value = identifiers[what]
+    if (typeof value === 'string' && !fitsCharacters(value, IDENTIFIER_CHARACTERS)) {
+      throw new InvalidDurableStringError(
+        `${what} is longer than the ${IDENTIFIER_CHARACTERS} characters a durable identifier holds`,
+      )
+    }
+  }
+}
+
 type TaskValueDomain = 'opaque' | 'headers'
 
 const requireJsonDataObject = freeze({
@@ -944,6 +988,14 @@ export class UserName {
     if (!storageStringRoundTrips(raw)) {
       throw new FatalTaskError(
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
+      )
+    }
+    // A name a task passes becomes a durable identifier, and every store refuses one past
+    // the width on every pass. Refused here, the same input fails the task once and for
+    // good. The name is not echoed: it is at least 256 characters long.
+    if (!fitsCharacters(raw, IDENTIFIER_CHARACTERS)) {
+      throw new FatalTaskError(
+        `${what} is longer than the ${IDENTIFIER_CHARACTERS} characters a durable identifier holds`,
       )
     }
     return new UserName(raw)

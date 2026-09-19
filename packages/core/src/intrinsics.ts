@@ -20,6 +20,10 @@ const regexpExec = RegExp.prototype.exec.call.bind(RegExp.prototype.exec) as (
   expression: RegExp,
   value: string,
 ) => RegExpExecArray | null
+const stringCharCodeAt = String.prototype.charCodeAt.call.bind(String.prototype.charCodeAt) as (
+  value: string,
+  index: number,
+) => number
 const stringIncludes = String.prototype.includes.call.bind(String.prototype.includes) as (
   value: string,
   search: string,
@@ -81,6 +85,7 @@ export const TASK_INTRINSICS = freeze({
   ReflectGet: Reflect.get,
   RegExpExec: regexpExec,
   Set,
+  StringCharCodeAt: stringCharCodeAt,
   StringFrom: String,
   StringIncludes: stringIncludes,
   StringStartsWith: stringStartsWith,

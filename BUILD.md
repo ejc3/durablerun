@@ -1865,12 +1865,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `DURABLERUN_CONFORMANCE_DIALECTS` narrows a run to the servers it has,
   failing on an unknown or empty list, which
   `packages/conformance/bin/dialect-conformance.sh` checks again from the
-  reporter's record. Open: (1) MySQL bounds an indexed
-  identifier at 255 characters and the other dialects do not, so the same long
-  queue or event name is accepted there and refused here as an invalid durable
-  string. Making the engine identical means a length rule in core's
-  `requireDurableString`, which changes the other dialects' contract and is
-  the maintainer's call. (2) The stored-JSON guards cannot refuse a repeated
+  reporter's record. Open: (1) Closed by PR4.5. MySQL bounded an indexed
+  identifier at 255 characters and the other dialects did not, so the same long
+  queue or event name was accepted there and refused here. The width is now a
+  rule of core that every dialect holds. (2) The stored-JSON guards cannot refuse a repeated
   key on MySQL. The guard and the decoder read the same member, so nothing is
   decoded that was not checked. (3) A claim leg can lock up to the limit in
   runs the merged order leaves out, which other claimers skip until that claim
@@ -1887,9 +1885,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   The review
   of this PR found eleven defects, eight of them in behaviour and one of them
   introduced by a fix, recorded in
-  `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an
-  identifier past 255 characters itself, whatever the excess is, because MySQL
-  cuts trailing spaces past the width where it refuses any other excess.
+  `postmortems/pr4.3-store-mysql-review.md`. Since it, an identifier past 255
+  characters is refused before any statement is sent, whatever the excess is,
+  because MySQL cuts trailing spaces past the width where it refuses any other
+  excess. PR4.5 moved that refusal into core.
   - **Discharged from PR3.12:** MySQL commits each DDL statement on its own,
     so a `meta` table without its version row would be an ordinary state
     during every cold start, and isolation alone cannot hide it. The adapter
@@ -1933,6 +1932,22 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 ## Phase 5 — operations + sharding
 
+- **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
+  item of PR4.3: the engine behaves identically on every dialect, so the 255
+  character width that only MySQL enforced is a rule of core (DESIGN.md §3.4
+  rule 10). `IDENTIFIER_CHARACTERS` and `requireIdentifiersFit` live in core,
+  counted in Unicode code points. Every entry of all three stores calls it
+  first, the stored child key is held inside `spawnIdempotencyKey`, an awaited
+  child id through `EventName.awaitedTaskDone`, and a saga step key through
+  core's `requireSagaStepFits`. The MySQL store's own `requireIndexable`,
+  `requireSagaStepFits`, and width constant are deleted, and its schema imports
+  the width. The executor's refusal of error 1406 and of a cut write stays,
+  because it guards the column. The SDK's `UserName.parse` holds the same
+  width, so a longer step or event name fails its task for good. The
+  MySQL-only unit test became the shared `identifier-bound` conformance
+  surface, which libSQL and PostgreSQL failed before the fix. Rows written
+  before the rule are left alone, and what that means is in rule 10 and held
+  by two cases in `legacy-rows.test.ts`.
 - **PR5.1 registry + fan-out**: status semantics (active/draining/paused),
   routing with versioned cache, multi-shard tick fan-out, driver adoption caps.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics

@@ -56,4 +56,13 @@ describe('UserName.parse rejects non-round-tripping names', () => {
     expect(UserName.parse('event name', 'näme').value).toBe('näme')
     expect(UserName.parse('event name', '📦').value).toBe('📦')
   })
+
+  it('holds a name to the width of a durable identifier, counted in code points, and fails the task for good past it', () => {
+    expect(UserName.parse('step name', 'x'.repeat(255)).value).toHaveLength(255)
+    expect(UserName.parse('step name', '📦'.repeat(255)).value).toHaveLength(510)
+    expect(() => UserName.parse('step name', 'x'.repeat(256))).toThrow(FatalTaskError)
+    expect(() => UserName.parse('step name', '📦'.repeat(256))).toThrow(
+      'step name is longer than the 255 characters a durable identifier holds',
+    )
+  })
 })

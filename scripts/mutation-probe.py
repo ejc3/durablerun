@@ -7265,13 +7265,6 @@ MUTATION_SPECS.extend(
             "an application's own pool connects with FOUND_ROWS, and a compare-and-set that lost reads as one that won",
         ),
         (
-            "mysql-identifier-past-the-width-refused-in-the-store",
-            "packages/store-mysql/src/store.ts",
-            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > IDENTIFIER_CHARACTERS\n",
-            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > Number.MAX_SAFE_INTEGER // MUTATION\n",
-            "a name with trailing spaces past the indexed width reaches MySQL, which cuts it to a different name",
-        ),
-        (
             "mysql-write-cut-to-fit-is-refused",
             "packages/store-mysql/src/executor.ts",
             "  if (cut !== undefined) {\n",
@@ -7298,13 +7291,6 @@ MUTATION_SPECS.extend(
             "            mode === 'write' &&\n",
             "            mode === 'read' && // MUTATION\n",
             "a write batch InnoDB rolled back as a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge an infrastructure retry",
-        ),
-        (
-            "mysql-saga-step-key-bound",
-            "packages/store-mysql/src/store.ts",
-            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > SAGA_STEP_KEY_CHARACTERS) {\n",
-            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > Number.MAX_SAFE_INTEGER) { // MUTATION\n",
-            "a step whose key fits only its shortest saga name starts on MySQL, and the batch that fails its rollback can never store the attempt record",
         ),
     )
 )
@@ -11268,12 +11254,6 @@ VERDICTS.update(
             "MysqlExecutor transactions refuses a pool that connects with FOUND_ROWS, or whose flags it cannot read",
             "mutation-verdict:construction:mysql-foreign-pool-found-rows-refused",
         ),
-        "mysql-identifier-past-the-width-refused-in-the-store": ExpectedVerdict(
-            "construction",
-            "packages/store-mysql/test/identifier-bound.test.ts",
-            "refuses an identifier past 255 characters at every entry, before anything is sent",
-            "mutation-verdict:construction:mysql-identifier-past-the-width-refused-in-the-store",
-        ),
         "mysql-write-cut-to-fit-is-refused": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/real-server.test.ts",
@@ -11297,12 +11277,6 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock runs a write batch again after a deadlock, under the named lock it already holds",
             "mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again",
-        ),
-        "mysql-saga-step-key-bound": ExpectedVerdict(
-            "construction",
-            "packages/store-mysql/test/identifier-bound.test.ts",
-            "holds a saga step key to the width less the longest saga prefix, at every entry that carries one",
-            "mutation-verdict:construction:mysql-saga-step-key-bound",
         ),
     }
 )
@@ -12868,6 +12842,91 @@ for _verdict, _names in (
 ):
     for _name in _names:
         VERDICTS[_name] = _verdict
+
+# The width of a durable identifier (DESIGN.md S3.4 rule 10). Core holds it for every
+# dialect, so each mutation breaks core and its verdict is the shared conformance surface.
+MUTATION_SPECS.extend(
+    (
+        (
+            "identifier-past-the-width-refused",
+            "packages/core/src/validate.ts",
+            "    if (typeof value === 'string' && !fitsCharacters(value, IDENTIFIER_CHARACTERS)) {\n",
+            "    if (typeof value === 'string' && !fitsCharacters(value, Number.MAX_SAFE_INTEGER)) { // MUTATION\n",
+            "a name past 255 characters is stored by two dialects and refused or cut to a different name by the third",
+        ),
+        (
+            "identifier-width-counts-code-points",
+            "packages/core/src/validate.ts",
+            "    characters--\n",
+            "    // MUTATION: a surrogate pair counts as two characters\n",
+            "the width is counted in UTF-16 units, so a name of 128 to 255 characters outside the basic plane, which every dialect can store, is refused",
+        ),
+        (
+            "saga-step-key-held-to-the-longest-prefix",
+            "packages/core/src/sagas.ts",
+            "    if (!fitsCharacters(name, prefix.length + SAGA_STEP_KEY_CHARACTERS)) {\n",
+            "    if (!fitsCharacters(name, IDENTIFIER_CHARACTERS)) { // MUTATION\n",
+            "a step whose key fits only its shortest saga name starts, and the batch that fails its rollback can never store the attempt record",
+        ),
+        (
+            "awaited-child-event-name-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childTaskId, as the name of its completion event,': name,\n",
+            "      // MUTATION: only the id is held\n",
+            "a child id of 245 to 255 characters is awaited under a completion event name no dialect may hold",
+        ),
+        (
+            "stored-child-key-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.replayKey, as the stored child key, which also holds the parent task id,': childKey,\n",
+            "      // MUTATION: the stored key is not held\n",
+            "a replay key that fits on its own is stored inside a child key past the width, which one dialect cannot index",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses an identifier past 255 characters at every entry of the port, before anything is sent",
+            "mutation-verdict:behavior:identifier-past-the-width-refused-at-every-entry",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "identifier-past-the-width-refused",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] counts characters as code points, so 200 characters outside the basic plane fit at every entry",
+            "mutation-verdict:behavior:identifier-width-counts-code-points",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "identifier-width-counts-code-points",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] holds the names the engine derives from an identifier to the same width, and names what the caller passed",
+            "mutation-verdict:behavior:derived-names-held-to-the-identifier-width",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "saga-step-key-held-to-the-longest-prefix",
+            "awaited-child-event-name-held-to-the-width",
+            "stored-child-key-held-to-the-width",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
@@ -16748,7 +16807,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 861:
+        if len(MUTATIONS) != 864:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

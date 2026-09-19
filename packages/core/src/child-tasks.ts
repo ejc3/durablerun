@@ -8,7 +8,7 @@
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
 import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
-import { requireDurableString } from './validate.js'
+import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
 // Task code shares this process, and this file decodes what task code will read, so it
 // calls captured operations and reads own properties only, as `task-result.ts` does.
@@ -73,6 +73,22 @@ export class EventName {
 
   static taskDone(taskId: string): EventName {
     return new EventName(taskDoneEventName(taskId))
+  }
+
+  /**
+   * The completion event a parent asks to await. Here the task id is a caller's, so it
+   * and the name built from it, which is longer, are held to the width of an identifier.
+   * The caller passed the id and never sees the name, so the refusal names the id. A
+   * terminal batch names the event of a task it read from its own rows, through
+   * `taskDone`, and is never refused.
+   */
+  static awaitedTaskDone(childTaskId: string): EventName {
+    const name = taskDoneEventName(childTaskId)
+    requireIdentifiersFit({
+      childTaskId,
+      'childTaskId, as the name of its completion event,': name,
+    })
+    return new EventName(name)
   }
 }
 
@@ -187,14 +203,25 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
     requireDurableString('childOf.parentQueue', childOf.parentQueue)
     requireDurableString('childOf.runId', childOf.runId)
     requireDurableString('childOf.claimToken', childOf.claimToken)
-    return childSpawnKey(
+    const childKey = childSpawnKey(
       requireDurableString('childOf.parentTaskId', childOf.parentTaskId),
       requireDurableString('childOf.replayKey', childOf.replayKey),
     )
+    // The key is built from the parent's task and the call site, so the width is held to
+    // the key as it will be stored, and to the parent's identifiers. A child spawn passes
+    // no idempotency key, so its refusal names the replay key it did pass.
+    requireIdentifiersFit({
+      'childOf.parentQueue': childOf.parentQueue,
+      'childOf.parentTaskId': childOf.parentTaskId,
+      'childOf.runId': childOf.runId,
+      'childOf.replayKey, as the stored child key, which also holds the parent task id,': childKey,
+    })
+    return childKey
   }
   if (callerKey === undefined) return null
   const key = requireDurableString('idempotencyKey', callerKey)
   refuseReservedIdempotencyKey('spawn', key)
+  requireIdentifiersFit({ idempotencyKey: key })
   return key
 }
 

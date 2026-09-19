@@ -146,7 +146,10 @@ export function identifierBoundConformance(
       ]) {
         const { store, reached } = storeOverRecorder(f)
         const refusals = await refusalsAtEveryEntry(store, tooLong)
-        expect({ refusals, sent: reached }).toEqual({
+        expect(
+          { refusals, sent: reached },
+          'mutation-verdict:behavior:identifier-past-the-width-refused-at-every-entry',
+        ).toEqual({
           refusals: Object.fromEntries(Object.keys(refusals).map((entry) => [entry, REFUSED])),
           sent: [],
         })
@@ -160,7 +163,10 @@ export function identifierBoundConformance(
       expect(fits.length).toBe(400)
       const { store, reached } = storeOverRecorder(f)
       const refusals = await refusalsAtEveryEntry(store, fits)
-      expect(Object.entries(refusals).filter(([, refusal]) => refusal === REFUSED)).toEqual([])
+      expect(
+        Object.entries(refusals).filter(([, refusal]) => refusal === REFUSED),
+        'mutation-verdict:behavior:identifier-width-counts-code-points',
+      ).toEqual([])
       expect(reached.length).toBeGreaterThan(0)
     })
 
@@ -213,28 +219,31 @@ export function identifierBoundConformance(
       const childTooLong = await awaited('x'.repeat(245))
       const keyFits = await spawned('k'.repeat(208))
       const keyTooLong = await spawned('k'.repeat(209))
-      expect({
-        childFits: { refused: childFits.refused, sent: childFits.sent > 0 },
-        childTooLong: {
-          refused: childTooLong.refused,
-          sent: childTooLong.sent > 0,
-          namesTheChild: childTooLong.message.includes('childTaskId'),
-          namesTheEvent: childTooLong.message.includes('eventName'),
+      expect(
+        {
+          childFits: { refused: childFits.refused, sent: childFits.sent > 0 },
+          childTooLong: {
+            refused: childTooLong.refused,
+            sent: childTooLong.sent > 0,
+            namesTheChild: childTooLong.message.includes('childTaskId'),
+            namesTheEvent: childTooLong.message.includes('eventName'),
+          },
+          keyFits: { refused: keyFits.refused, sent: keyFits.sent > 0 },
+          keyTooLong: {
+            refused: keyTooLong.refused,
+            sent: keyTooLong.sent > 0,
+            namesTheReplayKey: keyTooLong.message.includes('replayKey'),
+            namesAnIdempotencyKey: keyTooLong.message.includes('idempotencyKey'),
+          },
+          sagaFits: await saga('k'.repeat(239)),
+          sagaTooLong: await saga('k'.repeat(240)),
+          // A name that is not a saga's is held to the plain width and nothing less.
+          plainCheckpoint: await outcomeOf(f, (s) =>
+            s.setCheckpoint('q', 't', 'r', 'c', 'k'.repeat(WIDTH), '0', 30),
+          ).then(({ refused, sent }) => ({ refused, sent: sent > 0 })),
         },
-        keyFits: { refused: keyFits.refused, sent: keyFits.sent > 0 },
-        keyTooLong: {
-          refused: keyTooLong.refused,
-          sent: keyTooLong.sent > 0,
-          namesTheReplayKey: keyTooLong.message.includes('replayKey'),
-          namesAnIdempotencyKey: keyTooLong.message.includes('idempotencyKey'),
-        },
-        sagaFits: await saga('k'.repeat(239)),
-        sagaTooLong: await saga('k'.repeat(240)),
-        // A name that is not a saga's is held to the plain width and nothing less.
-        plainCheckpoint: await outcomeOf(f, (s) =>
-          s.setCheckpoint('q', 't', 'r', 'c', 'k'.repeat(WIDTH), '0', 30),
-        ).then(({ refused, sent }) => ({ refused, sent: sent > 0 })),
-      }).toEqual({
+        'mutation-verdict:behavior:derived-names-held-to-the-identifier-width',
+      ).toEqual({
         childFits: fits,
         childTooLong: { refused: true, sent: false, namesTheChild: true, namesTheEvent: false },
         keyFits: fits,

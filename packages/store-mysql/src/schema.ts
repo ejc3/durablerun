@@ -23,8 +23,10 @@
  * that dies inside version 1 leaves tables a rerun finds and skips.
  */
 
-/** The characters an indexed identifier holds. MySQL counts characters, which are code points. */
-export const IDENTIFIER_CHARACTERS = 255
+import { IDENTIFIER_CHARACTERS } from '@durablerun/core'
+
+// The width is core's, because every dialect refuses what this one cannot index. MySQL
+// counts a VARCHAR in characters, which are code points, as the contract does.
 const ID = `VARCHAR(${IDENTIFIER_CHARACTERS}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`
 const NAME = ID
 const BODY = 'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'

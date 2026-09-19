@@ -1,13 +1,16 @@
+import { IDENTIFIER_CHARACTERS } from './contract.js'
+import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlRow } from './primitives.js'
 import type { SqlFragment } from './sql-tree.js'
 import type { RollbackOutcome } from './types.js'
-import { parseTaskValueJson, serializeTaskValue } from './validate.js'
+import { fitsCharacters, parseTaskValueJson, serializeTaskValue } from './validate.js'
 
 const {
   NumberIsSafeInteger: isSafeInteger,
   RangeError: TrustedRangeError,
   StringFrom: stringFrom,
+  StringStartsWith: startsWith,
 } = TASK_INTRINSICS
 
 /*
@@ -37,6 +40,44 @@ export const SAGA_PHASE_CHECKPOINT = '$rolling-back'
 export const SAGA_STARTED_PREFIX = '$started:'
 export const SAGA_ROLLBACK_PREFIX = '$rollback:'
 export const SAGA_TRIES_PREFIX = '$rollback-tries:'
+
+/** The prefixes a saga puts before a registered step's key to name its checkpoints. */
+const SAGA_STEP_PREFIXES = [SAGA_STARTED_PREFIX, SAGA_ROLLBACK_PREFIX, SAGA_TRIES_PREFIX] as const
+
+/**
+ * The characters a registered step's key may have: the width of an identifier less the
+ * longest saga prefix, `$rollback-tries:`, which leaves 239.
+ */
+export const SAGA_STEP_KEY_CHARACTERS =
+  IDENTIFIER_CHARACTERS -
+  SAGA_STEP_PREFIXES.reduce(
+    (longest, prefix) => (prefix.length > longest ? prefix.length : longest),
+    0,
+  )
+
+/**
+ * Refuse a saga checkpoint whose step key leaves no room for the step's other saga names.
+ * A step registers under `$started:` and its key, which is the shortest of its saga
+ * names. Were that the only one held to the width, a step with a key of 240 to 246
+ * characters would start, and the batch that fails its rollback could not store the
+ * attempt record under `$rollback-tries:` and the same key, so the saga could not count
+ * a failed rollback. Every saga name of a step is therefore held to the key the longest
+ * one allows, at each entry that carries a checkpoint name, and the refusal names what
+ * the caller passed. A name that is not a saga's is held to the plain width elsewhere.
+ */
+export function requireSagaStepFits(what: string, name: unknown): void {
+  if (typeof name !== 'string') return
+  for (const prefix of SAGA_STEP_PREFIXES) {
+    if (!startsWith(name, prefix)) continue
+    // The prefixes are ASCII, so the key fits when the whole name fits the key and its prefix.
+    if (!fitsCharacters(name, prefix.length + SAGA_STEP_KEY_CHARACTERS)) {
+      throw new InvalidDurableStringError(
+        `${what} names a saga step whose key is longer than ${SAGA_STEP_KEY_CHARACTERS} characters: a durable identifier holds ${IDENTIFIER_CHARACTERS}, and '${SAGA_TRIES_PREFIX}' and the key must fit`,
+      )
+    }
+    return
+  }
+}
 
 /** One failed attempt of a rollback, as `$rollback-tries:<step>` holds it. */
 export interface RollbackTry {

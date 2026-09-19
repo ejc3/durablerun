@@ -9,7 +9,6 @@ import {
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
-  InvalidDurableStringError,
   LIVE_STATES,
   LOST_LEASE,
   type LeaseState,
@@ -28,9 +27,6 @@ import {
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
-  SAGA_ROLLBACK_PREFIX,
-  SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   SWEEP_SCAN_DRIFT,
   type SchedulerStore,
   type SpawnOptions,
@@ -83,6 +79,8 @@ import {
   reopenLostLaunchCas,
   requireDerivedInteger,
   requireDurableString,
+  requireIdentifiersFit,
+  requireSagaStepFits,
   requireEpochMs,
   requirePositiveClaimGeneration,
   requirePositiveInt,
@@ -145,7 +143,6 @@ import {
   successorOwned,
   taskOwnsEveryRun,
 } from './fragments.js'
-import { IDENTIFIER_CHARACTERS } from './schema.js'
 import { heartbeatCas, heartbeatRemainingRead, nextWakeRead } from './statements.js'
 import { NOW_MS } from './time.js'
 import { TREE_DIALECT } from './tree.js'
@@ -475,62 +472,6 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
 )`
 
 /**
- * Refuse an identifier the schema cannot hold, before any statement is sent. MySQL indexes
- * an identifier as VARCHAR(255). It refuses most longer values with error 1406, but it
- * cuts trailing spaces past the width with a note, in every `sql_mode`, and the cut value
- * is a different identifier: an event stored under another name, an idempotency key that
- * answers for another task. Refusing here, whatever the excess is, keeps the difference
- * from the other dialects a refusal. A value that is not a string is left to the
- * validation that already owns it. Each entry is keyed by what the caller passed, so a
- * name the store derives from an identifier is refused in the caller's own terms.
- */
-function requireIndexable(identifiers: Readonly<Record<string, unknown>>): void {
-  for (const [what, value] of Object.entries(identifiers)) {
-    if (
-      typeof value === 'string' &&
-      value.length > IDENTIFIER_CHARACTERS &&
-      [...value].length > IDENTIFIER_CHARACTERS
-    ) {
-      throw new InvalidDurableStringError(
-        `${what} is longer than the ${IDENTIFIER_CHARACTERS} characters a MySQL store indexes`,
-      )
-    }
-  }
-}
-
-/** The prefixes a saga puts before a registered step's key to name its checkpoints. */
-const SAGA_STEP_PREFIXES = [SAGA_STARTED_PREFIX, SAGA_ROLLBACK_PREFIX, SAGA_TRIES_PREFIX]
-
-/**
- * The characters a registered step's key may have on this store: the indexed width less
- * the longest saga prefix, `$rollback-tries:`, which is 239.
- */
-const SAGA_STEP_KEY_CHARACTERS =
-  IDENTIFIER_CHARACTERS - Math.max(...SAGA_STEP_PREFIXES.map((prefix) => prefix.length))
-
-/**
- * Refuse a saga checkpoint whose step key leaves no room for the step's other saga names.
- * A checkpoint name is indexed, so it holds 255 characters here and is unbounded on the
- * other dialects. A step registers under `$started:` and its key, which is the shortest
- * of its saga names. Were that the only one checked, a step with a key of 240 to 246
- * characters would start, and the batch that fails its rollback could not store the
- * attempt record under `$rollback-tries:` and the same key, so the saga could not count
- * a failed rollback. Every saga name of a step is therefore held to the key the longest
- * one allows, before any statement is sent, and the refusal names what the caller passed.
- */
-function requireSagaStepFits(what: string, name: unknown): void {
-  if (typeof name !== 'string') return
-  const prefix = SAGA_STEP_PREFIXES.find((candidate) => name.startsWith(candidate))
-  if (prefix === undefined) return
-  const key = name.slice(prefix.length)
-  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > SAGA_STEP_KEY_CHARACTERS) {
-    throw new InvalidDurableStringError(
-      `${what} names a saga step whose key is longer than ${SAGA_STEP_KEY_CHARACTERS} characters: a MySQL store indexes ${IDENTIFIER_CHARACTERS}, and '${SAGA_TRIES_PREFIX}' and the key must fit`,
-    )
-  }
-}
-
-/**
  * The reads this store sends outside a transition, each prepared once: built, checked and
  * compiled on first use, and sent with a call's own values after that. next-wake and the
  * sweep's two scans run on every driver tick.
@@ -607,24 +548,12 @@ export class MysqlSchedulerStore implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
+    requireIdentifiersFit({ queue })
     // The queue becomes durable here, so it is held to the domain every store keeps.
     requireDurableString('queue', queue)
     const durableTaskName = requireDurableString('taskName', taskName)
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
-    // A child's key is built from its parent's task and the call site, so the bound is
-    // held to the key as it will be stored, and to the parent's identifiers. A child
-    // spawn passes no idempotency key, so its refusal names the replay key it did pass.
-    requireIndexable({
-      queue,
-      [childOf === undefined
-        ? 'idempotencyKey'
-        : 'childOf.replayKey, as the stored child key, which also holds the parent task id,']:
-        key ?? undefined,
-      parentQueue: childOf?.parentQueue,
-      parentTaskId: childOf?.parentTaskId,
-      parentRunId: childOf?.runId,
-    })
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy
@@ -778,7 +707,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIndexable({ queue })
+    requireIdentifiersFit({ queue })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum), so ticks
@@ -947,7 +876,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<ClaimedRun | null> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('activate.claimGen', claimGen)
     // Buggify: a lost activation is always legal: the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
@@ -1032,7 +961,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     extendLeaseSeconds: number,
   ): Promise<LeaseState> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     // Buggify: lease-lost can arrive at ANY heartbeat: workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
@@ -1080,7 +1009,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * sequentially (the reviewed RTT pileup).
    */
   async sweep(queue: string, limit: number): Promise<SweptRun[]> {
-    requireIndexable({ queue })
+    requireIdentifiersFit({ queue })
     const budget = clampLimit(limit)
     if (budget === 0) return []
     const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
@@ -1445,7 +1374,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * sole authority and advisory signals never revoke it.
    */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const unexpired = runClaimUnexpired('runs', NOW_MS)
     const owner = runOwnedByTask('runs', 't')
     const [expired] = await this.db.batch('expire-lease-now', [
@@ -1469,7 +1398,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * Replay-safe: re-applying the same beat is the same row.
    */
   async driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void> {
-    requireIndexable({ queue, driverId })
+    requireIdentifiersFit({ queue, driverId })
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
@@ -1524,7 +1453,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     queue: string,
     taskId: string,
   ): Promise<{ runId: string; attempt: number } | null> {
-    requireIndexable({ queue, taskId })
+    requireIdentifiersFit({ queue, taskId })
     const runId = this.ids.uuidv7()
     const top = (task: string) =>
       `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
@@ -1592,7 +1521,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    requireIndexable({ queue, taskId })
+    requireIdentifiersFit({ queue, taskId })
     const batch = new FencedBatch('cancel-task', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1695,7 +1624,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<string | null> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('claimedTaskName.claimGen', claimGen)
     // The launch carries only ids, so the worker learns the claimed task's name
     // here. The name is immutable, so an unfenced read is safe; the claim
@@ -1720,7 +1649,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimGen: number,
     inSeconds: number,
   ): Promise<void> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
     const wakePlan = prepareWake({ inSeconds }, true)
     // The rolling-deploy deferral, decided before activation.
@@ -1766,7 +1695,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     wake: WakeSpec,
   ): Promise<void> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
     // The task must be ELIGIBLE, not merely live: the same predicate
@@ -1820,7 +1749,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     wake: WakeSpec,
     checkpoint: CheckpointWrite,
   ): Promise<void> {
-    requireIndexable({ queue, runId, checkpointName: checkpoint?.key })
+    requireIdentifiersFit({ queue, runId, 'checkpoint.key': checkpoint?.key })
     requireSagaStepFits('checkpoint.key', checkpoint?.key)
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
@@ -1879,7 +1808,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
@@ -2002,7 +1931,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     failureJson: string,
     retry: { delaySeconds: number } | null,
   ): Promise<FailOutcome> {
-    requireIndexable({ queue, runId })
+    requireIdentifiersFit({ queue, runId })
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
@@ -2036,7 +1965,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     retry: { delaySeconds: number } | null,
     rollbackTry: CheckpointWrite,
   ): Promise<FailOutcome> {
-    requireIndexable({ queue, runId, 'rollbackTry.key': rollbackTry.key })
+    requireIdentifiersFit({ queue, runId, 'rollbackTry.key': rollbackTry.key })
     requireSagaStepFits('rollbackTry.key', rollbackTry.key)
     const passId = this.ids.uuidv7()
     const passDelayMs =
@@ -2268,7 +2197,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
-    requireIndexable({ queue, taskId })
+    requireIdentifiersFit({ queue, taskId })
     const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
     const b = new FencedBatch('get-checkpoints', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('checkpoints', CHECKPOINTS, { queue, taskId, visibleThrough })
@@ -2315,7 +2244,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     stateJson: string,
     extendLeaseSeconds: number,
   ): Promise<void> {
-    requireIndexable({ queue, taskId, runId, checkpointName })
+    requireIdentifiersFit({ queue, taskId, runId, checkpointName })
     requireSagaStepFits('checkpointName', checkpointName)
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     const b = new FencedBatch('set-checkpoint', this.ids.token(), {
@@ -2365,7 +2294,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
-    requireIndexable({ queue, taskId })
+    requireIdentifiersFit({ queue, taskId })
     const b = new FencedBatch('task-result', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('result', TASK_RESULT, { queue, taskId })
     const rows = await this.rows(b, 'result')
@@ -2377,7 +2306,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
-    requireIndexable({ queue })
+    requireIdentifiersFit({ queue })
     const b = new FencedBatch('next-wake', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('wake', NEXT_WAKE, { queue })
     const rows = await this.rows(b, 'wake')
@@ -2399,7 +2328,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    requireIndexable({ queue, eventName })
+    requireIdentifiersFit({ queue, eventName })
     const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
@@ -2642,6 +2571,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     eventName: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    requireIdentifiersFit({ queue, taskId, runId, stepName, eventName })
     const answer = await this.awaitNamedEvent(
       queue,
       taskId,
@@ -2674,17 +2604,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    const name = EventName.taskDone(childTaskId)
-    // The completion event's name is longer than the child's id and must fit too. The
-    // caller passed the id and never sees the name, so the refusal names the id.
-    requireIndexable({
-      queue,
-      taskId,
-      runId,
-      stepName,
-      childTaskId,
-      'childTaskId, as the name of its completion event,': name.value,
-    })
+    requireIdentifiersFit({ queue, taskId, runId, stepName })
+    const name = EventName.awaitedTaskDone(childTaskId)
     // A child revived before the read, or between the read and the batch that records it,
     // is live again, so the next round registers. Two rounds cover that. A live child that
     // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
@@ -2811,7 +2732,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
     awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const eventName = name.value
-    requireIndexable({ queue, taskId, runId, stepName, eventName })
     const timeoutMs =
       timeoutSeconds === null
         ? null
