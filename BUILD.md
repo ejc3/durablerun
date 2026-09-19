@@ -2257,6 +2257,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
       sweep does needs the two reads to share a snapshot, because every
       transition it then makes checks its own row again, but it changes a
       batch's shape on all three stores.
+    - Option, not a deferral of this PR: both executors prove from its text
+      that a read writes nothing. Core proved it from the tree when the read
+      was built, and does not pass the fact on, because a statement carries
+      only its text, its binds, and its gate. A statement that said it was
+      built as a read would replace the text test in both executors. That is
+      a change to core's statement, and the text test fails safe: what it
+      cannot prove keeps the transaction.
   - Deferred from PR4.3: `migrate()` reads the version before each of the four
     empty versions and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
