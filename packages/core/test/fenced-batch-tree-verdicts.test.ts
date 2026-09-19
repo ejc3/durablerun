@@ -1418,6 +1418,11 @@ describe('the tree path', () => {
         const written = capturingExecutor(1)
         await batch().casTree('win', statement(winCas())).run(written.executor)
         expect([...prepared.captured, ...built.captured].map(isTreeBuiltRead)).toEqual([true, true])
+        // Frozen, so nothing between core and the executor can change the text under the brand.
+        expect(
+          [...prepared.captured, ...built.captured].map((sent) => Object.isFrozen(sent)),
+          'mutation-verdict:construction:core-read-brand-is-frozen',
+        ).toEqual([true, true])
         expect(written.captured.map(isTreeBuiltStatement)).toEqual([true])
         expect(
           written.captured.map(isTreeBuiltRead),

@@ -6948,9 +6948,16 @@ MUTATION_SPECS.extend(
         (
             "core-read-brand-marks-reads-alone",
             "packages/core/src/fenced-batch.ts",
-            "    if (reading) weakSetAdd(treeBuiltReads, held.compiled)\n",
-            "    weakSetAdd(treeBuiltReads, held.compiled)\n",
+            "    if (reading) brandRead(held.compiled)\n",
+            "    brandRead(held.compiled)\n",
             "a compare-and-set is branded as a read, so the brand an executor trusts to send a statement alone no longer says the statement writes nothing",
+        ),
+        (
+            "core-read-brand-is-frozen",
+            "packages/core/src/fenced-batch.ts",
+            "  weakSetAdd(treeBuiltReads, Object.freeze(compiled))\n",
+            "  weakSetAdd(treeBuiltReads, compiled)\n",
+            "a statement branded as a read can have its text changed between core and the executor, which then sends what is no longer a read alone",
         ),
         (
             "postgres-lone-statement-is-the-whole-batch",
@@ -9941,6 +9948,12 @@ VERDICTS = {
         "packages/store-postgres/test/round-trips.test.ts",
         "refuses a delete sent behind a select in one read, and keeps the row",
         "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
+    ),
+    "core-read-brand-is-frozen": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times brands what it compiled as a read, and no write, as a read",
+        "mutation-verdict:construction:core-read-brand-is-frozen",
     ),
     "core-read-brand-marks-reads-alone": ExpectedVerdict(
         "construction",
@@ -17259,7 +17272,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 890:
+        if len(MUTATIONS) != 891:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

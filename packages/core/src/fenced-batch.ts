@@ -140,6 +140,11 @@ export function isTreeBuiltRead(statement: unknown): boolean {
   )
 }
 
+/** Brand a statement as a read, frozen, so the text an executor trusts is the text core compiled. */
+function brandRead(compiled: object): void {
+  weakSetAdd(treeBuiltReads, Object.freeze(compiled))
+}
+
 /** True only for an authentic compiler bind failure from this module. */
 export function isFencedBatchBindError(value: unknown): value is TypeError {
   return (
@@ -729,7 +734,7 @@ export class FencedBatch {
     // Counted last, so a read refused above leaves no clock read behind.
     this.countClockRead(at, name, drift, shape.readsClock)
     weakSetAdd(treeBuilt, compiled)
-    weakSetAdd(treeBuiltReads, compiled)
+    brandRead(compiled)
     this.statements.push({ name, kind: 'tail', fence: null, atMost: null, compiled })
     this.reads.push(name)
     return this
@@ -1052,7 +1057,7 @@ export class FencedBatch {
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
     }
     weakSetAdd(treeBuilt, held.compiled)
-    if (reading) weakSetAdd(treeBuiltReads, held.compiled)
+    if (reading) brandRead(held.compiled)
     this.statements.push(held)
     if (reading) this.reads.push(name)
     return this

@@ -337,6 +337,7 @@ jobs:
               # markers are exempted.
               repaired = reaim_spec(previous, candidate, 'mysql-version-read-is-read-committed')
               repaired = exempt(repaired, candidate, (
+                  "mutation-verdict:construction:core-read-brand-is-frozen",
                   "mutation-verdict:construction:core-read-brand-marks-reads-alone",
                   "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
                   "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
