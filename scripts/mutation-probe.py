@@ -14609,6 +14609,15 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-halt-says-where-the-replay-ended": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
+    "sdk-durable-key-held-before-the-body-runs": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-key-already-stored-is-not-held": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-emitted-event-name-held": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
     "legacy-wait-step-backfill": (
         "the Vitest title is generated from the migration-derived table, column, "
         "and version tuple"
