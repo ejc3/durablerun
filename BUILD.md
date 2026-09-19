@@ -33,7 +33,8 @@ validated by that run.
 
 ## Current milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
 
-**Status: IN PROGRESS (named 2026-09-16).** The maintainer named six items, in
+**Status: COMPLETE (named 2026-09-16, exit tests met 2026-09-19); pause after
+green merge until the maintainer names the next milestone.** The maintainer named six items, in
 this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
 PR3.9 ends with PR3.9f, which the review of PR3.9e part 3c added: exit test 3
 needs it, so it is the last part of PR3.9 and not a seventh item.
@@ -49,7 +50,11 @@ implements the finished surface once.
    Conformance cases on libSQL and PostgreSQL and an SDK case show it and were
    committed red first. PR3.11's two generated surfaces also land: a launch
    payload case crossing older and newer driver and worker builds, and a
-   driver clock-shape surface.
+   driver clock-shape surface. This is met. PR #32 made a refused heartbeat
+   name the cancellation, with the conformance case on libSQL and PostgreSQL
+   and the SDK case. PR #35 generated the launch payload case and the driver
+   loop's clock-shape surface, and PR #36 added the store answer case and a
+   due-wake axis.
 2. A mutation audit whose worker baseline goes red names the failing test in
    the coordinator's failure message, and an aborted audit's teardown either
    reaps every worker group or reports a measured reason it cannot.
@@ -57,14 +62,23 @@ implements the finished surface once.
    the coordinator's failure message, and gave killed verifier groups time to
    empty, so an aborted audit's teardown reaps them or reports why it cannot,
    and PR #31 drains a process group before calling a descendant live.
-3. Every store batch's SQL is built as a tree and checked as a tree, per
-   PR3.9, and the textual scanners it replaces are deleted. PR3.9e part 3b
-   deleted `FencedBatch`'s text path and its scanners, and part 3c asked the
-   rules of `fragment-lint` and `clock-lint` of the tree, and PR3.9f part 1
-   built a store's reads as trees. This is NOT met. The two lints still scan
-   store SQL text, because a store still sends some of its writes and its
-   admin's statements as text that no tree holds. It is met when PR3.9f part 2
-   builds that text as trees and deletes the two scans.
+3. Every statement a store sends through `FencedBatch` is built as a tree and
+   checked as a tree, per PR3.9, and the scanners that read a batch
+   statement's text are deleted. What a store still sends as SQL text is one
+   checked list, `scripts/text-statements.json`, of statements that cannot be
+   trees, each with its reason. `expire-lease-now` may change one column of a
+   run, which the poison matrix holds it to (`leaseOnlyShortened`), and a
+   compare-and-set must also write the run's provenance. `driver-heartbeat`
+   writes `drivers`, which carries no provenance, and each dialect writes it
+   its own way. The admin's statements are DDL, which no statement tree
+   holds, and reads and writes of `meta`. `fragment-lint` and `clock-lint`
+   scan exactly that text. A conformance test fails when a store sends SQL
+   text that is neither built as a tree nor on the list, and when a listed
+   statement no longer exists. This is met. PR3.9e part 3b deleted
+   `FencedBatch`'s text path and its scanners, part 3c asked the two lints'
+   rules of the tree, PR3.9f part 1 built a store's reads as trees, and part 2
+   built `heartbeat` as trees on every dialect and scoped the two lints by the
+   list, with the test passing on libSQL, PostgreSQL and MySQL.
 4. A task can spawn a child from a step and await the child's completion as an
    event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
@@ -83,6 +97,21 @@ implements the finished surface once.
 **Non-goals:** active-wait identity (PR3.8), the condition-mutation ratchet
 (PR3.10), operations and sharding (Phase 5), dedicated placement (Phase 6), and
 the cloudification PRs.
+
+**Options backlog:** not planned. The maintainer chose the third option of
+PR3.9f part 2, keeping the two lints scoped to the text that reaches no tree,
+so the first two below were not built.
+
+- A write primitive that stamps nothing, with a grammar wide enough for
+  `expire-lease-now`, `driver-heartbeat` and the admin's writes, so that those
+  statements could be trees.
+- Fragments that carry the module they came from, so that a tree could refuse
+  a deadline comparison hand-written outside `fragments.ts`.
+- A saga rollback pass that stores a rebuilt error and rethrows it. It would
+  help only a `catch` that tests an error's name or code: an `instanceof`
+  catch would still fail, and it costs a new reserved checkpoint on three
+  dialects. The limit is stated in DESIGN.md §3.10 and the halt names both
+  steps. Revisit it only if observed use shows name-based catches.
 
 ## Completed milestone — lifecycle correctness and the simplification sweep
 
@@ -1025,31 +1054,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     sent as it was, and every later call of that read was refused. A prepared
     read now declares its bind types and every call is checked against them.
     The registry holds 861 mutations.
-  - PR3.9f part 2, not started, and most of it needs a decision before it is
-    built. What a store still sends as text is `heartbeat` on libSQL and
-    PostgreSQL, `expire-lease-now`, `driver-heartbeat`, and the admin's
-    statements. `heartbeat` fits today's grammar with no RETURNING: MySQL
-    already builds it as a compare-and-set and a gated read of the two
-    instants it stored, and the other two stores can send the same two
-    statements, at the cost of one more statement in the batch and one id
-    drawn for the stamp. The other three are writes that stamp nothing, and
-    `FencedBatch` has no such write: a compare-and-set stamps the row it
-    changes. `expire-lease-now` may change one column, which the poison
-    matrix holds it to (`leaseOnlyShortened`), so a compare-and-set that also
-    wrote the run's provenance would fail that barrier. `driver-heartbeat`
-    writes `drivers`, and the admin writes `meta`, and neither table carries
-    provenance. `driver-heartbeat` also differs by dialect well beyond
-    RETURNING: PostgreSQL writes it as a common table expression that inserts
-    and then deletes, MySQL as two statements with an optimizer hint, a
-    locking read that skips locked rows, and a multi-table DELETE, and libSQL
-    as an insert into a view. The admin's statements include DDL, which no
-    statement tree holds. Deleting the two lints has a cost of its own: a
-    deadline comparison hand-written inside a store fragment passes the tree
-    rule, which cannot tell a fragment that came from `fragments.ts` from one
-    written in `store.ts`. The options are a write primitive that stamps
-    nothing with a much wider grammar, fragments that carry the module they
-    came from, or keeping the two lints scoped to the text that reaches no
-    tree. Exit test 3 of the current milestone is met when part 2 lands.
+  - PR3.9f part 2, delivered. The maintainer chose to keep the two lints,
+    scoped to the text that reaches no tree. `heartbeat` is a fenced batch of
+    two trees on every dialect (`heartbeatCas` and `heartbeatRemainingRead` in
+    `packages/core/src/statements/lease.ts`), the shape MySQL already sent:
+    the compare-and-set extends the lease and stamps the run, and a gated read
+    subtracts the two instants it stored. It costs libSQL and PostgreSQL one
+    more statement in the batch and one id drawn for the stamp. What a store
+    still sends as text is one list, `scripts/text-statements.json`, with the
+    reason each statement cannot be a tree. `batch-lint` classifies a store's
+    raw batches from it, and `fragment-lint` and `clock-lint` read a store
+    file that builds a `FencedBatch` only inside its raw batch calls.
+    `packages/conformance/test/text-statements.test.ts` holds each store to
+    the list in both directions, from its source and from what it sends on a
+    real backend. The narrowing has a cost, which is accepted: a deadline
+    comparison hand-written inside a store fragment is no longer seen, because
+    a tree cannot tell a fragment that came from `fragments.ts` from one
+    written in `store.ts`. A fragment that read the fake clock's row would
+    also have gone unseen, and the tree's clock spellings now list
+    `fake_now_ms`. The registry holds 862 mutations. The two options that
+    were not built are in the current milestone's options backlog.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for

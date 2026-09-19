@@ -1241,7 +1241,9 @@ are load-bearing):
      the batch clock's text and for the clock spellings
      `scripts/clock-lint.py` lists, which include a date function called with
      no argument, SQLite's spelling of the current time, and the literal
-     `'now'`, whatever function takes it. That scan is a
+     `'now'`, whatever function takes it. The tree's own list adds
+     `fake_now_ms`, the column a store's clock reads under test, which a
+     fragment could read with no clock call at all. That scan is a
      spelling proxy, confined to raw text, and a spelling nobody has listed
      passes it.
    - A statement holds no second definition of eligibility.
@@ -1312,9 +1314,19 @@ are load-bearing):
    the dialect that compiles one, and the scanners that read a
    statement's text are deleted. A batch reads a statement's object graph
    once for all of its checks. `scripts/fragment-lint.py` and
-   `scripts/clock-lint.py` still read store SQL text, because a store still
-   sends text that no tree holds: `expire-lease-now`, `driver-heartbeat`, and
-   the admin's statements. A store's reads are batches of reads built as
+   `scripts/clock-lint.py` still read store SQL text, scoped to the text that
+   no tree holds: `expire-lease-now`, `driver-heartbeat`, and the admin's
+   statements. That text is one list, `scripts/text-statements.json`, with
+   the reason each statement cannot be a tree, and `scripts/batch-lint.py`
+   classifies a store's raw batches from it. In a store file that builds a
+   `FencedBatch` the two lints read only its raw batch calls, and they read
+   any other store file whole. The scope is checked and not remembered:
+   `packages/conformance/test/text-statements.test.ts` fails when a store's
+   source, or a store on a real backend, sends SQL text under a label that is
+   not on the list, and when a listed statement is no longer sent. The
+   narrowing has a cost. A deadline comparison hand-written in a fragment
+   outside `fragments.ts` is seen by neither lint nor tree, because a tree
+   cannot tell where a fragment was written. A store's reads are batches of reads built as
    trees. `heartbeat` is a fenced batch of two trees on every dialect, the
    shape MySQL needs because it has no RETURNING: the compare-and-set extends
    the lease and stamps the run, and a gated read subtracts the two instants
