@@ -86,6 +86,10 @@ async function fixture(
   return { raw, admin, store: baseStore, router, close }
 }
 
+function inspect(f: Awaited<ReturnType<typeof fixture>>, taskId: string): Promise<Response> {
+  return f.router.handle(request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'))
+}
+
 describe('hosted-alpha Web Request router', () => {
   it('rearms both HTTP and trusted ticks through sleep, completion, and idle', async () => {
     const wakes: WakeRequest[] = []
@@ -199,9 +203,7 @@ describe('hosted-alpha Web Request router', () => {
         workerOutcome: { kind: 'completed' },
       })
 
-      const inspected = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(spawned.taskId)}`, 'GET'),
-      )
+      const inspected = await inspect(f, spawned.taskId)
       expect(inspected.status).toBe(200)
       await expect(responseBody(inspected)).resolves.toEqual({
         taskId: spawned.taskId,
@@ -228,9 +230,7 @@ describe('hosted-alpha Web Request router', () => {
       const spawned = await f.store.spawn(Q, 'job', '{}')
       await expect(f.store.cancelTask(Q, spawned.taskId)).resolves.toBe(true)
 
-      const inspected = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(spawned.taskId)}`, 'GET'),
-      )
+      const inspected = await inspect(f, spawned.taskId)
       expect(inspected.status).toBe(200)
       await expect(responseBody(inspected)).resolves.toEqual({
         taskId: spawned.taskId,
@@ -270,12 +270,10 @@ describe('hosted-alpha Web Request router', () => {
         ).resolves.toEqual({ rollingBack: true })
         return { taskId: spawned.taskId, pass: await claimed('pass') }
       }
-      const inspect = async (taskId: string) => {
-        const inspected = await f.router.handle(
-          request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
-        )
-        expect(inspected.status).toBe(200)
-        return responseBody(inspected)
+      const inspected = async (taskId: string) => {
+        const response = await inspect(f, taskId)
+        expect(response.status).toBe(200)
+        return responseBody(response)
       }
       const rolledBack = await rollingBack()
       await f.store.setCheckpoint(
@@ -294,8 +292,8 @@ describe('hosted-alpha Web Request router', () => {
         stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RefundDown"}' }),
       })
       expect({
-        rolledBack: await inspect(rolledBack.taskId),
-        halted: await inspect(halted.taskId),
+        rolledBack: await inspected(rolledBack.taskId),
+        halted: await inspected(halted.taskId),
       }).toEqual({
         rolledBack: {
           taskId: rolledBack.taskId,
@@ -471,9 +469,7 @@ describe('hosted-alpha Web Request router', () => {
         claimed: 1,
         workerOutcome: { kind: 'suspended' },
       })
-      const sleeping = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
-      )
+      const sleeping = await inspect(f, taskId)
       await expect(responseBody(sleeping)).resolves.toEqual({ taskId, state: 'sleeping' })
 
       const emitted = await f.router.handle(
@@ -486,9 +482,7 @@ describe('hosted-alpha Web Request router', () => {
         workerOutcome: { kind: 'completed' },
       })
 
-      const completed = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
-      )
+      const completed = await inspect(f, taskId)
       await expect(responseBody(completed)).resolves.toEqual({
         taskId,
         state: 'completed',

@@ -1,4 +1,10 @@
-import type { SqlExecutor, SqlStatement } from '@durablerun/core'
+import {
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  type SqlExecutor,
+  type SqlStatement,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
 import { MysqlSchedulerStore } from '../src/store.js'
@@ -20,6 +26,14 @@ const READ_COUNTERS = {
 
 type TestDb = Awaited<ReturnType<typeof openMysqlTestDb>>
 
+type Reading = Awaited<ReturnType<SqlExecutor['batch']>>[number] | undefined
+
+/** The rows a session had read by walking an index or a table, at one reading of its counters. */
+const walkedAt = (reading: Reading): number =>
+  (reading?.rows ?? [])
+    .filter((row) => row.Variable_name !== 'Handler_read_key')
+    .reduce((sum, row) => sum + Number(row.Value), 0)
+
 /** Rows the statement read by walking an index or a table, and what it returned. */
 async function measured(db: TestDb, sql: string, args: SqlStatement['args']) {
   const [before, result, after] = await db.raw.batch(
@@ -27,11 +41,32 @@ async function measured(db: TestDb, sql: string, args: SqlStatement['args']) {
     [READ_COUNTERS, { sql, args: [...args] }, READ_COUNTERS],
     'read',
   )
-  const walked = (rows: typeof before) =>
-    (rows?.rows ?? [])
-      .filter((row) => row.Variable_name !== 'Handler_read_key')
-      .reduce((sum, row) => sum + Number(row.Value), 0)
-  return { rows: result?.rows ?? [], walked: walked(after) - walked(before) }
+  return { rows: result?.rows ?? [], walked: walkedAt(after) - walkedAt(before) }
+}
+
+/**
+ * An executor that counts the rows every batch under one of `labels` walked, a read batch
+ * included, and adds them up by label. A batch's follow-ons are built inside it, so the
+ * batch itself is measured: the counters are read as its first and last statements, in its
+ * own transaction, and every gate index moves by the one statement put ahead of it.
+ */
+function countingRowsWalked(db: TestDb, labels: readonly string[]) {
+  const walked = new Map<string, number>()
+  const executor: SqlExecutor = {
+    batch: async (label, statements, control) => {
+      if (!labels.includes(label)) return db.raw.batch(label, statements, control)
+      const shifted: SqlStatement[] = statements.map((statement) =>
+        statement.skipUnlessWrote === undefined
+          ? statement
+          : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
+      )
+      const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
+      const rows = walkedAt(all[all.length - 1]) - walkedAt(all[0])
+      walked.set(label, (walked.get(label) ?? 0) + rows)
+      return all.slice(1, -1)
+    },
+  }
+  return { executor, walked }
 }
 
 /**
@@ -58,7 +93,7 @@ async function shippedBatch(
 /** Copy one row of a table `HISTORY` times, with some columns replaced by SQL. */
 async function cloneRows(
   db: TestDb,
-  table: 'tasks' | 'runs',
+  table: 'tasks' | 'runs' | 'checkpoints',
   where: string,
   replaced: Readonly<Record<string, string>>,
 ) {
@@ -159,27 +194,7 @@ describe('the wake a terminal batch owes the parent of its task, on MySQL', () =
   it('finds the runs it woke by their event, beside a backlog of pending runs', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'plan-woken', nowMs: 1_000_000 })
     try {
-      // The follow-ons after the wake are built inside the batch, so the batch itself is
-      // measured: the counters are read as its first and last statements, in its own
-      // transaction, and every gate index moves by the one statement put ahead of it.
-      let walked = Number.NaN
-      const measuring: SqlExecutor = {
-        batch: async (label, statements, control) => {
-          if (label !== 'complete') return db.raw.batch(label, statements, control)
-          const shifted: SqlStatement[] = statements.map((statement) =>
-            statement.skipUnlessWrote === undefined
-              ? statement
-              : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
-          )
-          const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked = total(all[all.length - 1]) - total(all[0])
-          return all.slice(1, -1)
-        },
-      }
+      const { executor: measuring, walked } = countingRowsWalked(db, ['complete'])
       const store = new MysqlSchedulerStore(measuring, db.ids)
       const parentTask = await store.spawn(Q, 'parent', '{}')
       const [parent] = await store.claim(Q, 'w-parent', { leaseSeconds: 60, limit: 1 })
@@ -234,7 +249,7 @@ describe('the wake a terminal batch owes the parent of its task, on MySQL', () =
       expect(woken?.rows).toEqual([{ state: 'pending' }])
       // Measured on MySQL 8.4 beside this backlog of 800: 35 rows through the index
       // runs_woken (queue, wake_event, state), and 3,243 without it.
-      expect(walked, 'rows the terminal batch walked').toBeLessThan(150)
+      expect(walked.get('complete'), 'rows the terminal batch walked').toBeLessThan(150)
     } finally {
       await db.close()
     }
@@ -251,25 +266,11 @@ describe('the hot path beside a history of tasks, on MySQL', () => {
     // history, and every write batch is measured from inside its own transaction.
     const db = await openMysqlTestDb({ idNamespace: 'plan-hot-path', nowMs: 1_000_000 })
     try {
-      const walked = new Map<string, number>()
-      const measuring: SqlExecutor = {
-        batch: async (label, statements, control) => {
-          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
-          if (mode === 'read') return db.raw.batch(label, statements, control)
-          const shifted: SqlStatement[] = statements.map((statement) =>
-            statement.skipUnlessWrote === undefined
-              ? statement
-              : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
-          )
-          const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked.set(label, total(all[all.length - 1]) - total(all[0]))
-          return all.slice(1, -1)
-        },
-      }
+      const { executor: measuring, walked } = countingRowsWalked(db, [
+        'claim',
+        'activate',
+        'complete',
+      ])
       const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn('history', 'old', '{}')
       for (const [prefix, queue] of [
         ['a', Q],
@@ -308,25 +309,11 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
     // `tasks` and `runs` by key, and reads the task's own checkpoints, which are few.
     const db = await openMysqlTestDb({ idNamespace: 'plan-sagas', nowMs: 1_000_000 })
     try {
-      const walked = new Map<string, number>()
-      const measuring: SqlExecutor = {
-        batch: async (label, statements, control) => {
-          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
-          if (mode === 'read') return db.raw.batch(label, statements, control)
-          const shifted: SqlStatement[] = statements.map((statement) =>
-            statement.skipUnlessWrote === undefined
-              ? statement
-              : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
-          )
-          const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked.set(label, total(all[all.length - 1]) - total(all[0]))
-          return all.slice(1, -1)
-        },
-      }
+      const { executor: measuring, walked } = countingRowsWalked(db, [
+        'set-checkpoint',
+        'fail',
+        'fail-rollback',
+      ])
       const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn('history', 'old', '{}')
       for (const prefix of ['a', 'b', 'c', 'd', 'e']) {
         await cloneRows(db, 'tasks', `src.task_id = '${seed.taskId}'`, {
@@ -346,7 +333,7 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
         task.taskId,
         run.runId,
         run.claimToken,
-        '$started:charge',
+        `${SAGA_STARTED_PREFIX}charge`,
         '0',
         60,
       )
@@ -364,7 +351,7 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
           '{}',
           { delaySeconds: 5 },
           {
-            key: '$rollback-tries:charge',
+            key: `${SAGA_TRIES_PREFIX}charge`,
             stateJson: '{"tries":1,"errorJson":"{}"}',
           },
         ),
@@ -380,38 +367,11 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
   })
 })
 
-/**
- * An executor that counts the rows each batch under one of `labels` walked, a read batch
- * included, from the session's handler counters around the batch.
- */
-function countingRowsWalked(db: TestDb, labels: readonly string[]) {
-  const walked = new Map<string, number>()
-  const executor: SqlExecutor = {
-    batch: async (label, statements, control) => {
-      if (!labels.includes(label)) return db.raw.batch(label, statements, control)
-      const shifted: SqlStatement[] = statements.map((statement) =>
-        statement.skipUnlessWrote === undefined
-          ? statement
-          : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
-      )
-      const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-      const total = (result: (typeof all)[number] | undefined) =>
-        (result?.rows ?? [])
-          .filter((row) => row.Variable_name !== 'Handler_read_key')
-          .reduce((sum, row) => sum + Number(row.Value), 0)
-      walked.set(label, total(all[all.length - 1]) - total(all[0]))
-      return all.slice(1, -1)
-    },
-  }
-  return { executor, walked }
-}
-
 describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
   it('fails a task, and reads a result, without walking the checkpoints the task has', async () => {
     // A saga's names are a range of the checkpoints key. Found by a test of each name,
     // the failure of any task walks every checkpoint the task has to learn that no step
     // is owed a rollback, and every read of a result walks them again.
-    const CHECKPOINTS = 2_000
     const db = await openMysqlTestDb({ idNamespace: 'plan-saga-names', nowMs: 1_000_000 })
     try {
       const { executor, walked } = countingRowsWalked(db, ['fail', 'task-result'])
@@ -423,23 +383,15 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         await store.activate(Q, run.runId, run.claimToken, run.claimGen)
         return run
       }
-      const beside = async (run: { taskId: string; runId: string }) => {
-        for (let at = 0; at < CHECKPOINTS; at += 500) {
-          const names = Array.from(
-            { length: Math.min(500, CHECKPOINTS - at) },
-            (_, i) => `step-${String(at + i).padStart(5, '0')}`,
-          )
-          await db.raw.batch(
-            'fixture:checkpoints',
-            [
-              {
-                sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, status,
-                                               owner_run_id, owner_attempt, updated_at_ms)
-                      VALUES ${names.map(() => "(?, ?, ?, '1', 'committed', ?, 1, 1)").join(', ')}`,
-                args: names.flatMap((name) => [run.taskId, name, Q, run.runId]),
-              },
-            ],
-            'write',
+      /** One plain checkpoint of the run's task, and a history of copies beside it. */
+      const beside = async (run: { taskId: string; runId: string; claimToken: string }) => {
+        await store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'step', '1', 60)
+        for (const copy of ['a', 'b', 'c', 'd', 'e']) {
+          await cloneRows(
+            db,
+            'checkpoints',
+            `src.task_id = '${run.taskId}' AND src.checkpoint_name = 'step'`,
+            { checkpoint_name: `CONCAT('step-${copy}-', seq.n)` },
           )
         }
       }
@@ -466,7 +418,7 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         forward.taskId,
         forward.runId,
         forward.claimToken,
-        '$started:charge',
+        `${SAGA_STARTED_PREFIX}charge`,
         '0',
         60,
       )
@@ -482,7 +434,7 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         pass.taskId,
         pass.runId,
         pass.claimToken,
-        '$rollback:charge',
+        `${SAGA_ROLLBACK_PREFIX}charge`,
         'null',
         60,
       )
@@ -492,7 +444,7 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         rolledBack = (await store.getTaskResult(Q, forward.taskId))?.rollback
       })
       expect(rolledBack).toEqual({ outcome: 'complete' })
-      // Each entry is the rows one batch walked beside the checkpoints of its own task.
+      // Each entry is the rows one batch walked beside the 5 * HISTORY checkpoints of its task.
       expect(
         Object.entries({ plainFailure, plainResult, sagaResult }).filter(
           ([, rows]) => !(Number(rows) < 150),

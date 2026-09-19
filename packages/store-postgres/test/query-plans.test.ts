@@ -15,11 +15,38 @@ import { openPostgresTestDb } from '../src/testing.js'
  * PostgreSQL turns the follow-on's `IN` into a join driven from the source, so it was
  * keyed while the source was still correlated on the queue, and it is keyed with the queue
  * bound. This holds that, where it used to be a measurement. The statements are recovered
- * from the real operations. Sequential scans are disabled for the planning transaction,
- * so a scan of `tasks` that remains is the statement's shape and not a small table's
- * price, and GENERIC_PLAN needs no bind values. The executor refuses a statement without
+ * from the real operations. Sequential and bitmap scans are disabled for the planning
+ * transaction, so a scan of `tasks` that remains is the statement's shape and not a small
+ * table's price, and GENERIC_PLAN needs no bind values. The executor refuses a statement without
  * its binds, so the plans are read through a client of their own. This needs a server.
  */
+/**
+ * The lines of a statement's plan: its generic plan, or with `args` the plan it ran under.
+ * Without the two settings a plan over tables this small is the planner's guess at the
+ * price of a few rows, and says nothing of how the statement reaches them.
+ */
+async function planLines(
+  client: Client,
+  sql: string,
+  args?: readonly unknown[],
+): Promise<string[]> {
+  await client.query('BEGIN')
+  try {
+    await client.query('SET LOCAL enable_seqscan = off')
+    await client.query('SET LOCAL enable_bitmapscan = off')
+    const text = compilePostgresPlaceholders(sql).sql
+    const plan =
+      args === undefined
+        ? await client.query(`EXPLAIN (GENERIC_PLAN, COSTS OFF) ${text}`)
+        : await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${text}`, [
+            ...args,
+          ])
+    return plan.rows.map((row) => String(Object.values(row as object)[0]))
+  } finally {
+    await client.query('ROLLBACK')
+  }
+}
+
 it('reaches tasks by an index condition in every shipped task update', async () => {
   const db = await openPostgresTestDb({ idNamespace: 'plan-task-updates' })
   const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
@@ -119,18 +146,9 @@ it('reaches tasks by an index condition in every shipped task update', async () 
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
     const walksEveryTask = async (sql: string) => {
-      await client.query('BEGIN')
-      try {
-        await client.query('SET LOCAL enable_seqscan = off')
-        const plan = await client.query(
-          `EXPLAIN (GENERIC_PLAN, COSTS OFF) ${compilePostgresPlaceholders(sql).sql}`,
-        )
-        const lines = plan.rows.map((row) => String(Object.values(row as object)[0]))
-        const scan = lines.findIndex((line) => /Scan\b.* on tasks\b/.test(line))
-        return scan < 0 || !/^Index Cond:/.test((lines[scan + 1] ?? '').trim())
-      } finally {
-        await client.query('ROLLBACK')
-      }
+      const lines = await planLines(client, sql)
+      const scan = lines.findIndex((line) => /Scan\b.* on tasks\b/.test(line))
+      return scan < 0 || !/^Index Cond:/.test((lines[scan + 1] ?? '').trim())
     }
     // The check can say no: a task update by a column that has no index walks every task.
     expect(await walksEveryTask('UPDATE tasks SET state = state WHERE task_name = ?')).toBe(true)
@@ -184,19 +202,24 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     await store.complete('q', completed.runId, completed.claimToken, '{}')
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
-    const saga = await started('rolls-back')
-    await store.setCheckpoint(
-      'q',
-      saga.taskId,
-      saga.runId,
-      saga.claimToken,
-      `${SAGA_STARTED_PREFIX}a`,
-      '1',
-      60,
-    )
-    expect(await store.fail('q', saga.runId, saga.claimToken, '{}', null)).toEqual({
-      rollingBack: true,
-    })
+    /** A task whose one registered step started, and whose failure placed a rollback pass. */
+    const rollingBack = async (name: string) => {
+      const forward = await started(name)
+      await store.setCheckpoint(
+        'q',
+        forward.taskId,
+        forward.runId,
+        forward.claimToken,
+        `${SAGA_STARTED_PREFIX}a`,
+        '1',
+        60,
+      )
+      expect(await store.fail('q', forward.runId, forward.claimToken, '{}', null)).toEqual({
+        rollingBack: true,
+      })
+      return forward
+    }
+    const saga = await rollingBack('rolls-back')
     claims += 1
     const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
     if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
@@ -205,19 +228,7 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
       key: `${SAGA_TRIES_PREFIX}a`,
       stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"R"}' }),
     })
-    const cancelled = await started('cancelled-in-the-phase')
-    await store.setCheckpoint(
-      'q',
-      cancelled.taskId,
-      cancelled.runId,
-      cancelled.claimToken,
-      `${SAGA_STARTED_PREFIX}a`,
-      '1',
-      60,
-    )
-    expect(await store.fail('q', cancelled.runId, cancelled.claimToken, '{}', null)).toEqual({
-      rollingBack: true,
-    })
+    const cancelled = await rollingBack('cancelled-in-the-phase')
     expect(await store.cancelTask('q', cancelled.taskId)).toBe(true)
     const resultReadOf = async (taskId: string) => {
       const before = seen.length
@@ -235,25 +246,6 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     expect(reads.saga.result?.rollback).toEqual({ outcome: 'failed', errorJson: '{"name":"R"}' })
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
-    const planOf = async (sql: string, args?: readonly unknown[]) => {
-      await client.query('BEGIN')
-      try {
-        // Without these two a plan over tables this small is the planner's guess at the
-        // price of a few rows, and says nothing of how the statement reaches them.
-        await client.query('SET LOCAL enable_seqscan = off')
-        await client.query('SET LOCAL enable_bitmapscan = off')
-        const text = compilePostgresPlaceholders(sql).sql
-        const plan =
-          args === undefined
-            ? await client.query(`EXPLAIN (GENERIC_PLAN, COSTS OFF) ${text}`)
-            : await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${text}`, [
-                ...args,
-              ])
-        return plan.rows.map((row) => String(Object.values(row as object)[0]))
-      } finally {
-        await client.query('ROLLBACK')
-      }
-    }
     /** The saga reads of a plan that are not keyed as this store's are. */
     const notKeyed = (lines: readonly string[]) =>
       lines.flatMap((line, at) => {
@@ -271,14 +263,16 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     // The check can say no: to a read with no task bound, and to a name compared by order.
     expect(
       notKeyed(
-        await planOf(
+        await planLines(
+          client,
           "SELECT 1 FROM checkpoints ss WHERE substr(ss.checkpoint_name, 1, 9) = '$started:'",
         ),
       ),
     ).toHaveLength(1)
     expect(
       notKeyed(
-        await planOf(
+        await planLines(
+          client,
           "SELECT 1 FROM checkpoints ss WHERE ss.task_id = ? AND ss.checkpoint_name >= '$started:' AND ss.checkpoint_name < '$started;'",
         ),
       ),
@@ -288,7 +282,8 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     for (const st of new Map(seen.map((sent) => [sent.sql, sent])).values()) {
       if (!/\bcheckpoints (sp|ss|sr|st)\b/.test(st.sql)) continue
       reached.add(st.label)
-      for (const fault of notKeyed(await planOf(st.sql))) faults.push(`[${st.label}] ${fault}`)
+      for (const fault of notKeyed(await planLines(client, st.sql)))
+        faults.push(`[${st.label}] ${fault}`)
     }
     expect(faults.join('\n')).toBe('')
     expect(
@@ -298,7 +293,7 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     // never began.
     const attemptRecordsRead: Record<string, boolean> = {}
     for (const [which, { read }] of Object.entries(reads)) {
-      const scan = (await planOf(read.sql, read.args)).find((line) =>
+      const scan = (await planLines(client, read.sql, read.args)).find((line) =>
         / on checkpoints st\b/.test(line),
       )
       if (scan === undefined)

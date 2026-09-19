@@ -1008,10 +1008,6 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
-    // A crash between batches changes nothing durable, and the next rollback is a function
-    // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
-    // that dies is recovered by the lease story like any run, and the pass that follows
-    // finds what ran and carries on from there.
     // The names under a reserved prefix are read as a range of the checkpoints key where a
     // name compares by its bytes, and by a test of each name where it does not. Either
     // way the names beside that range are no start marker: the prefix in another case,
@@ -1039,6 +1035,10 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // A crash between batches changes nothing durable, and the next rollback is a function
+    // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
+    // that dies is recovered by the lease story like any run, and the pass that follows
+    // finds what ran and carries on from there.
     it('resumes a rollback pass that died where it died', async () => {
       const { taskId, pass } = await rollingBack(f, ['a', 'b'])
       await checkpointOwned(f.store, Q, pass, rollbackOf('b'), 'null', 60)
