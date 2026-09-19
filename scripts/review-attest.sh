@@ -763,12 +763,16 @@ check_postmortem_commits() {
 # workspace package is a relative link, and through a borrowed directory it
 # resolves in the tree it was borrowed from, which holds the fix. A red whose
 # test is in one package and whose fix is in another then passes. So every
-# dependency link is held to the copy before anything runs in it.
+# dependency link is held to the copy before anything runs in it. The install is
+# offline and from the store this checkout names: left to itself pnpm picks a
+# store by mount point, and a copy under another mount than the checkout is
+# given one that nothing filled.
 scratch_copy() {
-  local commit="$1" copy="$2" inside link target links=0
+  local commit="$1" copy="$2" store="$3" inside link target links=0
   git -C "$REPO" worktree add --quiet --detach "$copy" "$commit" >&2 || return 1
-  (cd "$copy" && pnpm install --frozen-lockfile --offline) >"$copy.install.log" 2>&1 || {
-    echo "cannot install the dependencies of ${commit:0:7} offline into a scratch copy:" >&2
+  (cd "$copy" && pnpm install --frozen-lockfile --offline --store-dir "$store") >"$copy.install.log" 2>&1 || {
+    echo "cannot install the dependencies of ${commit:0:7} offline from $store, the store this checkout names." >&2
+    echo "  Run pnpm install in this checkout, which fills it, then try again:" >&2
     tail -5 "$copy.install.log" >&2
     return 1
   }
@@ -799,19 +803,29 @@ remove_scratch_copies() {
 run_probe() {
   local copy="$1" report="$2" file="$3" name="$4"
   local -a filter=()
-  [[ -z "$name" ]] || filter=(-t "$name")
+  # vitest reads -t as a regular expression, and a title such as "[libsql] ..."
+  # would open a character class that matches nothing. Each such character is
+  # escaped, so a name is matched as it is written. sed does it, because the
+  # replacement needs the matched character, which ${name//...} gives only from
+  # bash 5.2.
+  # shellcheck disable=SC2001
+  [[ -z "$name" ]] || filter=(-t "$(sed 's,[][\\^$.*+?(){}|/],\\&,g' <<<"$name")")
   (cd "$copy" && pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || true
   jq -er '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || true
 }
 
 prove_reds() {
-  local path="$1" work red short file name probe copy report counts passed failed
+  local path="$1" work store red short file name probe copy report counts passed failed
   local head_short="${CITED_HEAD:0:7}"
   local -a proven=() unnamed=() problems=()
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/review-attest-reds.XXXXXX")
   # shellcheck disable=SC2064
   trap "remove_scratch_copies '$work'" EXIT
+  store=$(cd "$REPO" && pnpm store path) || {
+    echo "SEV rule: postmortem $path cannot be proved: pnpm names no store for this checkout." >&2
+    return 1
+  }
 
   for red in "${CITED_REDS[@]}"; do
     short="${red:0:7}"
@@ -830,7 +844,7 @@ prove_reds() {
     copy="$work/red-$short"
     report="$work/red-$short.json"
     SECONDS=0
-    scratch_copy "$red" "$copy" || {
+    scratch_copy "$red" "$copy" "$store" || {
       problems+=("red \`$short\` could not be run: the scratch copy above is not one a result can be trusted from.")
       continue
     }
@@ -853,7 +867,7 @@ prove_reds() {
   if [[ ${#proven[@]} -gt 0 ]]; then
     copy="$work/head-$head_short"
     SECONDS=0
-    if ! scratch_copy "$CITED_HEAD" "$copy"; then
+    if ! scratch_copy "$CITED_HEAD" "$copy" "$store"; then
       problems+=("the head $head_short could not be run: the scratch copy above is not one a result can be trusted from.")
       proven=()
     fi
