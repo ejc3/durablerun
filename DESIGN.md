@@ -2216,7 +2216,11 @@ realized in the store's compiler, executor, fragments, or schema:
   all, the second claim waits for the first's row locks, re-checks only the id
   list, and overwrites the first claim. Each state is therefore its own
   index-ordered `FOR UPDATE SKIP LOCKED` leg, which locked exactly the runs it
-  returned.
+  returned. Each leg names its index, because the plan the server picks for
+  itself moves with its statistics: over forty due runs that are the whole of
+  a freshly counted table, a leg with no hint is a table scan and a sort,
+  which locked all forty for a claim of two. `query-plans.test.ts` holds the
+  limit and the hint, each with a registered mutation.
 - **Rows written.** MySQL reports rows changed, where the port means rows
   matched, and counts an upsert that updated as two. The executor runs without
   `CLIENT_FOUND_ROWS`, so an upsert whose conflict arm changes nothing reports
@@ -2385,7 +2389,13 @@ block, where the server runs it in a transaction of its own: one query where
 order:
 
 - *The snapshot.* One statement reads through one snapshot, its subqueries
-  included, at any isolation level, measured the way MySQL's was.
+  included, at any isolation level, measured the way MySQL's was. Sent alone
+  it runs at the session's level, and under READ COMMITTED the server takes
+  the snapshot after the statement has resolved its names and waited for its
+  locks, where the REPEATABLE READ transaction took it before them, which
+  `postgres-bootstrap-window.test.ts` shows on a server. It is one snapshot
+  either way, and the schema-version read is the only read that depends on
+  which.
 - *READ ONLY.* The guard stays for every read the executor cannot prove writes
   nothing. A read is sent alone only when it begins with SELECT and does not
   name INTO: `SELECT ... INTO` creates a table, a statement that changes rows

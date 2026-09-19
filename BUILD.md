@@ -2274,16 +2274,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statement that owns the legs walked 56 rows and held 8 record locks on
     `runs`. With a leg that has no LIMIT of its own it walked 3,246 rows and
     held 1,602 locks, and a registered mutation makes the case refuse that.
-    The index hint changed neither number, under stale statistics or analyzed
-    ones: the shape of the legs is what bounds them, and no mutation is
-    registered for the hint. Two things measured on the way belong elsewhere.
-    Under statistics InnoDB had not yet recalculated, as after a bulk load,
-    the claim's task update and its receipt read walked every run in the
-    table, 3,213 and 1,606 rows beside 2,000 runs, and 11 and 8 once the
-    tables were analyzed, which bears on the option under PR3.14. And over a
-    `runs` table of five rows or fewer the claim's update scans the table and
-    locks every row, where it locks one at six rows and more. The plan test
-    says so and does not pin it.
+    The index hint changed neither number there, under stale statistics or
+    analyzed ones, so a second case holds the hint where it does: over forty
+    due runs that are the whole table, once the server has counted them, a
+    leg with no hint is a table scan and a sort that locked all forty runs
+    for a claim of two. It held 40 record locks and walked 166 rows, against
+    4 and 49 as shipped, and a second registered mutation makes that case
+    refuse it. With no hint the scan was the plan from twelve due runs to
+    eighty at a limit of one or two, and not at eight, under stale
+    statistics, or where half the table belonged to another queue. Two
+    things measured on the way belong elsewhere. Under statistics InnoDB had
+    not yet recalculated, as after a bulk load, the claim's task update and
+    its receipt read walked every run in the table, 3,213 and 1,606 rows
+    beside 2,000 runs, and 11 and 8 once the tables were analyzed, which
+    bears on the option under PR3.14. And as shipped the claim's update scans
+    `runs` and locks every row of it when the limit is a large part of the
+    table: with a limit of one at five rows and fewer, and with a limit of
+    half the table at 20, 120, and 400 rows, where a quarter of the table
+    was still read by key. The plan tests say so and do not pin it.
   - Deferred from PR4.3: third copies. The test id source, the admin's
     version read and versioned write, the fixture's corruption-table switch,
     and the store's dialect-free declarations are now in three packages.
