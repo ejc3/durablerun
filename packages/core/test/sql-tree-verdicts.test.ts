@@ -14,6 +14,7 @@ import {
   treeBuilder as db,
   defineStatement,
   fenceValue,
+  literalValue,
   nowValue,
   rawSql,
   sqlFragment,
@@ -447,6 +448,73 @@ describe('the tree rules', () => {
         problem(leg().intersectAll(leg()), true),
         'mutation-verdict:construction:tree-set-operation-is-union',
       ).toBe(OTHER)
+    })
+  })
+
+  describe('a state a read compares', () => {
+    const runs = () => loose.selectFrom('runs as r').select('r.run_id')
+    const problem = (read: Builder, reading = true) =>
+      statementGrammarProblem(read.toOperationNode(), reading)
+    const BOUND = /^a state column compared with a bound value/
+
+    it('is refused when it is bound', () => {
+      expect(
+        problem(runs().where('r.state', '=', 'running')),
+        'mutation-verdict:construction:tree-read-state-literal',
+      ).toMatch(BOUND)
+      // A transition finds its row by key, so it may bind the state it compares.
+      expect(problem(runs().where('r.state', '=', 'running'), false)).toBeNull()
+    })
+
+    it('is admitted as an inline literal', () => {
+      expect(
+        problem(runs().where('r.state', '=', literalValue('running'))),
+        'mutation-verdict:construction:tree-read-state-literal-admitted',
+      ).toBeNull()
+    })
+
+    it('is the only column held to a literal', () => {
+      expect(
+        problem(runs().where('r.run_id', '=', 'r1')),
+        'mutation-verdict:construction:tree-read-state-names-the-column',
+      ).toBeNull()
+    })
+
+    it('counts an inline value as no bind', () => {
+      expect(
+        problem(
+          loose
+            .selectFrom('checkpoints as c')
+            .select('c.state')
+            .where('c.status', '=', literalValue('committed')),
+        ),
+        'mutation-verdict:construction:tree-read-bind-is-not-immediate',
+      ).toBeNull()
+    })
+
+    it('counts another column as no bind', () => {
+      expect(
+        problem(
+          loose
+            .selectFrom('runs as r')
+            .innerJoin('tasks as t', 't.task_id', 'r.task_id')
+            .select('r.run_id')
+            .whereRef('r.state', '=', 't.state'),
+        ),
+        'mutation-verdict:construction:tree-read-bind-is-a-value',
+      ).toBeNull()
+    })
+
+    it('holds a checkpoint status to a literal as well', () => {
+      expect(
+        problem(
+          loose
+            .selectFrom('checkpoints as c')
+            .select('c.state')
+            .where('c.status', '=', 'committed'),
+        ),
+        'mutation-verdict:construction:tree-read-status-is-a-state',
+      ).toMatch(BOUND)
     })
   })
 

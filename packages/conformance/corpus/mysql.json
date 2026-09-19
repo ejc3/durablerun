@@ -666,16 +666,16 @@
   "claimed-task-name": {
     "read": [
       {
-        "sql": "select `t`.`task_name` from `runs` as `r` inner join `tasks` as `t` on (t.task_id = r.task_id AND t.queue = r.queue) where `r`.`run_id` = ? and `r`.`queue` = ? and `r`.`claimed_by` = ? and `r`.`state` = ? and `r`.`claim_gen` = ? and `r`.`activated_gen` < ?",
-        "bindArity": 6
+        "sql": "select `t`.`task_name` from `runs` as `r` inner join `tasks` as `t` on (t.task_id = r.task_id AND t.queue = r.queue) where `r`.`run_id` = ? and `r`.`queue` = ? and `r`.`claimed_by` = ? and `r`.`state` = 'running' and `r`.`claim_gen` = ? and `r`.`activated_gen` < ?",
+        "bindArity": 5
       }
     ]
   },
   "get-checkpoints": {
     "read": [
       {
-        "sql": "select `c`.`checkpoint_name`, `c`.`state`, `c`.`owner_run_id`, `c`.`owner_attempt` from `checkpoints` as `c` inner join `runs` as `owner` on (((c.owner_attempt) IS NOT NULL AND c.owner_attempt BETWEEN 1 AND 1000020)\n   AND owner.run_id = c.owner_run_id\n   AND owner.task_id = c.task_id\n   AND owner.queue = c.queue\n   AND owner.attempt = c.owner_attempt) where `c`.`task_id` = ? and `c`.`queue` = ? and `c`.`status` = ? and `c`.`owner_attempt` <= ? order by `c`.`checkpoint_name`",
-        "bindArity": 4
+        "sql": "select `c`.`checkpoint_name`, `c`.`state`, `c`.`owner_run_id`, `c`.`owner_attempt` from `checkpoints` as `c` inner join `runs` as `owner` on (((c.owner_attempt) IS NOT NULL AND c.owner_attempt BETWEEN 1 AND 1000020)\n   AND owner.run_id = c.owner_run_id\n   AND owner.task_id = c.task_id\n   AND owner.queue = c.queue\n   AND owner.attempt = c.owner_attempt) where `c`.`task_id` = ? and `c`.`queue` = ? and `c`.`status` = 'committed' and `c`.`owner_attempt` <= ? order by `c`.`checkpoint_name`",
+        "bindArity": 3
       }
     ]
   },

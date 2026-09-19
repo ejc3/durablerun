@@ -2368,6 +2368,48 @@ MUTATION_SPECS = [
         "INTERSECT ALL and EXCEPT ALL pass for UNION ALL",
     ),
     (
+        "tree-read-state-literal",
+        "packages/core/src/sql-tree.ts",
+        "    if (reading && BinaryOperationNode.is(node) && comparesStateWithBind(node)) {\n",
+        "    if (false) {\n",
+        "a read may compare a state column with a bound value, which no partial index matches",
+    ),
+    (
+        "tree-read-state-literal-admitted",
+        "packages/core/src/sql-tree.ts",
+        "  if (!isBind(node.rightOperand)) return false\n",
+        "  if (false) return false\n",
+        "a read is refused a state written inline, the one form a partial index matches",
+    ),
+    (
+        "tree-read-state-names-the-column",
+        "packages/core/src/sql-tree.ts",
+        "  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))\n",
+        "  return true\n",
+        "a read is refused every bound comparison, whatever column it names",
+    ),
+    (
+        "tree-read-bind-is-not-immediate",
+        "packages/core/src/sql-tree.ts",
+        "const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true\n",
+        "const isBind = (node: OperationNode): boolean => ValueNode.is(node)\n",
+        "an inline value passes for a bound one, so a literal status is refused",
+    ),
+    (
+        "tree-read-bind-is-a-value",
+        "packages/core/src/sql-tree.ts",
+        "const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true\n",
+        "const isBind = (node: OperationNode): boolean => node.immediate !== true\n",
+        "a column passes for a bound value, so a state compared with another column is refused",
+    ),
+    (
+        "tree-read-status-is-a-state",
+        "packages/core/src/sql-tree.ts",
+        "const STATE_COLUMNS = ['state', 'status']\n",
+        "const STATE_COLUMNS = ['state']\n",
+        "a read may bind the status it compares, which the checkpoints' partial index cannot match",
+    ),
+    (
         "tree-raw-fragment-unminted-message",
         "packages/core/src/sql-tree.ts",
         "        if (role === undefined) problem = 'a raw fragment that rawSql did not mint'\n"
@@ -8658,6 +8700,42 @@ VERDICTS = {
         "the tree rules a set operation is refused as another operation that keeps duplicate rows",
         "mutation-verdict:construction:tree-set-operation-is-union",
     ),
+    "tree-read-state-literal": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when it is bound",
+        "mutation-verdict:construction:tree-read-state-literal",
+    ),
+    "tree-read-state-literal-admitted": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is admitted as an inline literal",
+        "mutation-verdict:construction:tree-read-state-literal-admitted",
+    ),
+    "tree-read-state-names-the-column": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is the only column held to a literal",
+        "mutation-verdict:construction:tree-read-state-names-the-column",
+    ),
+    "tree-read-bind-is-not-immediate": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares counts an inline value as no bind",
+        "mutation-verdict:construction:tree-read-bind-is-not-immediate",
+    ),
+    "tree-read-bind-is-a-value": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares counts another column as no bind",
+        "mutation-verdict:construction:tree-read-bind-is-a-value",
+    ),
+    "tree-read-status-is-a-state": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares holds a checkpoint status to a literal as well",
+        "mutation-verdict:construction:tree-read-status-is-a-state",
+    ),
     "tree-raw-fragment-unminted-message": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -14613,6 +14691,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
     },
     "packages/core/src/sql-tree.ts": {
+        "if (reading && BinaryOperationNode.is(node) && comparesStateWithBind(node)) {": (
+            "fails closed: with `reading` gone every transition that binds a state is refused, and 255 core tests fail; the node test stands before a read of the node's operands, which only a comparison has"
+        ),
         "!(select.selections ?? []).some((selection) =>": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
         ),
@@ -16581,7 +16662,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 848:
+        if len(MUTATIONS) != 854:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

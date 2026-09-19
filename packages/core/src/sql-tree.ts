@@ -112,6 +112,14 @@ export const stampValue = nodeExpression<string>(ValueNode.create(EngineToken.st
 /** The batch's clock. Legal only in a compare-and-set. */
 export const nowValue = nodeExpression<number>(ValueNode.create(EngineToken.now))
 /** The provenance value an earlier statement of the batch wrote. */
+/**
+ * A value written into the statement's text and never bound. It is for a state a read
+ * compares: a partial index is matched by the literal, which a placeholder is not.
+ */
+export function literalValue<T extends string | number>(value: T): Expression<T> {
+  return nodeExpression<T>(ValueNode.createImmediate(value))
+}
+
 export function fenceValue(name: string): Expression<string> {
   return nodeExpression<string>(ValueNode.create(EngineToken.fence(name)))
 }
@@ -1254,6 +1262,16 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
   return null
 }
 
+/** The columns a partial index is declared on by value: a run's or a task's state, and a checkpoint's status. */
+const STATE_COLUMNS = ['state', 'status']
+const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true
+
+/** Whether a comparison holds a state column on its left and a bound value on its right, the way the builder writes one. */
+function comparesStateWithBind(node: BinaryOperationNode): boolean {
+  if (!isBind(node.rightOperand)) return false
+  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))
+}
+
 /** The one set operation the grammar lists. UNION, INTERSECT and EXCEPT compare whole rows, which no read here needs. */
 const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all
 
@@ -1266,7 +1284,9 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
  * the root, and no schema-qualified table. It lists one set operation, UNION ALL, and
  * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
- * write, so a set operation there is a form nobody considered. An INSERT takes one row of values or one
+ * write, so a set operation there is a form nobody considered. A read may not compare a
+ * state or status column with a bound value, because a partial index is matched by the
+ * literal. A transition finds its row by key, so it may. An INSERT takes one row of values or one
  * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
  * what is built from nodes. A store fragment is opaque text, reviewed through the
  * generated corpus.
@@ -1274,6 +1294,9 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
 export function statementGrammarProblem(tree: OperationNode, reading = false): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
     if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
+    if (reading && BinaryOperationNode.is(node) && comparesStateWithBind(node)) {
+      return 'a state column compared with a bound value: a partial index is matched by the literal in the text, so a read writes a state inline or in a store fragment'
+    }
     if (SetOperationNode.is(node)) {
       if (!reading) return 'a set operation outside a batch of reads'
       if (!isUnionAll(node)) return 'a set operation other than UNION ALL'

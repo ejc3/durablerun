@@ -1,4 +1,4 @@
-import { type SqlFragment, aliasedAs, defineStatement, rawSql } from '../sql-tree.js'
+import { type SqlFragment, aliasedAs, defineStatement, literalValue, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
 
@@ -6,7 +6,9 @@ import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
  * The reads a store sends outside a transition. Each is one SELECT of a batch that only
  * reads (`FencedBatch.readTree`). A store's predicates reach a read as fragments, as they
  * reach every shared statement: a condition on a state or on a stored instant stays the
- * dialect's own text, so a partial index still sees the literal it was declared with.
+ * dialect's own text, so a partial index still sees the literal it was declared with. A
+ * state a read compares from nodes is written inline (`literalValue`), and a batch of
+ * reads refuses one that is bound.
  */
 
 /**
@@ -87,7 +89,7 @@ export const claimedTaskNameRead = defineStatement(
       .where('r.run_id', '=', binds.runId)
       .where('r.queue', '=', binds.queue)
       .where('r.claimed_by', '=', binds.claimToken)
-      .where('r.state', '=', 'running')
+      .where('r.state', '=', literalValue('running'))
       .where('r.claim_gen', '=', binds.claimGen)
       .where('r.activated_gen', '<', binds.claimGen),
 )
@@ -110,7 +112,7 @@ export const checkpointsRead = defineStatement(
       .select(['c.checkpoint_name', 'c.state', 'c.owner_run_id', 'c.owner_attempt'])
       .where('c.task_id', '=', binds.taskId)
       .where('c.queue', '=', binds.queue)
-      .where('c.status', '=', 'committed')
+      .where('c.status', '=', literalValue('committed'))
       .where('c.owner_attempt', '<=', binds.visibleThrough)
       .orderBy('c.checkpoint_name'),
 )

@@ -1206,7 +1206,9 @@ are load-bearing):
      for a batch of reads alone, and `next-wake` uses it to keep each wake
      source on its own index. A condition on a state or a stored instant stays
      a store fragment, so a partial index still sees the literal it was
-     declared with. MySQL builds its own `next-wake`, because it does not
+     declared with. A state a shared read compares from nodes is written
+     inline, and a batch of reads refuses a state or status column compared
+     with a bound value, whose placeholder no partial index can match. MySQL builds its own `next-wake`, because it does not
      answer MIN from an index: each leg is a store fragment holding a scalar
      subquery and its index hint, so the grammar lists no hint, as for the
      claim. The query-plan suites pin these reads by recording the statements
