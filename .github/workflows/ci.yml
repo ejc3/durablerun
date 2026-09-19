@@ -311,13 +311,17 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
-              # The invariant library gained a width condition with three mutations, under two
-              # verdict markers that are newer than this registry. Nothing is re-aimed: every
-              # find of this registry still occurs exactly once in this tree. The arm is keyed
-              # on main's registry as of the merge of PR4.4c, whose own arm it replaces.
+              # The invariant library gained a width condition, and the replay-equivalence
+              # harness and a fuzz walk each own one mutation of a hold: five mutations, under
+              # four verdict markers that are newer than this registry. Nothing is re-aimed:
+              # every find of this registry still occurs exactly once in this tree. The arm is
+              # keyed on main's registry as of the merge of PR4.4c, whose own arm it
+              # replaces.
               repaired = exempt(previous, candidate, (
                   'mutation-verdict:behavior:identifier-over-width-read-in-every-column',
                   'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
+                  'mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call',
+                  'mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

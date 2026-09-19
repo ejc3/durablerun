@@ -10,6 +10,7 @@ import {
 } from '@durablerun/core'
 import { MIGRATIONS as MYSQL_MIGRATIONS } from '@durablerun/store-mysql'
 import { describe, expect, it } from 'vitest'
+import { runFuzzScenario } from '../src/fuzz.js'
 import {
   IDENTIFIER_COLUMNS,
   bindInvariantSnapshotRows,
@@ -776,4 +777,33 @@ describe('invariant checkers fire on constructed corruption', () => {
       bindings: projections.map(({ table }) => [table, [table]]),
     })
   })
+})
+
+/**
+ * The width condition can fail only when something stores a name past the width, and the
+ * one op of the fuzz walk that passes such a name is refused by a store that holds the rule.
+ * So these walks are green while every entry holds it, and a store entry that stops holding
+ * it fails them by that condition. The case lives here and not beside the fuzz shards,
+ * because the mutation audit leaves the fuzz files out of a mutation's run.
+ */
+describe('walks that pass the port names past the width', () => {
+  it('uphold the invariants, and the port refuses every name', async () => {
+    const failures: string[] = []
+    let refusals = 0
+    // Eight walks of fifty steps pass a few dozen names between them.
+    for (let walk = 0; walk < 8; walk++) {
+      await runFuzzScenario(makeLibsqlFixture, `past-the-width-${walk}`, 50).then(
+        (stats) => {
+          refusals += stats.overWidthRefusals
+        },
+        (error: unknown) => {
+          failures.push(String(error).replace(/w{40,}/g, '<a name past the width>'))
+        },
+      )
+    }
+    expect(
+      { failures, refusedSomething: refusals > 0 },
+      'mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width',
+    ).toEqual({ failures: [], refusedSomething: true })
+  }, 120_000)
 })

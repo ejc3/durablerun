@@ -13088,7 +13088,10 @@ for _verdict, _names in (
 
 # The invariant library's width condition (DESIGN.md S3.4 rule 10). It reads every
 # identifier column of the six table snapshots, it counts as core counts, and its list of
-# columns is held to the columns MySQL's migrations bound at the width.
+# columns is held to the columns MySQL's migrations bound at the width. The last two keep
+# the audit checking that the two generated surfaces can fail: the replay-equivalence
+# harness's name-length axis owns one mutation of the SDK's hold, and a fuzz walk owns one
+# of a store entry's hold.
 MUTATION_SPECS.extend(
     (
         (
@@ -13111,6 +13114,20 @@ MUTATION_SPECS.extend(
             "  runs: ['run_id', 'queue', 'task_id', 'wake_event', 'wake_step'],\n",
             "  runs: ['run_id', 'queue', 'task_id', 'wake_event'],\n",
             "an identifier column the width condition does not read: a wake step past the width is stored and reported by nothing",
+        ),
+        (
+            "sdk-repeated-name-key-held-with-its-counter",
+            "packages/sdk/src/context.ts",
+            "    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "    requireRoom(what, raw, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "a name used twice is held as the task passed it and not as the key it is stored under, so `name#2` passes the width, every store refuses it on every pass, and the second body runs again on each retry until the budget is gone",
+        ),
+        (
+            "libsql-emitted-name-held-at-the-entry",
+            "packages/store-libsql/src/store.ts",
+            "    requireIdentifiersFit({ queue, eventName })\n",
+            "    // MUTATION: an emitted name is not held at this entry\n",
+            "the libSQL store stores an event name past the width, which the port admits on no dialect and no emit can reach again, and no walk fails for it",
         ),
     )
 )
@@ -13135,6 +13152,24 @@ for _verdict, _names in (
             "mutation-verdict:construction:identifier-columns-are-the-bounded-columns",
         ),
         ("identifier-column-inventory-holds-every-bounded-column",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "the name-length axis (every call that passes a name: under its room, at it, and past it) step used twice: a name under its room and at it replays like any other, and one past it fails the task for good with nothing stored",
+            "mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call",
+        ),
+        ("sdk-repeated-name-key-held-with-its-counter",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "walks that pass the port names past the width uphold the invariants, and the port refuses every name",
+            "mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width",
+        ),
+        ("libsql-emitted-name-held-at-the-entry",),
     ),
 ):
     for _name in _names:
@@ -14733,6 +14768,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     ),
     "saga-halt-says-where-the-replay-ended": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-repeated-name-key-held-with-its-counter": (
+        "one test is generated for each member of the name-length axis, and its title carries the member"
     ),
     "sdk-durable-key-held-before-the-body-runs": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
@@ -17032,7 +17070,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 878:
+        if len(MUTATIONS) != 880:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

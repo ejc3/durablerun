@@ -1,5 +1,6 @@
-import { FatalTaskError, childSpawnKey } from '@durablerun/core'
+import { FatalTaskError } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
+import { LONGEST_NAME_BUILT, roomOf } from './name-rooms.js'
 import { SAGA_DIALECTS, drive, runNext } from './saga-harness.js'
 import { Q, registry } from './worker-harness.js'
 
@@ -109,11 +110,16 @@ for (const { dialect, open } of SAGA_DIALECTS) {
     })
 
     it('holds each key at its last fitting length, and refuses it one character past', async () => {
-      // The numbers DESIGN.md gives for the SDK's keys, held so they cannot drift from the
-      // code: an awaited event name 248, an awaited child id 243, a registered step 239, a
-      // step used twice 253, and a child task name whatever the stored child key leaves
-      // its replay key.
+      // Every length here is computed in name-rooms.ts, which the replay-equivalence
+      // harness's name-length axis also computes from, so the two cannot drift apart. The
+      // numbers DESIGN.md gives for the SDK's keys are stated once, in the expectation.
       // One past its room, a key fails the task on that first pass: nothing is retried.
+      const ROOM = {
+        awaitEvent: roomOf(LONGEST_NAME_BUILT.awaitEvent),
+        awaitTask: roomOf(LONGEST_NAME_BUILT.awaitTask),
+        registeredStep: roomOf(LONGEST_NAME_BUILT.registeredStep),
+        stepUsedTwice: roomOf(LONGEST_NAME_BUILT.stepUsedTwice),
+      }
       const firstPass = async (seed: string, job: Parameters<typeof registry>[0][string]) => {
         const f = await open(seed)
         await f.store.spawn(Q, 'job', '{}', THREE_TRIES)
@@ -142,7 +148,7 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           await ctx.step('n'.repeat(length), () => 2)
         })
       // A child's id is the engine's, so the key of its await is reached only through a
-      // forged handle. At 243 the key fits and the store is asked, which knows no such
+      // forged handle. At its room the key fits and the store is asked, which knows no such
       // task. One past it the SDK refuses first, in the task's own terms.
       const awaitingTask = async (length: number) => {
         const pass = await firstPass(`width-await-task-${length}`, async (ctx) => {
@@ -158,7 +164,7 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       // The room a child task name has under this harness's parent id, by the same sum
       // DESIGN.md does for a 36 character id.
       const roomUnder = (parentTaskId: string) =>
-        255 - [...childSpawnKey(parentTaskId, '')].length - '$spawn:'.length
+        roomOf(LONGEST_NAME_BUILT.spawnUnder(parentTaskId))
       const probe = await firstPass('width-parent-id', async () => {})
       const room = roomUnder(probe.parentTaskId)
       const spawning = (length: number) =>
@@ -166,27 +172,33 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           await ctx.spawn('c'.repeat(length), {})
         })
       expect({
-        documentedRoomUnderA36CharacterParentId: roomUnder('x'.repeat(36)),
-        await248: (await awaiting(248)).outcome,
-        await249: (await awaiting(249)).outcome,
-        awaitTask243: await awaitingTask(243),
-        awaitTask244: await awaitingTask(244),
-        registered239: (await registered(239)).outcome,
-        registered240: (await registered(240)).outcome,
-        twice253: (await twice(253)).outcome,
-        twice254: (await twice(254)).outcome,
+        rooms: { ...ROOM, childTaskNameUnderA36CharacterParentId: roomUnder('x'.repeat(36)) },
+        awaitAtItsRoom: (await awaiting(ROOM.awaitEvent)).outcome,
+        awaitOnePast: (await awaiting(ROOM.awaitEvent + 1)).outcome,
+        awaitTaskAtItsRoom: await awaitingTask(ROOM.awaitTask),
+        awaitTaskOnePast: await awaitingTask(ROOM.awaitTask + 1),
+        registeredAtItsRoom: (await registered(ROOM.registeredStep)).outcome,
+        registeredOnePast: (await registered(ROOM.registeredStep + 1)).outcome,
+        twiceAtItsRoom: (await twice(ROOM.stepUsedTwice)).outcome,
+        twiceOnePast: (await twice(ROOM.stepUsedTwice + 1)).outcome,
         spawnAtItsRoom: (await spawning(room)).outcome,
         spawnOnePast: (await spawning(room + 1)).outcome,
       }).toEqual({
-        documentedRoomUnderA36CharacterParentId: 201,
-        await248: 'suspended',
-        await249: 'failed',
-        awaitTask243: { outcome: 'failed', refusedByTheSdk: false },
-        awaitTask244: { outcome: 'failed', refusedByTheSdk: true },
-        registered239: 'completed',
-        registered240: 'failed',
-        twice253: 'completed',
-        twice254: 'failed',
+        rooms: {
+          awaitEvent: 248,
+          awaitTask: 243,
+          registeredStep: 239,
+          stepUsedTwice: 253,
+          childTaskNameUnderA36CharacterParentId: 201,
+        },
+        awaitAtItsRoom: 'suspended',
+        awaitOnePast: 'failed',
+        awaitTaskAtItsRoom: { outcome: 'failed', refusedByTheSdk: false },
+        awaitTaskOnePast: { outcome: 'failed', refusedByTheSdk: true },
+        registeredAtItsRoom: 'completed',
+        registeredOnePast: 'failed',
+        twiceAtItsRoom: 'completed',
+        twiceOnePast: 'failed',
         spawnAtItsRoom: 'completed',
         spawnOnePast: 'failed',
       })
