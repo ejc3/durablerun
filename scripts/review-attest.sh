@@ -23,10 +23,12 @@
 #      whose design notes live there too; a mechanism that can only be
 #      satisfied by mangling good documents teaches people to bypass it.
 #      Every commit such a postmortem cites must be on the pull request's
-#      branch, and its red tests and fixes must be real, distinct, and
-#      ordered, because a commit id does not survive a rebase
-#      (check_postmortem_commits below). '--check-postmortem <path>
-#      --prove-reds' also runs the probe each cited red test names.
+#      branch, because a commit id does not survive a rebase, and its red
+#      tests and fixes must be the pull request's own commits, real,
+#      distinct, and ordered, because the last postmortem's ids are all of
+#      that except its own (check_postmortem_commits below).
+#      '--check-postmortem <path> --prove-reds' also runs the probe each
+#      cited red test names.
 #   3. The review artifacts match THIS HEAD and verifiably COMPLETED: a codex
 #      log containing exactly one matching 'review-head:' line and its
 #      'tokens used' completion marker, and a review-workflow journal with
@@ -42,7 +44,7 @@
 set -euo pipefail
 usage() {
   echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|->" >&2
-  echo "       review-attest.sh --check-postmortem <path> [<head>] [--prove-reds]" >&2
+  echo "       review-attest.sh --check-postmortem <path> [<head> [<base>]] [--prove-reds]" >&2
   echo "       review-attest.sh --check-codex-log <path> <head>" >&2
   echo "       review-attest.sh --check-journal <path> <head>" >&2
   echo "       review-attest.sh --check-pr-body <path>" >&2
@@ -710,7 +712,12 @@ refuse_postmortem() {
 }
 
 # Refuses a postmortem that cites a commit the head does not descend from.
-# Under a label an id must also resolve, none may be both a red test and a fix,
+# Under a label an id must also resolve and be the pull request's own, which
+# the base does not hold: every commit main held before the branch was cut is
+# an ancestor of the head, so a red test and a fix left in place from the last
+# postmortem, which is what a new one is copied from, are real, distinct and
+# ordered. Prose may cite such a commit, and so may the word before the code a
+# red test ran against. None may be both a red test and a fix,
 # and some cited fix must descend from each red test. A line may name a commit
 # of the other kind, the fix that answers a red or the red a fix turns green,
 # so a commit under both labels counts under the one where it comes first
@@ -729,14 +736,19 @@ declare -A CITED_PROBE_FILE=() CITED_PROBE_NAME=()
 CITED_HEAD=""
 CITED_SUMMARY=""
 check_postmortem_commits() {
-  local path="$1" content="$2" head="$3"
-  local head_id cited record first second third id where red index last_red=""
+  local path="$1" content="$2" head="$3" base="$4"
+  local head_id base_id cited record first second third id where red index last_red=""
   local -a labels=() words=() problems=() reds=()
   local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=()
 
   head_id=$(git -C "$REPO" rev-parse --verify --quiet "${head}^{commit}" 2>/dev/null) || {
     echo "SEV rule: the commits postmortem $path cites cannot be judged: $head is not a commit in this repository." >&2
     echo "  Fetch the pull request's head, then run this again." >&2
+    return 1
+  }
+  base_id=$(git -C "$REPO" rev-parse --verify --quiet "${base}^{commit}" 2>/dev/null) || {
+    echo "SEV rule: the commits postmortem $path cites cannot be judged: the base $base is not a commit in this repository." >&2
+    echo "  Fetch it, or name the branch the pull request is cut from as the base." >&2
     return 1
   }
   cited=$(cited_commits "$content") || return 1
@@ -772,6 +784,10 @@ check_postmortem_commits() {
         }
         if ! git -C "$REPO" merge-base --is-ancestor "$id" "$head_id" 2>/dev/null; then
           problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id")")
+          continue
+        fi
+        if [[ "$first" -ge 1 ]] && git -C "$REPO" merge-base --is-ancestor "$id" "$base_id" 2>/dev/null; then
+          problems+=("cites \`$second\` $where, which the base ${base_id:0:7} already holds: a red test and its fix are commits of the pull request itself, made after it left its base. A commit of an earlier pull request goes in prose on another line, or without backticks.")
           continue
         fi
         others[$id]=1
@@ -830,7 +846,7 @@ check_postmortem_commits() {
     [[ -z "${red_cited[$red]:-}" ]] || CITED_REDS+=("$red")
   done
   CITED_HEAD="$head_id"
-  CITED_SUMMARY="on ${head_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
+  CITED_SUMMARY="on ${head_id:0:7} since ${base_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
 }
 
 # --- --prove-reds: a cited red test fails where it is cited ------------------
@@ -988,18 +1004,20 @@ prove_reds() {
 }
 
 # The head defaults to HEAD, which is the pull request's head in the worktree
-# its author runs this from before pushing.
+# its author runs this from before pushing, and the base to origin/main, which
+# a pull request of this repository is cut from. A replay of a merged pull
+# request names both, because main holds a merged head.
 if [[ "${1:-}" == "--check-postmortem" ]]; then
   PROVE_REDS=0
   if [[ "${!#}" == "--prove-reds" ]]; then
     PROVE_REDS=1
     set -- "${@:1:$#-1}"
   fi
-  [[ $# -eq 2 || $# -eq 3 ]] || usage
+  [[ $# -ge 2 && $# -le 4 ]] || usage
   [[ -f "$2" ]] || { echo "no postmortem: $2" >&2; exit 1; }
   CONTENT=$(<"$2")
   ROWS=$(check_postmortem_tables "$2" "$CONTENT")
-  check_postmortem_commits "$2" "$CONTENT" "${3:-HEAD}"
+  check_postmortem_commits "$2" "$CONTENT" "${3:-HEAD}" "${4:-origin/main}"
   echo "SEV rule satisfied: $ROWS findings accounted for in $2; commits $CITED_SUMMARY"
   [[ "$PROVE_REDS" -eq 0 ]] || prove_reds "$2"
   exit 0
@@ -1066,6 +1084,8 @@ if [[ "$DECLARED" -gt 0 ]]; then
   PLACEHOLDERS=$(grep -F '<' "$TEMPLATE" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$')
   [[ -n "$PLACEHOLDERS" ]] || { echo "cannot read placeholders from $TEMPLATE" >&2; exit 1; }
 
+  # The tip of the branch the pull request is cut from bounds its own commits.
+  BASE_SHA=$(gh pr view "$PR" --json baseRefOid --jq .baseRefOid)
   PM_FILES=""
   TOTAL_ROWS=0
   while IFS= read -r f; do
@@ -1095,7 +1115,7 @@ if [[ "$DECLARED" -gt 0 ]]; then
       echo "SEV rule: postmortem $f still carries an unfilled-section marker" >&2; exit 1; }
     ROWS=$(check_postmortem_tables "$f" "$CONTENT")
     TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
-    check_postmortem_commits "$f" "$CONTENT" "$SHA"
+    check_postmortem_commits "$f" "$CONTENT" "$SHA" "$BASE_SHA"
     PM_FILES="$PM_FILES  commits $CITED_SUMMARY"$'\n'
   done <<<"$ADDED"
 

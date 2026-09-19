@@ -91,11 +91,13 @@ were re-reviewed as new code or merely re-tested.>
   before a colon or straight before an id. An id belongs to the nearest label
   before it, so give each
   round's red tests and fixes a label, on lines of their own or sharing one.
-  Under a label every id must resolve, and some cited fix must descend from
-  each red test. A line may also name a commit of the other kind, the fix that
-  answers a red test or the red test a fix turns green: a commit under both
-  labels counts where it comes first after its label, and first under both it
-  is refused, because a red test and its fix are two commits. An id that
+  Under a label every id must resolve and be the pull request's own, made
+  after it left its base, and some cited fix must descend from each red test;
+  a commit of an earlier pull request goes in prose on another line. A line
+  may also name a commit of the other kind, the fix that answers a red test
+  or the red test a fix turns green: a commit under both labels counts where
+  it comes first after its label, and first under both it is refused, because
+  a red test and its fix are two commits. An id that
   follows the word that stands before the buggy commit above, in the same
   clause, is the code a red test ran against, and is neither. A red test that
   names a probe as the first line above does, the test file and then a test
