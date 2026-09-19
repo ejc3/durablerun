@@ -1940,6 +1940,14 @@ are load-bearing):
    schema, ten rounds a side: 36 to 51 ms where they took 23 to 41 before, and
    one round of 1,038 ms. None was rejected.
 
+   An operator's own view over one of these tables stops the version.
+   PostgreSQL refuses to change the type of a column that a view reads, so
+   `migrate()` fails with `StoreUnavailableError` (SQLSTATE 0A000, and the
+   detail names the view), the transaction rolls back, and the schema stays
+   at version 6. Drop the view, migrate, and create it again. Measured: a view
+   over `runs` failed the version that way, and the version committed once the
+   view was dropped.
+
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. An older build

@@ -2571,7 +2571,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Eight migrators racing on a fresh schema took 36 to 51 ms where main took 23
   to 41, and one round in ten took a second: version 7 is the first version to
   lock `meta`, so two migrators can deadlock there, and PostgreSQL takes its
-  timeout to abort the second, which then finds the version applied.
+  timeout to abort the second, which then finds the version applied. An
+  operator's own view over a store table stops the version: PostgreSQL refuses
+  to change the type of a column a view reads, `migrate()` fails and leaves
+  version 6, and it commits once the view is dropped.
   - The task result's tie between two attempt records of one attempt is broken
     by the bytes of the checkpoint name from version 7 on, like every other
     order. No way to reach such a tie was found: the batch that fails a
