@@ -1389,8 +1389,36 @@ export class S {
 """
 )
 
+def tree_store(text_statement: str, fragment: str) -> dict[str, str]:
+    """A store file that builds a tree, holds a fragment for it, and sends one text statement."""
+    return store(
+        "import { FencedBatch } from '@durablerun/core'\n"
+        f"const FRAGMENT = `{fragment}`\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    return new FencedBatch('claim', token(), {})\n"
+        "  }\n"
+        "  async text() {\n"
+        f"    await this.db.batch('expire-lease-now', [{{ sql: `{text_statement}`, args: [] }}])\n"
+        "  }\n"
+        "}\n"
+    )
+
+
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
+    (
+        "clock-lint.py",
+        tree_store("UPDATE runs SET claim_expires_at_ms = NOW()", "x = 1"),
+        "raw wall-clock function in store SQL",
+        "a text statement stays in scope in a file that builds trees",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store("UPDATE tasks SET x = 1 WHERE cancel_at_ms <= 5", "x = 1"),
+        "cancellation-deadline comparison outside fragments.ts",
+        "a text statement stays in scope in a file that builds trees",
+    ),
     (
         "batch-lint.py",
         store(
@@ -3902,6 +3930,16 @@ ENV_BAD_INVOCATIONS = [
 # is NOT covered there is the near miss: correct code that looks like a
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
+    (
+        "clock-lint.py",
+        tree_store("UPDATE runs SET x = 1", "x <= NOW()"),
+        "text that feeds a tree is read by the tree rules, and left this lint's scope",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store("UPDATE runs SET x = 1", "t.cancel_at_ms <= 5"),
+        "text that feeds a tree is read by the tree rules, and left this lint's scope",
+    ),
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
     (
         "batch-lint.py",
@@ -4251,6 +4289,10 @@ def run(
         }:
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
+            )
+        if lint == "batch-lint.py":
+            (root / "scripts" / "text-statements.json").write_text(
+                (SCRIPTS / "text-statements.json").read_text()
             )
         if lint == "mutation-probe.py":
             (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(

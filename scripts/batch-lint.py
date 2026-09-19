@@ -27,6 +27,7 @@ passes a fixture tree, which is how this checker gets checked.)
 """
 
 import re
+import json
 import sys
 from pathlib import Path
 
@@ -54,32 +55,30 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# Read-only batches sent as text — no write to fence. A store's own reads are not here:
-# each is a FencedBatch of reads (`readTree`), which runs in read mode whatever is asked
-# and refuses a second read of the clock that gives no reason.
-READS = {
-    "admin:now",
-    "migrate:version",
-}
+# What a store sends as SQL text is one list, scripts/text-statements.json, with why each
+# statement cannot be a statement tree. This lint's classification is read from it, so a
+# raw batch that is not on the list is unclassified, and fails below.
+TEXT_STATEMENTS = json.loads(
+    (Path(__file__).resolve().parent / "text-statements.json").read_text()
+)["statements"]
+
+
+def listed(shape: str) -> set[str]:
+    return {label for label, entry in TEXT_STATEMENTS.items() if entry["shape"] == shape}
+
+
+# Read-only batches sent as text: no write to fence.
+READS = listed("read")
 
 # Single-statement writes — one statement cannot key on another's post-state,
 # and cannot disagree with itself about the time.
-SINGLE_WRITES = {
-    "expire-lease-now",
-    "admin:set-fake-now",
-    "admin:clear-fake-now",
-}
+SINGLE_WRITES = listed("single-write")
 
 # Multi-statement writes whose stamp is a token the CALLER already holds, so
 # they cannot mint a fresh one. Each needs a written reason, because "it is
 # fine" is exactly the judgement this lint exists to stop being made silently.
 TOKEN_FENCED = {
-    # Observability only; nothing in the protocol reads the drivers table, and
-    # re-applying the same beat is the same row.
-    "driver-heartbeat": "advisory liveness row, replay-identical",
-    # The migration runner carries its own structural fence: an applied:vN
-    # sentinel INSERT whose key violation rolls the whole batch back.
-    "migrate:bootstrap": "migration sentinel fence (schema.ts)",
+    label: TEXT_STATEMENTS[label]["fence"] for label in listed("token-fenced")
 }
 
 # Call sites whose label is legitimately computed. Each names the file and the
@@ -96,7 +95,7 @@ DYNAMIC = {
         "one batch per migration version, labelled by version"
     ),
 }
-DYNAMIC_LABELS = {"migrate:v*"}
+DYNAMIC_LABELS = listed("migration")
 
 # One shipped call delegates construction of its statement list. It is not
 # silently counted as zero: the exception names the exact call and the

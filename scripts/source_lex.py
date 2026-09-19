@@ -576,6 +576,26 @@ def sql_template_view(
     return "".join(visible)
 
 
+def text_statement_view(visible: str, calls: tuple[BatchCall, ...]) -> str:
+    """Narrow a file's SQL view to the text that reaches no statement tree.
+
+    A file that constructs a FencedBatch feeds trees. Its fragments reach a tree,
+    where the tree rules read them, so the only SQL text a lint still owns there is
+    its raw batch calls, and batch-lint holds those to scripts/text-statements.json.
+    A file that constructs none is scanned whole, as it always was. Offsets are kept,
+    so a finding still names its line.
+    """
+    if all(call.kind == "raw" for call in calls):
+        return visible
+    kept = [char if char == "\n" else " " for char in visible]
+    for call in calls:
+        if call.kind == "raw":
+            kept[call.open_paren : call.close_paren] = visible[
+                call.open_paren : call.close_paren
+            ]
+    return "".join(kept)
+
+
 def sql_file_view(
     source: str,
     preserve_literals: frozenset[str] = frozenset(),

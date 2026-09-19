@@ -1,0 +1,39 @@
+{
+  "about": "Every statement a store sends as SQL text and not as a statement tree, with why it cannot be a tree. scripts/batch-lint.py classifies a store's raw batches from this list, scripts/fragment-lint.py and scripts/clock-lint.py still scan this text, and packages/conformance/test/text-statements.test.ts holds every store to it.",
+  "statements": {
+    "expire-lease-now": {
+      "shape": "single-write",
+      "why": "it may change one column of a run, which the poison matrix holds it to (leaseOnlyShortened), and a compare-and-set must also write the run's provenance"
+    },
+    "driver-heartbeat": {
+      "shape": "token-fenced",
+      "fence": "advisory liveness row, replay-identical",
+      "why": "it writes drivers, which carries no provenance, and each dialect writes it its own way: PostgreSQL as a common table expression that inserts and then deletes, MySQL as two statements with an optimizer hint and a locking read, libSQL as an insert into a view"
+    },
+    "migrate:bootstrap": {
+      "shape": "token-fenced",
+      "fence": "migration sentinel fence (schema.ts)",
+      "why": "it is DDL, which no statement tree holds, and a migration's text is frozen by its content hash"
+    },
+    "migrate:v*": {
+      "shape": "migration",
+      "why": "it is DDL, which no statement tree holds, and a migration's text is frozen by its content hash"
+    },
+    "migrate:version": {
+      "shape": "read",
+      "why": "it reads meta before any schema may exist, and a missing table must surface as the executor's own typed error"
+    },
+    "admin:set-fake-now": {
+      "shape": "single-write",
+      "why": "it writes meta, which carries no provenance, so no compare-and-set can hold it"
+    },
+    "admin:clear-fake-now": {
+      "shape": "single-write",
+      "why": "it writes meta, which carries no provenance, so no compare-and-set can hold it"
+    },
+    "admin:now": {
+      "shape": "read",
+      "why": "it is the test clock's read of the clock definition itself, by an admin built over a bare executor with no tree dialect"
+    }
+  }
+}
