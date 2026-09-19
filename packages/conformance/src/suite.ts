@@ -4503,8 +4503,9 @@ export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtur
   describe(`wake witness conformance [${dialect}]`, () => {
     // The limit is set against the slowest CI runner observed, not a local figure. On
     // PostgreSQL this test took 37.9 to 58.8 seconds across main's ordinary CI runs and 96.9
-    // on one slow runner, under the 120 seconds it had. 300 is a bit over three times that
-    // worst case, so a hung case still ends the test in five minutes. The limit stays a
+    // on one slow runner, under the 120 seconds it had. MySQL runs in its own CI job under
+    // this same limit and took 30.6 to 44.9. 300 is a bit over three times the worst case,
+    // so a hung case still ends the test in five minutes. The limit stays a
     // numeric literal on purpose: given a named constant, the formatter stops hugging the
     // call and re-indents the whole body. BUILD.md's PR3.13 entry has the measurements.
     it('decides every park through one correlated wait witness', async () => {

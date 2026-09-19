@@ -13,8 +13,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # 18 to 30 minutes across recent runs. Twice the slowest, so a hung test run does not hold a runner for the six hour default.
-    timeout-minutes: 60
+    # 18 to 30 minutes across recent runs. Three times the slowest, the margin the per-test limits have: a slow runner must
+    # not cancel a required check, and a hung run must not hold a runner for the six hour default.
+    timeout-minutes: 90
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # The dialects this job has servers for. MySQL runs the same suite in its
