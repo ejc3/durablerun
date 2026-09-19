@@ -16,6 +16,12 @@ admitted, and a reason accepted where it excuses nothing. Our own machinery
 found none of the eight. All eight are fixed here, two of them as a red test
 and a fix.
 
+One narrow re-review of that fold followed, and it found a ninth defect that
+the fold had made. The fix for finding 1 took each bind's type from the first
+call a prepared read saw, never checked that call, and kept the result in a
+record that every store in the process shares. It is finding 9, fixed as a red
+test and a fix. The re-review's nine LOW items are in the pull request's body.
+
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** Never "who wrote it", "should have noticed", "was careless" — those
 explain nothing and are not actionable. Always "what would have made this
@@ -49,6 +55,14 @@ said only a compare-and-set may. A statement the builder refused inside the
 refusal-state read would have told a worker whose task was cancelled that it
 had lost its lease.
 
+The ninth, which the fold introduced, would have turned one bad call into an
+outage of a read. A caller that first sent `getTaskResult` an undefined task
+id got no row for an answer, where the branch before the fold refused the
+call and sent nothing. Every well-formed call of that read after it, on any
+store in the process, was then refused until the process restarted. No store
+checks a queue, a task id or a run id before these reads, so it needed only a
+caller that passes a wrongly typed value first.
+
 ## Findings
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
@@ -61,6 +75,7 @@ had lost its lease.
 | 6 | A statement the builder refuses inside the refusal-state read is reported as a lost lease | A cancelled run would answer lease-lost | The conformance cases for refusals | They refuse a write and read the state, and the read's construction never fails in them | The batch is built before the read is handed to the caller that classifies a failed read (1, by where the code stands) |
 | 7 | A read was counted as a clock read before the rules that could still refuse it | A batch whose first clock read was refused then refused its only held one as a second | The verdict tests of the clock rule | Each builds a fresh batch for each refusal, so none reuses a batch after one | The count comes last, and a core test reuses a batch after a refusal (3) |
 | 8 | The reason for a second read of the clock was accepted on any read, and restated in three stores | A reason outlives the read it excused, and nobody is asked again | The rule that asks for the reason | It asked only whether a second clock read lacked one | A reason is owed by a second read of the clock and refused anywhere else, and the sweep's is one constant (2) |
+| 9 | Fix-induced, by the fix for finding 1. A prepared read took each bind's type from the first call's values, never checked that call, and kept the result in a record every store shares | A malformed first call is sent as it is and answers no row. Every later well-formed call of that read, on any store, is refused until the process restarts | The verdict test of the bind check, and the store's reuse test | Both send a well-formed call first, so the type the read kept was always right, and neither sends a first call from one store and a second from another | A prepared read declares its bind types, the compiler holds the declaration to the builder's parameters, and every call is checked before anything is prepared or sent (1 for where a type comes from, 2 for the check, with one registered mutation) |
 
 ## Detection ledger
 
@@ -68,11 +83,14 @@ The branch had passed every local gate, with the unfiltered audit at 847 of
 847, before the review read it. Every finding came from the review. The audit
 did catch one defect of mine before review, a verdict test whose unmarked
 expectation failed ahead of its marked one, and that is not counted here
-because no reviewer had to find it.
+because no reviewer had to find it. The ninth finding came from the narrow
+re-review of the fold, after the fold had passed every gate again with the
+audit at 860 of 860.
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | The one full review of PR #57: eight finder angles, a verifier, and the reviewer's own runs on libSQL, MySQL 8.4 and PostgreSQL 17 | 8 | No |
+| The one narrow re-review of the fold: the built-in review skill, and the reviewer's own runs with `c1a6024` as the control | 1 | No |
 | This project's machinery: conformance, corpus, plan pins, lints, mutation probe | 0 | Yes |
 
 Self-catch rate: 0% (previous round: 0%).
@@ -115,6 +133,17 @@ names. Finding 6 is the same family from the other side: a catch written when
 only the executor could throw inside it kept its meaning after the builder
 could too. The earlier mechanism named answers and did not reach this catch.
 
+**What a shared record learns from its first use. Recurred inside this
+round.** A prepared read is kept at module scope, so whatever prepares it
+first decides it for the process. The fold's first slip of this kind was
+caught before review: the record was a `Map`, and the SDK first sends a read
+inside a task that has replaced the global `Map`. The repair was about where
+the record lives. Finding 9 is the same class one step on: the first call's
+values decided each bind's type. The repair did not ask what else a first use
+decides, and nothing in the machinery sends a malformed call first. A
+declared type removes the question for binds, because a call now decides
+nothing that the record keeps.
+
 Findings 7 and 8 are not instances of an earlier class that I can find.
 
 ## Mechanism audit — the false negative of each
@@ -128,12 +157,15 @@ Each row was written and run against the fixed code.
 | Every prepared read stands at module scope | 3, syntactic: it counts `prepareRead(` against `const NAME = prepareRead(` in a store's sources | Before this check existed, `task-done-state` prepared inside its method passed all seven cases, because that read is reached only through a transition and no case can call it alone. Ran. With the check, the row above is what still passes |
 | A prepared read must compile to one statement whatever values it is sent | 2 | A build that branches on a value, `binds.attempt > 0 ? A : B`, is admitted when both stand-ins take one branch. The stand-ins for a number are negative, so shape B was kept and then sent with 5. Ran. Two stand-ins show that a shape depends on a value only when they differ in the way the build tests |
 | A reason is owed by a second read of the clock and refused anywhere else | 2 | `readTree('b', due(), 'x')` is admitted as a second clock read. Ran. The rule holds where a reason stands and cannot hold what it says, as an open tail's reason cannot |
-| refusal-state's batch is built before the read is handed on | 1 by placement, with no test | Moving the two lines back inside the returned function passes the libSQL store suite, 89 tests, and the 72 refusal cases of the conformance file. Ran. Nothing can make the builder refuse this read from outside, so nothing holds where it is built |
+| refusal-state's batch is built before the read is handed on | 3, one libSQL store test, added in the second round | The same two lines moved back inside the returned function in the PostgreSQL store pass its whole suite, 42 tests, because the test that sends a heartbeat an undefined run id is libSQL's alone. Ran. This row said that nothing can make the builder refuse this read from outside. That was false: an undefined run id does, and finding 9 came through the same door |
+| A prepared read declares its bind types, and every call is checked against them before the read is prepared or sent | 1 for where a type comes from: the compiler refuses a declaration that disagrees with the builder's parameters. 2 for the check | `readPrepared('state', R, { attempt: Number.NaN })` on a read that declares a number is admitted and sent `NaN`. Ran. The check reads a value's type and nothing else about it, as `defineStatement` reads only whether a bind is undefined. A store checks a generation or a limit before it sends one |
+| Arithmetic on a numeric bind is refused when a read is first prepared | 2 | A build that adds exactly the distance between two stand-ins, `binds.a + 2 ** 20` beside `binds.c`, lands on the next bind's stand-in in both rounds and is kept as that bind's slot. It sent `[99, 99]` for `{ a: 10, c: 99 }`. Ran. Any fixed spacing has such a sum, so the rule holds a build to nothing a writer would do by accident, and no further |
 | A read is counted as a clock read only after every rule admits it | 3, one regression case | A rule added after the count would reopen it, and the one case exercises only the spelled-clock rule. Not run: it is a statement about a rule that does not exist |
 
 ## Fix-induced defects
 
-Two, and our own machinery caught both before any reviewer read the fixes. The
+Three. Our own machinery caught two of them before any reviewer read the
+fixes, and the narrow re-review of the fold found the third. The
 prepared read first kept what it compiled to in a `Map`. A read is prepared
 wherever it is first sent, and the SDK has a test that first sends one inside
 a task that has replaced the global `Map`, so the run ended in a throw. The
@@ -153,14 +185,22 @@ one, before the review. The audit caught both, and it is the only thing that
 can: nothing at build time reads a verdict test for what it does when its
 mutant is live.
 
-Neither is in the findings table, because no review found them.
+Neither of those is in the findings table, because no review found them.
+
+The third is finding 9. `prepareRead` was written to remove a cost and was
+tested as one: every test of it sent a well-formed call first, from one
+store. It took each bind's type from that first call, so the one call that
+nothing checked decided what every later call was held to. One finding in
+nine was caused by the fix for another in the same round.
 
 The fixes have not been re-reviewed as new code. They were re-tested, and the
 machinery caught three smaller slips inside the fold before any commit. MySQL's inventory of store methods refused the new `rows` helper until
 it was named internal. The probe's self-test refused two mutants whose libSQL
 lines the rewrite had moved. The linter refused a `typeof` compared with a
-value that is not a literal. At most one narrow re-review of the behaviour
-changes follows this fold.
+value that is not a literal. One narrow re-review of the behaviour
+changes followed this fold and found finding 9. The second fold's fixes were
+re-tested, and the reviewer's probes were run again against them. They have
+not been reviewed: that re-review was the last for this pull request.
 
 ## Evidence
 
@@ -195,6 +235,22 @@ changes follows this fold.
 - Two of the review's ten items are not counted: text in tooling and review
   rules that named what the reads removed, and the two registry figures. Both
   are corrected in `81e825e`.
+- Second round. Red test: commit `ae1f120`, run and seen failing (2 tests)
+  against `e1a1712`. The malformed first call "resolved "null" instead of
+  rejecting", and the next call, on a second store, was refused with "bind
+  'taskId' is string: a prepared read is sent the undefined it was prepared
+  with". Fix: commit `bc8d5ab`. Gate after it: core 562 tests, the SDK suite,
+  the three store suites, the probe's self-test at 861 mutations, and the
+  four mutants of the prepared path each caught by its own verdict.
+- Finder of finding 9: the one narrow re-review of `c1a6024..e1a1712`. Its
+  verdict: "The fold has no HIGH finding and one MEDIUM regression. A
+  malformed first call to a prepared read is sent unchecked, and that read
+  then throws on every later well-formed call until the process restarts."
+- The reviewer's probes, run again on `bc8d5ab` over all three stores. The
+  malformed first call is refused with "bind 'taskId' is undefined" and sends
+  nothing, and both later calls answer. A refused prepared read leaves no
+  clock read behind. Arithmetic on a bind, and a statement that holds a
+  stamp, are refused when first prepared. A result without rows throws.
 
 ## Root cause
 
@@ -208,6 +264,11 @@ are values, because a builder binds what text would have written inline.
 Neither is a difference in the statement the database runs today, so a
 machinery built on equivalence is structurally unable to see either.
 
+Finding 9 has a root of its own. A record kept for the whole process was
+filled by whichever call came first, and every test's first call was well
+formed. A thing that learns from its first use is tested only when a test
+chooses that first use, and none did.
+
 ## Mechanisms
 
 Built in this PR:
@@ -216,7 +277,14 @@ Built in this PR:
   them: a prepared read cannot be rebuilt by a call. A store test holds that a
   second call compiles nothing, rung 3, and a source check holds that no
   store sends an unprepared read or prepares one outside module scope, rung
-  3 and syntactic. Three registered mutations hold the prepared path.
+  3 and syntactic. Four registered mutations hold the prepared path.
+- A prepared read declares its bind types, rung 1 for where a type comes
+  from, and every call is checked against them before the read is prepared or
+  sent, rung 2, with one registered mutation. A store test sends the
+  malformed call first and a second store's call after it. Stand-in numbers
+  stand far apart and the second round goes under another name, rung 2, so
+  arithmetic on a bind and a held stamp are refused when a read is first
+  prepared. A batch of reads refuses a result that holds no rows, rung 3.
 - A batch of reads refuses a state or status column compared with a bound
   value, rung 2, in `packages/core/src/sql-tree.ts`, with `literalValue` for
   the inline form and six registered mutations.
@@ -253,3 +321,10 @@ Deferred (recorded in BUILD.md):
 - New core code that reaches for an ambient global is caught only where an
   SDK test happens to run that path under a replaced global. This round's one
   such slip was caught that way, by luck of where a read is first sent.
+- A second thing that a process-wide record learns from its first use.
+  Declared types closed the one that was found. The record still keeps the
+  first dialect object and clock token it meets, by design, and nothing
+  enumerates what a first use decides.
+- A number bind that is `NaN` or a fraction is sent as it is.
+- The refusal-state test is libSQL's. The same defect in the PostgreSQL or
+  MySQL store ships today.

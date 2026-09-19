@@ -1019,7 +1019,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads refuses a state or status column compared with a bound value. Two
     shapes still pass that rule and wait for part 2's decision about
     fragments: a state bound inside a store fragment, and a one-state IN list
-    of a bound value. The registry holds 860 mutations.
+    of a bound value. One narrow re-review of that fold found that the fix
+    had taken each bind's type from the first call a prepared read saw,
+    unchecked, in a record every store shares: a malformed first call was
+    sent as it was, and every later call of that read was refused. A prepared
+    read now declares its bind types and every call is checked against them.
+    The registry holds 861 mutations.
   - PR3.9f part 2, not started, and most of it needs a decision before it is
     built. What a store still sends as text is `heartbeat` on libSQL and
     PostgreSQL, `expire-lease-now`, `driver-heartbeat`, and the admin's

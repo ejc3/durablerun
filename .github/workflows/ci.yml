@@ -470,6 +470,7 @@ jobs:
                   "mutation-verdict:construction:tree-prepared-read-shape-is-fixed",
                   "mutation-verdict:construction:tree-prepared-read-bind-kind",
                   "mutation-verdict:construction:tree-prepared-read-clock-counted",
+                  "mutation-verdict:construction:tree-prepared-read-first-call-checked",
                   "mutation-verdict:construction:tree-read-recorded",
                   "mutation-verdict:construction:tree-reads-run-in-read-mode",
                   "mutation-verdict:construction:tree-read-grammar-is-the-reads",

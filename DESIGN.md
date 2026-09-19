@@ -1197,8 +1197,13 @@ are load-bearing):
      rule below. A store sends each read through `readPrepared`: the read is
      built, checked and compiled once for a dialect and a clock, from stand-in
      values, and every call after that sends the same SQL with its own values
-     in a statement object of its own. A statement whose shape depends on a
-     value it is sent is refused when it is first prepared. What depends on the
+     in a statement object of its own. A prepared read declares each bind's
+     type, and every call's values are held to that declaration before the
+     read is prepared or sent, the first call included: what a read compiled
+     to is kept for the whole process and for every store in it, so no
+     caller's values may decide it. A statement whose shape depends on a value
+     it is sent, or that holds its own stamp, is refused when it is first
+     prepared. What depends on the
      batch is asked on every call: that it holds reads alone, and the clock
      rule. `next-wake` and the sweep's two scans run on every driver tick, so
      a read costs a few microseconds to send, as its text did. The read labels
@@ -1219,7 +1224,8 @@ are load-bearing):
      send. PostgreSQL's plan suite pins none of them. An executor answers a
      batch with one result for each statement it was sent, and `run` refuses
      any other count for a batch of reads as for a transition, so a read that
-     got no answer throws and is never taken for no row.
+     got no answer throws and is never taken for no row. A result of a batch
+     of reads that holds no list of rows is refused for the same reason.
    - One rule says who may hold the clock token. In a transition, only a
      compare-and-set may. In a batch of reads any read may, and because two
      statements of one batch see different clocks on a real backend, a second
