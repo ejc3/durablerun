@@ -261,3 +261,68 @@ it('refuses a write sent as a read, whether it begins with DELETE or is a SELECT
     await db.close()
   }
 }, 120_000)
+
+it('refuses a delete sent behind a select in one read, and keeps the row', async () => {
+  // Text is not read, so nothing about how a statement begins says what it holds. A read
+  // the executor did not get from core's read path keeps the read-only transaction, where
+  // the server refuses the write whatever the text looks like.
+  const db = await openPostgresTestDb({ idNamespace: 'read-guard-text' })
+  try {
+    await db.raw.batch('fixture:seed', [
+      { sql: "INSERT INTO meta (key, value) VALUES ('kept', 'v')", args: [] },
+    ])
+    const outcome = await db.raw
+      .batch(
+        'fixture:read-only',
+        [{ sql: "SELECT 1; DELETE FROM meta WHERE key = 'kept'", args: [] }],
+        'read',
+      )
+      .then(
+        () => 'accepted',
+        (error: unknown) =>
+          /read-only transaction/.test(String(error)) ? 'refused by the server' : String(error),
+      )
+    const [after] = await db.raw.batch(
+      'fixture:read',
+      [{ sql: "SELECT COUNT(*) AS kept FROM meta WHERE key = 'kept'", args: [] }],
+      'read',
+    )
+    expect({ outcome, kept: after?.rows[0]?.kept }).toEqual({
+      outcome: 'refused by the server',
+      kept: 1,
+    })
+  } finally {
+    await db.close()
+  }
+}, 120_000)
+
+it('rolls back a single write whose result it refuses', async () => {
+  // The executor reads a result only after the server has run the statement. Inside a
+  // transaction a result it refuses rolls the write back, and sent alone the write would
+  // already be committed.
+  const db = await openPostgresTestDb({ idNamespace: 'single-write-result' })
+  try {
+    await db.raw.batch('fixture:seed', [
+      { sql: "INSERT INTO meta (key, value) VALUES ('kept', 'before')", args: [] },
+    ])
+    const outcome = await db.raw
+      .batch('fixture:refused-result', [
+        { sql: "UPDATE meta SET value = 'after' WHERE key = 'kept' RETURNING true", args: [] },
+      ])
+      .then(
+        () => 'accepted',
+        () => 'refused',
+      )
+    const [after] = await db.raw.batch(
+      'fixture:read',
+      [{ sql: "SELECT value FROM meta WHERE key = 'kept'", args: [] }],
+      'read',
+    )
+    expect({ outcome, value: after?.rows[0]?.value }).toEqual({
+      outcome: 'refused',
+      value: 'before',
+    })
+  } finally {
+    await db.close()
+  }
+}, 120_000)

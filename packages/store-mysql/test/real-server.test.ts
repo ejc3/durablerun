@@ -480,6 +480,37 @@ describe('MysqlExecutor against a real server', () => {
       await db.close()
     }
   })
+
+  it('refuses a single write whose key ends in a tab and would be cut to fit, and writes nothing', async () => {
+    // MySQL cuts more than a trailing space with a note: a tab, a line break, a bind sent
+    // as bytes, a literal in the text. The executor cannot tell from a statement that none
+    // of them is in it, so a single write keeps its transaction, where the cut rolls back.
+    const db = await openMysqlTestDb({ idNamespace: 'cut-tab' })
+    try {
+      const outcome = await db.raw
+        .batch('fixture:cut-tab', [
+          {
+            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+            args: [`${'k'.repeat(255)}\t`, 'tabbed'],
+          },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      const [rows] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'tabbed'", args: [] }],
+        'read',
+      )
+      expect({
+        refused: outcome instanceof InvalidDurableStringError,
+        stored: rows?.rows[0]?.n,
+      }).toEqual({ refused: true, stored: 0 })
+    } finally {
+      await db.close()
+    }
+  })
 })
 
 describe('the version table on a real server', () => {
