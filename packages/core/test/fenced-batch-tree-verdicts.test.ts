@@ -1316,8 +1316,38 @@ describe('the tree path', () => {
       // The marked refusals come first: a mutant must fail this test at its own marker.
       const MARKER = 'mutation-verdict:construction:tree-second-clock-read-needs-a-reason'
       refuses(MARKER, SECOND_CLOCK, () => twice())
-      refuses(MARKER, SECOND_CLOCK, () => twice(' '))
       expect(() => twice('each row is checked again under its own fence')).not.toThrow()
+    })
+
+    it('takes a blank reason for no reason', () => {
+      refuses('mutation-verdict:construction:tree-clock-reason-is-not-blank', SECOND_CLOCK, () =>
+        batch().readTree('cancels', due()).readTree('expired', due(), ' '),
+      )
+    })
+
+    it('asks a read that holds no clock for no reason', () => {
+      accepts('mutation-verdict:construction:tree-clockless-read-needs-no-reason', () =>
+        batch().readTree('due', due()).readTree('state', state()),
+      )
+    })
+
+    it('refuses a reason on a read that owes none', () => {
+      const STRAY = /gives a reason for a second read of the clock, and it is not one/
+      const MARKER = 'mutation-verdict:construction:tree-clock-reason-needs-a-clock-read'
+      refuses(MARKER, STRAY, () => batch().readTree('state', state(), 'a reason'))
+      refuses(MARKER, STRAY, () => batch().readTree('due', due(), 'a reason'))
+    })
+
+    it('counts no clock read for a read it refused', () => {
+      const b = batch()
+      const spelled = statement(
+        db
+          .selectFrom('runs')
+          .select('run_id')
+          .where(predicate(`claim_expires_at_ms <= ${NOW} AND heartbeat_at_ms <= unixepoch()`)),
+      )
+      expect(() => b.readTree('spelled', spelled)).toThrow(/spells out a database clock/)
+      expect(() => b.readTree('due', due())).not.toThrow()
     })
 
     it('counts a read of the clock wherever it stands in the batch', () => {

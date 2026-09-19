@@ -676,8 +676,8 @@ export class FencedBatch {
    *
    * A read may hold the clock. Two statements of one batch see different clocks on a real
    * backend, so a second read of the clock must say, in `drift`, why a disagreement
-   * between the two is harmless. Like an open tail's reason it is a forcing function,
-   * written beside the statement, and nothing reads it back.
+   * between the two is harmless, and no other read may give one. Like an open tail's
+   * reason it is a forcing function, written beside the statement, and nothing reads it back.
    */
   readTree(name: string, statement: DefinedStatement, drift = ''): this {
     return this.addTree('read', name, statement, null, drift)
@@ -716,6 +716,24 @@ export class FencedBatch {
    * for the batch clock's exact text and for clock spellings, as `scripts/clock-lint.py`
    * scans store sources.
    */
+  /**
+   * Hold a read to the one rule about a batch's reads of the clock, and count it. A reason
+   * is owed by a second read of the clock and by no other read: given anywhere else, it
+   * would outlive the read it excused.
+   */
+  private countClockRead(at: string, name: string, drift: string, readsClock: boolean): void {
+    const needed = readsClock && this.clockReads.length !== 0
+    const excused = drift.trim() !== ''
+    if (needed !== excused) {
+      throw new Error(
+        needed
+          ? `${at} is this batch's second read of the clock: two statements of one batch see different clocks, so say why a disagreement with '${this.clockReads[0]}' is harmless`
+          : `${at} gives a reason for a second read of the clock, and it is not one: a reason stands beside the read it excuses and nowhere else`,
+      )
+    }
+    if (readsClock) this.clockReads.push(name)
+  }
+
   private addTree(
     asked: Kind | 'openTail' | 'read',
     name: string,
@@ -928,14 +946,6 @@ export class FencedBatch {
     if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {
       throw new Error(clockReadRule(at))
     }
-    if (reading && compiled.sql.includes(this.now)) {
-      if (this.clockReads.length !== 0 && drift.trim() === '') {
-        throw new Error(
-          `${at} is this batch's second read of the clock: two statements of one batch see different clocks, so say why a disagreement with '${this.clockReads[0]}' is harmless`,
-        )
-      }
-      this.clockReads.push(name)
-    }
     if (spelledClock) {
       throw new Error(
         `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression`,
@@ -971,6 +981,8 @@ export class FencedBatch {
         `${at} argument ${index} is ${value === undefined ? 'undefined' : typeof value}: bind a string, number, bigint, bytes, or null`,
       )
     })
+    // Counted last, so a read that one of the rules above refused leaves no clock read behind.
+    if (reading) this.countClockRead(at, name, drift, compiled.sql.includes(this.now))
     const held = {
       name,
       kind,

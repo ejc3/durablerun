@@ -2286,30 +2286,51 @@ MUTATION_SPECS = [
     (
         "tree-first-clock-read-needs-no-reason",
         "packages/core/src/fenced-batch.ts",
-        "      if (this.clockReads.length !== 0 && drift.trim() === '') {\n",
-        "      if (drift.trim() === '') {\n",
+        "    const needed = readsClock && this.clockReads.length !== 0\n",
+        "    const needed = readsClock\n",
         "a batch's first read of the clock is asked why it may disagree with a read that does not exist",
     ),
     (
         "tree-second-clock-read-needs-a-reason",
         "packages/core/src/fenced-batch.ts",
-        "      if (this.clockReads.length !== 0 && drift.trim() === '') {\n",
-        "      if (false) {\n",
+        "    if (needed !== excused) {\n",
+        "    if (false) {\n",
         "a second read of the clock gives no reason why a disagreement between the two is harmless",
     ),
     (
         "tree-clock-read-counted",
         "packages/core/src/fenced-batch.ts",
-        "    if (reading && compiled.sql.includes(this.now)) {\n",
-        "    if (false) {\n",
+        "    if (readsClock) this.clockReads.push(name)\n",
+        "    if (false) this.clockReads.push(name)\n",
         "no read of the clock is counted, so a second one is never seen",
     ),
     (
         "tree-clock-read-counts-reads-only",
         "packages/core/src/fenced-batch.ts",
-        "    if (reading && compiled.sql.includes(this.now)) {\n",
-        "    if (compiled.sql.includes(this.now)) {\n",
+        "    if (reading) this.countClockRead(at, name, drift, compiled.sql.includes(this.now))\n",
+        "    this.countClockRead(at, name, drift, compiled.sql.includes(this.now))\n",
         "a transition's second compare-and-set that holds the clock is refused as a second read of it",
+    ),
+    (
+        "tree-clockless-read-needs-no-reason",
+        "packages/core/src/fenced-batch.ts",
+        "    const needed = readsClock && this.clockReads.length !== 0\n",
+        "    const needed = this.clockReads.length !== 0\n",
+        "a read that holds no clock owes a reason once another read holds one",
+    ),
+    (
+        "tree-clock-reason-is-not-blank",
+        "packages/core/src/fenced-batch.ts",
+        "    const excused = drift.trim() !== ''\n",
+        "    const excused = drift !== ''\n",
+        "a blank reason excuses a second read of the clock",
+    ),
+    (
+        "tree-clock-reason-needs-a-clock-read",
+        "packages/core/src/fenced-batch.ts",
+        "    if (needed !== excused) {\n",
+        "    if (needed && !excused) {\n",
+        "a reason may stand beside a read that owes none, where it outlives the read it excused",
     ),
     (
         "tree-read-recorded",
@@ -8651,6 +8672,24 @@ VERDICTS = {
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
         "the tree path a batch of reads counts the clock reads of a batch of reads alone",
         "mutation-verdict:construction:tree-clock-read-counts-reads-only",
+    ),
+    "tree-clockless-read-needs-no-reason": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads asks a read that holds no clock for no reason",
+        "mutation-verdict:construction:tree-clockless-read-needs-no-reason",
+    ),
+    "tree-clock-reason-is-not-blank": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads takes a blank reason for no reason",
+        "mutation-verdict:construction:tree-clock-reason-is-not-blank",
+    ),
+    "tree-clock-reason-needs-a-clock-read": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads refuses a reason on a read that owes none",
+        "mutation-verdict:construction:tree-clock-reason-needs-a-clock-read",
     ),
     "tree-read-recorded": ExpectedVerdict(
         "construction",
@@ -16662,7 +16701,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 854:
+        if len(MUTATIONS) != 857:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

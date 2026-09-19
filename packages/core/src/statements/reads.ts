@@ -17,6 +17,14 @@ import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
  */
 export const READS_SEED = 'reads'
 
+/**
+ * Why the sweep's two discovery reads may see different clocks, the reason `readTree`
+ * asks of the second. A task sitting exactly on a deadline can appear in one and not the
+ * other, and then it waits for the next sweep.
+ */
+export const SWEEP_SCAN_DRIFT =
+  'read-only discovery: every item is checked again under its own fence, at the instant of its own batch'
+
 /** `refusal-state`: a refused run's state, read only after its fence refused a write or a heartbeat. */
 export const refusalStateRead = defineStatement('refusal-state', (binds: { runId: string }) =>
   treeBuilder.selectFrom('runs').select('state').where('run_id', '=', binds.runId),

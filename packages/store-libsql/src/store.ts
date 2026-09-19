@@ -26,6 +26,7 @@ import {
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
+  SWEEP_SCAN_DRIFT,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -927,7 +928,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
         expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
       }),
-      'read-only discovery: every item is checked again under its own fence, at the instant of its own batch',
+      SWEEP_SCAN_DRIFT,
     )
     const { results: scanned } = await scan.run(this.db)
     const cancels = scanned.cancels
