@@ -1438,6 +1438,33 @@ def tree_store_with_a_typed_fragment(fragment: str) -> dict[str, str]:
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
     (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "reed", "why": "x"}}}',
+        },
+        "has shape 'reed'",
+        "a listed statement's shape is one of the shapes this lint classifies by",
+    ),
+    (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "token-fenced", "why": "x"}}}',
+        },
+        "is token-fenced and names no fence",
+        "a token-fenced statement says which token fences it",
+    ),
+    (
+        "batch-lint.py",
+        {
+            **CLEAN_STORE,
+            "scripts/text-statements.json": '{"statements": {"migrate:version": {"shape": "read", "why": " "}}}',
+        },
+        "gives no reason it cannot be a tree",
+        "every listed statement says why it is text",
+    ),
+    (
         "clock-lint.py",
         tree_store_sending_a_constant(
             "UPDATE runs SET claim_expires_at_ms = unixepoch() * 1000 WHERE run_id = ?"
@@ -4346,10 +4373,9 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
-        if lint == "batch-lint.py":
-            (root / "scripts" / "text-statements.json").write_text(
-                (SCRIPTS / "text-statements.json").read_text()
-            )
+        listed = root / "scripts" / "text-statements.json"
+        if lint == "batch-lint.py" and not listed.exists():
+            listed.write_text((SCRIPTS / "text-statements.json").read_text())
         if lint == "mutation-probe.py":
             (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(
                 (SCRIPTS / "typescript-verdict-analyzer.cjs").read_text()

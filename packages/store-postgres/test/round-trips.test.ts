@@ -20,7 +20,7 @@ import { postgresTestIdSource } from '../src/testing.js'
  * whether a rollback is owed from its own rows, and a caller's hint that none is would
  * be a second account of those rows, which a worker of an older build could not give.
  */
-it('sends a pinned number of queries for each batch a saga touches', async () => {
+it('sends a pinned number of queries for each batch a saga touches, and for a heartbeat', async () => {
   const url = process.env.DURABLERUN_POSTGRES_URL
   if (!url)
     throw new Error('DURABLERUN_POSTGRES_URL is required, as it is for the conformance suite')
@@ -76,6 +76,8 @@ it('sends a pinned number of queries for each batch a saga touches', async () =>
 
     await store.spawn(Q, 'plain', '{}')
     const plain = await claimed('w1')
+    const beatHeld = await measure(() => store.heartbeat(Q, plain.runId, plain.claimToken, 30))
+    const beatRefused = await measure(() => store.heartbeat(Q, plain.runId, 'another-token', 30))
     const stepCheckpoint = await measure(() => mark(plain, 'step', '{}'))
     const failFinal = await measure(() => store.fail(Q, plain.runId, plain.claimToken, E, null))
     await store.spawn(Q, 'retrying', '{}', { maxAttempts: 3 })
@@ -109,6 +111,8 @@ it('sends a pinned number of queries for each batch a saga touches', async () =>
     const finishing = await measure(() => store.fail(Q, pass2.runId, pass2.claimToken, E, null))
 
     expect({
+      'heartbeat, held': beatHeld,
+      'heartbeat, refused': beatRefused,
       'set-checkpoint of a step': stepCheckpoint,
       'set-checkpoint of a start marker': startMarker,
       'set-checkpoint of a rollback': rollback,
@@ -120,6 +124,11 @@ it('sends a pinned number of queries for each batch a saga touches', async () =>
       'fail-rollback, retrying': rollbackRetrying,
       'fail-rollback, final': rollbackHalts,
     }).toEqual({
+      // A held beat is BEGIN, the compare-and-set, the gated read of what is left, and
+      // COMMIT: one query more than the single statement with RETURNING it replaced. A
+      // refused beat skips the gated read, then reads the run's state in a batch of its own.
+      'heartbeat, held': 4,
+      'heartbeat, refused': 6,
       // Unchanged by sagas: the phase is one more predicate of a statement already sent.
       'set-checkpoint of a step': 4,
       'set-checkpoint of a start marker': 4,

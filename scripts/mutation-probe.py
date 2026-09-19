@@ -1485,6 +1485,13 @@ MUTATION_SPECS = [
         "a fragment reads the fake clock's row in meta, a read of the clock no function names, and goes unseen",
     ),
     (
+        "text-statement-list-holds-every-raw-batch",
+        "packages/store-libsql/src/admin.ts",
+        "        await this.db.batch('migrate:bootstrap', [\n",
+        "        await this.db.batch('migrate:bootstrapped', [\n",
+        "a store sends SQL text under a label that scripts/text-statements.json does not list",
+    ),
+    (
         "tree-clock-function-unixepoch",
         "packages/core/src/sql-tree.ts",
         "  'unixepoch',\n",
@@ -8006,6 +8013,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses a read of the fake clock row in a fragment",
         "mutation-verdict:construction:tree-clock-spelling-fake-clock-arm",
+    ),
+    "text-statement-list-holds-every-raw-batch": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/text-statements.test.ts",
+        "the statements a store sends as text are the raw batches of every store, read from its sources, and no others",
+        "mutation-verdict:behavior:text-statement-list-holds-every-raw-batch",
     ),
     "tree-clock-function-unixepoch": ExpectedVerdict(
         "construction",
@@ -16934,7 +16947,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 872:
+        if len(MUTATIONS) != 873:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

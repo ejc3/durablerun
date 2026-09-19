@@ -17,7 +17,7 @@ const LIST = JSON.parse(
 ) as { statements: Record<string, { shape: string; why: string; fence?: string }> }
 const LISTED = Object.keys(LIST.statements).sort()
 
-/** Sent only to a database with no schema yet, which no fixture hands out. The source case holds them. */
+/** Sent only to a database with no schema yet. The per-dialect case takes a migrated fixture, so the source case holds them. */
 const UNMIGRATED_ONLY = ['migrate:bootstrap', 'migrate:v*']
 
 describe('the statements a store sends as text', () => {
@@ -37,10 +37,13 @@ describe('the statements a store sends as text', () => {
         encoding: 'utf8',
       }),
     )
-    expect(Object.keys(harvested).length).toBeGreaterThanOrEqual(3)
     for (const [store, labels] of Object.entries(harvested)) {
-      expect(labels, `${store}'s text statements`).toEqual(LISTED)
+      expect(
+        { [store]: labels },
+        'mutation-verdict:behavior:text-statement-list-holds-every-raw-batch',
+      ).toEqual({ [store]: LISTED })
     }
+    expect(Object.keys(harvested).length).toBeGreaterThanOrEqual(3)
   })
 
   for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {

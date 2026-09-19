@@ -62,6 +62,16 @@ TEXT_STATEMENTS = json.loads(
     (Path(__file__).resolve().parent / "text-statements.json").read_text()
 )["statements"]
 
+SHAPES = ("read", "single-write", "token-fenced", "migration")
+for label, entry in TEXT_STATEMENTS.items():
+    where = f"batch-lint.py: scripts/text-statements.json: '{label}'"
+    if entry.get("shape") not in SHAPES:
+        sys.exit(f"{where} has shape {entry.get('shape')!r}; a shape is one of {', '.join(SHAPES)}")
+    if not str(entry.get("why", "")).strip():
+        sys.exit(f"{where} gives no reason it cannot be a tree")
+    if entry["shape"] == "token-fenced" and not str(entry.get("fence", "")).strip():
+        sys.exit(f"{where} is token-fenced and names no fence")
+
 
 def listed(shape: str) -> set[str]:
     return {label for label, entry in TEXT_STATEMENTS.items() if entry["shape"] == shape}
