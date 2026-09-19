@@ -9,6 +9,7 @@ const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
   postgres: [
     'packages/conformance/test/postgres-bootstrap-window.test.ts',
     'packages/store-postgres/test/query-plans.test.ts',
+    'packages/store-postgres/test/text-collation.test.ts',
   ],
   mysql: [
     'packages/store-mysql/test/real-server.test.ts',

@@ -3830,6 +3830,20 @@ MUTATION_SPECS = [
         "the schema-version read keeps a snapshot older than its name lookup and rejects a cold-start migrator",
     ),
     (
+        "postgres-text-column-keeps-database-collation",
+        "packages/store-postgres/src/schema.ts",
+        "        ALTER COLUMN checkpoint_name TYPE TEXT COLLATE \"C\",\n",
+        "",
+        "a text column keeps the collation of its database, so a caller's names come back in an order no other dialect returns",
+    ),
+    (
+        "postgres-collation-migration-rewrites-a-table",
+        "packages/store-postgres/src/schema.ts",
+        "        ALTER COLUMN owner_run_id TYPE TEXT COLLATE \"C\"`,\n",
+        "        ALTER COLUMN owner_run_id TYPE TEXT COLLATE \"C\" USING owner_run_id || ''`,\n",
+        "a migration rewrites a table, which a read batch's older snapshot then sees as empty",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9853,6 +9867,18 @@ VERDICTS = {
         "packages/store-postgres/test/executor.test.ts",
         "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
         "mutation-verdict:construction:postgres-version-read-isolation",
+    ),
+    "postgres-text-column-keeps-database-collation": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation declares the byte collation on every text column and every index key",
+        "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
+    ),
+    "postgres-collation-migration-rewrites-a-table": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation migrates without rewriting a table",
+        "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -17129,7 +17155,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 880:
+        if len(MUTATIONS) != 882:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

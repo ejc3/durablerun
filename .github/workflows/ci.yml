@@ -320,18 +320,15 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
-              # The invariant library gained a width condition, and the replay-equivalence
-              # harness and a fuzz walk each own one mutation of a hold: five mutations, under
-              # four verdict markers that are newer than this registry. Nothing is re-aimed:
-              # every find of this registry still occurs exactly once in this tree. The arm is
-              # keyed on main's registry as of the merge of PR4.4c, whose own arm it
-              # replaces.
+          if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
+              # PostgreSQL's schema gained a version that declares the byte collation on
+              # every text column, and a server test reads the catalog to hold it: no text
+              # column or index key keeps its database's collation, and no migration
+              # rewrites a table. Its two mutations are newer than the base registry, so
+              # their verdict markers are exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:identifier-over-width-read-in-every-column',
-                  'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
-                  'mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call',
-                  'mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width',
+                  "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
+                  "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
