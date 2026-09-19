@@ -31,18 +31,125 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+## Current milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
 
-**Status: COMPLETE once PR3.9f part 2 merges (named 2026-09-16): main and that
-pull request together meet every exit test below. Pause after its green merge
-until the maintainer names the next milestone.** The maintainer named six items, in
+**Status: IN PROGRESS (named 2026-09-19).** The maintainer asked for every
+tractable follow-up that the reviews of the milestone named on 2026-09-16
+deferred or recorded as an option. Tractable means the repository and a
+development machine are enough: no account, secret, or decision that only the
+maintainer has. Each item lands as its own PR, and one PR merges at a time.
+AGENTS.md asks for one implementation PR in flight. The maintainer asked for the
+whole list at once, so follow-ups that do not depend on each other are built
+ahead of their turn, and each rebases onto the ones that merged before it. Three
+orders are fixed: PR4.4e merges after PR4.4a, PR4.4d merges before PR4.4b so
+that `migrate()` is rewritten once against hoisted pieces, and PR4.4b merges
+after PR3.3b because both change `SqlBatchControl`. PR4.4a and PR4.4c both
+change the two server executors, so the second of them to merge rebases onto
+the first. The list below is the first ten. A follow-up planned later adds its
+exit test here, as the next numbered line, in the PR that builds it. Each PR
+also takes its own bullets out from under the merged entry that holds them, and
+a last docs PR gives a live owner to every open bullet that is left.
+
+**Exit test:**
+
+1. PR4.5b: the SDK's replay-equivalence harness draws, for every keyed call it
+   generates, a name at its room, one under, and one past, with each room
+   computed from core's constants. One registered mutation that removes the
+   SDK's hold on a derived key names the harness as the test that catches it,
+   so the audit keeps checking that the harness can fail. The invariant
+   library holds every identifier column of a snapshot to the width of a
+   durable identifier: it reports the over-width rows `legacy-rows.test.ts`
+   plants and nothing else there, and a walk fails when a store entry's width
+   check is removed.
+2. PR4.4a: on MySQL and PostgreSQL a batch of one statement that carries no
+   lock is sent alone, in one round trip, when the executor can show that what
+   the transaction gave still holds. Any other batch keeps its transaction, and
+   the server still refuses a write sent as a read. The counts are pinned
+   against a real server on both dialects. The claim's
+   `FORCE INDEX (runs_poll)` legs have a plan test, with rows in the table,
+   that fails when the hint is removed from a leg.
+3. PR3.3b: the lines that take the event lock leave the dialect stores. Core
+   takes it, refuses a batch that adds a completion event without it where that
+   batch is built, and decides once whether a batch that ends no task needs it.
+   A tree rule refuses a statement that writes a terminal `tasks.state` unless
+   its batch carries the completion event's follow-on, and the rule reads a
+   declared node or field, not a fragment's text. `awaitTaskDone`'s engine
+   logic, the same 43 lines in each store today, and the `taskDoneState`
+   decoder exist once, in core.
+4. PR4.4c: a conformance surface generated from the store's two ports runs
+   every call concurrently with itself on libSQL, PostgreSQL, and MySQL, the
+   admin's `migrate()` included, and it fails when the fix for the transition
+   PR4.3's review found is reverted. Pairs of different calls stay with the
+   fuzz, the fault matrix, and the lock-order test. PR #50's transition was two
+   cold-start migrators, and the committed eight-migrator case passed five runs
+   of five with that defect in place, so the PR records how often the surface
+   sees it. Each server executor counts the deadlock victims it retries, and
+   the count is held at zero in that surface and in the real-concurrency cases
+   on PostgreSQL and on MySQL, apart from the one MySQL contest exit test 8
+   names. The fuzz runs on libSQL with one caller, so a hold there could not
+   fail and is not claimed. The surface costs seconds a dialect, measured, and
+   the `verify` job's limit still meets the three-times rule of the PR3.13
+   entry.
+5. PR4.4b: a migration write carries the migration lock in `SqlBatchControl` as
+   a lock coordinate, and the MySQL executor refuses a migration write that
+   comes without it, so a new `migrate:` label cannot run DDL unlocked the way
+   the label match allows today. A test on MySQL builds a version that was half
+   applied, some of its statements run and its version row absent, runs
+   `migrate()` again, and holds the schema and the version: no test has that
+   case. On MySQL `migrate()` crosses the four empty versions with one version
+   read and one locked batch, where today each costs a read and the lock, and
+   the counts are pinned.
+6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
+   the test id source, the admin's version read and versioned write, the
+   fixture's corruption-table switch, and the stores' dialect-free
+   declarations. The PR lists the declarations it moved.
+7. PR3.14b: the three statements of `claim` that select their source rows by
+   queue and state are measured on libSQL beside 100, 1,000, 10,000, and 40,000
+   running runs of the claim's queue. Either they are keyed, and the three
+   `claim` entries of `EXCUSED_SOURCE_WALKS` in
+   `store-libsql/test/query-plans.test.ts` are deleted, or the table is
+   recorded with the reason a key is not worth its cost to every write.
+8. PR4.4e: on MySQL a keyed write takes its key on a table of any size. Inside
+   a claim's own batch on a four-row `runs` table the update holds a record
+   lock on the rows it claims and on no other row, and the concurrent-claim
+   contest of PR4.4c's surface meets no deadlock victim. That surface found the
+   defect: at five rows or fewer the claim's update scans `runs` and locks
+   every row, so concurrent claimers deadlock.
+9. PR3.4b: `rollback_error` names the rollback that failed when a cancellation
+   follows a failed attempt that had budget left, held by a case on three
+   dialects that was committed failing. Saga reads on libSQL and MySQL are
+   ranges the checkpoint key serves, and their plan pins refuse the walk.
+   PostgreSQL keeps the walk, which is keyed by task, because a range over a
+   name is not sound under a linguistic collation. The hosted inspect route
+   shows the rollback outcome.
+10. PR3.10a: the attestation refuses a postmortem that the pull request adds
+    when a commit it cites as a red or a green does not resolve, is not an
+    ancestor of the head, is the same commit as its pair, or, for a red, is
+    not an ancestor of its green. A postmortem that cites the copy of a commit
+    from before a rebase is refused.
+
+**Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
+dropping the row lock of a caller's event, which needs a stated oldest build;
+work this plan records as an option that is not scheduled or not planned, or as
+rejected, which are the maintainer's choices; an option whose stated trigger has
+not fired, active-wait identity (PR3.8) among them; the condition-mutation
+ratchet's generated mutations (PR3.10); operations and sharding (Phase 5);
+dedicated placement (Phase 6); and the cloudification PRs.
+
+## Completed milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+
+**Status: COMPLETE (named 2026-09-16, complete 2026-09-19).** PR3.9f part 2
+merged as PR #59, and `ci` passed on the merge commit `5b203f4` in
+[run 35441588376](https://github.com/ejc3/durablerun/actions/runs/35441588376).
+Main meets every exit test below. The maintainer named six items, in
 this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
 PR3.9 ends with PR3.9f, which the review of PR3.9e part 3c added: exit test 3
 needs it, so it is the last part of PR3.9 and not a seventh item.
-Each lands as its own PR, and only one implementation PR is in flight at a time.
-PR3.9 lands before the new batches, so child tasks, sagas, and the MySQL store
-write their SQL as trees once. PR4.3 lands last, so the third dialect
-implements the finished surface once.
+The plan was one implementation PR in flight at a time, with PR3.9 ahead of the
+new batches and PR4.3 last. It did not go that way. PR4.3 merged as PR #51 on
+2026-09-18, ahead of child tasks (PR #49) and sagas (PR #56), so each of those
+PRs ported its own surface to MySQL. Several PRs were open at once, and they
+merged one at a time.
 
 **Exit test:**
 
@@ -1079,7 +1186,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     also list `fake_now_ms`, so a fragment that reads the fake clock's row is
     refused where the statement is built as well as by the lint. The registry
     holds 873 mutations. The two options that were not built are in the
-    current milestone's options backlog.
+    options backlog of the milestone that ended on 2026-09-19.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
@@ -1449,7 +1556,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   task whose saga began, and an infrastructure cap rolls back. A saga's state
   is checkpoints under reserved names, so there is no migration. One batch
   label is new, `fail-rollback`, with its own port method, and DESIGN.md
-  §3.10 maps each action of the model to its batch. Exit test item 5 is held
+  §3.10 maps each action of the model to its batch. Exit test item 5 of the
+  milestone named on 2026-09-16 is held
   on libSQL and PostgreSQL by the `sagas` conformance surface, 18 cases on
   each dialect, and by the SDK's saga suite, 14 cases on each dialect, which
   runs through a PostgreSQL twin of the SDK's test harness. Each owed twin,
@@ -1939,7 +2047,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     converged in 3200 of 3200 runs, and the eight-migrator and lost-bootstrap
     schema/admin cases both passed in 120 repeated runs.
 - **PR4.4 store-mysql follow-ups**: what the PR4.3 review found that the
-  milestone does not need, none of it a correctness hole today.
+  milestone of 2026-09-16 did not need, none of it a correctness hole then. The
+  follow-ups milestone builds them.
   - Deferred from PR4.3: the migration lock is chosen by the batch label
     (`migrate:bootstrap` or `migrate:vN`), spelled in the executor, the admin,
     and `batch-lint.py`, where the event and claim locks travel in
