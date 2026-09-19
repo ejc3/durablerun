@@ -13,6 +13,8 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # 18 to 30 minutes across recent runs. Twice the slowest, so a hung test run does not hold a runner for the six hour default.
+    timeout-minutes: 60
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # The dialects this job has servers for. MySQL runs the same suite in its
@@ -166,6 +168,8 @@ jobs:
   base-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # Three to five and a half minutes across recent runs. Its longest step is main's registry self-test over the head tree.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
