@@ -1,4 +1,13 @@
-import { type Clock, type SchedulerStore, parseTaskValueJson, systemClock } from '@durablerun/core'
+import {
+  type Clock,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  type SchedulerStore,
+  encodeRollbackTry,
+  parseTaskValueJson,
+  systemClock,
+} from '@durablerun/core'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -227,6 +236,79 @@ describe('hosted-alpha Web Request router', () => {
         taskId: spawned.taskId,
         state: 'cancelled',
         failure: { name: '$Cancelled' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('shows how the saga ended when inspecting a task that rolled back', async () => {
+    const f = await fixture('hosted-inspect-rollback')
+    try {
+      const claimed = async (worker: string) => {
+        const [run] = await f.store.claim(Q, worker, { leaseSeconds: 60, limit: 1 })
+        if (run === undefined) throw new Error(`nothing to claim for ${worker}`)
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        return run
+      }
+      const CAUSE = '{"name":"CardDeclined"}'
+      /** A task whose one registered step started, and whose failure placed a rollback pass. */
+      const rollingBack = async () => {
+        const spawned = await f.store.spawn(Q, 'saga', '{}')
+        const forward = await claimed('forward')
+        await f.store.setCheckpoint(
+          Q,
+          forward.taskId,
+          forward.runId,
+          forward.claimToken,
+          `${SAGA_STARTED_PREFIX}charge`,
+          '1',
+          60,
+        )
+        await expect(
+          f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null),
+        ).resolves.toEqual({ rollingBack: true })
+        return { taskId: spawned.taskId, pass: await claimed('pass') }
+      }
+      const inspect = async (taskId: string) => {
+        const inspected = await f.router.handle(
+          request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
+        )
+        expect(inspected.status).toBe(200)
+        return responseBody(inspected)
+      }
+      const rolledBack = await rollingBack()
+      await f.store.setCheckpoint(
+        Q,
+        rolledBack.taskId,
+        rolledBack.pass.runId,
+        rolledBack.pass.claimToken,
+        `${SAGA_ROLLBACK_PREFIX}charge`,
+        'null',
+        60,
+      )
+      await f.store.fail(Q, rolledBack.pass.runId, rolledBack.pass.claimToken, CAUSE, null)
+      const halted = await rollingBack()
+      await f.store.failRollback(Q, halted.pass.runId, halted.pass.claimToken, CAUSE, null, {
+        key: `${SAGA_TRIES_PREFIX}charge`,
+        stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RefundDown"}' }),
+      })
+      expect({
+        rolledBack: await inspect(rolledBack.taskId),
+        halted: await inspect(halted.taskId),
+      }).toEqual({
+        rolledBack: {
+          taskId: rolledBack.taskId,
+          state: 'failed',
+          failure: { name: 'CardDeclined' },
+          rollback: { outcome: 'complete' },
+        },
+        halted: {
+          taskId: halted.taskId,
+          state: 'failed',
+          failure: { name: 'CardDeclined' },
+          rollback: { outcome: 'failed', error: { name: 'RefundDown' } },
+        },
       })
     } finally {
       f.close()
