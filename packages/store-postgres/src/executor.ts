@@ -10,6 +10,7 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -209,8 +210,9 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
   )
 }
 
-// A read batch is one REPEATABLE READ snapshot. The canonical schema-version read is the
-// exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
+// A read batch is one REPEATABLE READ snapshot, unless it is one read the executor knows
+// to be a read, which is sent alone (`sentAlone`). The canonical schema-version read is
+// the other exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
 // takes its snapshot before the statement does that, so the read could see a concurrent
 // bootstrap's meta table and not the version row committed with it. READ COMMITTED takes
 // the execution snapshot after the lookup, and one statement needs no snapshot held
@@ -219,41 +221,32 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
 const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
 
-const BEGINS_WITH_SELECT = /^\s*SELECT\b/i
-const NAMES_INTO = /\bINTO\b/i
-
 /**
  * Whether a batch is sent as its one statement alone, outside a transaction block, where
- * PostgreSQL runs it in a transaction of its own. It is as atomic as the batch was, in
- * one round trip where the transaction cost three. What the transaction gave a batch of
- * one statement still holds:
- * - A read batch's snapshot. One statement reads through one snapshot, its subqueries
- *   included, at any isolation level.
- * - A read batch's READ ONLY, under which the server refuses a write. A statement that
- *   begins with SELECT writes nothing unless it names INTO, which creates a table: one
- *   that changes rows from inside a query must begin with WITH, and this schema installs
- *   no function for a query to call. Any other statement sent as a read keeps the
- *   read-only transaction.
- * - The schema-version read's READ COMMITTED. Alone it would run at the session's default
- *   level, which belongs to whoever owns the pool, so it keeps its transaction.
- * - A deadlock victim's second run. PostgreSQL aborts the victim's transaction, which for
- *   a statement sent alone is the statement. It committed nothing, so it is run again as
- *   any write batch is, with no ROLLBACK to send first.
- * A lock coordinate keeps the transaction too, because both kinds of lock end with it.
+ * PostgreSQL runs it in a transaction of its own, in one round trip where a read batch's
+ * transaction cost three.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar. How a statement's text begins shows nothing: a text that begins with SELECT can
+ * call `nextval`, and the simple query protocol runs `SELECT 1; DELETE ...` whole. A read
+ * sent as text therefore keeps the read-only transaction, where the server refuses every
+ * write. The schema-version read is text, so it keeps its transaction and the READ
+ * COMMITTED it needs.
+ *
+ * What the transaction gave such a read still holds: one statement reads through one
+ * snapshot, its subqueries included, at any isolation level. It runs at the session's
+ * default level, which belongs to whoever owns the pool.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * its result is refused, which the executor learns only after the server has run the
+ * statement, and a statement such as LOCK TABLE needs the block.
  */
-function sentAlone(
-  prepared: readonly PreparedStatement[],
-  mode: SqlBatchMode,
-  transactionLock: SqlTransactionLock | undefined,
-  schemaVersionRead: boolean,
-): boolean {
-  const [statement] = prepared
-  if (statement === undefined || prepared.length !== 1) return false
-  if (transactionLock !== undefined) return false
-  if (schemaVersionRead) return false
-  if (mode !== 'read') return true
-  if (NAMES_INTO.test(statement.sql)) return false
-  return BEGINS_WITH_SELECT.test(statement.sql)
+function sentAlone(statements: readonly SqlStatement[], mode: SqlBatchMode): boolean {
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return isTreeBuiltRead(statement)
 }
 
 function isSchemaVersionRead(
@@ -320,9 +313,9 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
  * SqlExecutor over node-postgres. Every batch owns one checked-out client. A batch of
  * more than one statement owns one transaction, so its statements are atomic, ordered,
  * and observe earlier statements from the same batch: a read batch in a repeatable-read,
- * read-only snapshot, a write batch at PostgreSQL's read-committed default. A batch of
- * one statement is sent alone, because one statement is atomic and reads one snapshot by
- * itself (`sentAlone`).
+ * read-only snapshot, a write batch at PostgreSQL's read-committed default. One read
+ * that the executor knows to be a read is sent alone, because one statement reads one
+ * snapshot by itself (`sentAlone`).
  */
 export class PgExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
@@ -362,7 +355,7 @@ export class PgExecutor implements SqlExecutor {
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
-    const alone = sentAlone(prepared, mode, transactionLock, schemaVersionRead)
+    const alone = sentAlone(statements, mode)
 
     let client: PoolClient
     try {

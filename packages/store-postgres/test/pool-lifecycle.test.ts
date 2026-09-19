@@ -15,13 +15,14 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
 
 class EmittingClient extends EventEmitter {
   readonly releases: (Error | boolean | undefined)[] = []
-  readonly queryStarted = deferred()
-  readonly allowQuery = deferred()
+  readonly beginStarted = deferred()
+  readonly allowBegin = deferred()
 
-  /** Holds the first query open. A batch of one statement sends no BEGIN ahead of it. */
-  async query() {
-    this.queryStarted.resolve()
-    await this.allowQuery.promise
+  async query(text: string) {
+    if (text === 'BEGIN') {
+      this.beginStarted.resolve()
+      await this.allowBegin.promise
+    }
     return EMPTY_RESULT
   }
 
@@ -55,13 +56,13 @@ describe('PgExecutor owned-pool lifecycle', () => {
     const client = new EmittingClient()
     const db = PgExecutor.fromPool(new EmittingPool(client) as unknown as Pool)
     const outcome = db.batch('active-error', [{ sql: 'SELECT 1', args: [] }])
-    await client.queryStarted.promise
+    await client.beginStarted.promise
 
     const error = new Error('simulated active disconnect')
     try {
       expect(() => client.emit('error', error)).not.toThrow()
     } finally {
-      client.allowQuery.resolve()
+      client.allowBegin.resolve()
       await outcome
     }
 

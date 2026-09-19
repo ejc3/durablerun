@@ -327,8 +327,8 @@ jobs:
               new_start, new_end = span(candidate)
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == '9f60ddc67ba6ec9fb277cc221f03bdcd395b7314b948ca222ee67d61432ed5db':
-              # A batch of one statement is sent alone on MySQL and PostgreSQL. The MySQL
-              # executor's own transaction for the schema-version read is gone with that,
+              # One read the executor knows to be a read is sent alone on MySQL and PostgreSQL.
+              # The MySQL executor's own transaction for the schema-version read is gone with that,
               # because one statement sent alone under the session's READ COMMITTED is what
               # the read needed. The base entry that mutated the line choosing that
               # transaction is re-aimed at the rule, and its mutant is the one it was: the
@@ -337,16 +337,16 @@ jobs:
               # markers are exempted.
               repaired = reaim_spec(previous, candidate, 'mysql-version-read-is-read-committed')
               repaired = exempt(repaired, candidate, (
+                  "mutation-verdict:construction:core-read-brand-marks-reads-alone",
                   "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
-                  "mutation-verdict:construction:mysql-lone-statement-carries-no-lock",
-                  "mutation-verdict:behavior:mysql-lone-read-begins-with-select",
-                  "mutation-verdict:behavior:mysql-lone-write-binds-no-trailing-space",
+                  "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
+                  "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
+                  "mutation-verdict:construction:mysql-session-autocommit-on",
                   "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
                   "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
                   "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
-                  "mutation-verdict:construction:postgres-lone-statement-carries-no-lock",
-                  "mutation-verdict:behavior:postgres-lone-read-begins-with-select",
-                  "mutation-verdict:behavior:postgres-lone-read-names-no-into",
+                  "mutation-verdict:behavior:postgres-lone-statement-is-a-read",
+                  "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

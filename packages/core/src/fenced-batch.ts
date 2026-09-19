@@ -124,6 +124,22 @@ export function isTreeBuiltStatement(statement: unknown): boolean {
   return typeof statement === 'object' && statement !== null && weakSetHas(treeBuilt, statement)
 }
 
+/** The statements a `FencedBatch` compiled from trees as reads, by identity. */
+const treeBuiltReads = new TrustedWeakSet<object>()
+
+/**
+ * Whether a `FencedBatch` compiled this statement from a tree AS A READ: through `readTree`
+ * or `readPrepared`, which refuse a root that is not a SELECT, inside a grammar whose
+ * functions are a closed list. It is asked of the statement an executor receives, and it
+ * is how an executor can know that a statement writes nothing, where a statement's text
+ * can only be guessed at.
+ */
+export function isTreeBuiltRead(statement: unknown): boolean {
+  return (
+    typeof statement === 'object' && statement !== null && weakSetHas(treeBuiltReads, statement)
+  )
+}
+
 /** True only for an authentic compiler bind failure from this module. */
 export function isFencedBatchBindError(value: unknown): value is TypeError {
   return (
@@ -713,6 +729,7 @@ export class FencedBatch {
     // Counted last, so a read refused above leaves no clock read behind.
     this.countClockRead(at, name, drift, shape.readsClock)
     weakSetAdd(treeBuilt, compiled)
+    weakSetAdd(treeBuiltReads, compiled)
     this.statements.push({ name, kind: 'tail', fence: null, atMost: null, compiled })
     this.reads.push(name)
     return this
@@ -1035,6 +1052,7 @@ export class FencedBatch {
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
     }
     weakSetAdd(treeBuilt, held.compiled)
+    if (reading) weakSetAdd(treeBuiltReads, held.compiled)
     this.statements.push(held)
     if (reading) this.reads.push(name)
     return this

@@ -1,4 +1,4 @@
-import type { SqlStatement } from '@durablerun/core'
+import type { SqlBatchControl, SqlStatement } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import { describeFailure } from '../src/scenario.js'
 import { makePostgresFixture } from './fixture-postgres.js'
@@ -35,17 +35,31 @@ const waitUntil = (what: string, predicate: string): SqlStatement => ({
 })
 const VERSION_BEHIND_THE_GATE = `SELECT m.value FROM gate g, meta m WHERE m.key = 'schema_version'`
 
-// Each case names its level inside the transaction. The executor sends a batch of one
-// statement alone, at the session's level, so a read batch of one is no way to ask for
-// REPEATABLE READ.
 it.each([
-  { isolation: 'REPEATABLE READ', sees: 'the table and no row', rows: [] },
-  { isolation: 'READ COMMITTED', sees: 'the row', rows: [{ value: '0' }] },
-])(
+  {
+    isolation: 'REPEATABLE READ',
+    sees: 'the table and no row',
+    control: 'read',
+    begin: [],
+    rows: [],
+  },
+  {
+    isolation: 'READ COMMITTED',
+    sees: 'the row',
+    control: 'write',
+    begin: [{ sql: 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY', args: [] }],
+    rows: [{ value: '0' }],
+  },
+] satisfies {
+  isolation: string
+  sees: string
+  control: SqlBatchControl
+  begin: SqlStatement[]
+  rows: unknown[]
+}[])(
   'under $isolation, one statement that races a bootstrap commit sees $sees',
-  async ({ isolation, rows }) => {
-    const level = isolation.toLowerCase().replace(' ', '-')
-    const fixture = await makePostgresFixture(`bootstrap-window-${level}`, { migrate: false })
+  async ({ control, begin, rows }) => {
+    const fixture = await makePostgresFixture(`bootstrap-window-${control}`, { migrate: false })
     try {
       await fixture.raw.batch('fixture:gate', [
         { sql: 'CREATE TABLE gate (x INTEGER NOT NULL)', args: [] },
@@ -70,10 +84,11 @@ it.each([
       }
       const [committed, read] = await Promise.allSettled([
         bootstrap,
-        fixture.raw.batch('fixture:one-statement-across-the-commit', [
-          { sql: `SET TRANSACTION ISOLATION LEVEL ${isolation}, READ ONLY`, args: [] },
-          { sql: VERSION_BEHIND_THE_GATE, args: [] },
-        ]),
+        fixture.raw.batch(
+          'fixture:one-statement-across-the-commit',
+          [...begin, { sql: VERSION_BEHIND_THE_GATE, args: [] }],
+          control,
+        ),
       ])
       expect({
         gateHeldFirst: held,

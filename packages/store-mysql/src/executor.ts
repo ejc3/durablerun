@@ -10,6 +10,7 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -82,8 +83,9 @@ class MysqlResultContractError extends TypeError {}
  *   truncation, whatever the server's default is. Backslash escapes stay on.
  * - UTC, English server messages, because the affected-row normalization reads the
  *   server's `Rows matched:` line.
- * - Autocommit on. It is the server's default, and a batch of one statement depends on
- *   it: the statement is sent alone, and the server commits it (`sentAlone`).
+ * - Autocommit on. It is the server's default, and a read sent alone depends on it
+ *   (`sentAlone`): with autocommit off, the read would open a transaction that stays open
+ *   on a pooled connection.
  */
 const SESSION_SETUP = `SET SESSION
   autocommit = 1,
@@ -333,49 +335,47 @@ async function refuseWriteCutToFit(
   }
 }
 
-const BEGINS_WITH_SELECT = /^\s*SELECT\b/i
-const endsInASpace = (argument: PreparedStatement['args'][number]): boolean =>
-  typeof argument === 'string' && argument.endsWith(' ')
-
 /**
  * Whether a batch is sent as its one statement alone, with no transaction around it. The
- * session has autocommit on, so the server commits the statement by itself. It is as
- * atomic as the batch was, in one round trip where the transaction cost three, and four
- * for a read. What the transaction gave a batch of one statement still holds:
- * - A read batch's snapshot. One statement reads through one view under READ COMMITTED,
- *   its subqueries included. The schema-version read is such a statement, and has to be:
- *   a snapshot taken ahead of it is older than a table created since, and MySQL refuses
- *   to read such a table (error 1412). Measured over 250 cold starts with six racing
- *   readers: 1500 such refusals under a snapshot, and none for one statement under READ
- *   COMMITTED, which sees either no table or the table with its row.
- * - A read batch's READ ONLY, under which the server refuses a write. A statement that
- *   begins with SELECT writes no row in MySQL, and this schema installs no stored routine
- *   for one to call. Any other statement sent as a read keeps the read-only transaction.
- * - A write's rollback when MySQL cut a value to fit (`refuseWriteCutToFit`). Alone, the
- *   statement has committed before its warning count arrives. Only trailing spaces are
- *   cut with a note, so a write whose bound strings do not end in one cannot have a bound
- *   value cut, and any other keeps its transaction. No single write of the store stores
- *   a string it builds in SQL. A cut of one would still be reported, after it committed.
- * - A deadlock victim's second run. InnoDB rolls the victim's transaction back, which for
- *   a statement sent alone is the statement. It committed nothing, so it is run again as
- *   any write batch is, with no ROLLBACK to send first.
- * A lock coordinate keeps the transaction as well.
+ * session has autocommit on, so the server commits the statement by itself, in one round
+ * trip where a read batch's transaction cost four.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar, or the canonical schema-version read, which is matched by its whole text. How a
+ * statement's text begins shows nothing, because a text that begins with SELECT can still
+ * call what writes. A read sent as text therefore keeps the read-only transaction, where
+ * the server refuses every write.
+ *
+ * What the transaction gave such a read still holds. One statement reads through one view
+ * under READ COMMITTED, its subqueries included. The schema-version read has to be such a
+ * statement: a snapshot taken ahead of it is older than a table created since, and MySQL
+ * refuses to read such a table (error 1412). Measured over 250 cold starts with six racing
+ * readers: 1500 such refusals under a snapshot, and none for one statement under READ
+ * COMMITTED, which sees either no table or the table with its row.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * MySQL cut a value to fit (`refuseWriteCutToFit`) or when its result is refused, and the
+ * executor learns of either only after the server has run the statement. Nothing about a
+ * statement's text or binds shows that neither will happen: MySQL cuts a trailing tab or
+ * line break as it cuts a space, in a bind sent as bytes or a literal in the text as in a
+ * bound string.
  */
 function sentAlone(
-  prepared: readonly PreparedStatement[],
+  statements: readonly SqlStatement[],
   mode: SqlBatchMode,
-  lock: LockCoordinates | null,
+  schemaVersionRead: boolean,
 ): boolean {
-  const [statement] = prepared
-  if (statement === undefined || prepared.length !== 1) return false
-  if (lock !== null) return false
-  if (mode === 'read') return BEGINS_WITH_SELECT.test(statement.sql)
-  return !statement.args.some(endsInASpace)
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return schemaVersionRead || isTreeBuiltRead(statement)
 }
 
 /**
  * The canonical version read, for which a missing table means a database with no schema
- * yet. It is one statement that begins with SELECT, so it is sent alone.
+ * yet. It is matched by its whole text, so the executor knows it for a read and sends it
+ * alone.
  */
 function isSchemaVersionRead(
   label: string,
@@ -449,8 +449,8 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
  * SqlExecutor over mysql2. Every batch owns one connection. A batch of more than one
  * statement owns one transaction, so its statements are ordered, atomic, and observe
  * earlier statements of the same batch: a write batch at READ COMMITTED, a read batch
- * in a read-only consistent snapshot. A batch of one statement is sent alone, because
- * one statement is atomic and reads one view by itself (`sentAlone`).
+ * in a read-only consistent snapshot. One read that the executor knows to be a read is
+ * sent alone, because one statement reads one view by itself (`sentAlone`).
  *
  * Statements that carry arguments go through the server's prepared-statement protocol,
  * so a bind is data and never SQL text.
@@ -552,7 +552,8 @@ export class MysqlExecutor implements SqlExecutor {
         await connection.query(SESSION_SETUP)
         this.configured.add(physical)
       }
-      return await this.transact(connection, prepared, mode, lock)
+      const alone = sentAlone(statements, mode, schemaVersionRead)
+      return await this.transact(connection, prepared, mode, lock, alone)
     } catch (error) {
       discard = !(error instanceof MysqlResultContractError) && errorNumber(error) === undefined
       throw classifyError(error, label, schemaVersionRead)
@@ -567,8 +568,8 @@ export class MysqlExecutor implements SqlExecutor {
     prepared: readonly PreparedStatement[],
     mode: SqlBatchMode,
     lock: LockCoordinates | null,
+    alone: boolean,
   ): Promise<SqlResult[]> {
-    const alone = sentAlone(prepared, mode, lock)
     let locked = false
     try {
       if (lock !== null) {

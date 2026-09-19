@@ -14,7 +14,7 @@ import { openMysqlTestDb } from '../src/testing.js'
  * sends it, so the one extra trip that prepares a statement the first time a connection
  * sees it is left out, as it is from the cost of every later call.
  */
-it('sends one query for a batch of one statement, and a pinned number for every other shape', async () => {
+it('sends one query for a read that core built, and a pinned number for every other shape', async () => {
   const url = process.env.DURABLERUN_MYSQL_URL
   if (!url) throw new Error('DURABLERUN_MYSQL_URL is required, as it is for the conformance suite')
   const fixture = await openMysqlTestDb({ idNamespace: 'round-trips', nowMs: 1_000_000 })
@@ -75,24 +75,10 @@ it('sends one query for a batch of one statement, and a pinned number for every 
       store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'step', '{}', 60),
     )
     const expire = await measure(() => store.expireLeaseNow(Q, run.runId, run.claimToken))
-    // The same write in a queue whose name ends in a space. MySQL cuts trailing spaces
-    // past a column's width with a note, which the executor refuses, and a refusal can
-    // only precede the commit inside a transaction.
-    const padded = 'padded '
-    await store.spawn(padded, 'job', '{}')
-    const paddedRun = await claimed(padded, 'w3')
-    await store.activate(padded, paddedRun.runId, paddedRun.claimToken, paddedRun.claimGen)
-    const expirePadded = await measure(() =>
-      store.expireLeaseNow(padded, paddedRun.runId, paddedRun.claimToken),
-    )
-    // A read the executor cannot prove is a SELECT keeps the read-only transaction, in
-    // which the server refuses a write. A lock coordinate keeps the transaction too.
-    const unprovenRead = await measure(() =>
-      db.batch(
-        'fixture:unproven-read',
-        [{ sql: 'WITH one AS (SELECT 1 AS n) SELECT n FROM one', args: [] }],
-        'read',
-      ),
+    // A read sent as text is one the executor cannot know for a read, so it keeps the
+    // read-only transaction, in which the server refuses a write.
+    const textRead = await measure(() =>
+      db.batch('fixture:text-read', [{ sql: 'SELECT 1 AS n', args: [] }], 'read'),
     )
     const lockedWrite = await measure(() =>
       db.batch(
@@ -108,8 +94,7 @@ it('sends one query for a batch of one statement, and a pinned number for every 
       'task-result, a read of one statement': taskResult,
       'the sweep scan with nothing due, a read of two statements': scanNothingDue,
       'expire-lease-now, a single write': expire,
-      'expire-lease-now, where a bound string ends in a space': expirePadded,
-      'a read that does not begin with SELECT': unprovenRead,
+      'a read of one statement sent as text': textRead,
       'a single write under a lock coordinate': lockedWrite,
       'claim, a locked batch': claim,
       'activate, a fenced batch': activate,
@@ -122,10 +107,9 @@ it('sends one query for a batch of one statement, and a pinned number for every 
       'task-result, a read of one statement': 1,
       // SET TRANSACTION, START TRANSACTION, the two reads, and COMMIT.
       'the sweep scan with nothing due, a read of two statements': 5,
-      'expire-lease-now, a single write': 1,
-      // START TRANSACTION, the write, and COMMIT.
-      'expire-lease-now, where a bound string ends in a space': 3,
-      'a read that does not begin with SELECT': 4,
+      // START TRANSACTION, the write, and COMMIT: a write always keeps its transaction.
+      'expire-lease-now, a single write': 3,
+      'a read of one statement sent as text': 4,
       // The named lock, START TRANSACTION, the write, COMMIT, and the release.
       'a single write under a lock coordinate': 5,
       // The named lock, START TRANSACTION, four statements that were not skipped, COMMIT,

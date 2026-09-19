@@ -1,8 +1,9 @@
-import { StoreUnavailableError } from '@durablerun/core'
+import { FencedBatch, StoreUnavailableError, prepareRead, refusalStateRead } from '@durablerun/core'
 import type { FieldPacket, Pool } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
+import { TREE_DIALECT } from '../src/tree.js'
 
 const OK = [{ affectedRows: 0, info: '' }, undefined] as const
 const rows = (values: Record<string, unknown>[], name: string) =>
@@ -73,6 +74,21 @@ function executorOver(connection: FakeConnection): MysqlExecutor {
 const afterSessionSetup = (connection: FakeConnection) =>
   connection.sent.filter((sql) => !sql.startsWith('SET SESSION'))
 
+const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+  refusalStateRead(binds),
+)
+
+/** Reads as core's read path builds them, the one kind of statement an executor knows for a read. */
+function readsFromCore(...names: string[]): FencedBatch {
+  const batch = new FencedBatch('reads', 'seed', { now: 'CLOCK', tree: TREE_DIALECT })
+  for (const name of names) batch.readPrepared(name, REFUSAL_STATE, { runId: name })
+  return batch
+}
+
+/** What was sent, with each read that core built named for what it is. */
+const namingReads = (sent: readonly string[]) =>
+  sent.map((sql) => (sql.startsWith('select `state` from `runs`') ? 'a read core built' : sql))
+
 describe('MysqlExecutor transactions', () => {
   it('reads the schema version under READ COMMITTED, with no snapshot taken ahead of the statement', async () => {
     const connection = new FakeConnection()
@@ -85,69 +101,62 @@ describe('MysqlExecutor transactions', () => {
     expect(
       afterSessionSetup(connection),
       'mutation-verdict:construction:mysql-version-read-is-read-committed',
-      // Alone, under the session's READ COMMITTED. No transaction is begun, so nothing
-      // takes a snapshot ahead of the statement.
     ).toEqual([SCHEMA_VERSION_READ_SQL])
     expect(connection.released).toBe(1)
   })
 
-  it('sends a batch of one statement alone, with no transaction around it', async () => {
-    const read = new FakeConnection()
-    await executorOver(read).batch('next-wake', [{ sql: 'SELECT 1 AS value', args: [] }], 'read')
-    expect(afterSessionSetup(read)).toEqual(['SELECT 1 AS value'])
-    const write = new FakeConnection()
-    await executorOver(write).batch('fixture:write', [{ sql: 'UPDATE t SET a = ?', args: ['x'] }])
-    expect(afterSessionSetup(write)).toEqual(['UPDATE t SET a = ?'])
-    expect(read.released + write.released).toBe(2)
-  })
-
-  it('gives a read batch of more than one statement one consistent read-only snapshot', async () => {
+  it('gives every other read batch one consistent read-only snapshot', async () => {
     const connection = new FakeConnection()
     await executorOver(connection).batch(
-      'sweep:scan',
-      [
-        { sql: 'SELECT 1 AS value', args: [] },
-        { sql: 'SELECT 2 AS value', args: [] },
-      ],
+      'next-wake',
+      [{ sql: 'SELECT 1 AS value', args: [] }],
       'read',
     )
-    expect(
-      afterSessionSetup(connection),
-      'mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch',
-    ).toEqual([
+    expect(afterSessionSetup(connection)).toEqual([
       'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
       'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
       'SELECT 1 AS value',
-      'SELECT 2 AS value',
       'COMMIT',
     ])
   })
 
-  it('keeps the read-only transaction for a read that does not begin with SELECT', async () => {
-    // The server refuses a write inside it, which is what stands behind a statement the
-    // executor cannot prove is a SELECT.
-    for (const sql of [
-      "DELETE FROM meta WHERE `key` = 'a'",
-      'WITH one AS (SELECT 1 AS n) SELECT n FROM one',
-    ]) {
-      const connection = new FakeConnection()
-      await executorOver(connection).batch('fixture:read', [{ sql, args: [] }], 'read')
-      expect(afterSessionSetup(connection)).toEqual([
-        'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
-        'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
-        sql,
-        'COMMIT',
-      ])
-    }
+  it('sends a read that core built alone, with no transaction around it', async () => {
+    const connection = new FakeConnection()
+    await readsFromCore('first').run(executorOver(connection))
+    expect(namingReads(afterSessionSetup(connection))).toEqual(['a read core built'])
+    expect(connection.released).toBe(1)
   })
 
-  it('keeps the transaction for a single write whose bound string ends in a space', async () => {
-    // MySQL cuts trailing spaces past a column's width with a note, and the refusal of a
-    // cut write can only precede the commit inside a transaction.
+  it('gives two reads that core built one consistent read-only snapshot', async () => {
     const connection = new FakeConnection()
-    const sql = 'INSERT INTO meta (`key`, value) VALUES (?, ?)'
-    await executorOver(connection).batch('fixture:write', [{ sql, args: ['padded ', 'v'] }])
+    await readsFromCore('first', 'second').run(executorOver(connection))
+    expect(
+      namingReads(afterSessionSetup(connection)),
+      'mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch',
+    ).toEqual([
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+      'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
+      'a read core built',
+      'a read core built',
+      'COMMIT',
+    ])
+  })
+
+  it('keeps the transaction around a single write', async () => {
+    const connection = new FakeConnection()
+    const sql = 'UPDATE t SET a = ?'
+    await executorOver(connection).batch('fixture:write', [{ sql, args: ['x'] }])
     expect(afterSessionSetup(connection)).toEqual(['START TRANSACTION', sql, 'COMMIT'])
+  })
+
+  it('turns autocommit on with the session settings, which a read sent alone depends on', async () => {
+    // With autocommit off, a read sent alone would open a transaction that stays open on
+    // the pooled connection it returns.
+    const connection = new FakeConnection()
+    await readsFromCore('first').run(executorOver(connection))
+    expect(connection.sent[0], 'mutation-verdict:construction:mysql-session-autocommit-on').toMatch(
+      /^SET SESSION\s+autocommit = 1,/,
+    )
   })
 
   it('holds the migration lock from before a migration transaction until after it', async () => {
@@ -160,7 +169,6 @@ describe('MysqlExecutor transactions', () => {
       sent.map((sql) =>
         sql.includes('GET_LOCK') ? 'lock' : sql.includes('RELEASE_LOCK') ? 'unlock' : sql,
       ),
-      'mutation-verdict:construction:mysql-lone-statement-carries-no-lock',
     ).toEqual([
       'lock',
       'START TRANSACTION',
@@ -306,17 +314,6 @@ describe('MysqlExecutor transactions', () => {
         'COMMIT',
         'unlock',
       ])
-      expect(connection.released).toBe(1)
-    })
-
-    it('runs a statement sent alone again after a deadlock, with nothing to roll back', async () => {
-      const connection = new FakeConnection()
-      connection.failures.set(WRITE, { error: DEADLOCK, times: 1 })
-      const results = await executorOver(connection).batch('fixture:write', [
-        { sql: WRITE, args: [] },
-      ])
-      expect(results).toHaveLength(1)
-      expect(shape(connection)).toEqual([WRITE, WRITE])
       expect(connection.released).toBe(1)
     })
 

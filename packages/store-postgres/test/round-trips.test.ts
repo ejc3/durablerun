@@ -171,7 +171,7 @@ it('sends a pinned number of queries for each batch a saga touches, and for a he
  * outside a transaction block, and every other shape keeps its transaction. The
  * schema-version read keeps one as well, for its READ COMMITTED.
  */
-it('sends one query for a batch of one statement, and keeps a transaction for every other shape', async () => {
+it('sends one query for a read that core built, and keeps a transaction for every other shape', async () => {
   await counted('shapes', async ({ db, admin, store, measure }) => {
     const Q = 'q'
     const spawned = await store.spawn(Q, 'job', '{}')
@@ -183,12 +183,8 @@ it('sends one query for a batch of one statement, and keeps a transaction for ev
     if (!run) throw new Error('nothing to claim')
     await store.activate(Q, run.runId, run.claimToken, run.claimGen)
     const expire = await measure(() => store.expireLeaseNow(Q, run.runId, run.claimToken))
-    const unprovenRead = await measure(() =>
-      db.batch(
-        'fixture:unproven-read',
-        [{ sql: 'WITH one AS (SELECT 1 AS n) SELECT n FROM one', args: [] }],
-        'read',
-      ),
+    const textRead = await measure(() =>
+      db.batch('fixture:text-read', [{ sql: 'SELECT 1 AS n', args: [] }], 'read'),
     )
     const lockedWrite = await measure(() =>
       db.batch(
@@ -204,7 +200,7 @@ it('sends one query for a batch of one statement, and keeps a transaction for ev
       'task-result, a read of one statement': taskResult,
       'the sweep scan with nothing due, a read of two statements': scanNothingDue,
       'expire-lease-now, a single write': expire,
-      'a read that does not begin with SELECT': unprovenRead,
+      'a read of one statement sent as text': textRead,
       'a single write under a lock coordinate': lockedWrite,
     }).toEqual({
       // BEGIN at READ COMMITTED, the read, and COMMIT.
@@ -213,8 +209,10 @@ it('sends one query for a batch of one statement, and keeps a transaction for ev
       'task-result, a read of one statement': 1,
       // BEGIN, the two reads, and COMMIT.
       'the sweep scan with nothing due, a read of two statements': 4,
-      'expire-lease-now, a single write': 1,
-      'a read that does not begin with SELECT': 3,
+      // BEGIN, the write, and COMMIT: a write always keeps its transaction.
+      'expire-lease-now, a single write': 3,
+      // A read the executor cannot know for a read keeps the read-only transaction.
+      'a read of one statement sent as text': 3,
       // BEGIN, the advisory lock, the write, and COMMIT.
       'a single write under a lock coordinate': 4,
     })
@@ -222,9 +220,8 @@ it('sends one query for a batch of one statement, and keeps a transaction for ev
 }, 120_000)
 
 it('refuses a write sent as a read, whether it begins with DELETE or is a SELECT that names INTO', async () => {
-  // A read of one statement is sent alone only when it begins with SELECT and names no
-  // INTO. Anything else sent as a read keeps the read-only transaction, where the server
-  // refuses it.
+  // A read sent as text keeps the read-only transaction, where the server refuses a write,
+  // whatever the text begins with.
   const db = await openPostgresTestDb({ idNamespace: 'read-guard' })
   try {
     await db.raw.batch('fixture:seed', [
@@ -249,14 +246,14 @@ it('refuses a write sent as a read, whether it begins with DELETE or is a SELECT
       ],
       'read',
     )
-    expect(
-      { deleted, kept: after?.rows[0]?.kept },
-      'mutation-verdict:behavior:postgres-lone-read-begins-with-select',
-    ).toEqual({ deleted: 'refused by the server', kept: 1 })
-    expect(
-      { copied, copies: after?.rows[0]?.copies },
-      'mutation-verdict:behavior:postgres-lone-read-names-no-into',
-    ).toEqual({ copied: 'refused by the server', copies: 0 })
+    expect({ deleted, kept: after?.rows[0]?.kept }).toEqual({
+      deleted: 'refused by the server',
+      kept: 1,
+    })
+    expect({ copied, copies: after?.rows[0]?.copies }).toEqual({
+      copied: 'refused by the server',
+      copies: 0,
+    })
   } finally {
     await db.close()
   }
@@ -287,10 +284,10 @@ it('refuses a delete sent behind a select in one read, and keeps the row', async
       [{ sql: "SELECT COUNT(*) AS kept FROM meta WHERE key = 'kept'", args: [] }],
       'read',
     )
-    expect({ outcome, kept: after?.rows[0]?.kept }).toEqual({
-      outcome: 'refused by the server',
-      kept: 1,
-    })
+    expect(
+      { outcome, kept: after?.rows[0]?.kept },
+      'mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read',
+    ).toEqual({ outcome: 'refused by the server', kept: 1 })
   } finally {
     await db.close()
   }
@@ -318,10 +315,10 @@ it('rolls back a single write whose result it refuses', async () => {
       [{ sql: "SELECT value FROM meta WHERE key = 'kept'", args: [] }],
       'read',
     )
-    expect({ outcome, value: after?.rows[0]?.value }).toEqual({
-      outcome: 'refused',
-      value: 'before',
-    })
+    expect(
+      { outcome, value: after?.rows[0]?.value },
+      'mutation-verdict:behavior:postgres-lone-statement-is-a-read',
+    ).toEqual({ outcome: 'refused', value: 'before' })
   } finally {
     await db.close()
   }

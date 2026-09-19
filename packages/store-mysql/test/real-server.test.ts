@@ -415,8 +415,8 @@ describe('MysqlExecutor against a real server', () => {
   })
 
   it('runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read', async () => {
-    // A read of one statement is sent alone only when it begins with SELECT. Anything
-    // else sent as a read keeps the read-only transaction, where the server refuses it.
+    // A read is sent alone only when core's read path built it. A statement sent as a read
+    // in text keeps the read-only transaction, where the server refuses a write.
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
       const [write] = await db.raw.batch('fixture:isolation', [
@@ -443,39 +443,8 @@ describe('MysqlExecutor against a real server', () => {
       )
       expect(
         { outcome, kept: kept?.rows },
-        'mutation-verdict:behavior:mysql-lone-read-begins-with-select',
+        'mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read',
       ).toEqual({ outcome: 'refused by the server', kept: [{ n: 1 }] })
-    } finally {
-      await db.close()
-    }
-  })
-
-  it('refuses a single write MySQL would cut to fit its column, and writes nothing', async () => {
-    // Sent alone, a write has committed before its warning count arrives, so a write that
-    // binds a string ending in a space keeps its transaction, and the cut rolls back.
-    const db = await openMysqlTestDb({ idNamespace: 'cut-alone' })
-    try {
-      const outcome = await db.raw
-        .batch('fixture:cut-alone', [
-          {
-            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
-            args: [`${'k'.repeat(255)} `, 'v'],
-          },
-        ])
-        .then(
-          () => 'accepted',
-          (error: unknown) => error,
-        )
-      expect(outcome).toBeInstanceOf(InvalidDurableStringError)
-      const [rows] = await db.raw.batch(
-        'fixture:read',
-        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'v'", args: [] }],
-        'read',
-      )
-      expect(
-        rows?.rows,
-        'mutation-verdict:behavior:mysql-lone-write-binds-no-trailing-space',
-      ).toEqual([{ n: 0 }])
     } finally {
       await db.close()
     }
@@ -503,10 +472,10 @@ describe('MysqlExecutor against a real server', () => {
         [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'tabbed'", args: [] }],
         'read',
       )
-      expect({
-        refused: outcome instanceof InvalidDurableStringError,
-        stored: rows?.rows[0]?.n,
-      }).toEqual({ refused: true, stored: 0 })
+      expect(
+        { refused: outcome instanceof InvalidDurableStringError, stored: rows?.rows[0]?.n },
+        'mutation-verdict:behavior:mysql-lone-statement-is-a-read',
+      ).toEqual({ refused: true, stored: 0 })
     } finally {
       await db.close()
     }
