@@ -2561,10 +2561,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
   in any run. On a fresh database the version costs PostgreSQL 17 ms where
   opening and migrating a fixture took 27, about a minute over the 3,342
   fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
-  read and one more locked batch, 4 ms where it took 39, until PR4.4b crosses
-  the empty versions in one batch. libSQL showed no difference. Creating CI's
-  database with ICU cost the conformance leg nothing one run could show, 471
-  seconds against 465.
+  read and one more locked batch, 4 ms where it took 39. That cost is PR4.4b's
+  to remove: its exit test counts the four empty versions before this one, and
+  this is a fifth. libSQL showed no difference. Creating CI's database with ICU
+  cost the conformance leg nothing one run could show, 471 seconds against
+  465. With version 7 the leg took 554 and 556 seconds in one run and 609 and
+  612 in another, on a byte-ordered and an ICU server each time and under more
+  load than the runs before, so the fixture figure is the comparison to trust.
+  Eight migrators racing on a fresh schema took 36 to 51 ms where main took 23
+  to 41, and one round in ten took a second: version 7 is the first version to
+  lock `meta`, so two migrators can deadlock there, and PostgreSQL takes its
+  timeout to abort the second, which then finds the version applied.
   - The task result's tie between two attempt records of one attempt is broken
     by the bytes of the checkpoint name from version 7 on, like every other
     order. No way to reach such a tie was found: the batch that fails a
@@ -2573,6 +2580,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is
     sound on PostgreSQL too. It is another PR's to build.
+  - An option, not built: a test that fails when the server under test sorts
+    by bytes. After version 7 nothing fails if CI's service loses its ICU
+    arguments, and the suite then no longer sees a statement that orders by
+    the database's collation without going through a column. It waits for the
+    local default server to be linguistic too, because until then the
+    PostgreSQL leg must pass on both kinds of server.
   - An option, not built: a check of the database's encoding. Byte order is
     code point order for UTF-8 text, which is the encoding of every server
     this was run against, and nothing reads `server_encoding`.

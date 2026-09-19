@@ -1865,9 +1865,10 @@ are load-bearing):
    schema owns the collation, so a statement core builds once means the same
    thing on every dialect.
 
-   Equality was never at risk. A database's default collation is
-   deterministic, so two different strings were never equal under it, and a
-   key or a unique index held the same rows under any collation. Order was.
+   Equality was never at risk. PostgreSQL allows only a deterministic
+   collation as a database's default, so two different strings were never
+   equal under it, and a key or a unique index held the same rows under any
+   collation. Order was.
    Three things take their order from a name or an id.
    - The list `getCheckpoints` returns (§3.2), which a caller sees. Under ICU's
      `en-US` it came back `_init`, `a-step`, `b-step`, `B-step`, where every
@@ -1879,7 +1880,8 @@ are load-bearing):
    - The ties `claim` and the sweep's scans break by a run id or a task id.
      The ids the engine mints are UUIDs of one shape, and every collation
      orders those as their bytes do (measured on each server: 200,000 of them,
-     and no position differs), so these never differed in practice.
+     and no position differs), so this order did not differ for an id the
+     engine mints.
 
    A range over a name, from a prefix up to the first name past it, is sound
    only where names order by their bytes. Under ICU the range from `$started:`
@@ -1903,18 +1905,21 @@ are load-bearing):
    index that holds a changed column, which is all fifteen, and revalidates
    the `CHECK` constraints on `state` and `status`, which costs a scan and
    little else: on a million rows of `runs`, 1,449 ms for `state` with its
-   constraint against 1,390 ms without. `migrate()` runs the version as one
-   transaction, and its first statement takes an ACCESS EXCLUSIVE lock on all
-   eight tables, so every read and write of the store waits until it commits.
+   constraint against 1,390 ms without.
+
+   `migrate()` runs the version as one transaction, and its first statement
+   takes an ACCESS EXCLUSIVE lock on all eight tables, so every read and write
+   of the store waits until it commits.
    Measured on PostgreSQL 17 with the data directory in memory and a million
    rows in each of `tasks`, `runs` and `checkpoints` (870 MB of tables and
    320 MB of indexes): 3.2 seconds with nothing else running, of which `runs`
    took 2.0, `tasks` 0.7 and `checkpoints` 0.4. A disk will be slower.
+
    Under live traffic that first statement is what lets the version commit.
    With four workers of an older build spawning, claiming, checkpointing and
    completing tasks throughout, the version committed in 16 of 16 runs at a
-   million rows a table (4.4 to 6.6 seconds, once on its second attempt) and
-   in 6 of 6 at four million (15 to 17 seconds). The workers waited for as
+   million rows a table (3.5 to 6.6 seconds, once on its second attempt) and
+   in 6 of 6 at four million (14.8 to 17.1 seconds). The workers waited for as
    long as it ran and no caller saw an error: PostgreSQL ended each deadlock
    by aborting a worker's transaction, which the executor runs again. Without
    that statement the version took each table's lock only after it had rebuilt
@@ -1925,6 +1930,16 @@ are load-bearing):
    rows, where a table rebuilds in about that second, that version still
    committed in 15 of 16 runs. At four million it failed in 6 of 6, each time
    after the executor's three attempts, and left the schema at version 6.
+
+   Migrators that race on one database converge as they did (rule 9). Version
+   7 is the first version to take a table lock on `meta`, and a second
+   migrator holds a weaker lock on it while it waits for the first one's
+   sentinel row, so the two can deadlock. PostgreSQL takes its one second
+   timeout to abort the second, which the executor runs again and which then
+   finds the version applied. Measured with eight migrators racing on a fresh
+   schema, ten rounds a side: 36 to 51 ms where they took 23 to 41 before, and
+   one round of 1,038 ms. None was rejected.
+
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. An older build
