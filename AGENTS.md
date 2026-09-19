@@ -11,7 +11,7 @@ inside that scope rather than taking the box down. `verify:fuzz`,
 ## Overview
 
 A port of Absurd (earendil-works/absurd, Postgres durable execution) to a
-pluggable SQL backend (SQLite/libsql first; MySQL, Postgres later), driven by
+pluggable SQL backend (SQLite/libsql, PostgreSQL, and MySQL), driven by
 lightweight tick drivers that launch workers on demand.
 
 - **DESIGN.md is the spec.** Every invariant in it is (or becomes) a
@@ -64,7 +64,7 @@ that makes it difficult to review, land, and dogfood promptly.
   review checks, simplify gotchas, dialect traps, and process rules live
   there, each linked to its source lesson. Walk it before every PR push.
 - `pnpm verify` — lint + format-check + typecheck + test. Run before every
-  commit; this is the CI gate until a remote exists.
+  commit. CI's `verify` job runs it on every pull request and every push.
 - `pnpm test` — vitest across the workspace.
 - `pnpm format` — apply Biome formatting.
 
@@ -280,8 +280,9 @@ standing in for the property it approximates. The catalogue, all paid for:
 So when a finding lands, the question is not only "what mechanism catches
 this" but "is that mechanism the property, or a picture of it?" If replacement
 advances the current milestone, record it in BUILD.md with a named PR; otherwise
-put it in the options backlog. PR3.9's SQL-tree work is part of the current
-milestone, and PR3.10's per-condition mutation work stays deferred from it.
+put it in the options backlog. PR3.9's SQL-tree work was part of the
+milestone that ended on 2026-09-19, and PR3.10's per-condition mutation work
+stays deferred.
 
 The ratchet advances by substitution, not accumulation. A stronger structural
 guarantee identifies and deletes the lower-rung checks, fixtures, and process
