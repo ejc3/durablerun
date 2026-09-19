@@ -2878,9 +2878,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 - **The rollback outcome is derived, and stored nowhere.** When a task result
   is read, the outcome is `failed` exactly when a step that started has no
   `$rollback:` checkpoint, and `complete` otherwise, for an ended task whose
-  saga began. `errorJson` is the attempt record of a rollback that did not
-  run. It cannot disagree with the checkpoints, and no checkpoint of an ended
-  task changes.
+  saga began. `errorJson` is the failure of the rollback that ended the task:
+  the attempt record the task's last run wrote. An attempt record is written
+  only by the batch that fails its run, and a failure with budget left places
+  a pass, which becomes the task's last run. So an attempt that ended nothing
+  is never named, and a saga that a cancellation or a cap halts after such an
+  attempt names no rollback error. The outcome cannot disagree with the
+  checkpoints, and no checkpoint of an ended task changes.
 - **A saga with nothing to roll back skips the phase.** The task fails as it
   did before sagas, and its result carries no rollback field. The model calls
   that saga complete at entry and allows the skip. The engine records nothing

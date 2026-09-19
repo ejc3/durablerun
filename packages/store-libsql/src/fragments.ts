@@ -459,12 +459,16 @@ export const rollbackOutcome = (task: string): string =>
 
 /**
  * The attempt record of the rollback that halted a saga, the second value
- * `decodeRollbackOutcome` reads. The task-result statement names both values, so neither
- * carries an alias here.
+ * `decodeRollbackOutcome` reads: the one the task's last run wrote. An attempt record is
+ * written only by the batch that fails its run. When that failure had budget left, a pass
+ * followed it and became the task's last run, so the record of an attempt that ended
+ * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
+ * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
+ * task-result statement names both values, so neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
   `SELECT st.state FROM checkpoints st
      WHERE st.task_id = ${task}.task_id
        AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
-       AND NOT ${rollbackRan('st', SAGA_TRIES_PREFIX)}
-     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1`
+       AND st.owner_run_id = ${task}.last_attempt_run
+     ORDER BY st.checkpoint_name LIMIT 1`
