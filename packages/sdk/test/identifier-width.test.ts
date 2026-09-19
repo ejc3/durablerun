@@ -269,5 +269,75 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       })
       await f.close()
     })
+
+    it('does not run the body again when a step that started before the rule and never persisted has a stored key past the width, and still completes one whose stored key fits', async () => {
+      // A step that registers a rollback stores its start marker before its body runs. If
+      // the body then throws, the step has started and has no memo, so a later pass runs
+      // the body again and must write its result under the same key. Under a stored key
+      // past the width that write can never succeed, so running the body first only
+      // repeats its side effect on every remaining attempt.
+      const startedAndNeverPersisted = async (length: number) => {
+        const f = await open(`width-started-never-persisted-${length}`)
+        const longKey = 'k'.repeat(length)
+        let stepName = 's'
+        const ran: string[] = []
+        const reg = registry({
+          job: async (ctx) => {
+            await ctx.step(
+              stepName,
+              () => {
+                ran.push('body')
+                if (ran.length === 1) throw new Error('the first body throws')
+                return 'ok'
+              },
+              {
+                rollback: () => {
+                  ran.push('undo')
+                },
+              },
+            )
+          },
+        })
+        const task = await f.store.spawn(Q, 'job', '{}', {
+          maxAttempts: 4,
+          retryStrategy: NO_DELAY,
+        })
+        const first = await runNext(f, reg, 'w-first')
+        // What an older build would have stored: the start marker, under a longer key.
+        await f.raw.batch('older-build-start-marker', [
+          {
+            sql: 'UPDATE checkpoints SET checkpoint_name = ? WHERE task_id = ? AND checkpoint_name = ?',
+            args: [`$started:${longKey}`, task.taskId, '$started:s'],
+          },
+        ])
+        stepName = longKey
+        const rest = await drive(f, reg, task.taskId).catch((error: unknown) => [
+          `the pass threw: ${String(error).slice(0, 80)}`,
+        ])
+        const result = await f.store.getTaskResult(Q, task.taskId)
+        await f.close()
+        return { first, rest, ran, state: result?.state }
+      }
+      expect({
+        storedKeyOf300: await startedAndNeverPersisted(300),
+        storedKeyOf250: await startedAndNeverPersisted(250),
+      }).toEqual({
+        // The body is not run again. The task fails for good, and the pass that follows
+        // runs the rollback the first body is owed, once. It cannot be recorded.
+        storedKeyOf300: {
+          first: 'retry-scheduled',
+          rest: ['rolling-back', 'failed'],
+          ran: ['body', 'undo'],
+          state: 'failed',
+        },
+        // A key that fits can still be written, so the step runs again and completes.
+        storedKeyOf250: {
+          first: 'retry-scheduled',
+          rest: ['completed'],
+          ran: ['body', 'body'],
+          state: 'completed',
+        },
+      })
+    })
   })
 }
