@@ -6926,16 +6926,23 @@ MUTATION_SPECS.extend(
         (
             "postgres-deadlock-victim-runs-again",
             "packages/store-postgres/src/executor.ts",
-            "            error.code === DEADLOCK_DETECTED\n",
-            "            error.code === 'never'\n",
+            "  return error instanceof DatabaseError && error.code === DEADLOCK_DETECTED\n",
+            "  return error instanceof DatabaseError && error.code === 'never'\n",
             "a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge",
         ),
         (
             "postgres-only-a-deadlock-runs-again",
             "packages/store-postgres/src/executor.ts",
-            "            error.code === DEADLOCK_DETECTED\n",
-            "            error.code !== undefined\n",
+            "  return error instanceof DatabaseError && error.code === DEADLOCK_DETECTED\n",
+            "  return error instanceof DatabaseError && error.code !== undefined\n",
             "every failed batch is run three times before it is reported",
+        ),
+        (
+            "postgres-deadlock-victim-is-counted",
+            "packages/store-postgres/src/executor.ts",
+            "          if (isDeadlockVictim(error)) this.deadlockVictims += 1\n",
+            "          if (isDeadlockVictim(error)) this.deadlockVictims += 0\n",
+            "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
         ),
         (
             "postgres-event-lock-is-advisory",
@@ -7298,9 +7305,16 @@ MUTATION_SPECS.extend(
         (
             "mysql-deadlocked-write-batch-runs-again",
             "packages/store-mysql/src/executor.ts",
-            "            mode === 'write' &&\n",
-            "            mode === 'read' && // MUTATION\n",
+            "            mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)\n",
+            "            mode === 'read' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error) // MUTATION\n",
             "a write batch InnoDB rolled back as a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge an infrastructure retry",
+        ),
+        (
+            "mysql-deadlock-victim-is-counted",
+            "packages/store-mysql/src/executor.ts",
+            "          if (isDeadlockVictim(error)) this.deadlockVictims += 1\n",
+            "          if (isDeadlockVictim(error)) this.deadlockVictims += 0 // MUTATION\n",
+            "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
         ),
     )
 )
@@ -11300,6 +11314,12 @@ VERDICTS.update(
             "MysqlExecutor transactions a deadlock runs a write batch again after a deadlock, under the named lock it already holds",
             "mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again",
         ),
+        "mysql-deadlock-victim-is-counted": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions a deadlock counts every deadlock victim, the one it runs again and the one it reports",
+            "mutation-verdict:behavior:mysql-deadlock-victims-are-counted",
+        ),
     }
 )
 
@@ -11695,6 +11715,17 @@ for _verdict, _names in (
             "postgres-deadlock-victim-attempts-are-bounded",
             "postgres-deadlock-victim-runs-again",
             "postgres-only-a-deadlock-runs-again",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor transactions counts every deadlock victim, the one it runs again and the one it reports",
+            "mutation-verdict:behavior:postgres-deadlock-victims-are-counted",
+        ),
+        (
+            "postgres-deadlock-victim-is-counted",
         ),
     ),
     (
@@ -16947,7 +16978,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 873:
+        if len(MUTATIONS) != 875:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
