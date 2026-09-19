@@ -4471,9 +4471,12 @@ def fixture_postmortem(evidence: str, findings: int, ledger: str, severity: str)
 
 # Shell functions that stand in for the two tools review-attest.sh calls and a fixture cannot run.
 # `gh` answers for a pull request whose head is the fixture history's and which adds the fixture's
-# postmortem. `pnpm` installs by making the one link a workspace install makes, inside the copy
-# unless the fixture holds `link-outside`, and runs a test file by looking for its fix in the tree
-# it is run in, so a run passes or fails by the commit that is checked out, as a real one does.
+# postmortem. `pnpm` names a store and installs offline only from that one, as on a machine whose
+# scratch directory sits on another mount than the checkout: pnpm picks a store by mount point,
+# and the one it would pick for the copy was filled by nothing. It installs by making the one link
+# a workspace install makes, inside the copy unless the fixture holds `link-outside`, and runs a
+# test file by looking for its fix in the tree it is run in, so a run passes or fails by the
+# commit that is checked out, as a real one does.
 FAKE_TOOLS = r"""FIXTURE_ROOT="${BASH_SOURCE[0]%/*}"
 gh() {
   if [[ "$1" == pr && "$2" == view ]]; then
@@ -4494,8 +4497,16 @@ gh() {
   esac
 }
 pnpm() {
-  local argument name report="" failed=0 passed=0 skip=0
+  local argument name report="" pattern="" take="" failed=0 passed=0
+  if [[ "$1" == store && "$2" == path ]]; then
+    printf '%s\n' "$FIXTURE_ROOT/store"
+    return 0
+  fi
   if [[ "$1" == install ]]; then
+    [[ " $* " == *" --store-dir $FIXTURE_ROOT/store "* ]] || {
+      echo "ERR_PNPM_NO_OFFLINE_TARBALL: a package is missing from the store" >&2
+      return 1
+    }
     mkdir -p packages/a/node_modules/@fixture packages/b
     if [[ -e "$FIXTURE_ROOT/link-outside" ]]; then
       ln -s "$FIXTURE_ROOT/scripts" packages/a/node_modules/@fixture/b
@@ -4506,12 +4517,13 @@ pnpm() {
   fi
   [[ "$1" == exec && "$2" == vitest && "$3" == run ]] || return 2
   for argument in "${@:4}"; do
-    if [[ "$skip" -eq 1 ]]; then
-      skip=0
+    if [[ -n "$take" ]]; then
+      pattern="$argument"
+      take=""
       continue
     fi
     case "$argument" in
-      -t) skip=1 ;;
+      -t) take=1 ;;
       --outputFile=*) report="${argument#--outputFile=}" ;;
       --*) ;;
       *)
@@ -4524,6 +4536,12 @@ pnpm() {
         ;;
     esac
   done
+  # vitest reads -t as a regular expression: a bracket that is not escaped opens a character
+  # class, and a title that holds one is then matched by nothing.
+  if [[ "$pattern" == *'['* && "$pattern" != *'\['* ]]; then
+    passed=0
+    failed=0
+  fi
   printf '{"numTotalTests": %d, "numFailedTests": %d, "numPassedTests": %d, "testResults": []}\n' \
     "$((passed + failed))" "$failed" "$passed" >"$report"
   [[ "$failed" -eq 0 ]]
@@ -4729,11 +4747,11 @@ CITED_COMMIT_CASES = (
         args=(*CHECK_POSTMORTEM, "0123abc"),
     ),
     CitedCommitsCase(
-        "each red test fails at its own commit and passes at the head, with a test name and "
-        "without one",
+        "each red test fails at its own commit and passes at the head, with a test name that is "
+        "matched as it is written and without one",
         """
-- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts` `the case`, run and seen
-  failing (1 test). Commit `{later_red}`, probe `packages/a/test/later.test.ts`, 1 test.
+- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts` `the case [libsql]`, run and
+  seen failing (1 test). Commit `{later_red}`, probe `packages/a/test/later.test.ts`, 1 test.
 - Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
 """,
         None,
