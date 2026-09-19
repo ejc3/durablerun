@@ -1074,7 +1074,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     constant and sent by a raw batch, and a deadline comparison typed into a
     fragment, which no tree rule reads. The narrowing was removed, and the
     lints' self-test now plants such text in every real store source file, because
-    the narrowing had passed every small fixture. The tree's clock spellings
+    the narrowing had passed every small fixture. The round is
+    `postmortems/pr3.9f-part2-review.md`. The tree's clock spellings
     also list `fake_now_ms`, so a fragment that reads the fake clock's row is
     refused where the statement is built as well as by the lint. The registry
     holds 873 mutations. The two options that were not built are in the
@@ -1409,8 +1410,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Promoted to PR3.14 below: the generated follow-ons that select their source
     by key correlated it to `tasks` on the queue, and on libSQL their plan was
     a scan of `tasks`.
-- **PR3.4 saga / step rollbacks**: DONE. PR #47 modeled it and PR #56 built
-  it, per DESIGN §3.10 (Cloudflare's shipped
+- **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
+  and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
   rollback handlers as ordinary durable steps (`rollback:<step>#<count>`)
