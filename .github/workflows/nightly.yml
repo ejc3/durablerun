@@ -24,6 +24,11 @@ jobs:
           POSTGRES_DB: durablerun
           POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
+          # This image's C library sorts text by its bytes whatever locale the database
+          # names, so a statement that orders by the database's collation cannot fail
+          # here. ICU gives the service a linguistic collation, as a managed server may
+          # have, and the suite then sees what that server would show.
+          POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=en-US"
         ports:
           - 5432:5432
         options: >-
