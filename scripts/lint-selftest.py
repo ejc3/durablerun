@@ -4369,11 +4369,14 @@ GOOD_INVOCATIONS = [
 # review-attest.sh reads the commits a postmortem cites, so its fixtures need a repository whose
 # commits they can name. Every case below is given the same small history, which git itself builds:
 #
-#   main    base - moved
-#   topic   base - old_red - old_fix                                  before `git rebase main`
-#   topic          moved - red - fix - bundled - later_red - later_fix    after it, and HEAD
-#   side    base - side_fix                                           never merged
+#   main    start - earlier_red - earlier_fix - moved                 origin/main is its tip
+#   topic   earlier_fix - (change) - old_red - old_fix                before `git rebase main`
+#   topic   moved - change - red - fix - bundled - later_red - later_fix   after it, and HEAD
+#   side    earlier_fix - side_fix                                    never merged
 #
+# earlier_red and earlier_fix are an earlier pull request's, which main held before this branch was
+# cut: real, distinct, ordered, ancestors of the head, and no evidence of this pull request. `change`
+# is the change under review, the branch's own first commit, where a defect comes in.
 # old_red and old_fix are what a rebase leaves behind: the same subject and the same patch under
 # another id, still in the object database and no longer on the branch. side_fix has fix's subject
 # and another patch, so it is no copy of anything. `bundled` adds a test and
@@ -4419,15 +4422,20 @@ def cited_history() -> tuple[Path, dict[str, str]]:
         return git("rev-parse", "--short=7", "HEAD")
 
     git("init", "-q", "-b", "main")
-    ids = {"base": commit("Start", "README")}
+    commit("Start", "README")
+    ids = {"earlier_red": commit("Red: an earlier case fails", "packages/a/test/earlier.test.ts")}
+    ids["earlier_fix"] = commit("Fix the earlier case", "earlier.fix")
     git("checkout", "-q", "-b", "topic")
+    commit("The change under review", "change.txt")
     ids["old_red"] = commit("Red: the case fails", "packages/a/test/case.test.ts")
     ids["old_fix"] = commit("Fix the case", "case.fix")
-    git("checkout", "-q", "-b", "side", ids["base"])
+    git("checkout", "-q", "-b", "side", ids["earlier_fix"])
     ids["side_fix"] = commit("Fix the case", "side.fix")
     git("checkout", "-q", "main")
     ids["moved"] = commit("Main moves", "moved.txt")
+    git("update-ref", "refs/remotes/origin/main", "main")
     git("rebase", "-q", "main", "topic")
+    ids["change"] = git("rev-parse", "--short=7", "HEAD~2")
     ids["red"] = git("rev-parse", "--short=7", "HEAD~1")
     ids["fix"] = git("rev-parse", "--short=7", "HEAD")
     ids["bundled"] = commit(
@@ -4482,6 +4490,7 @@ gh() {
   if [[ "$1" == pr && "$2" == view ]]; then
     case "$5" in
       headRefOid) git -C "$FIXTURE_ROOT" rev-parse HEAD ;;
+      baseRefOid) git -C "$FIXTURE_ROOT" rev-parse main ;;
       body) printf '%s\n' 'review-findings: 1' 'reviews-abandoned: a fixture has no review to run' ;;
       commits) ;;
       *) return 2 ;;
@@ -4627,12 +4636,12 @@ CITED_COMMIT_CASES = (
   `{moved}`. Commit `{later_red}`, run and seen failing (1 test) against
   `{fix}`, the first fix.
 - Fixes, one commit for each finding: `{fix}` (1) and `{later_fix}` (2). The
-  defect came in with `{moved}`.
+  defect came in with `{change}`.
 - Red test: commit `{later_red}` again, as the second round cited it.
 - Finder: one review, of the tree whose registry digest begins `9f60ddc6`.
 """,
         None,
-        says=": 2 red, 3 fix, 0 other cited; each red is before a fix",
+        says=": 2 red, 3 fix, 1 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
         "a fix line may name the red test it turns green",
@@ -4714,6 +4723,13 @@ CITED_COMMIT_CASES = (
         says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
+        "prose may cite a commit of an earlier pull request, which the branch holds",
+        ONE_RED_AND_ITS_FIX,
+        None,
+        severity="The class was first fixed in `{earlier_fix}`, two pull requests ago.\n",
+        says=": 1 red, 1 fix, 2 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
         "the whole attestation accepts a pull request whose added postmortem cites its branch",
         ONE_RED_AND_ITS_FIX,
         None,
@@ -4774,6 +4790,39 @@ CITED_COMMIT_CASES = (
         ONE_RED_AND_ITS_FIX,
         "under ## Severity, which is not an ancestor of the head",
         severity="The defect came in with `{old_fix}` and would have shipped.\n",
+    ),
+    CitedCommitsCase(
+        "a red test and a fix copied from the last pull request's postmortem are real, distinct, "
+        "ordered ancestors of the head, and are refused because main held them before the branch "
+        "was cut",
+        """
+- Red tests: commit `{earlier_red}`, run and seen failing (1 test).
+- Fixes: commit `{earlier_fix}`; gate after fix: the suite passed.
+""",
+        "a red test and its fix are commits of the pull request itself",
+    ),
+    CitedCommitsCase(
+        "a copied red test is refused beside a fix of the pull request's own",
+        """
+- Red tests: commit `{earlier_red}`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "under '- Red tests:', which",
+    ),
+    CitedCommitsCase(
+        "the whole attestation takes the base from the pull request and refuses the copied pair",
+        """
+- Red tests: commit `{earlier_red}`, run and seen failing (1 test).
+- Fixes: commit `{earlier_fix}`; gate after fix: the suite passed.
+""",
+        "a red test and its fix are commits of the pull request itself",
+        args=WHOLE_ATTESTATION,
+    ),
+    CitedCommitsCase(
+        "a base that is not a commit bounds nothing, which is refused",
+        ONE_RED_AND_ITS_FIX,
+        "the base 0123abc is not a commit in this repository",
+        args=(*CHECK_POSTMORTEM, "HEAD", "0123abc"),
     ),
     CitedCommitsCase(
         "one commit cited as the red test and as its fix is refused",
