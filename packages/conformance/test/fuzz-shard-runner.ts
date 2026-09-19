@@ -26,7 +26,8 @@ function zeroBasedKnob(name: string, fallback: number): number {
 const SEEDS = knob('FUZZ_SEEDS', 64)
 const STEPS = knob('FUZZ_STEPS', 60)
 const BATCH_COUNT = knob('FUZZ_BATCHES', 1)
-const BATCH = zeroBasedKnob('FUZZ_BATCH_INDEX', 0)
+const BATCH_INDEX =
+  process.env.FUZZ_BATCH_INDEX === undefined ? undefined : zeroBasedKnob('FUZZ_BATCH_INDEX', 0)
 
 export interface FuzzBatchCoordinates {
   readonly totalSeeds: number
@@ -87,14 +88,29 @@ export function fuzzBatchSeeds({
  * in-process pooling cannot use the cores; thread-per-file can.
  */
 export function runFuzzShard(shard: number, of: number): void {
+  for (const batch of fuzzProcessBatches(BATCH_COUNT, BATCH_INDEX)) runFuzzBatch(shard, of, batch)
+}
+
+/**
+ * The batches one process runs. The hosted nightly starts a fresh process for each batch and
+ * names it with FUZZ_BATCH_INDEX.
+ */
+export function fuzzProcessBatches(
+  _batchCount: number,
+  batchIndex: number | undefined,
+): readonly number[] {
+  return [batchIndex ?? 0]
+}
+
+function runFuzzBatch(shard: number, of: number, batch: number): void {
   const seeds = fuzzBatchSeeds({
     totalSeeds: SEEDS,
     shard,
     shardCount: of,
-    batch: BATCH,
+    batch,
     batchCount: BATCH_COUNT,
   })
-  describe(`operation fuzz shard ${shard}/${of}, batch ${BATCH}/${BATCH_COUNT} (${seeds.length} of ${SEEDS} total seeds x ${STEPS} steps)`, () => {
+  describe(`operation fuzz shard ${shard}/${of}, batch ${batch}/${BATCH_COUNT} (${seeds.length} of ${SEEDS} total seeds x ${STEPS} steps)`, () => {
     it('upholds the engine invariants on every seeded walk', async () => {
       const failures: string[] = []
       const totals: FuzzStats = {

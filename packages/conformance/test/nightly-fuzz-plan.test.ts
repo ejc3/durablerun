@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { fuzzBatchSeeds } from './fuzz-shard-runner.js'
+import { fuzzBatchSeeds, fuzzProcessBatches } from './fuzz-shard-runner.js'
 
 interface HostedFuzzProcess {
   readonly shard: number
@@ -396,5 +396,45 @@ describe('fuzz shard batch plan', () => {
         }
       },
     )
+  })
+})
+
+describe('deep fuzz batches', () => {
+  // `verify:fuzz:deep` runs one process for each shard file, and each test has a 600 second
+  // budget. One batch of 782 walks took 286 seconds on the development host, 0.37 seconds a
+  // walk, so a whole shard of 3,125 walks cannot fit one test.
+  const DEEP = { totalSeeds: 100_000, shardCount: 32, batchCount: 8 }
+
+  it('runs every batch in a process that is given a batch count and no batch index', () => {
+    expect({
+      named: fuzzProcessBatches(DEEP.batchCount, 5),
+      unnamed: fuzzProcessBatches(DEEP.batchCount, undefined),
+      single: fuzzProcessBatches(1, undefined),
+    }).toEqual({ named: [5], unnamed: [0, 1, 2, 3, 4, 5, 6, 7], single: [0] })
+  })
+
+  it('gives the deep script a batch count that covers every seed once, in tests a quarter of their budget', () => {
+    const script = (
+      JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>
+      }
+    ).scripts['verify:fuzz:deep']
+    expect(script).toContain(`FUZZ_SEEDS=${DEEP.totalSeeds} `)
+    expect(script).toContain(`FUZZ_BATCHES=${DEEP.batchCount} `)
+    expect(script).not.toContain('FUZZ_BATCH_INDEX')
+    const planned: number[] = []
+    let largest = 0
+    for (let shard = 0; shard < DEEP.shardCount; shard++) {
+      for (const batch of fuzzProcessBatches(DEEP.batchCount, undefined)) {
+        const seeds = fuzzBatchSeeds({ ...DEEP, shard, batch })
+        largest = Math.max(largest, seeds.length)
+        planned.push(...seeds)
+      }
+    }
+    expect({
+      planned: planned.length,
+      unique: new Set(planned).size,
+      largestTestFitsAQuarterOfItsBudget: largest * 0.37 <= 150,
+    }).toEqual({ planned: 100_000, unique: 100_000, largestTestFitsAQuarterOfItsBudget: true })
   })
 })
