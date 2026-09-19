@@ -1505,10 +1505,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `addTaskDone`, so that a third dialect inherits them.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
-  - Holding the deadlock count at zero across the PostgreSQL concurrency cases
-    and the fuzz, so that a new lock-order inversion fails a test and is not
-    hidden by the victim's retry. The database's counter is shared by parallel
-    test workers, so it needs a counter on the executor that a fixture can read.
+  - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
+    cases, so that a new lock-order inversion fails a test and is not hidden by
+    the victim's retry. Each executor counts the victims it meets and a fixture
+    reads the count, because the database's counter is shared by parallel test
+    workers. The PR4.4 entry says where it is held, and that the fuzz's hold is
+    inert until the fuzz has concurrent callers or a server dialect.
   - Smaller, from the same review: the run-to-task memo does not forget a run
     its terminal batch has ended, `EventName` does not carry the task id or a
     display form, port refusals have no one typed class mapped once at the hosted
@@ -2071,11 +2073,74 @@ these three things; nothing else in the system does I/O, time, or randomness.
     version read and versioned write, the fixture's corruption-table switch,
     and the store's dialect-free declarations are now in three packages.
     Hoisting them is one change to all three stores.
-  - Deferred from PR4.3: a generated conformance surface that runs every store
-    call concurrently with itself on every dialect. PR #50 and PR4.3 each
-    found a transition no concurrent case reached, and each added a case for
-    that one transition, so the class is expected again until the surface is
-    generated.
+  - PR4.4c, DONE. The generated surface, `self-concurrency`, in the shared
+    suite on all three dialects, races every call of the store's two ports
+    against copies of itself. PR #50 and PR4.3 had each found a transition no
+    concurrent case reached, and each added a case for that one transition.
+    The contests come from two tables typed by `SchedulerStore` and
+    `StoreAdmin`, `migrate()` included, so a port method without an entry does
+    not compile: 37 contests. Each arranges a state in which its call is
+    legal, runs four copies one at a time and then four at once, from the same
+    state on two fixtures of one seed with a connection opened for each copy
+    first, and holds that the race answered what the serial order answered,
+    wrote the rows it wrote, violated no invariant, and met no outage. A claim
+    may come back short of what is due, so the claimers' contest holds that no
+    run is claimed twice and that one more claimer can take what the others
+    did not, and not how the runs were split. Test time on a shared machine:
+    1.9 s on libSQL, 6.4 to 7.9 s on PostgreSQL, 5.6 to 6.7 s on MySQL.
+    It fails when PR4.3's heartbeat fix is reverted: with the scanning
+    `DELETE` back, "driverHeartbeat of distinct drivers of one queue" was red
+    in 10 runs of 10 on MySQL, with 3 to 6 victims a run and an outage
+    surfaced in 6 of the 10. It does not reach PR #50's defect, and the rate
+    is recorded and not promised: with the PostgreSQL version read back under
+    REPEATABLE READ the migrate contest passed 300 rounds of 300 at four
+    migrators and 200 of 200 at eight, with MySQL's version read under a
+    consistent snapshot it passed 150 of 150, and with libSQL's bootstrap
+    forgiveness reverted 150 of 150, where one connection runs the migrators
+    one after another. The fix's own commit measured 18 rejections in 300
+    rounds through real migrators, and its postmortem records that the
+    eight-migrator case passed five runs of five with the bug in place.
+    Ordering that race takes a lock held inside one server, which
+    `postgres-bootstrap-window.test.ts` does for PostgreSQL and a shared
+    surface cannot.
+  - PR4.4c, DONE, with the surface. Each executor that runs a deadlock victim
+    again counts the victims it meets, a fixture reads the count, and it is
+    held at zero where real callers race: the surface, the six cases of the
+    shared suite that race real callers, every seeded scenario of the
+    scheduler suite, and the PostgreSQL lock-order test, which had read the
+    database's own counter, shared by every test worker. Measured first: no
+    fixture of the whole conformance suite met a victim on either server, in
+    one run of 4311 fixtures on each, and none did in 20 runs of the six cases
+    on each. The fuzz walk holds the count too, inertly: it is one caller on
+    libSQL, and its hold becomes real when the walk gains a second caller or a
+    server dialect. Two mutations hold the two counts, and three older ones
+    were re-aimed at the one function that now says what a victim is: 875.
+  - Deferred to PR4.4e, found by PR4.4c's surface before any review: concurrent
+    claims deadlock on MySQL while `runs` holds five rows or fewer. Measured on
+    MySQL 8.4: up to five rows the claim's `UPDATE runs ... WHERE run_id IN
+    (candidates)` is planned as a scan of `runs` with the FirstMatch semijoin
+    strategy, and that one statement holds an X record lock on every row of
+    `runs`. From six rows the plan is the materialized candidates and then
+    `runs` by primary key, and it holds the claimed rows alone. It follows the
+    size of the table and not the number of due runs. A claimer already holds
+    the run its locking leg chose, so two claimers wait on each other, which
+    InnoDB's deadlock report shows. With four claimers at limit 1 over four
+    due runs, 20 runs of 20 came back short, one run claimed of four, and 17
+    of the 20 met victims, three each. PostgreSQL and libSQL were clean in 20
+    of 20, and so was every other MySQL contest. The older native claim case
+    never met it: it has eight rows, and it opens its connections inside the
+    race, which puts the claims one after another. No run is claimed twice or
+    lost. Two fixes were measured to give the production plan and one lock on
+    a four-row table: `FORCE INDEX (PRIMARY)` on the `UPDATE` target, which the
+    MySQL tree compiler renders, and `/*+ SEMIJOIN(MATERIALIZATION) */` in the
+    candidate subquery, which core's rule against a comment in a SQL fragment
+    refuses today. PR4.4e fixes the class, every keyed `UPDATE` or `DELETE`
+    whose keys come from a subquery over a small table, with a deterministic
+    lock-count test, and deletes the one entry of `selfRaceDeadlocksExcused`
+    in the MySQL fixture, which until then excuses that contest's victim count
+    and nothing else. One probe of different calls, and of one call on
+    different targets, over tables of two or three rows met no victim on
+    either server, in 13 pairs of 10 rounds each.
 
 - **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
   item of PR4.3: the engine behaves identically on every dialect, so the 255
