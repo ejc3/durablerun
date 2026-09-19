@@ -93,13 +93,16 @@ export function runFuzzShard(shard: number, of: number): void {
 
 /**
  * The batches one process runs. The hosted nightly starts a fresh process for each batch and
- * names it with FUZZ_BATCH_INDEX.
+ * names it with FUZZ_BATCH_INDEX. A process given a batch count and no index runs every batch,
+ * each as its own test with its own time budget: an unset index once meant batch 0, so a run
+ * that set FUZZ_BATCHES alone walked one batch of its seeds and reported a green shard.
  */
 export function fuzzProcessBatches(
-  _batchCount: number,
+  batchCount: number,
   batchIndex: number | undefined,
 ): readonly number[] {
-  return [batchIndex ?? 0]
+  if (batchIndex !== undefined) return [batchIndex]
+  return Array.from({ length: batchCount }, (_, batch) => batch)
 }
 
 function runFuzzBatch(shard: number, of: number, batch: number): void {
