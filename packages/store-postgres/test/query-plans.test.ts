@@ -143,3 +143,155 @@ it('reaches tasks by an index condition in every shipped task update', async () 
     await db.close()
   }
 })
+
+/**
+ * A saga's checkpoints on PostgreSQL. One name is one row of the key. The names under a
+ * prefix are found by a test of each name among the task's rows of the key, so a read
+ * walks the checkpoints of one task and no more. The other two stores read those names
+ * as a range of the key, and this one must not: `checkpoint_name` compares and orders
+ * under the database's collation, and under a linguistic one the names that begin
+ * `$started:` are not the range from `$started:` to `$started;` (DESIGN.md §3.4). An
+ * index that holds only saga names would make the read one seek, and BUILD.md records it
+ * with its measurement and what would call for it. What this holds: the walk is keyed by
+ * the task, no name is compared by order, and the attempt records are not read at all
+ * for a task whose saga never began, which is every read of a plain task's result.
+ */
+it("walks a saga's names among one task's rows of the key, and reads no attempt record when no saga began", async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-saga-names' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const seen: { label: string; sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, control) => {
+        for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
+        return db.raw.batch(label, statements, control)
+      },
+    }
+    const store = new PostgresSchedulerStore(recorder, db.ids)
+    let claims = 0
+    const started = async (name: string) => {
+      const spawned = await store.spawn('q', name, '{}', { maxAttempts: 1 })
+      claims += 1
+      const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+      if (run?.taskId !== spawned.taskId) throw new Error(`expected to claim ${name}`)
+      await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      return run
+    }
+    const completed = await started('completes')
+    await store.complete('q', completed.runId, completed.claimToken, '{}')
+    const failed = await started('fails')
+    await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    const saga = await started('rolls-back')
+    await store.setCheckpoint(
+      'q',
+      saga.taskId,
+      saga.runId,
+      saga.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    expect(await store.fail('q', saga.runId, saga.claimToken, '{}', null)).toEqual({
+      rollingBack: true,
+    })
+    claims += 1
+    const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+    if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
+    await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
+    await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, {
+      key: `${SAGA_TRIES_PREFIX}a`,
+      stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"R"}' }),
+    })
+    const resultReadOf = async (taskId: string) => {
+      const before = seen.length
+      const result = await store.getTaskResult('q', taskId)
+      const read = seen.slice(before).find((st) => st.label === 'task-result')
+      if (read === undefined) throw new Error('the result read sent no statement')
+      return { result, read }
+    }
+    const reads = {
+      completed: await resultReadOf(completed.taskId),
+      failed: await resultReadOf(failed.taskId),
+      saga: await resultReadOf(saga.taskId),
+    }
+    expect(reads.saga.result?.rollback).toEqual({ outcome: 'failed', errorJson: '{"name":"R"}' })
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const planOf = async (sql: string, args?: readonly unknown[]) => {
+      await client.query('BEGIN')
+      try {
+        // Without these two a plan over tables this small is the planner's guess at the
+        // price of a few rows, and says nothing of how the statement reaches them.
+        await client.query('SET LOCAL enable_seqscan = off')
+        await client.query('SET LOCAL enable_bitmapscan = off')
+        const text = compilePostgresPlaceholders(sql).sql
+        const plan =
+          args === undefined
+            ? await client.query(`EXPLAIN (GENERIC_PLAN, COSTS OFF) ${text}`)
+            : await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${text}`, [
+                ...args,
+              ])
+        return plan.rows.map((row) => String(Object.values(row as object)[0]))
+      } finally {
+        await client.query('ROLLBACK')
+      }
+    }
+    /** The saga reads of a plan that are not keyed as this store's are. */
+    const notKeyed = (lines: readonly string[]) =>
+      lines.flatMap((line, at) => {
+        const scan = / on checkpoints (sp|ss|sr|st)\b/.exec(line)
+        if (scan === null) return []
+        const condition = (lines[at + 1] ?? '').trim()
+        const keyed =
+          scan[1] === 'sp' || scan[1] === 'sr'
+            ? /^Index Cond: \(\(task_id = .*\) AND \(checkpoint_name = .*\)\)$/.test(condition)
+            : /^Index Cond: \(task_id = [^()]*\)$/.test(condition)
+        return /Index (Only )?Scan using checkpoints_pkey /.test(line) && keyed
+          ? []
+          : [`${line.trim()} :: ${condition}`]
+      })
+    // The check can say no: to a read with no task bound, and to a name compared by order.
+    expect(
+      notKeyed(
+        await planOf(
+          "SELECT 1 FROM checkpoints ss WHERE substr(ss.checkpoint_name, 1, 9) = '$started:'",
+        ),
+      ),
+    ).toHaveLength(1)
+    expect(
+      notKeyed(
+        await planOf(
+          "SELECT 1 FROM checkpoints ss WHERE ss.task_id = ? AND ss.checkpoint_name >= '$started:' AND ss.checkpoint_name < '$started;'",
+        ),
+      ),
+    ).toHaveLength(1)
+    const faults: string[] = []
+    const reached = new Set<string>()
+    for (const st of new Map(seen.map((sent) => [sent.sql, sent])).values()) {
+      if (!/\bcheckpoints (sp|ss|sr|st)\b/.test(st.sql)) continue
+      reached.add(st.label)
+      for (const fault of notKeyed(await planOf(st.sql))) faults.push(`[${st.label}] ${fault}`)
+    }
+    expect(faults.join('\n')).toBe('')
+    expect(
+      ['complete', 'fail', 'fail-rollback', 'task-result'].filter((l) => !reached.has(l)),
+    ).toEqual([])
+    // The attempt records are read for the saga that halted, and for no task whose saga
+    // never began.
+    const attemptRecordsRead: Record<string, boolean> = {}
+    for (const [which, { read }] of Object.entries(reads)) {
+      const scan = (await planOf(read.sql, read.args)).find((line) =>
+        / on checkpoints st\b/.test(line),
+      )
+      if (scan === undefined)
+        throw new Error(`the result read of ${which} plans no attempt record read`)
+      attemptRecordsRead[which] = !scan.includes('never executed')
+    }
+    expect(attemptRecordsRead).toEqual({ completed: false, failed: false, saga: true })
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})

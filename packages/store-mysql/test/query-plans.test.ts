@@ -379,3 +379,127 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
     }
   })
 })
+
+/**
+ * An executor that counts the rows each batch under one of `labels` walked, a read batch
+ * included, from the session's handler counters around the batch.
+ */
+function countingRowsWalked(db: TestDb, labels: readonly string[]) {
+  const walked = new Map<string, number>()
+  const executor: SqlExecutor = {
+    batch: async (label, statements, control) => {
+      if (!labels.includes(label)) return db.raw.batch(label, statements, control)
+      const shifted: SqlStatement[] = statements.map((statement) =>
+        statement.skipUnlessWrote === undefined
+          ? statement
+          : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
+      )
+      const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
+      const total = (result: (typeof all)[number] | undefined) =>
+        (result?.rows ?? [])
+          .filter((row) => row.Variable_name !== 'Handler_read_key')
+          .reduce((sum, row) => sum + Number(row.Value), 0)
+      walked.set(label, total(all[all.length - 1]) - total(all[0]))
+      return all.slice(1, -1)
+    },
+  }
+  return { executor, walked }
+}
+
+describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
+  it('fails a task, and reads a result, without walking the checkpoints the task has', async () => {
+    // A saga's names are a range of the checkpoints key. Found by a test of each name,
+    // the failure of any task walks every checkpoint the task has to learn that no step
+    // is owed a rollback, and every read of a result walks them again.
+    const CHECKPOINTS = 2_000
+    const db = await openMysqlTestDb({ idNamespace: 'plan-saga-names', nowMs: 1_000_000 })
+    try {
+      const { executor, walked } = countingRowsWalked(db, ['fail', 'task-result'])
+      const store = new MysqlSchedulerStore(executor, db.ids)
+      const started = async (name: string) => {
+        const task = await store.spawn(Q, name, '{}', { maxAttempts: 1 })
+        const [run] = await store.claim(Q, name, { leaseSeconds: 60, limit: 1 })
+        if (run?.taskId !== task.taskId) throw new Error(`${name} was not claimed`)
+        await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        return run
+      }
+      const beside = async (run: { taskId: string; runId: string }) => {
+        for (let at = 0; at < CHECKPOINTS; at += 500) {
+          const names = Array.from(
+            { length: Math.min(500, CHECKPOINTS - at) },
+            (_, i) => `step-${String(at + i).padStart(5, '0')}`,
+          )
+          await db.raw.batch(
+            'fixture:checkpoints',
+            [
+              {
+                sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, status,
+                                               owner_run_id, owner_attempt, updated_at_ms)
+                      VALUES ${names.map(() => "(?, ?, ?, '1', 'committed', ?, 1, 1)").join(', ')}`,
+                args: names.flatMap((name) => [run.taskId, name, Q, run.runId]),
+              },
+            ],
+            'write',
+          )
+        }
+      }
+      const rowsWalked = async (label: string, act: () => Promise<unknown>) => {
+        walked.delete(label)
+        await act()
+        return walked.get(label)
+      }
+      // A plain task: no step registered a rollback, so its failure owes none.
+      const plain = await started('plain')
+      await beside(plain)
+      const plainFailure = await rowsWalked('fail', async () =>
+        expect(await store.fail(Q, plain.runId, plain.claimToken, '{}', null)).toEqual({
+          rollingBack: false,
+        }),
+      )
+      const plainResult = await rowsWalked('task-result', () =>
+        store.getTaskResult(Q, plain.taskId),
+      )
+      // A saga whose one rollback ran: the read finds its start marker, then its rollback.
+      const forward = await started('saga')
+      await store.setCheckpoint(
+        Q,
+        forward.taskId,
+        forward.runId,
+        forward.claimToken,
+        '$started:charge',
+        '0',
+        60,
+      )
+      await beside(forward)
+      expect(await store.fail(Q, forward.runId, forward.claimToken, '{}', null)).toEqual({
+        rollingBack: true,
+      })
+      const [pass] = await store.claim(Q, 'pass', { leaseSeconds: 60, limit: 1 })
+      if (pass?.taskId !== forward.taskId) throw new Error('the rollback pass was not claimed')
+      await store.activate(Q, pass.runId, pass.claimToken, pass.claimGen)
+      await store.setCheckpoint(
+        Q,
+        pass.taskId,
+        pass.runId,
+        pass.claimToken,
+        '$rollback:charge',
+        'null',
+        60,
+      )
+      await store.fail(Q, pass.runId, pass.claimToken, '{}', null)
+      let rolledBack: unknown
+      const sagaResult = await rowsWalked('task-result', async () => {
+        rolledBack = (await store.getTaskResult(Q, forward.taskId))?.rollback
+      })
+      expect(rolledBack).toEqual({ outcome: 'complete' })
+      for (const [what, rows] of Object.entries({ plainFailure, plainResult, sagaResult })) {
+        expect(
+          rows,
+          `rows ${what} walked beside ${CHECKPOINTS} checkpoints of its own task`,
+        ).toBeLessThan(150)
+      }
+    } finally {
+      await db.close()
+    }
+  })
+})
