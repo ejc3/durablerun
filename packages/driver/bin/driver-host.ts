@@ -1,4 +1,9 @@
-/** Driver process entry. Args: dbPath queue workerUrl secret [wakePort]. */
+/**
+ * Driver process entry. Args: dbPath queue workerUrl secret [wakePort]. Given a
+ * wakePort it serves wakes there, and 0 asks the OS for a free port. The ready
+ * message a parent process receives carries the port that was bound, or null
+ * when no wakePort was given.
+ */
 import { systemClock, systemIdSource } from '@durablerun/core'
 import { DriverLoop, createWakeServer, httpLauncher } from '@durablerun/driver'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -29,8 +34,8 @@ const loop = new DriverLoop(
   },
 )
 const wake = createWakeServer(loop)
-if (wakePortArg) await wake.listen(Number(wakePortArg))
-process.send?.('ready')
+const port = wakePortArg ? await wake.listen(Number(wakePortArg)) : null
+process.send?.({ ready: true, port })
 process.on('SIGTERM', () => {
   void loop.stop().then(() => process.exit(0))
 })

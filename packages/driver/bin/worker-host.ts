@@ -1,7 +1,9 @@
 /**
  * Worker process entry (composition root: the one place the REAL clock and
  * ids are wired). Args: dbPath port secret [driverUrl]. Registers the
- * chaos/dogfood task set and serves signed launches until killed.
+ * chaos/dogfood task set and serves signed launches until killed. Port 0 asks
+ * the OS for a free port, so the ready message a parent process receives
+ * carries the port that was bound.
  */
 import { systemClock, systemIdSource } from '@durablerun/core'
 import { createWorkerServer } from '@durablerun/driver'
@@ -62,5 +64,5 @@ const server = createWorkerServer({
   secret,
   ...(driverUrl ? { driverUrl } : {}),
 })
-await server.listen(Number(portArg))
-process.send?.('ready')
+const port = await server.listen(Number(portArg))
+process.send?.({ ready: true, port })
