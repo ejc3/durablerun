@@ -1854,6 +1854,88 @@ are load-bearing):
    harness as the test that catches it, and one of a store entry's hold names
    a pinned case of eight such walks.
 
+11. **A name compares and orders by its bytes, on every dialect.** Every string
+   the engine stores is compared byte for byte and ordered by the bytes of its
+   UTF-8 text, which is code point order. SQLite compares text that way unless
+   a column says otherwise, and none does. The MySQL schema declares
+   `utf8mb4_0900_bin` on every string column. A PostgreSQL text column that
+   declares nothing takes the collation of its database, which its operator or
+   its host chose, so every text column of the PostgreSQL schema declares
+   `COLLATE "C"` (version 7). No statement carries a `COLLATE` clause: the
+   schema owns the collation, so a statement core builds once means the same
+   thing on every dialect.
+
+   Equality was never at risk. A database's default collation is
+   deterministic, so two different strings were never equal under it, and a
+   key or a unique index held the same rows under any collation. Order was.
+   Three things take their order from a name or an id.
+   - The list `getCheckpoints` returns (§3.2), which a caller sees. Under ICU's
+     `en-US` it came back `_init`, `a-step`, `b-step`, `B-step`, where every
+     other dialect returns `B-step`, `_init`, `a-step`, `b-step`, and glibc's
+     `en_US.UTF-8` gave a third order.
+   - The attempt record a task result names (§3.10), which breaks a tie
+     between two records of one attempt by the checkpoint name. It is now
+     broken by bytes like the rest.
+   - The ties `claim` and the sweep's scans break by a run id or a task id.
+     The ids the engine mints are UUIDs of one shape, and every collation
+     orders those as their bytes do (measured on each server: 200,000 of them,
+     and no position differs), so these never differed in practice.
+
+   A range over a name, from a prefix up to the first name past it, is sound
+   only where names order by their bytes. Under ICU the range from `$started:`
+   to `$started;` is empty, because `;` sorts before `:`, and under glibc's
+   `en_US.UTF-8` it holds the bare prefix and no name under it. From version 7
+   on it is sound on PostgreSQL as well.
+
+   Three things hold the rule. The conformance case for the checkpoint list
+   writes names that separate the orders, and it failed on a PostgreSQL with a
+   linguistic collation, and only there, before version 7. CI's PostgreSQL
+   service is created with ICU's `en-US`, because the image's own C library
+   sorts by bytes whatever locale the database names, which hid this.
+   `store-postgres/test/text-collation.test.ts` reads the catalog and fails
+   for a text column or an index key whose collation is not `C`, so a column
+   that a later version adds cannot miss the declaration.
+
+   What an operator sees on PostgreSQL. Changing a text column's collation
+   changes no stored byte, so no table is rewritten, which matters because a
+   read batch's older snapshot sees a rewritten table as empty (the same test
+   holds that no version rewrites a table). PostgreSQL does rebuild every
+   index that holds a changed column, which is all fifteen, and revalidates
+   the `CHECK` constraints on `state` and `status`, which costs a scan and
+   little else: on a million rows of `runs`, 1,449 ms for `state` with its
+   constraint against 1,390 ms without. `migrate()` runs the version as one
+   transaction, and its first statement takes an ACCESS EXCLUSIVE lock on all
+   eight tables, so every read and write of the store waits until it commits.
+   Measured on PostgreSQL 17 with the data directory in memory and a million
+   rows in each of `tasks`, `runs` and `checkpoints` (870 MB of tables and
+   320 MB of indexes): 3.2 seconds with nothing else running, of which `runs`
+   took 2.0, `tasks` 0.7 and `checkpoints` 0.4. A disk will be slower.
+   Under live traffic that first statement is what lets the version commit.
+   With four workers of an older build spawning, claiming, checkpointing and
+   completing tasks throughout, the version committed in 16 of 16 runs at a
+   million rows a table (4.4 to 6.6 seconds, once on its second attempt) and
+   in 6 of 6 at four million (15 to 17 seconds). The workers waited for as
+   long as it ran and no caller saw an error: PostgreSQL ended each deadlock
+   by aborting a worker's transaction, which the executor runs again. Without
+   that statement the version took each table's lock only after it had rebuilt
+   the tables before it. A worker's transaction that held a later table while
+   it waited for an earlier one then deadlocked with a migration that had
+   indexes built, and once a table's rebuild outlasted PostgreSQL's one second
+   deadlock timeout the migration was the transaction aborted. At a million
+   rows, where a table rebuilds in about that second, that version still
+   committed in 15 of 16 runs. At four million it failed in 6 of 6, each time
+   after the executor's three attempts, and left the schema at version 6.
+   A process of an older build runs against the new schema unchanged, because
+   its statements are the same statements, and a newer build on a database
+   still at version 6 behaves as every build did before it. An older build
+   that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
+   it does after every migration. libSQL and MySQL take an empty version 7,
+   which keeps the numbering of the dialects aligned. On a fresh database the
+   version costs PostgreSQL nine statements, 17 ms where opening and
+   migrating a test fixture took 27, and costs MySQL one more version read and
+   one more locked batch, 4 ms where it took 39 (medians of 75 fixtures on
+   each side, interleaved, on one machine).
+
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
 `awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal

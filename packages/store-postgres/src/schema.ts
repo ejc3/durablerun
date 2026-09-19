@@ -185,6 +185,85 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
        WHERE wake_event IS NOT NULL AND state = 'pending'`,
     ],
   },
+  {
+    // A text column takes the collation of its database unless it declares one, and a
+    // database's collation is its operator's or its host's choice. Under a linguistic one
+    // `getCheckpoints` returned a caller's names in an order no other dialect returns,
+    // the task result's tie between two names broke another way, and a range over a name
+    // would miss its rows. SQLite compares bytes and the MySQL schema declares a binary
+    // collation on every string column, so every text column here declares "C", which
+    // compares bytes. The stored bytes do not change, so no table is rewritten, which the
+    // rule above forbids: PostgreSQL rebuilds each index that holds a changed column and
+    // nothing else, and the collation test holds both. The first statement takes every
+    // lock the rest need before any index is built. Without it the version takes each
+    // table's lock only after it has rebuilt the tables before it, and a live transaction
+    // that holds a later table while it waits for an earlier one deadlocks with a
+    // migration that has indexes built. Once a table's rebuild outlasts the deadlock
+    // timeout, the migration is the transaction PostgreSQL aborts, and it lost every
+    // attempt that way. With the locks first it can only be aborted before it has built
+    // anything, and the executor runs it again.
+    version: 7,
+    statements: [
+      `LOCK TABLE meta, tasks, runs, checkpoints, events, waits, event_locks, drivers
+        IN ACCESS EXCLUSIVE MODE`,
+      `ALTER TABLE meta
+        ALTER COLUMN key TYPE TEXT COLLATE "C",
+        ALTER COLUMN value TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE tasks
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN params TYPE TEXT COLLATE "C",
+        ALTER COLUMN headers TYPE TEXT COLLATE "C",
+        ALTER COLUMN retry_strategy TYPE TEXT COLLATE "C",
+        ALTER COLUMN cancellation TYPE TEXT COLLATE "C",
+        ALTER COLUMN idempotency_key TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN last_attempt_run TYPE TEXT COLLATE "C",
+        ALTER COLUMN completed_payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN failure_reason TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE runs
+        ALTER COLUMN run_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN claimed_by TYPE TEXT COLLATE "C",
+        ALTER COLUMN wake_event TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN run_db TYPE TEXT COLLATE "C",
+        ALTER COLUMN result TYPE TEXT COLLATE "C",
+        ALTER COLUMN failure_reason TYPE TEXT COLLATE "C",
+        ALTER COLUMN wake_step TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE checkpoints
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN checkpoint_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN status TYPE TEXT COLLATE "C",
+        ALTER COLUMN owner_run_id TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE events
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE waits
+        ALTER COLUMN run_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN step_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN status TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE event_locks
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE drivers
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN driver_id TYPE TEXT COLLATE "C"`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
