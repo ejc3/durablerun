@@ -6,8 +6,13 @@ import {
 import {
   EventTimeoutError,
   FatalTaskError,
+  IDENTIFIER_CHARACTERS,
+  type IdSource,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   StoreUnavailableError,
+  childSpawnKey,
 } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -90,6 +95,12 @@ interface ProgramOp {
   childFails?: boolean
   /** Which of the program's spawned children an await-child awaits, in spawn order. */
   childIndex?: number
+  /** The name-length axis: the step name or the child's task name, in place of the corpus's. */
+  name?: string
+  /** The name-length axis: a step that registers a rollback, so its key must leave its saga names room. */
+  registersRollback?: boolean
+  /** The name-length axis: a spawn whose child's task id has this many characters. */
+  childIdLength?: number
 }
 
 const KIND_TO_METHOD: Record<ProgramOp['kind'], keyof TaskContext> = {
@@ -196,15 +207,19 @@ function fingerprint(v: unknown): string {
   return `${typeof v}:${String(v)}`
 }
 
-function programHandler(ops: ProgramOp[]) {
+function programHandler(ops: ProgramOp[], watch?: Watch) {
   return async (ctx: TaskContext) => {
     const observed: string[] = []
     const children: ChildTask[] = []
-    for (const op of ops) {
+    for (const [index, op] of ops.entries()) {
+      watch?.trace.push(`op ${index}`)
       switch (op.kind) {
         case 'spawn':
           children.push(
-            await ctx.spawn('child', { valueIndex: op.valueIndex, fails: op.childFails === true }),
+            await ctx.spawn(op.name ?? 'child', {
+              valueIndex: op.valueIndex,
+              fails: op.childFails === true,
+            }),
           )
           break
         case 'await-child': {
@@ -263,7 +278,14 @@ function programHandler(ops: ProgramOp[]) {
         case 'step':
           observed.push(
             fingerprint(
-              await ctx.step(STEP_NAMES[op.nameIndex] ?? 'op', () => VALUES[op.valueIndex]),
+              await ctx.step(
+                op.name ?? STEP_NAMES[op.nameIndex] ?? 'op',
+                () => {
+                  watch?.bodies.push(index)
+                  return VALUES[op.valueIndex]
+                },
+                op.registersRollback ? { rollback: () => {} } : undefined,
+              ),
             ),
           )
           break
@@ -332,44 +354,105 @@ function faultPoints(measuredCalls: number): number[] {
   return points
 }
 
+/**
+ * What one run is watched for, beside what it returns. It is kept out of the returned
+ * record on purpose: that record is compared whole between two schedules, and how often a
+ * body ran or a call was made differs between schedules for reasons that are no defect.
+ */
+interface Watch {
+  /**
+   * What the task did, in order: `attempt` as a worker takes the run, `op N` as the task
+   * starts its Nth call, and every store call the SDK makes in between, by method.
+   */
+  readonly trace: string[]
+  /** The index of every step whose body ran, once for each time it ran. */
+  readonly bodies: number[]
+  /** The user attempts the task was charged. */
+  attempts?: number
+}
+
+interface RunOptions {
+  readonly tamper?: (store: SchedulerStore) => SchedulerStore
+  /** Every generated program completes. A name past its room fails its task for good. */
+  readonly ends?: 'completed' | 'failed'
+  readonly watch?: Watch
+}
+
 async function runProgram(
   ops: ProgramOp[],
   seed: string,
   failAtCall: number,
-  tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
+  options: RunOptions = {},
 ): Promise<{
   result: string | undefined
+  state: string | undefined
+  failure: string | undefined
   checkpoints: unknown[]
   /** How many tasks of each name exist at the end: a second child is a second row here. */
   tasks: string[]
+  /** The longest checkpoint name and the longest task id the run left, in characters. */
+  longestCheckpointName: number
+  longestTaskId: number
   calls: number
 }> {
+  const { tamper = (store: SchedulerStore) => store, ends = 'completed', watch } = options
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
     await admin.migrate()
-    const ids = seededIdSource(new Rng(seed))
+    // A child's id is the engine's, so a child await has a key near the width only when the
+    // engine mints a long id. A store's spawn mints the task's id first and before it
+    // awaits anything, so the first id minted inside the spawn of such a child is padded.
+    const seeded = seededIdSource(new Rng(seed))
+    const longChildren = new Map(
+      ops.flatMap((op) =>
+        op.kind === 'spawn' && op.childIdLength !== undefined
+          ? [[op.name ?? 'child', op.childIdLength] as const]
+          : [],
+      ),
+    )
+    let padNextIdTo: number | undefined
+    const ids: IdSource = {
+      token: () => seeded.token(),
+      uuidv7: () => {
+        const id = seeded.uuidv7()
+        const length = padNextIdTo
+        padNextIdTo = undefined
+        return length === undefined ? id : id.padEnd(length, 'x')
+      },
+    }
     const real = new LibsqlSchedulerStore(raw, ids)
     let calls = 0
+    // True while a worker runs the task, so the trace holds the SDK's calls and not this loop's.
+    let inRun = false
     const store = new Proxy(tamper(real), {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver)
         if (typeof value !== 'function' || prop === 'constructor') return value
         return (...args: unknown[]) => {
           calls++
+          if (inRun) watch?.trace.push(String(prop))
           if (calls === failAtCall) {
             return Promise.reject(new StoreUnavailableError('injected outage'))
           }
-          return (value as (...a: unknown[]) => unknown).apply(target, args)
+          if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
+          try {
+            return (value as (...a: unknown[]) => unknown).apply(target, args)
+          } finally {
+            padNextIdTo = undefined
+          }
         }
       },
     }) as SchedulerStore
     const clock = new FakeClock()
     await admin.setFakeNowEpochMs(clock.now)
     const registry: TaskRegistry = new Map([
-      ['prog', programHandler(ops)],
+      ['prog', programHandler(ops, watch)],
       ['child', childHandler],
       ['stuck', stuckHandler],
+      ...ops.flatMap((op) =>
+        op.kind === 'spawn' && op.name !== undefined ? [[op.name, childHandler] as const] : [],
+      ),
     ])
     const spawned = await real.spawn(Q, 'prog', '{}')
     const externals = ops
@@ -392,10 +475,13 @@ async function runProgram(
       }
       const [run] = await real.claim(Q, `w${round}`, { leaseSeconds: 60, limit: 1 })
       if (run) {
+        watch?.trace.push('attempt')
+        inRun = true
         await runClaimedRun(
           { store, clock, registry },
           { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
         ).catch(() => {})
+        inRun = false
       }
       // Moves time without firing sleeps: the pump parks until its pass ends.
       clock.advance(70_000)
@@ -403,7 +489,7 @@ async function runProgram(
       await real.sweep(Q, 10)
     }
     const outcome = await real.getTaskResult(Q, spawned.taskId)
-    expect(outcome?.state, `program must terminate (fault at call ${failAtCall})`).toBe('completed')
+    expect(outcome?.state, `program must terminate (fault at call ${failAtCall})`).toBe(ends)
     const [cps] = await raw.batch(
       't',
       [
@@ -427,10 +513,29 @@ async function runProgram(
       ],
       'read',
     )
+    const [measured] = await raw.batch(
+      't',
+      [
+        {
+          sql: `SELECT (SELECT MAX(LENGTH(task_id)) FROM tasks) AS id_width,
+                       (SELECT attempts FROM tasks WHERE task_id = ?) AS attempts`,
+          args: [spawned.taskId],
+        },
+      ],
+      'read',
+    )
+    if (watch !== undefined) watch.attempts = Number(measured?.rows[0]?.attempts)
     return {
       calls,
       tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
       result: outcome?.completedPayloadJson,
+      state: outcome?.state,
+      failure: outcome?.failureReasonJson,
+      longestCheckpointName: Math.max(
+        0,
+        ...(cps?.rows ?? []).map((row) => [...String(row.checkpoint_name)].length),
+      ),
+      longestTaskId: Number(measured?.rows[0]?.id_width),
       checkpoints: withoutChildIds(
         (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
       ),
@@ -438,6 +543,26 @@ async function runProgram(
   } finally {
     raw.close()
   }
+}
+
+/**
+ * The harness's one comparison: a program interrupted at any sampled store call ends as its
+ * reference run did. It answers the reference, so a caller can say more about it.
+ */
+async function everyFaultPointYieldsTheReference(
+  label: string,
+  run: (seed: string, failAtCall: number) => ReturnType<typeof runProgram>,
+): ReturnType<typeof runProgram> {
+  const reference = await run(`ref-${label}`, 0)
+  for (const call of faultPoints(reference.calls)) {
+    const faulted = await run(`fault-${label}-${call}`, call)
+    expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
+    expect(faulted.state, `fault at call ${call}`).toBe(reference.state)
+    expect(faulted.failure, `fault at call ${call}`).toBe(reference.failure)
+    expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
+    expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
+  }
+  return reference
 }
 
 describe('context-method enrollment (the inventory gate)', () => {
@@ -481,7 +606,9 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
   it('sees a duplicated child', async () => {
     const reference = await runProgram(SPAWNS_ONE_CHILD, 'dup-ref', 0)
     // The fault lands on the spawn's checkpoint, so the next pass spawns again.
-    const duplicated = await runProgram(SPAWNS_ONE_CHILD, 'dup-fault', 5, forgetsTheChildKey)
+    const duplicated = await runProgram(SPAWNS_ONE_CHILD, 'dup-fault', 5, {
+      tamper: forgetsTheChildKey,
+    })
     expect(
       JSON.stringify(duplicated) === JSON.stringify({ ...reference, calls: duplicated.calls }),
       'mutation-verdict:behavior:replay-harness-counts-tasks',
@@ -504,13 +631,235 @@ describe('replay equivalence (generated programs x fault points x adversarial va
   for (let seed = 0; seed < 6; seed++) {
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
-      const reference = await runProgram(ops, `ref-${seed}`, 0)
-      for (const call of faultPoints(reference.calls)) {
-        const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
-        expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
-        expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
-        expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
+      await everyFaultPointYieldsTheReference(String(seed), (runSeed, failAtCall) =>
+        runProgram(ops, runSeed, failAtCall),
+      )
+    }, 60_000)
+  }
+})
+
+/**
+ * The name-length axis. A durable identifier holds 255 characters (DESIGN.md §3.4 rule 10),
+ * and the SDK stores a task's names under keys that are longer than the names, so a name
+ * that fits can have a key that does not. The corpus above draws every name from six short
+ * ones, so no generated program built a key near the width, and a refusal that depends on a
+ * name's length was met by no generated program. Every call that passes a name therefore
+ * runs here with a name one character under its room, at its room, and one past it.
+ *
+ * A call's room is never typed. Each member says what the longest durable name built from a
+ * name is, and its room is what that leaves of the width.
+ */
+type GeneratedMethod = {
+  [Method in keyof typeof CTX_COVERAGE]: (typeof CTX_COVERAGE)[Method] extends 'generated'
+    ? Method
+    : never
+}[keyof typeof CTX_COVERAGE]
+
+/** Every generated method says which members pass a name through it. A new method must too. */
+const NAMED_CALLS = {
+  step: ['step', 'step used twice', 'step that registers a rollback'],
+  sleepFor: 'takes no name',
+  sleepUntil: 'takes no name',
+  awaitEvent: ['awaitEvent'],
+  emitEvent: ['emitEvent'],
+  spawn: ['spawn'],
+  awaitTask: ['awaitTask'],
+} as const satisfies Record<GeneratedMethod, readonly string[] | 'takes no name'>
+
+/** A task id as this harness mints one. A stored child key holds its parent's id, by length. */
+const SAMPLE_TASK_ID = seededIdSource(new Rng('name-length-axis')).uuidv7()
+
+interface NamedCall {
+  readonly id: string
+  /** The longest durable name the engine builds from `name`. */
+  longest(name: string): string
+  /** The longest checkpoint name a program that completes leaves, when the call leaves one. */
+  stored?(name: string): string
+  /** The calls that pass the name. A name past its room is refused at the last of them. */
+  ops(name: string): ProgramOp[]
+  /** What the failure names, which is what the task passed. */
+  readonly names: string
+  /**
+   * The store calls the SDK makes for the refused call. There are none, except that a
+   * child's task name is held by the store, which builds the longer child key: DESIGN.md's
+   * one exception to a key being refused before any store call.
+   */
+  readonly reaches: readonly string[]
+  /** The longest task id the run leaves: a harness id, or the long id an awaited child has. */
+  taskIdLength?(name: string): number
+}
+
+const namedStep = (name: string, registersRollback = false): ProgramOp => ({
+  kind: 'step',
+  valueIndex: 0,
+  nameIndex: 0,
+  name,
+  ...(registersRollback ? { registersRollback } : {}),
+})
+
+const NAME_AXIS: readonly NamedCall[] = [
+  {
+    id: 'step',
+    longest: (name) => name,
+    stored: (name) => name,
+    ops: (name) => [namedStep(name)],
+    names: 'step name',
+    reaches: [],
+  },
+  {
+    // The second use of a name is stored under a counter, which the name's own length hides.
+    id: 'step used twice',
+    longest: (name) => `${name}#2`,
+    stored: (name) => `${name}#2`,
+    ops: (name) => [namedStep(name), namedStep(name)],
+    names: 'step name',
+    reaches: [],
+  },
+  {
+    // A registered step's key must leave room for the longest of its saga names.
+    id: 'step that registers a rollback',
+    longest: (name) => `${SAGA_TRIES_PREFIX}${name}`,
+    stored: (name) => `${SAGA_STARTED_PREFIX}${name}`,
+    ops: (name) => [namedStep(name, true)],
+    names: 'step name',
+    reaches: [],
+  },
+  {
+    // The parked path, so the wait and the wake it carries hold the key as well as the memo.
+    id: 'awaitEvent',
+    longest: (name) => `$await:${name}`,
+    stored: (name) => `$await:${name}`,
+    ops: (name) => [{ kind: 'await-external', valueIndex: 0, nameIndex: 0, eventName: name }],
+    names: 'event name',
+    reaches: [],
+  },
+  {
+    // An emit has no key. The name itself is what is stored.
+    id: 'emitEvent',
+    longest: (name) => name,
+    ops: (name) => [{ kind: 'emit', valueIndex: 0, nameIndex: 0, eventName: name }],
+    names: 'event name',
+    reaches: [],
+  },
+  {
+    id: 'spawn',
+    longest: (name) => childSpawnKey(SAMPLE_TASK_ID, `$spawn:${name}`),
+    stored: (name) => `$spawn:${name}`,
+    ops: (name) => [{ kind: 'spawn', valueIndex: 0, nameIndex: 0, name }],
+    names: "ctx.spawn('",
+    reaches: ['spawn'],
+  },
+  {
+    // The name here is the child's id, which is the engine's, so the axis asks for its length.
+    id: 'awaitTask',
+    longest: (id) => `$await-task:${id}`,
+    stored: (id) => `$await-task:${id}`,
+    ops: (id) => [
+      { kind: 'spawn', valueIndex: 0, nameIndex: 0, childIdLength: id.length },
+      { kind: 'await-child', valueIndex: 0, nameIndex: 0, childIndex: 0 },
+    ],
+    names: 'child task id',
+    reaches: [],
+    taskIdLength: (id) => id.length,
+  },
+]
+
+const PLAIN_STEP: ProgramOp = { kind: 'step', valueIndex: 0, nameIndex: 0 }
+
+/** What each attempt did after it started the call at `marker`: one list for each such attempt. */
+function callsAfter(trace: readonly string[], marker: string): string[][] {
+  const attempts: string[][] = []
+  let open: string[] | undefined
+  for (const entry of trace) {
+    if (entry === 'attempt') {
+      open = undefined
+    } else if (entry === marker) {
+      open = []
+      attempts.push(open)
+    } else {
+      open?.push(entry)
+    }
+  }
+  return attempts
+}
+
+describe('the name-length axis (every call that passes a name: under its room, at it, and past it)', () => {
+  it('has a member for every generated call that passes a name', () => {
+    const owed = Object.values(NAMED_CALLS).flatMap((members) =>
+      members === 'takes no name' ? [] : [...members],
+    )
+    expect(NAME_AXIS.map((call) => call.id).sort()).toEqual([...owed].sort())
+  })
+
+  for (const call of NAME_AXIS) {
+    const room = IDENTIFIER_CHARACTERS - [...call.longest('')].length
+
+    it(`${call.id}: a name under its room and at it replays like any other, and one past it fails the task for good with nothing stored`, async () => {
+      for (const length of [room - 1, room]) {
+        const name = 'n'.repeat(length)
+        const reference = await everyFaultPointYieldsTheReference(
+          `${call.id}-${length}`,
+          (seed, failAtCall) => runProgram([...call.ops(name), PLAIN_STEP], seed, failAtCall),
+        )
+        // The run really built what the member says it builds, at the length it says.
+        expect(
+          {
+            longestName: [...call.longest(name)].length,
+            longestCheckpointName: reference.longestCheckpointName,
+            longestTaskId: reference.longestTaskId,
+          },
+          `a name of ${length}`,
+        ).toEqual({
+          longestName: IDENTIFIER_CHARACTERS - (room - length),
+          longestCheckpointName:
+            call.stored === undefined
+              ? reference.longestCheckpointName
+              : [...call.stored(name)].length,
+          longestTaskId: call.taskIdLength?.(name) ?? SAMPLE_TASK_ID.length,
+        })
       }
+
+      const name = 'n'.repeat(room + 1)
+      const ops = [PLAIN_STEP, ...call.ops(name), PLAIN_STEP]
+      const refusedAt = ops.length - 2
+      const reference = await everyFaultPointYieldsTheReference(
+        `${call.id}-past`,
+        async (seed, failAtCall) => {
+          const watch: Watch = { trace: [], bodies: [] }
+          const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+          // On every schedule: no body at or after the refused call ran. Every attempt that
+          // started the refused call then made the store calls the member names and recorded
+          // the failure, and nothing else: an attempt the injected outage cut short made the
+          // first of those only. The task was charged one attempt, so nothing was retried.
+          const thenCalled = [...call.reaches, 'fail']
+          const after = callsAfter(watch.trace, `op ${refusedAt}`)
+          expect(
+            {
+              ranAtOrAfterTheRefusedCall: watch.bodies.filter((index) => index >= refusedAt),
+              calledAnythingElse: after.filter((calls) =>
+                calls.some((made, at) => made !== thenCalled[at]),
+              ),
+              lastAttempt: after.at(-1),
+              attempts: watch.attempts,
+            },
+            `fault at call ${failAtCall}`,
+          ).toEqual({
+            ranAtOrAfterTheRefusedCall: [],
+            calledAnythingElse: [],
+            lastAttempt: thenCalled,
+            attempts: 1,
+          })
+          return run
+        },
+      )
+      const failure = JSON.parse(reference.failure ?? 'null') as {
+        name?: string
+        message?: string
+      } | null
+      expect({
+        name: failure?.name,
+        namesWhatTheTaskPassed: failure?.message?.includes(call.names),
+      }).toEqual({ name: 'FatalTaskError', namesWhatTheTaskPassed: true })
     }, 60_000)
   }
 })
