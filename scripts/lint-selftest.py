@@ -3996,16 +3996,6 @@ ENV_BAD_INVOCATIONS = [
 # is NOT covered there is the near miss: correct code that looks like a
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
-    (
-        "clock-lint.py",
-        tree_store("UPDATE runs SET x = 1", "x <= NOW()"),
-        "text that feeds a tree is read by the tree rules, and left this lint's scope",
-    ),
-    (
-        "fragment-lint.py",
-        tree_store("UPDATE runs SET x = 1", "t.cancel_at_ms <= 5"),
-        "text that feeds a tree is read by the tree rules, and left this lint's scope",
-    ),
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
     (
         "batch-lint.py",

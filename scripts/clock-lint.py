@@ -25,8 +25,6 @@ from source_lex import (
     sql_file_view,
     sql_template_view,
     store_sql_sources,
-    text_statement_calls,
-    text_statement_view,
     validated_root,
 )
 
@@ -37,9 +35,6 @@ try:
         "clock-lint.py",
     )
     source_paths = store_sql_sources(root, "clock-lint.py")
-    # What this lint scans is the store text that reaches no statement tree. A file that
-    # builds trees is narrowed to its raw batch calls (source_lex.text_statement_view).
-    call_inventory = text_statement_calls(root, source_paths, "clock-lint.py")
 except ValueError as error:
     sys.exit(str(error))
 
@@ -97,10 +92,7 @@ for path in source_paths:
     # remains blank, so `'NOW()'` cannot impersonate a call.
     try:
         view = sql_file_view if path.suffix == ".sql" else sql_template_view
-        visible = text_statement_view(
-            view(source, frozenset({"fake_now_ms", "now"})),
-            call_inventory.get(path.relative_to(root).as_posix(), ()),
-        )
+        visible = view(source, frozenset({"fake_now_ms", "now"}))
     except ValueError as error:
         print(f"{path.relative_to(root)}: cannot lex TypeScript source: {error}")
         violations += 1
