@@ -249,8 +249,9 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 - No numeric underscore literals (`1_000_000`) inside SQL strings.
 - Partial-index usability requires the query's WHERE to textually imply the
   index's WHERE — an added state in an IN-list can silently drop the index.
-  Hot queries are pinned by EXPLAIN QUERY PLAN tests against the EXACT
-  exported production SQL, never stand-ins. [query-plans.test.ts]
+  Hot queries are pinned by EXPLAIN QUERY PLAN tests against the statements a
+  real operation sends, recorded from the store, never stand-ins.
+  [query-plans.test.ts]
 - `ORDER BY run_id DESC` in correlated subqueries can force temp b-trees;
   prefer an indexed column (`attempt DESC` over `runs_task_attempt`).
 - Interactive transactions are banned (Turso 5s window): one `batch()` or

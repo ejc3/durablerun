@@ -93,8 +93,13 @@ import { readingOnce } from './tree-walk.js'
  */
 
 const {
+  ArrayIsArray: arrayIsArray,
+  ObjectKeys: objectKeys,
   Set: TrustedSet,
   TypeError: TrustedTypeError,
+  WeakMap: TrustedWeakMap,
+  WeakMapGet: weakMapGet,
+  WeakMapSet: weakMapSet,
   WeakSet: TrustedWeakSet,
   WeakSetAdd: weakSetAdd,
   WeakSetHas: weakSetHas,
@@ -235,6 +240,9 @@ export interface FencedResult {
 export class FencedBatch {
   private readonly statements: Named[] = []
   private readonly transactionLocks: SqlTransactionLock[] = []
+  /** The reads of a batch that only reads, and the ones among them that read the clock. */
+  private readonly reads: string[] = []
+  private readonly clockReads: string[] = []
   private readonly now: string
   private readonly tree: TreeDialect
 
@@ -666,6 +674,50 @@ export class FencedBatch {
     return this.addTree('openTail', name, statement, null)
   }
 
+  /**
+   * A SELECT of a batch that only reads: no compare-and-set, no stamp, and no fence to
+   * gate it. Every other tree rule still reads it. A batch holds reads or a transition,
+   * never both, and a batch of reads runs in read mode whatever the caller asked for.
+   *
+   * A read may hold the clock. Two statements of one batch see different clocks on a real
+   * backend, so a second read of the clock must say, in `drift`, why a disagreement
+   * between the two is harmless, and no other read may give one. Like an open tail's
+   * reason it is a forcing function, written beside the statement, and nothing reads it back.
+   */
+  readTree(name: string, statement: DefinedStatement, drift = ''): this {
+    return this.addTree('read', name, statement, null, drift)
+  }
+
+  /**
+   * `readTree` for a read a store sends again and again. The read is built, checked and
+   * compiled once for this batch's dialect and clock, from stand-in values, and every call
+   * after that sends the same SQL with its own values, in a statement object of its own.
+   * A call's values are held to the types the read declares on every call, the first
+   * included, before anything is prepared or sent, so a refused call leaves nothing behind.
+   * What depends on the batch is still asked on every call: that it holds reads alone, and
+   * the rule about its reads of the clock.
+   */
+  readPrepared<B extends ReadBinds>(
+    name: string,
+    read: PreparedRead<B>,
+    binds: B,
+    drift = '',
+  ): this {
+    const at = this.admitBeside('tail', name, true)
+    const values = checkedBinds(at, read, binds)
+    const shape = readShape(read, this.tree, this.now, (standIns, suffix) => {
+      const once = new FencedBatch(this.label, this.seed, { now: this.now, tree: this.tree })
+      return once.readTree(`${name}${suffix}`, read.build(standIns)).statements[0]?.compiled
+    })
+    const compiled = { sql: shape.sql, args: shapeArgs(shape, values) }
+    // Counted last, so a read refused above leaves no clock read behind.
+    this.countClockRead(at, name, drift, shape.readsClock)
+    weakSetAdd(treeBuilt, compiled)
+    this.statements.push({ name, kind: 'tail', fence: null, atMost: null, compiled })
+    this.reads.push(name)
+    return this
+  }
+
   /** The batch-shape rules every statement passes. Returns the error prefix. */
   private admit(kind: Kind, name: string): string {
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -699,31 +751,64 @@ export class FencedBatch {
    * for the batch clock's exact text and for clock spellings, as `scripts/clock-lint.py`
    * scans store sources.
    */
+  /** `admit`, and the rule that a batch holds reads or a transition, never both. */
+  private admitBeside(kind: Kind, name: string, reading: boolean): string {
+    const at = this.admit(kind, name)
+    if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {
+      throw new Error(
+        `${at}: a batch holds reads or a transition, never both, because a read beside a write must be a tail that a fence gates`,
+      )
+    }
+    return at
+  }
+
+  /**
+   * Hold a read to the one rule about a batch's reads of the clock, and count it. A reason
+   * is owed by a second read of the clock and by no other read: given anywhere else, it
+   * would outlive the read it excused.
+   */
+  private countClockRead(at: string, name: string, drift: string, readsClock: boolean): void {
+    const needed = readsClock && this.clockReads.length !== 0
+    const excused = drift.trim() !== ''
+    if (needed !== excused) {
+      throw new Error(
+        needed
+          ? `${at} is this batch's second read of the clock: two statements of one batch see different clocks, so say why a disagreement with '${this.clockReads[0]}' is harmless`
+          : `${at} gives a reason for a second read of the clock, and it is not one: a reason stands beside the read it excuses and nowhere else`,
+      )
+    }
+    if (readsClock) this.clockReads.push(name)
+  }
+
   private addTree(
-    asked: Kind | 'openTail',
+    asked: Kind | 'openTail' | 'read',
     name: string,
     statement: DefinedStatement,
     atMost: number | null,
+    drift = '',
   ): this {
-    return readingOnce(() => this.admitTree(asked, name, statement, atMost))
+    return readingOnce(() => this.admitTree(asked, name, statement, atMost, drift))
   }
 
   /** `addTree`'s checks. They run under `readingOnce`, so the tree's object graph is read once for all of them. */
   private admitTree(
-    asked: Kind | 'openTail',
+    asked: Kind | 'openTail' | 'read',
     name: string,
     statement: DefinedStatement,
     atMost: number | null,
+    drift: string,
   ): this {
-    // An open tail is a tail in every way but one: no fence has to gate it.
-    const open = asked === 'openTail'
+    // An open tail is a tail in every way but one: no fence has to gate it. A read is an
+    // open tail of a batch that holds nothing else, and it may read the clock.
+    const reading = asked === 'read'
+    const open = asked === 'openTail' || reading
     const kind: Kind = open ? 'tail' : asked
-    const at = this.admit(kind, name)
+    const at = this.admitBeside(kind, name, reading)
     if (!isDefinedStatement(statement)) {
       throw new Error(`${at} must come from defineStatement, which refuses undefined binds`)
     }
     const { tree } = statement
-    const grammar = statementGrammarProblem(tree)
+    const grammar = statementGrammarProblem(tree, reading)
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
@@ -899,7 +984,7 @@ export class FencedBatch {
     )
     // The clock token compiles to the batch clock's own text, so one comparison finds
     // the token and that text written into a fragment alike.
-    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {
+    if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {
       throw new Error(clockReadRule(at))
     }
     if (spelledClock) {
@@ -937,6 +1022,8 @@ export class FencedBatch {
         `${at} argument ${index} is ${value === undefined ? 'undefined' : typeof value}: bind a string, number, bigint, bytes, or null`,
       )
     })
+    // Counted last, so a read that one of the rules above refused leaves no clock read behind.
+    if (reading) this.countClockRead(at, name, drift, compiled.sql.includes(this.now))
     const held = {
       name,
       kind,
@@ -949,13 +1036,18 @@ export class FencedBatch {
     }
     weakSetAdd(treeBuilt, held.compiled)
     this.statements.push(held)
+    if (reading) this.reads.push(name)
     return this
   }
 
-  async run(db: SqlExecutor, mode: SqlBatchMode = 'write'): Promise<FencedResult> {
-    if (!this.statements.some((s) => s.kind === 'cas' || s.kind === 'casMany')) {
+  async run(db: SqlExecutor, asked: SqlBatchMode = 'write'): Promise<FencedResult> {
+    // A batch of reads has no compare-and-set to win, and it runs in read mode whatever
+    // was asked: nothing in it may write.
+    const readsOnly = this.reads.length !== 0
+    if (!readsOnly && !this.statements.some((s) => s.kind === 'cas' || s.kind === 'casMany')) {
       throw new Error(`FencedBatch[${this.label}] has no CAS`)
     }
+    const mode: SqlBatchMode = readsOnly ? 'read' : asked
     const compiled = this.statements.map((s) => s.compiled)
     const transactionLock = this.transactionLocks[0]
     if (transactionLock !== undefined && mode !== 'write') {
@@ -979,6 +1071,11 @@ export class FencedBatch {
     let count = 0
     this.statements.forEach((s, i) => {
       const result = raw[i] as SqlResult
+      if (readsOnly && !arrayIsArray(result?.rows)) {
+        throw new Error(
+          `FencedBatch[${this.label}] executor answered read '${s.name}' with no rows: a read that got no answer is never taken for no row`,
+        )
+      }
       results[s.name] = result
       const affected = result.rowsAffected
       if (s.kind === 'cas' || s.kind === 'casMany') {
@@ -1004,6 +1101,144 @@ export class FencedBatch {
     })
     return { won, count, results }
   }
+}
+
+/** The values a prepared read is sent with. Each reaches the statement as an argument and as nothing else. */
+export type ReadBinds = Readonly<Record<string, string | number>>
+
+type ReadArg = SqlStatement['args'][number]
+
+/** What a prepared read compiled to: its SQL, and for each argument the bind it carries or the constant the statement holds. */
+interface ReadShape {
+  readonly sql: string
+  readonly slots: readonly ({ readonly bind: string } | { readonly constant: ReadArg })[]
+  readonly readsClock: boolean
+}
+
+/** The type of each bind of a prepared read, declared where the read is prepared and never taken from a call. */
+export type ReadKinds<B extends ReadBinds> = {
+  readonly [K in keyof B]: B[K] extends number ? 'number' : 'string'
+}
+
+/**
+ * A read made by `prepareRead`. It keeps what it compiled to, for each dialect and clock.
+ * A read is first prepared wherever it is first sent, which can be inside a task that has
+ * replaced the global `Map`, so the record is core's captured WeakMap and a plain list.
+ */
+export interface PreparedRead<B extends ReadBinds> {
+  readonly kinds: ReadKinds<B>
+  readonly build: (binds: B) => DefinedStatement
+  readonly shapes: WeakMap<
+    TreeDialect,
+    readonly { readonly now: string; readonly shape: ReadShape }[]
+  >
+}
+
+/**
+ * A read for `FencedBatch.readPrepared`. `kinds` declares each bind's type, which every
+ * call is held to. `build` is given stand-in values of those types, never a caller's, so
+ * it may only pass them on to the statement: a statement whose shape depends on a value is
+ * refused when it is first prepared.
+ */
+export function prepareRead<B extends ReadBinds>(
+  kinds: ReadKinds<B>,
+  build: (binds: B) => DefinedStatement,
+): PreparedRead<B> {
+  return Object.freeze({ kinds: Object.freeze({ ...kinds }), build, shapes: new TrustedWeakMap() })
+}
+
+/** A value's type, by name, to compare with the type a prepared read declares for a bind. */
+const kindOf = (value: unknown): string => typeof value
+
+/**
+ * A call's own values, each held to the type its read declares. It is asked of every
+ * call, the first included, before the read is prepared or sent, as `defineStatement` asks
+ * of every statement it mints that no bind is undefined. A refused call has reached
+ * neither the record of what the read compiled to nor the executor.
+ */
+function checkedBinds<B extends ReadBinds>(at: string, read: PreparedRead<B>, binds: B): B {
+  const kinds: Readonly<Record<string, string>> = read.kinds
+  for (const key of objectKeys(kinds)) {
+    const value = (binds as ReadBinds)[key]
+    if (kindOf(value) !== kinds[key]) {
+      throw bindCompilationError(
+        `${at} bind '${key}' is ${kindOf(value)}: this prepared read declares it a ${kinds[key]}`,
+      )
+    }
+  }
+  return binds
+}
+
+/**
+ * A value no caller sends, distinct for each bind and each round, of the bind's declared
+ * type. Numbers stand far apart, so arithmetic on one lands on no other and is seen as a
+ * value the statement made up.
+ */
+const standIn = (round: number, key: string, kind: string, index: number): string | number =>
+  kind === 'number'
+    ? Number.MIN_SAFE_INTEGER + round * 2 ** 40 + index * 2 ** 20
+    : `\u00a7${round}:${key}\u00a7`
+
+/**
+ * What a prepared read compiles to, from its first use with a dialect and a clock. It is
+ * admitted twice, with two sets of stand-ins and under two names. An argument that is a
+ * stand-in both times is that bind's slot, one that is the same value both times is the
+ * statement's own constant, and anything else means the statement depends on the values
+ * it was given or on its own name.
+ */
+function readShape<B extends ReadBinds>(
+  read: PreparedRead<B>,
+  tree: TreeDialect,
+  now: string,
+  admit: (standIns: B, suffix: string) => SqlStatement | undefined,
+): ReadShape {
+  const kept = weakMapGet(read.shapes, tree) ?? []
+  for (let index = 0; index < kept.length; index++) {
+    if (kept[index]?.now === now) return (kept[index] as { shape: ReadShape }).shape
+  }
+  const kinds: Readonly<Record<string, string>> = read.kinds
+  const keys = objectKeys(kinds)
+  // The second round goes under another name, so a statement that holds its own stamp
+  // compiles differently each time and is refused as depending on it.
+  const [first, second] = ['', '-again'].map((suffix, at) => {
+    const values = Object.fromEntries(
+      keys.map((key, index) => [key, standIn(at + 1, key, kinds[key] as string, index)]),
+    )
+    return { values, compiled: admit(values as B, suffix) }
+  })
+  const before = first?.compiled?.args ?? []
+  const after = second?.compiled?.args ?? []
+  const slots = before.map((arg, index) => {
+    const bind = keys.find(
+      (key) => first?.values[key] === arg && second?.values[key] === after[index],
+    )
+    return bind !== undefined ? { bind } : arg === after[index] ? { constant: arg } : undefined
+  })
+  const sql = first?.compiled?.sql
+  const fixed =
+    sql !== undefined &&
+    sql === second?.compiled?.sql &&
+    before.length === after.length &&
+    slots.every((slot) => slot !== undefined)
+  if (!fixed) {
+    throw new Error(
+      'a prepared read must compile to one statement whatever values it is sent with: its build may only pass its binds on to the statement as arguments, and the statement may hold no stamp',
+    )
+  }
+  const shape: ReadShape = {
+    sql,
+    slots: slots.filter((slot) => slot !== undefined),
+    readsClock: sql.includes(now),
+  }
+  weakMapSet(read.shapes, tree, kept.concat({ now, shape }))
+  return shape
+}
+
+/** A call's own arguments for a prepared read, from values `checkedBinds` has admitted. */
+function shapeArgs(shape: ReadShape, values: ReadBinds): ReadArg[] {
+  return shape.slots.map((slot) =>
+    'constant' in slot ? slot.constant : (values[slot.bind] as string | number),
+  )
 }
 
 // An immutable instance still inherits its executor method. Seal that shared

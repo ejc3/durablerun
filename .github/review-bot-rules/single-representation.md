@@ -42,11 +42,10 @@ Flag a second copy of something that already has a definition — a query plan E
 Report a failure when the changed code introduces or materially expands any of these:
 
 - **A query plan pinned against SQL written in the test file.** A string handed to `EXPLAIN` /
-  `EXPLAIN QUERY PLAN` that is a literal in the test rather than the shipped text — an imported
-  constant (`NEXT_WAKE_SQL`, `SWEEP_SCAN_CANCELS_SQL`, `SWEEP_SCAN_EXPIRED_SQL` from
-  `packages/store-libsql/src/index.ts`) or a statement recorded off a real call, as
-  `shippedWakeStatement` does. Purely syntactic and decidable: look at what the EXPLAIN argument
-  is. This is finding 42 verbatim.
+  `EXPLAIN QUERY PLAN` that is a literal in the test rather than the shipped text, which is a
+  statement recorded off a real call, as `shippedBatch` and `shippedWakeStatement` do in
+  `packages/store-libsql/test/query-plans.test.ts`. Purely syntactic and decidable: look at
+  what the EXPLAIN argument is. This is finding 42 verbatim.
 - **A copy justified by a comment instead of a check.** "structurally the same", "mirrors",
   "equivalent to", "kept in sync with", "same shape as the shipped X" — used *about the changed
   code's own relationship to another text in the tree*, with nothing in the diff that fails when

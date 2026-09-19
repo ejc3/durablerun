@@ -1,16 +1,22 @@
 import { sql } from 'kysely'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   EventName,
+  NOW,
+  type SqlExecutor,
   aliasedAs,
   treeBuilder as db,
   fenceValue,
   isFencedBatchBindError,
+  isTreeBuiltStatement,
+  literalValue,
   nowValue,
+  prepareRead,
   rawSql,
   sqlFragment,
   stampValue,
 } from '../src/index.js'
+import { attributeExpectedFailure } from '../src/testing.js'
 import {
   type Loose,
   accepts,
@@ -1237,6 +1243,303 @@ describe('the tree path', () => {
               'a reason',
               statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
             ),
+      )
+    })
+  })
+
+  describe('a batch of reads', () => {
+    const state = () => statement(db.selectFrom('runs').select('state').where('run_id', '=', 'r1'))
+    const due = () =>
+      statement(
+        db
+          .selectFrom('runs')
+          .select('run_id')
+          .where(predicate(`claim_expires_at_ms <= ${NOW}`)),
+      )
+    const SECOND_CLOCK = /second read of the clock/
+    const runs = () => loose.selectFrom('runs').select('run_id')
+    /** An executor that answers every statement with no rows, and keeps the mode it was asked for. */
+    const modeKeeper = () => {
+      const modes: unknown[] = []
+      const executor: SqlExecutor = {
+        async batch(_label, statements, mode) {
+          modes.push(mode)
+          return statements.map(() => ({ rows: [], rowsAffected: 0 }))
+        },
+      }
+      return { modes, executor }
+    }
+
+    it('takes a SELECT with no fence to gate it', () => {
+      accepts('mutation-verdict:construction:tree-read-asked', () =>
+        batch().readTree('state', state()),
+      )
+    })
+
+    it('takes a join with no fence to gate it', () => {
+      accepts('mutation-verdict:construction:tree-read-is-open', () =>
+        batch().readTree(
+          'name',
+          statement(
+            db
+              .selectFrom('runs as r')
+              .innerJoin('tasks as t', 't.task_id', 'r.task_id')
+              .select('t.task_name')
+              .where('r.run_id', '=', 'r1'),
+          ),
+        ),
+      )
+    })
+
+    it('refuses a read beside a transition, whichever came first', () => {
+      const APART = /holds reads or a transition, never both/
+      refuses('mutation-verdict:construction:tree-reads-apart-from-a-transition', APART, () =>
+        withCas().readTree('state', state()),
+      )
+      refuses('mutation-verdict:construction:tree-reads-apart-from-a-transition', APART, () =>
+        withCas(batch().readTree('state', state())),
+      )
+    })
+
+    it('admits a read that holds the clock', () => {
+      accepts('mutation-verdict:construction:tree-read-may-hold-the-clock', () =>
+        batch().readTree('due', due()),
+      )
+    })
+
+    it('asks the first read of the clock for no reason', () => {
+      accepts('mutation-verdict:construction:tree-first-clock-read-needs-no-reason', () =>
+        batch().readTree('state', state()).readTree('due', due()),
+      )
+    })
+
+    it('refuses a second read of the clock that gives no reason', () => {
+      const twice = (drift?: string) =>
+        batch().readTree('cancels', due()).readTree('expired', due(), drift)
+      // The marked refusals come first: a mutant must fail this test at its own marker.
+      const MARKER = 'mutation-verdict:construction:tree-second-clock-read-needs-a-reason'
+      refuses(MARKER, SECOND_CLOCK, () => twice())
+      expect(() => twice('each row is checked again under its own fence')).not.toThrow()
+    })
+
+    it('takes a blank reason for no reason', () => {
+      refuses('mutation-verdict:construction:tree-clock-reason-is-not-blank', SECOND_CLOCK, () =>
+        batch().readTree('cancels', due()).readTree('expired', due(), ' '),
+      )
+    })
+
+    it('asks a read that holds no clock for no reason', () => {
+      accepts('mutation-verdict:construction:tree-clockless-read-needs-no-reason', () =>
+        batch().readTree('due', due()).readTree('state', state()),
+      )
+    })
+
+    it('refuses a reason on a read that owes none', () => {
+      const STRAY = /gives a reason for a second read of the clock, and it is not one/
+      const MARKER = 'mutation-verdict:construction:tree-clock-reason-needs-a-clock-read'
+      refuses(MARKER, STRAY, () => batch().readTree('state', state(), 'a reason'))
+      refuses(MARKER, STRAY, () => batch().readTree('due', due(), 'a reason'))
+    })
+
+    it('counts no clock read for a read it refused', () => {
+      const b = batch()
+      const spelled = statement(
+        db
+          .selectFrom('runs')
+          .select('run_id')
+          .where(predicate(`claim_expires_at_ms <= ${NOW} AND heartbeat_at_ms <= unixepoch()`)),
+      )
+      expect(() => b.readTree('spelled', spelled)).toThrow(/spells out a database clock/)
+      expect(() => b.readTree('due', due())).not.toThrow()
+    })
+
+    it('counts a read of the clock wherever it stands in the batch', () => {
+      refuses('mutation-verdict:construction:tree-clock-read-counted', SECOND_CLOCK, () =>
+        batch().readTree('cancels', due()).readTree('state', state()).readTree('expired', due()),
+      )
+    })
+
+    it('counts the clock reads of a batch of reads alone', () => {
+      // Two compare-and-sets of a transition may both hold the clock: at most one wins.
+      accepts('mutation-verdict:construction:tree-clock-read-counts-reads-only', () =>
+        withCas().casTree('again', statement(winCas())),
+      )
+    })
+
+    describe('prepared once and sent many times', () => {
+      const STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+        statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
+      )
+      const DUE = prepareRead({}, () => due())
+
+      it('builds twice, from stand-ins, and never again', async () => {
+        const build = vi.fn((binds: { runId: string; attempt: number }) =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('state')
+              .where('run_id', '=', binds.runId)
+              .where('attempt', '<=', binds.attempt)
+              .where('queue', '=', 'q'),
+          ),
+        )
+        const read = prepareRead({ runId: 'string', attempt: 'number' }, build)
+        const sent = []
+        for (const runId of ['r1', 'r2', 'r3']) {
+          const { captured, executor } = capturingExecutor(0)
+          await batch().readPrepared('state', read, { runId, attempt: 2 }).run(executor)
+          sent.push(...captured)
+        }
+        expect(build).toHaveBeenCalledTimes(2)
+        for (const call of build.mock.calls) expect(JSON.stringify(call)).not.toMatch(/r[123]/)
+        expect(sent.map((statement) => statement.args)).toEqual([
+          ['r1', 2, 'q'],
+          ['r2', 2, 'q'],
+          ['r3', 2, 'q'],
+        ])
+        expect(new Set(sent.map((statement) => statement.sql)).size).toBe(1)
+        expect(new Set(sent).size).toBe(3)
+        expect(sent.every((statement) => isTreeBuiltStatement(statement))).toBe(true)
+      })
+
+      it('is first prepared inside a task that has replaced Map and WeakMap', () => {
+        // A read is prepared wherever it is first sent. The SDK runs a task's handler in
+        // this realm, so that first send can happen while the globals are the task's.
+        const fresh = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+          statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
+        )
+        class Poisoned {
+          constructor() {
+            throw new Error('a task-installed constructor ran')
+          }
+        }
+        const globals = globalThis as unknown as Record<string, unknown>
+        const kept = { Map: globals.Map, WeakMap: globals.WeakMap }
+        try {
+          globals.Map = Poisoned
+          globals.WeakMap = Poisoned
+          expect(() => batch().readPrepared('state', fresh, { runId: 'r1' })).not.toThrow()
+          expect(() => batch().readPrepared('state', fresh, { runId: 'r2' })).not.toThrow()
+        } finally {
+          globals.Map = kept.Map
+          globals.WeakMap = kept.WeakMap
+        }
+      })
+
+      it('stands beside a read built on the spot, and never beside a transition', () => {
+        expect(() =>
+          batch().readTree('first', state()).readPrepared('second', STATE, { runId: 'r1' }),
+        ).not.toThrow()
+        expect(() => withCas().readPrepared('state', STATE, { runId: 'r1' })).toThrow(
+          /holds reads or a transition, never both/,
+        )
+      })
+
+      it('refuses a statement whose shape depends on a value it is sent', () => {
+        const inlined = prepareRead({ attempt: 'number' }, (binds: { attempt: number }) =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('state')
+              .where('attempt', '=', literalValue(binds.attempt)),
+          ),
+        )
+        refuses(
+          'mutation-verdict:construction:tree-prepared-read-shape-is-fixed',
+          /must compile to one statement whatever values it is sent with/,
+          () => batch().readPrepared('state', inlined, { attempt: 1 }),
+        )
+      })
+
+      it('holds every call to the type a bind was prepared with', () => {
+        expect(() => batch().readPrepared('state', STATE, { runId: 'r1' })).not.toThrow()
+        refuses(
+          'mutation-verdict:construction:tree-prepared-read-bind-kind',
+          /bind 'runId' is undefined/,
+          () => batch().readPrepared('state', STATE, { runId: undefined as never }),
+        )
+      })
+
+      it('checks the first call as it checks every call, and keeps nothing of one it refused', async () => {
+        const fresh = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+          statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
+        )
+        refuses(
+          'mutation-verdict:construction:tree-prepared-read-first-call-checked',
+          /bind 'runId' is undefined/,
+          () => batch().readPrepared('state', fresh, { runId: undefined as never }),
+        )
+        const { captured, executor } = capturingExecutor(0)
+        await batch().readPrepared('state', fresh, { runId: 'r1' }).run(executor)
+        expect(captured.map((sent) => sent.args)).toEqual([['r1']])
+      })
+
+      it('counts no clock read for a prepared read it refused', () => {
+        const spelled = prepareRead({}, () =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('run_id')
+              .where(predicate(`claim_expires_at_ms <= ${NOW} AND heartbeat_at_ms <= unixepoch()`)),
+          ),
+        )
+        const b = batch()
+        expect(() => b.readPrepared('spelled', spelled, {})).toThrow(/spells out a database clock/)
+        expect(() => b.readPrepared('due', DUE, {})).not.toThrow()
+      })
+
+      it('refuses arithmetic on a bind, and a statement that holds its own stamp', () => {
+        const SHAPE = /must compile to one statement whatever values it is sent with/
+        const sum = prepareRead({ a: 'number', c: 'number' }, (binds: { a: number; c: number }) =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('state')
+              .where('attempt', '=', binds.a + 1)
+              .where('claim_gen', '=', binds.c),
+          ),
+        )
+        expect(() => batch().readPrepared('state', sum, { a: 10, c: 99 })).toThrow(SHAPE)
+        const stamped = prepareRead({}, () =>
+          statement(loose.selectFrom('runs').select('state').where('fence_stamp', '=', stampValue)),
+        )
+        expect(() => batch().readPrepared('state', stamped, {})).toThrow(SHAPE)
+      })
+
+      it('counts its reads of the clock as any read', () => {
+        expect(() =>
+          batch().readPrepared('cancels', DUE, {}).readPrepared('expired', DUE, {}, 'a reason'),
+        ).not.toThrow()
+        refuses(
+          'mutation-verdict:construction:tree-prepared-read-clock-counted',
+          SECOND_CLOCK,
+          () => batch().readPrepared('cancels', DUE, {}).readPrepared('expired', DUE, {}),
+        )
+      })
+    })
+
+    it('runs with no compare-and-set to win', async () => {
+      const ran = await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'tree-read-recorded' },
+        /has no CAS/,
+        () => batch().readTree('state', state()).run(modeKeeper().executor),
+      )
+      expect(ran.won).toBeNull()
+    })
+
+    it('runs in read mode whatever was asked', async () => {
+      const { modes, executor } = modeKeeper()
+      await batch().readTree('state', state()).run(executor, 'write')
+      expect(modes, 'mutation-verdict:construction:tree-reads-run-in-read-mode').toEqual(['read'])
+    })
+
+    it('admits UNION ALL, which a transition may not hold', () => {
+      const joined = () => statement(runs().unionAll(runs()))
+      expect(() => withCas().openTailTree('both', 'a reason', joined())).toThrow(
+        /a set operation outside a batch of reads/,
+      )
+      accepts('mutation-verdict:construction:tree-read-grammar-is-the-reads', () =>
+        batch().readTree('both', joined()),
       )
     })
   })

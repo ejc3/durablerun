@@ -20,5 +20,13 @@
   "cancel-task": ["cancelled"],
   "sweep:cancel": ["cancelled"],
   "sweep:lost-launch": ["swept"],
-  "sweep:claim-timeout": ["swept"]
+  "sweep:claim-timeout": ["swept"],
+  "sweep:scan": ["read"],
+  "next-wake": ["read"],
+  "claimed-task-name": ["read"],
+  "get-checkpoints": ["read"],
+  "task-result": ["read"],
+  "run-task": ["read"],
+  "refusal-state": ["read"],
+  "task-done-state": ["read"]
 }

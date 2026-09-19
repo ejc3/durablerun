@@ -60,18 +60,25 @@ implements the finished surface once.
 3. Every store batch's SQL is built as a tree and checked as a tree, per
    PR3.9, and the textual scanners it replaces are deleted. PR3.9e part 3b
    deleted `FencedBatch`'s text path and its scanners, and part 3c asked the
-   rules of `fragment-lint` and `clock-lint` of the tree. This is NOT met. The
-   two lints still scan store SQL text, because a store still sends its reads,
-   some of its writes, and its admin's statements as text that no tree holds.
-   It is met when PR3.9f builds that text as trees and deletes the two scans.
+   rules of `fragment-lint` and `clock-lint` of the tree, and PR3.9f part 1
+   built a store's reads as trees. This is NOT met. The two lints still scan
+   store SQL text, because a store still sends some of its writes and its
+   admin's statements as text that no tree holds. It is met when PR3.9f part 2
+   builds that text as trees and deletes the two scans.
 4. A task can spawn a child from a step and await the child's completion as an
    event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
-   it.
+   it. This is met. PR #42 modeled it in `specs/ChildTasks.tla` before its SQL
+   existed, and PR #49 built it, with the child-task conformance surface on
+   libSQL, PostgreSQL, and MySQL.
 5. A step can declare a rollback that the engine runs in reverse step-start
    order on terminal failure, per DESIGN.md §3.10, with the PR3.4 conformance
-   cases on every dialect. It is modeled in TLA before its SQL exists.
+   cases on every dialect. It is modeled in TLA before its SQL exists. This is
+   met. PR #47 modeled it in `specs/Sagas.tla` before its SQL existed, and
+   PR #56 built it, with the saga conformance surface on all three dialects.
 6. `store-mysql` passes the identical conformance suite against MySQL 8 in CI.
+   This is met. PR #51 added `store-mysql`, and the `conformance-mysql` job
+   runs the identical suite against MySQL 8.4 as a required check.
 
 **Non-goals:** active-wait identity (PR3.8), the condition-mutation ratchet
 (PR3.10), operations and sharding (Phase 5), dedicated placement (Phase 6), and
@@ -989,17 +996,60 @@ these three things; nothing else in the system does I/O, time, or randomness.
     column table. The registry holds 770 mutations. The two text lints are NOT
     deleted, and the entry below that owned that says why. Its review round is
     `postmortems/pr3.9e-part3c-review.md`.
-  - PR3.9f, not started. Build the statements a store still sends as text as
-    trees, then delete `fragment-lint` and `clock-lint`. They are the reads
+  - PR3.9f part 1, delivered: a store's reads are trees. The eight reads
     (`claimed-task-name`, `refusal-state`, `run-task`, `task-done-state`,
-    `sweep:scan`, `get-checkpoints`, `task-result`, `next-wake`), two writes
-    that are no fenced batch on any dialect (`expire-lease-now` and
-    `driver-heartbeat`), `heartbeat` on libSQL and PostgreSQL, where it is one
-    text statement with RETURNING, and the admin's statements. MySQL already
-    builds `heartbeat` as a fenced batch of trees, because it has no
-    RETURNING. They need what the statement grammar does not list today:
-    RETURNING, UNION ALL, LIMIT with a bind, and an index hint on MySQL. Exit
-    test 3 of the current milestone is met when it lands.
+    `sweep:scan`, `get-checkpoints`, `task-result`, `next-wake`) are shared
+    statements in `packages/core/src/statements/reads.ts`, sent as batches of
+    reads through `FencedBatch.readTree`, which refuses a second read of the
+    clock that gives no reason. Of the four additions this entry once listed,
+    the reads needed one in the grammar: UNION ALL, for a batch of reads
+    alone. LIMIT with a bind was already listed, and MySQL's index hint stays
+    inside a store fragment, as the claim's does, so the grammar lists no
+    hint. MySQL builds its own `next-wake` statement. The corpus gained nine
+    statements on each dialect and no enrolled statement changed. The read
+    labels left `batch-lint`'s tables, and the stores no longer export
+    `NEXT_WAKE_SQL` and the two sweep scans: the query-plan suites record the
+    statements a real operation sends. Its one review round is
+    `postmortems/pr3.9f-part1-review.md`. It found that every read was built,
+    checked and compiled again on each call, about 120 microseconds for
+    `next-wake` where its text had cost 1, on every driver tick. A store now
+    prepares each read once (`prepareRead`, `readPrepared`) and a call costs 2
+    to 4 microseconds. It also found two reads binding a state their text had
+    written inline: they write it inline again (`literalValue`), and a batch of
+    reads refuses a state or status column compared with a bound value. Two
+    shapes still pass that rule and wait for part 2's decision about
+    fragments: a state bound inside a store fragment, and a one-state IN list
+    of a bound value. One narrow re-review of that fold found that the fix
+    had taken each bind's type from the first call a prepared read saw,
+    unchecked, in a record every store shares: a malformed first call was
+    sent as it was, and every later call of that read was refused. A prepared
+    read now declares its bind types and every call is checked against them.
+    The registry holds 861 mutations.
+  - PR3.9f part 2, not started, and most of it needs a decision before it is
+    built. What a store still sends as text is `heartbeat` on libSQL and
+    PostgreSQL, `expire-lease-now`, `driver-heartbeat`, and the admin's
+    statements. `heartbeat` fits today's grammar with no RETURNING: MySQL
+    already builds it as a compare-and-set and a gated read of the two
+    instants it stored, and the other two stores can send the same two
+    statements, at the cost of one more statement in the batch and one id
+    drawn for the stamp. The other three are writes that stamp nothing, and
+    `FencedBatch` has no such write: a compare-and-set stamps the row it
+    changes. `expire-lease-now` may change one column, which the poison
+    matrix holds it to (`leaseOnlyShortened`), so a compare-and-set that also
+    wrote the run's provenance would fail that barrier. `driver-heartbeat`
+    writes `drivers`, and the admin writes `meta`, and neither table carries
+    provenance. `driver-heartbeat` also differs by dialect well beyond
+    RETURNING: PostgreSQL writes it as a common table expression that inserts
+    and then deletes, MySQL as two statements with an optimizer hint, a
+    locking read that skips locked rows, and a multi-table DELETE, and libSQL
+    as an insert into a view. The admin's statements include DDL, which no
+    statement tree holds. Deleting the two lints has a cost of its own: a
+    deadline comparison hand-written inside a store fragment passes the tree
+    rule, which cannot tell a fragment that came from `fragments.ts` from one
+    written in `store.ts`. The options are a write primitive that stamps
+    nothing with a much wider grammar, fragments that carry the module they
+    came from, or keeping the two lints scoped to the text that reaches no
+    tree. Exit test 3 of the current milestone is met when part 2 lands.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
@@ -1060,7 +1110,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to the defined sets and allows only IS NULL tests of `cancel_at_ms` built
     from nodes, and the clock rule was already asked of the tree. The two
     lints are not deleted, because
-    their subjects are not gone: a store still sends its reads,
+    their subjects are not gone: a store still sends
     `expire-lease-now`, `driver-heartbeat`, `heartbeat` on libSQL and
     PostgreSQL, and its admin's statements as text
     that no tree holds, and a raw clock call or a second eligibility

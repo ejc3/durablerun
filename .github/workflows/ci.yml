@@ -223,8 +223,8 @@ jobs:
         # and so does a tree that leaves the file as the base has it. A tree that
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
-        # once its pull request is the base, and is deleted then. No row is live today:
-        # the last one carried the batch lint that child tasks changed, which main has.
+        # once its pull request is the base, and is deleted then. One row is live: the
+        # published-surface snapshot, which withdraws three names with their reason.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -232,6 +232,12 @@ jobs:
           from pathlib import Path
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
+              (
+                  'scripts/published-surface-v0.1.0-alpha.1.json',
+                  '587f1540e4f77819cf866433b6bf905f14387119a6194892ba0aae6b6e600989',
+                  'd0ead3c6cbfb35458bbdb76df82980b8fef9f4ac7baacce4c7aebcca0d61e80b',
+                  'the libSQL store no longer exports its next-wake read and its two sweep scans as SQL text, and the snapshot withdraws the three names with the reason',
+              ),
           )
           def sha(data):
               return hashlib.sha256(data).hexdigest()
@@ -254,8 +260,8 @@ jobs:
               return installed
           bridge(PAIRS, Path('/tmp/base'), Path('.'))
           print(f'{len(PAIRS)} pinned file pairs.')
-          # The table has no live row, so these controls are what runs its four answers on every
-          # pull request: another base skips, a head that leaves the file alone skips, an
+          # A live row runs one of the table's four answers, so these controls run all four on
+          # every pull request: another base skips, a head that leaves the file alone skips, an
           # unpinned head refuses, a pinned one installs.
           with tempfile.TemporaryDirectory() as scratch:
               base_root, head_root = Path(scratch) / 'base', Path(scratch) / 'head'
@@ -311,13 +317,174 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '93068a37ccdffaa168da13eaae8009339253aa1f9a4383516c8e4d38bd85df9d':
-              # One verdict marker is newer than this registry: the deep fuzz case that runs a
-              # real shard file with a batch count and no batch index. Nothing is re-aimed:
-              # every find of this registry still occurs exactly once in this tree. The arm is
-              # keyed on main's registry as of the merge of PR3.4, whose own arm it replaces.
-              repaired = exempt(previous, candidate, (
-                  'mutation-verdict:construction:deep-fuzz-unset-index-runs-every-batch',
+          def reaim_entry(repaired, candidate, name):
+              # Replace one top-level entry of the base registry with this tree's entry of the
+              # same name, for a mutation whose target line this tree rewrote. Its name must
+              # stand, and so must whatever comment the entry opens with, so only the file, the
+              # find, the replacement and the description move. The file moves when the text a
+              # mutant rewrites moved to another file, as a store's SQL does when it becomes a
+              # shared statement.
+              def span(text):
+                  key = f'        "{name}",\n'
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  at = text.index(key)
+                  start = text.rindex('    (\n', 0, at)
+                  opening = text[start + len('    (\n'):at].splitlines()
+                  if any(not line.strip().startswith('#') for line in opening):
+                      raise SystemExit(f'{name}: the bridge re-aims only a top-level entry.')
+                  return start, at + len(key), text.index('    ),\n', start) + len('    ),\n')
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+          def drop_question_reasons(repaired, candidate, names):
+              # Drop the base's reason for a changed count of question marks, for a re-aimed
+              # mutant that no longer changes it. This tree's registry must no longer give one.
+              table = 'QUESTION_TOKEN_DELTA_REASONS = {\n'
+              def section(text):
+                  if text.count(table) != 1:
+                      raise SystemExit('question reasons: the bridge requires one table.')
+                  start = text.index(table) + len(table)
+                  return start, text.index('\n}\n', start) + 1
+              head_start, head_end = section(candidate)
+              for name in names:
+                  key = f'    "{name}": (\n'
+                  start, end = section(repaired)
+                  if repaired.count(key, start, end) != 1 or key in candidate[head_start:head_end]:
+                      raise SystemExit(f'{name}: the bridge drops only a reason the base gives once and this tree no longer gives.')
+                  at = repaired.index(key, start, end)
+                  repaired = repaired[:at] + repaired[repaired.index('    ),\n', at) + len('    ),\n'):]
+              return repaired
+          def list_conditions(repaired, candidate, file, lines):
+              # List condition lines of a tree rule whose mutations this tree registers and the
+              # base predates, so the base's derived coverage check reads them as held.
+              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
+              opening = f'    "{file}": {{\n'
+              if repaired.count(table) != 1 or repaired.count(opening, repaired.index(table)) != 1:
+                  raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
+              at = repaired.index(opening, repaired.index(table)) + len(opening)
+              for line in lines:
+                  if f'"{line}": (' in repaired or line not in candidate:
+                      raise SystemExit(f'{line}: the bridge lists only a line this tree mutates and the base does not list.')
+              entries = ''.join(
+                  f'        "{line}": (\n            "held by mutations the head registry registers, which the base predates"\n        ),\n'
+                  for line in lines
+              )
+              return repaired[:at] + entries + repaired[at:]
+          def unlist_conditions(repaired, candidate, file, lines):
+              # Drop listed condition lines of a tree rule file that this tree deleted or moved
+              # to another file, so the base's derived coverage check does not read them as
+              # stale. This tree's registry must no longer list them for that file.
+              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
+              opening = f'    "{file}": {{\n'
+              def section(text):
+                  if text.count(table) != 1 or text.count(opening, text.index(table)) != 1:
+                      raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
+                  start = text.index(opening, text.index(table)) + len(opening)
+                  return start, text.index('\n    },\n', start) + 1
+              head_start, head_end = section(candidate)
+              for line in lines:
+                  key = f'        "{line}": (\n'
+                  start, end = section(repaired)
+                  if repaired.count(key, start, end) != 1 or key in candidate[head_start:head_end]:
+                      raise SystemExit(f'{line}: the bridge unlists only a line the base lists once and this tree no longer lists.')
+                  at = repaired.index(key, start, end)
+                  repaired = repaired[:at] + repaired[repaired.index('        ),\n', at) + len('        ),\n'):]
+              return repaired
+          if digest == '297ca69d50447802bfa14bfef04b67c95b0ae6ddf53310fe109401b5b9cd4321':
+              # A store's reads became batches of reads: FencedBatch gained readTree, and the
+              # grammar gained UNION ALL for a batch of reads alone. The head registry
+              # registers a mutation for each new condition, the base predates them, and so
+              # their lines are listed and their verdict markers exempted. Two lines the base
+              # lists gained a condition: each is listed under its new text and unlisted
+              # under its old. Fourteen base entries are re-aimed, and each mutant is the
+              # one it was. The two clock mutants quote the line that gained `!reading`. The
+              # other twelve quoted the libSQL store's read text, which is gone: the queue
+              # condition of claimed-task-name and the owner join of get-checkpoints are now
+              # nodes of the shared statements, and the bounds and admissions of next-wake,
+              # of the sweep's two scans, and of the checkpoint owner are the fragments the
+              # store hands those statements. The queue condition is a node now, so its
+              # mutant removes no bind, and the base's reason for a changed count of question
+              # marks is dropped with it.
+              repaired = previous
+              for name in (
+                  'tree-clock-text-in-followon',
+                  'tree-followon-spelled-clock-message',
+                  'claimed-task-name-requires-queue',
+                  'timestamp-next-wake-pending-lower',
+                  'timestamp-next-wake-sleeping-lower',
+                  'timestamp-next-wake-expiry-lower',
+                  'timestamp-next-wake-cancel-lower',
+                  'checkpoint-read-requires-owner-join',
+                  'checkpoint-read-requires-owner-attempt-relation',
+                  'poison-sweep-scan-prelimit',
+                  'timestamp-sweep-lost-launch-lower-before-limit',
+                  'timestamp-sweep-timeout-lower-before-limit',
+                  'timestamp-cancel-lower-before-limit',
+                  'heartbeat-names-cancellation',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
+              repaired = drop_question_reasons(repaired, candidate, (
+                  'claimed-task-name-requires-queue',
+              ))
+              repaired = unlist_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "const open = asked === 'openTail'",
+                  "if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
+              ))
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  "const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true",
+                  "if (!isBind(node.rightOperand)) return false",
+                  "return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))",
+                  "const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all",
+                  "if (reading && BinaryOperationNode.is(node) && comparesStateWithBind(node)) {",
+                  "if (SetOperationNode.is(node)) {",
+                  "if (!reading) return 'a set operation outside a batch of reads'",
+                  "if (!isUnionAll(node)) return 'a set operation other than UNION ALL'",
+              ))
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {",
+                  "const needed = readsClock && this.clockReads.length !== 0",
+                  "const excused = drift.trim() !== ''",
+                  "if (needed !== excused) {",
+                  "if (readsClock) this.clockReads.push(name)",
+                  "const reading = asked === 'read'",
+                  "const open = asked === 'openTail' || reading",
+                  "if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {",
+                  "if (reading) this.countClockRead(at, name, drift, compiled.sql.includes(this.now))",
+                  "if (reading) this.reads.push(name)",
+              ))
+              repaired = exempt(repaired, candidate, (
+                  "mutation-verdict:construction:tree-read-asked",
+                  "mutation-verdict:construction:tree-read-is-open",
+                  "mutation-verdict:construction:tree-reads-apart-from-a-transition",
+                  "mutation-verdict:construction:tree-read-may-hold-the-clock",
+                  "mutation-verdict:construction:tree-first-clock-read-needs-no-reason",
+                  "mutation-verdict:construction:tree-second-clock-read-needs-a-reason",
+                  "mutation-verdict:construction:tree-clock-read-counted",
+                  "mutation-verdict:construction:tree-clock-read-counts-reads-only",
+                  "mutation-verdict:construction:tree-clockless-read-needs-no-reason",
+                  "mutation-verdict:construction:tree-clock-reason-is-not-blank",
+                  "mutation-verdict:construction:tree-clock-reason-needs-a-clock-read",
+                  "mutation-verdict:construction:tree-prepared-read-shape-is-fixed",
+                  "mutation-verdict:construction:tree-prepared-read-bind-kind",
+                  "mutation-verdict:construction:tree-prepared-read-clock-counted",
+                  "mutation-verdict:construction:tree-prepared-read-first-call-checked",
+                  "mutation-verdict:construction:tree-read-recorded",
+                  "mutation-verdict:construction:tree-reads-run-in-read-mode",
+                  "mutation-verdict:construction:tree-read-grammar-is-the-reads",
+                  "mutation-verdict:construction:tree-set-operation-checked",
+                  "mutation-verdict:construction:tree-set-operation-reads-only",
+                  "mutation-verdict:construction:tree-set-operation-union-all-only",
+                  "mutation-verdict:construction:tree-union-needs-all",
+                  "mutation-verdict:construction:tree-set-operation-is-union",
+                  "mutation-verdict:construction:tree-read-state-literal",
+                  "mutation-verdict:construction:tree-read-state-literal-admitted",
+                  "mutation-verdict:construction:tree-read-state-names-the-column",
+                  "mutation-verdict:construction:tree-read-bind-is-not-immediate",
+                  "mutation-verdict:construction:tree-read-bind-is-a-value",
+                  "mutation-verdict:construction:tree-read-status-is-a-state",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

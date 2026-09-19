@@ -15,6 +15,13 @@
         "FENCE_VALS": "the provenance values as SQL text, for FencedBatch's text statements, which are deleted: a tree statement assigns provenance as nodes, with FENCE_ASSIGNMENTS, stampValue and nowValue",
         "fenceSetAt": "the preserved-instant provenance assignment as SQL text, deleted with FencedBatch's text statements: a tree statement copies the preserved instant as a column node"
       }
+    },
+    "@durablerun/store-libsql": {
+      ".": {
+        "NEXT_WAKE_SQL": "the next-wake read as SQL text, exported so the query-plan suite could pin it: the read is a statement tree (nextWakeRead in @durablerun/core) sent as a batch of reads, and the suite records the statement a real nextWakeAtEpochMs sends",
+        "SWEEP_SCAN_CANCELS_SQL": "the sweep's due-cancellation scan as SQL text, exported so the query-plan suite could pin it: the read is a statement tree (sweepDueCancelsRead in @durablerun/core) sent as a batch of reads, and the suite records the statement a real sweep sends",
+        "SWEEP_SCAN_EXPIRED_SQL": "the sweep's expired-claim scan as SQL text, exported so the query-plan suite could pin it: the read is a statement tree (sweepExpiredClaimsRead in @durablerun/core) sent as a batch of reads, and the suite records the statement a real sweep sends"
+      }
     }
   },
   "surface": {

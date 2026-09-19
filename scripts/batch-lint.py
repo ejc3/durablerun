@@ -54,16 +54,10 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# Read-only batches — no write to fence.
+# Read-only batches sent as text — no write to fence. A store's own reads are not here:
+# each is a FencedBatch of reads (`readTree`), which runs in read mode whatever is asked
+# and refuses a second read of the clock that gives no reason.
 READS = {
-    "claimed-task-name",
-    "refusal-state",
-    "run-task",
-    "task-done-state",
-    "get-checkpoints",
-    "next-wake",
-    "task-result",
-    "sweep:scan",
     "admin:now",
     "migrate:version",
 }
@@ -87,17 +81,6 @@ TOKEN_FENCED = {
     # The migration runner carries its own structural fence: an applied:vN
     # sentinel INSERT whose key violation rolls the whole batch back.
     "migrate:bootstrap": "migration sentinel fence (schema.ts)",
-}
-
-# Batches allowed to read the clock in more than one statement. Every entry is
-# a standing bug of class A unless the reason says why the drift is harmless,
-# so this stays as close to empty as the engine allows.
-MULTI_CLOCK = {
-    # Two read-only discovery scans. A task sitting exactly on a deadline can
-    # appear in one and not the other; the per-item batch that follows
-    # re-checks every predicate under its own fence, so the only effect is
-    # that the item waits for the next tick.
-    "sweep:scan": "read-only discovery; every item is re-checked under its own fence",
 }
 
 # Call sites whose label is legitimately computed. Each names the file and the
@@ -331,14 +314,13 @@ for path in source_paths:
                 f"{rel}: '{label}' is declared a READ but is not run in 'read' "
                 f"mode — it can write, and nothing fences it."
             )
-        if statements > 1 and clocks > 1 and label not in MULTI_CLOCK:
+        if statements > 1 and clocks > 1:
             violations.append(
                 f"{rel}: '{label}' reads the clock in {clocks} places across "
                 f"{statements} statements. Two statements of one batch see "
                 f"DIFFERENT clocks on a real backend, so any pair of values "
                 f"that must agree eventually will not. Derive the later ones "
-                f"from what the first statement wrote, or declare the batch in "
-                f"MULTI_CLOCK in scripts/batch-lint.py with a reason."
+                f"from what the first statement wrote."
             )
 
 for v in violations:

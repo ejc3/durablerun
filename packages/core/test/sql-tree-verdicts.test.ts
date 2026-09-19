@@ -14,10 +14,12 @@ import {
   treeBuilder as db,
   defineStatement,
   fenceValue,
+  literalValue,
   nowValue,
   rawSql,
   sqlFragment,
   stampValue,
+  statementGrammarProblem,
 } from '../src/index.js'
 import {
   type Builder,
@@ -403,6 +405,120 @@ describe('the tree rules', () => {
           (eventInsert() as Loose).onConflict((oc: Loose) => oc.doNothing()),
         ),
       )
+    })
+  })
+
+  describe('a set operation', () => {
+    const leg = () => loose.selectFrom('runs').select('run_id')
+    const problem = (joined: Builder, reading: boolean) =>
+      statementGrammarProblem(joined.toOperationNode(), reading)
+    const OTHER = 'a set operation other than UNION ALL'
+
+    it('belongs to a batch of reads alone', () => {
+      expect(problem(leg().unionAll(leg()), true)).toBeNull()
+      expect(
+        problem(leg().unionAll(leg()), false),
+        'mutation-verdict:construction:tree-set-operation-reads-only',
+      ).toBe('a set operation outside a batch of reads')
+    })
+
+    it('is read wherever the tree holds one', () => {
+      expect(
+        problem(leg().except(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-checked',
+      ).toBe(OTHER)
+    })
+
+    it('is refused when it is not a UNION ALL', () => {
+      expect(
+        problem(leg().intersect(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-union-all-only',
+      ).toBe(OTHER)
+    })
+
+    it('is refused as a UNION that drops duplicate rows', () => {
+      expect(
+        problem(leg().union(leg()), true),
+        'mutation-verdict:construction:tree-union-needs-all',
+      ).toBe(OTHER)
+    })
+
+    it('is refused as another operation that keeps duplicate rows', () => {
+      expect(
+        problem(leg().intersectAll(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-is-union',
+      ).toBe(OTHER)
+    })
+  })
+
+  describe('a state a read compares', () => {
+    const runs = () => loose.selectFrom('runs as r').select('r.run_id')
+    const problem = (read: Builder, reading = true) =>
+      statementGrammarProblem(read.toOperationNode(), reading)
+    // Matched as text: a matcher that wants a string refuses null before it prints the
+    // marker, and null is what a mutant that admits the read answers.
+    const BOUND = /^a state column compared with a bound value/
+
+    it('is refused when it is bound', () => {
+      expect(
+        String(problem(runs().where('r.state', '=', 'running'))),
+        'mutation-verdict:construction:tree-read-state-literal',
+      ).toMatch(BOUND)
+      // A transition finds its row by key, so it may bind the state it compares.
+      expect(problem(runs().where('r.state', '=', 'running'), false)).toBeNull()
+    })
+
+    it('is admitted as an inline literal', () => {
+      expect(
+        problem(runs().where('r.state', '=', literalValue('running'))),
+        'mutation-verdict:construction:tree-read-state-literal-admitted',
+      ).toBeNull()
+    })
+
+    it('is the only column held to a literal', () => {
+      expect(
+        problem(runs().where('r.run_id', '=', 'r1')),
+        'mutation-verdict:construction:tree-read-state-names-the-column',
+      ).toBeNull()
+    })
+
+    it('counts an inline value as no bind', () => {
+      expect(
+        problem(
+          loose
+            .selectFrom('checkpoints as c')
+            .select('c.state')
+            .where('c.status', '=', literalValue('committed')),
+        ),
+        'mutation-verdict:construction:tree-read-bind-is-not-immediate',
+      ).toBeNull()
+    })
+
+    it('counts another column as no bind', () => {
+      expect(
+        problem(
+          loose
+            .selectFrom('runs as r')
+            .innerJoin('tasks as t', 't.task_id', 'r.task_id')
+            .select('r.run_id')
+            .whereRef('r.state', '=', 't.state'),
+        ),
+        'mutation-verdict:construction:tree-read-bind-is-a-value',
+      ).toBeNull()
+    })
+
+    it('holds a checkpoint status to a literal as well', () => {
+      expect(
+        String(
+          problem(
+            loose
+              .selectFrom('checkpoints as c')
+              .select('c.state')
+              .where('c.status', '=', 'committed'),
+          ),
+        ),
+        'mutation-verdict:construction:tree-read-status-is-a-state',
+      ).toMatch(BOUND)
     })
   })
 

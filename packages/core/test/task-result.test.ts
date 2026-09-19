@@ -70,6 +70,8 @@ describe('decodeTaskResult', () => {
     expect(Object.keys(taskResult).sort()).toEqual([
       'TASK_OUTCOME_COLUMNS',
       'TASK_RESULT_COLUMNS',
+      // The same columns as a list, for a statement tree's select. It reads no row.
+      'TASK_RESULT_COLUMN_LIST',
       'decodeTaskResult',
       // Not a reader of rows: the same rule, in words, for an outcome already in hand.
       // The completion event's decoder holds its payload to it.
