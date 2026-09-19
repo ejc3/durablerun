@@ -89,7 +89,14 @@ a last docs PR gives a live owner to every open bullet that is left.
    names. The fuzz runs on libSQL with one caller, so a hold there could not
    fail and is not claimed. The surface costs seconds a dialect, measured, and
    the `verify` job's limit still meets the three-times rule of the PR3.13
-   entry.
+   entry. This is met. PR4.4c added the `self-concurrency` surface, 37 contests
+   generated from `SchedulerStore` and `StoreAdmin` and green on all three
+   dialects, which was red in 10 runs of 10 on MySQL with the heartbeat's fix
+   reverted and saw PR #50's defect in none of 800 rounds with that fix
+   reverted. Each server executor's count is held at zero in the surface, the
+   six real-concurrency cases, the seeded scenarios, and the lock-order test,
+   the surface costs 1.8 s on libSQL, 6.6 s on PostgreSQL and 6.0 s on MySQL,
+   and three times `verify`'s slowest run with it is 5,352 of 5,400 seconds.
 5. PR4.4b: a migration write carries the migration lock in `SqlBatchControl` as
    a lock coordinate, and the MySQL executor refuses a migration write that
    comes without it, so a new `migrate:` label cannot run DDL unlocked the way
