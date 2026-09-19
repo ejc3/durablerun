@@ -88,11 +88,14 @@ export function withCas(b: FencedBatch = batch()): FencedBatch {
   return b.casTree('win', statement(winCas()))
 }
 
-/** Tasks owned by the run this batch's compare-and-set stamped. */
+/**
+ * Tasks owned by the run this batch's compare-and-set stamped. The state is a live one: a
+ * batch that ends a task owes its completion event, which is not what these cases are about.
+ */
 export const taskFollowOn = () =>
   db
     .updateTable('tasks')
-    .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+    .set({ state: 'sleeping', fence_stamp: stampValue, fence_at_ms: 5 })
     .where((eb) =>
       eb(
         'task_id',

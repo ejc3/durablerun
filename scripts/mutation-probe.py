@@ -13441,6 +13441,111 @@ MUTATION_SPECS.extend(
             "      held.eventName !== lock.eventName\n",
             "a batch whose second statement names the lock it already holds is refused, and one that names another event is admitted",
         ),
+        (
+            "terminal-task-state-is-of-tasks",
+            "packages/core/src/sql-tree.ts",
+            "  if (statementTable(tree) !== 'tasks') return []\n",
+            "  if (false) return []\n",
+            "a statement that writes a terminal state into runs is held to a completion event it does not owe, and every completing batch is refused",
+        ),
+        (
+            "terminal-task-state-reads-the-state-column",
+            "packages/core/src/sql-tree.ts",
+            "    .filter((update) => assignedColumn(update) === 'state')\n",
+            "    .filter(() => true)\n",
+            "a terminal state's name written into another column of tasks is read as the task ending",
+        ),
+        (
+            "terminal-task-state-of-an-insert",
+            "packages/core/src/sql-tree.ts",
+            "  const inserted = InsertQueryNode.is(tree) ? insertedValue(tree, 'state') : undefined\n",
+            "  const inserted = InsertQueryNode.is(tree) ? undefined : undefined\n",
+            "a statement inserts a task that is already terminal, and the batch records no completion event",
+        ),
+        (
+            "terminal-task-state-reads-an-assigned-value",
+            "packages/core/src/sql-tree.ts",
+            "  return [...assigned, inserted].filter((value) => value !== undefined)\n",
+            "  return [...assigned, inserted] as OperationNode[]\n",
+            "an UPDATE of tasks, which inserts no state, crashes the rules that read the state it writes",
+        ),
+        (
+            "task-state-takes-no-fragment",
+            "packages/core/src/sql-tree.ts",
+            "  return taskStateValues(tree).some((value) => someNode(value, (node) => RawNode.is(node)))\n",
+            "  return taskStateValues(tree).some((value) => someNode(value, () => false))\n",
+            "a fragment gives a task its state, so a terminal state spelled as text owes no completion event",
+        ),
+        (
+            "terminal-task-state-is-asked",
+            "packages/core/src/sql-tree.ts",
+            "  return taskStateValues(tree).some((value) =>\n    someNode(value, (node) => isTerminalState(boundValue(node))),\n  )\n",
+            "  return taskStateValues(tree).some(() => false)\n",
+            "no statement is read as ending a task, so a terminal path that records no completion event runs",
+        ),
+        (
+            "terminal-task-state-as-a-value",
+            "packages/core/src/sql-tree.ts",
+            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
+            "    someNode(value, (node) => boundValue(node) === 'failed'),\n",
+            "one terminal state is read and the others are not, so a cancellation owes no completion event",
+        ),
+        (
+            "terminal-task-state-in-any-arm",
+            "packages/core/src/sql-tree.ts",
+            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
+            "    isTerminalState(boundValue(value)),\n",
+            "only a value that is itself a state is read, so an expression with a terminal arm owes no completion event",
+        ),
+        (
+            "terminal-task-state-reads-the-value",
+            "packages/core/src/sql-tree.ts",
+            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
+            "    someNode(value, () => true),\n",
+            "every statement that writes tasks.state is held to a completion event, a live state included",
+        ),
+        (
+            "task-state-fragment-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unreadState !== null) throw new Error(`${at} ${unreadState}`)\n",
+            "    if (false && unreadState !== null) throw new Error(`${at} ${unreadState}`)\n",
+            "the batch asks whether it can read a task's state and admits the statement whatever the answer",
+        ),
+        (
+            "completion-event-is-an-event",
+            "packages/core/src/fenced-batch.ts",
+            "        written === 'events' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null\n",
+            "        written !== 'tasks' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null\n",
+            "a wait registered on the completion event is taken for the event, and the task ends with nothing recorded",
+        ),
+        (
+            "completion-event-is-recognised",
+            "packages/core/src/fenced-batch.ts",
+            "      if (ended !== null) recordsEndOf = gateName\n",
+            "      recordsEndOf = gateName\n",
+            "any follow-on under the ending statement's stamp is taken for the completion event",
+        ),
+        (
+            "completion-event-names-the-ending-statement",
+            "packages/core/src/fenced-batch.ts",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf !== undefined),\n",
+            "a completion event recorded under another statement's stamp pays for this one, and it writes no row when this one ends the task",
+        ),
+        (
+            "terminal-task-state-is-what-owes",
+            "packages/core/src/fenced-batch.ts",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "      (s) => !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "every statement of every batch is held to a completion event, and no batch runs",
+        ),
+        (
+            "terminal-task-state-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unrecorded !== undefined) {\n",
+            "    if (false && unrecorded !== undefined) {\n",
+            "the batch finds a statement that ends a task with no completion event, and runs all the same",
+        ),
     )
 )
 for _verdict, _names in (
@@ -13542,6 +13647,131 @@ for _verdict, _names in (
         ),
         (
             "batch-lock-may-be-named-again",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task owes the completion event, recorded under its own stamp",
+            "mutation-verdict:construction:terminal-task-state-owes-its-completion-event",
+        ),
+        (
+            "terminal-task-state-is-asked",
+            "completion-event-is-recognised",
+            "terminal-task-state-refuses",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a completion event recorded under another statement",
+            "mutation-verdict:construction:completion-event-names-the-ending-statement",
+        ),
+        (
+            "completion-event-names-the-ending-statement",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a wait registered on the completion event",
+            "mutation-verdict:construction:completion-event-is-an-event",
+        ),
+        (
+            "completion-event-is-an-event",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is a statement that writes tasks, and a run that completes owes nothing",
+            "mutation-verdict:construction:terminal-task-state-is-of-tasks",
+        ),
+        (
+            "terminal-task-state-is-of-tasks",
+            "terminal-task-state-is-what-owes",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the state a statement writes, and no other column",
+            "mutation-verdict:construction:terminal-task-state-reads-the-state-column",
+        ),
+        (
+            "terminal-task-state-reads-the-state-column",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the value, so a live state owes nothing",
+            "mutation-verdict:construction:terminal-task-state-reads-an-assigned-value",
+        ),
+        (
+            "terminal-task-state-reads-an-assigned-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the value, so a live state owes nothing",
+            "mutation-verdict:construction:terminal-task-state-reads-the-value",
+        ),
+        (
+            "terminal-task-state-reads-the-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a terminal state written as a value",
+            "mutation-verdict:construction:terminal-task-state-as-a-value",
+        ),
+        (
+            "terminal-task-state-as-a-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a terminal state in any arm of an expression built from nodes",
+            "mutation-verdict:construction:terminal-task-state-in-any-arm",
+        ),
+        (
+            "terminal-task-state-in-any-arm",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the state an INSERT gives a new task",
+            "mutation-verdict:construction:terminal-task-state-of-an-insert",
+        ),
+        (
+            "terminal-task-state-of-an-insert",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task takes no fragment, whatever the fragment holds",
+            "mutation-verdict:construction:task-state-takes-no-fragment",
+        ),
+        (
+            "task-state-takes-no-fragment",
+            "task-state-fragment-refuses",
         ),
     ),
 ):
@@ -17311,7 +17541,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 890:
+        if len(MUTATIONS) != 905:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

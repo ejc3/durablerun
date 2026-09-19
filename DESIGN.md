@@ -725,13 +725,28 @@ One invocation executes one claimed run to its next suspension point:
     that ended it, so a batch that ended nothing writes no event, and a `fail`
     that scheduled a retry writes none. It carries no conflict clause, which a
     follow-on insert may not have. An event that exists is left alone by a
-    `NOT EXISTS` guard, which the event lock makes safe. Both stores add the
-    insert and the wake through one core function (`addTaskDone`). Nothing is
-    checked after the batch. A terminal write's answer is its batch's answer,
-    and a read after the commit could only change that answer for a transition
-    that has happened. A batch that named the wrong task or the wrong terminal
-    statement would end the task with no event, and an insert that writes
-    nothing passes every row-count audit. What holds that is
+    `NOT EXISTS` guard, which the event lock makes safe. Every store adds the
+    insert and the wake through one core function (`addTaskDone`). A batch is
+    held to it when it is built. The state a statement gives a task is nodes
+    and never text: a state's name is a value node (`taskStateValue`), which
+    the statement's text is compiled from, and the copy of a run's state is a
+    subquery built from nodes (`stampedRunState`). A fragment anywhere in that
+    value is refused, whatever it holds, because text can spell a state in
+    more ways than a reader of text closes, and a generated UPDATE's type takes
+    no text there. A statement that writes `tasks` and gives `state` a value
+    that holds a terminal state's name, in any arm of an expression, owes the
+    completion event, recorded under that statement's own stamp: a
+    `FencedBatch` that holds such a statement and no follow-on that inserts a
+    completion event gated by its stamp is refused when it runs, before
+    anything is sent, on every dialect. So a terminal path that forgets the
+    event, or names another statement as the one that ended the task, does not
+    run. Nothing is checked after the batch. A terminal write's answer is its
+    batch's answer, and a read after the commit could only change that answer
+    for a transition that has happened. The rule reads declared nodes, so two
+    things are beyond it: a batch that names the wrong task, and a value that
+    produces a terminal state and names none, which is the copy of a run's
+    state. Every shipped copy reads a run the batch left live. An insert
+    that writes nothing passes every row-count audit, so what holds those is
     `childTaskViolations`, which runs after every case of the surface, over
     every terminal label, in the fuzz, and in the SDK harness.
   - A terminal batch names the task, and `complete` and `fail` are handed only

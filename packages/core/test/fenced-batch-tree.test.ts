@@ -8,13 +8,14 @@ import {
 import { describe, expect, it } from 'vitest'
 import {
   EventName,
+  type SqlExecutor,
   type SqlFragment,
   type SqlStatement,
+  type SqlTransactionLock,
   type StoreTables,
   aliasedAs,
   capLostLaunchCas,
   coalesced,
-  treeBuilder as db,
   defineStatement,
   emitEventCas,
   failClaimTimeoutCas,
@@ -25,8 +26,12 @@ import {
   reopenLostLaunchCas,
   spawnTaskCas,
   sqlFragment,
+  sqlTransactionLock,
   stampValue,
+  stampedRunState,
   suspendCas,
+  taskStateValue,
+  treeBuilder as db,
 } from '../src/index.js'
 
 import {
@@ -45,6 +50,7 @@ import {
   key,
   keyIn,
   loose,
+  onEvent,
   predicate,
   recorded,
   statement,
@@ -79,7 +85,7 @@ describe('FencedBatch tree statements', () => {
       },
       {
         sql: 'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where "task_id" in (select "f"."task_id" from "runs" as "f" where "f"."run_id" = ? and "f"."fence_stamp" = ?)',
-        args: ['completed', 'seed:task', 5, 'r1', 'seed:win'],
+        args: ['sleeping', 'seed:task', 5, 'r1', 'seed:win'],
         skipUnlessWrote: 0,
       },
     ])
@@ -91,7 +97,7 @@ describe('FencedBatch tree statements', () => {
     b.derived('task', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'completed'` },
+      set: { state: taskStateValue('sleeping') },
       rows: 'one',
     })
     b.derived('task-runs', {
@@ -404,7 +410,7 @@ describe('FencedBatch tree statements', () => {
     // Bound, in order with the binds around it.
     const correlated = db
       .updateTable('tasks')
-      .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+      .set({ state: 'sleeping', fence_stamp: stampValue, fence_at_ms: 5 })
       .where('task_id', 'in', (eb) =>
         eb
           .selectFrom('runs')
@@ -460,12 +466,12 @@ describe('FencedBatch tree statements', () => {
       })
 
     it('gives each text value the arguments it binds, and refuses a count that does not add up', () => {
-      expect(() => mirror({ state: `'failed'`, failure_reason: '?' }, ['why'])).not.toThrow()
+      expect(() => mirror({ last_attempt_run: `'r9'`, failure_reason: '?' }, ['why'])).not.toThrow()
       // A missing argument is refused where the value is minted, and a stray one here.
-      expect(() => mirror({ state: `'failed'`, failure_reason: '?' }, [])).toThrow(
+      expect(() => mirror({ last_attempt_run: `'r9'`, failure_reason: '?' }, [])).toThrow(
         /a SQL fragment binds 1 of its 0 arguments/,
       )
-      expect(() => mirror({ state: `'failed'` }, ['stray'])).toThrow(
+      expect(() => mirror({ last_attempt_run: `'r9'` }, ['stray'])).toThrow(
         /set binds 0 of its 1 arguments/,
       )
     })
@@ -501,11 +507,13 @@ describe('FencedBatch tree statements', () => {
       // A fence inside a value must name a fence of this batch.
       expect(() =>
         mirror({
-          state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:nobody$)',
+          last_attempt_run: '(SELECT f.run_id FROM runs f WHERE f.fence_stamp = $FENCE:nobody$)',
         }),
       ).toThrow(/nobody/)
       expect(() =>
-        mirror({ state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:win$)' }),
+        mirror({
+          last_attempt_run: '(SELECT f.run_id FROM runs f WHERE f.fence_stamp = $FENCE:win$)',
+        }),
       ).not.toThrow()
     })
 
@@ -521,7 +529,9 @@ describe('FencedBatch tree statements', () => {
       ).toThrow(/'attempts'/)
       // A qualified read of another row with no arithmetic is a copy, and stays allowed.
       expect(() =>
-        mirror({ state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:win$)' }),
+        mirror({
+          last_attempt_run: '(SELECT f.run_id FROM runs f WHERE f.fence_stamp = $FENCE:win$)',
+        }),
       ).not.toThrow()
     })
 
@@ -567,7 +577,7 @@ describe('FencedBatch tree statements', () => {
         generated().derived('mirror', {
           relation: 'runs-to-tasks',
           fence: 'win',
-          set: { state: `'failed'` },
+          set: { last_attempt_run: `'r9'` },
           rows: 'one',
           ...selection,
         } as never)
@@ -882,7 +892,7 @@ describe('FencedBatch tree statements', () => {
         fence: 'win',
         where: 'f.run_id = ?',
         whereArgs: ['r'],
-        set: { state: `'completed'` },
+        set: { state: taskStateValue('pending') },
         rows: 'one',
       })
     } catch (error) {
@@ -1425,10 +1435,10 @@ describe('FencedBatch tree statements', () => {
       // Each exhibit is ACCEPTED, beside a control the same rule refuses. They mark
       // where the rules stop, so nobody takes them for more than they are.
       it('accepts a gate tied on a column that is not a key, which reaches rows the fenced row does not own', async () => {
-        const completeTasks = (tie: boolean) =>
+        const parkTasks = (tie: boolean) =>
           db
             .updateTable('tasks')
-            .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+            .set({ state: 'sleeping', fence_stamp: stampValue, fence_at_ms: 5 })
             .where((eb) =>
               eb.exists(
                 (tie
@@ -1441,13 +1451,13 @@ describe('FencedBatch tree statements', () => {
               ),
             )
         // The control: with no tie at all the write is refused.
-        refused(completeTasks(false), /not tied to the rows it reads or writes/)
-        // The exhibit: one run's stamp, tied by its queue alone, completes every task in
+        refused(parkTasks(false), /not tied to the rows it reads or writes/)
+        // The exhibit: one run's stamp, tied by its queue alone, parks every task in
         // that queue. The rule asks for a tie and cannot ask whether the tie is a key,
         // because an event legitimately wakes every run in its queue this way.
         const { captured, executor } = capturingExecutor(1)
         await withCas()
-          .followOnTree('tasks', statement(completeTasks(true)), { many: 'the exhibit' })
+          .followOnTree('tasks', statement(parkTasks(true)), { many: 'the exhibit' })
           .run(executor)
         expect(captured[1]?.sql).toBe(
           'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where exists (select "f"."run_id" from "runs" as "f" where "f"."queue" = "tasks"."queue" and "f"."run_id" = ? and "f"."fence_stamp" = ?)',
@@ -1851,6 +1861,56 @@ describe('FencedBatch tree statements', () => {
     expect(sent[2]).toContain(
       'do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is distinct from ? and (events.payload IS NOT NULL)',
     )
+  })
+
+  describe('what the event lock and the completion event rules still do not check', () => {
+    // Each exhibit is ACCEPTED and SENT, beside a control the same rule refuses. They mark
+    // where the two rules stop, so nobody takes them for more than they are.
+    it("accepts a lock that names the row's event in another queue, which excludes nothing that touches the event", async () => {
+      // The control: the lock of another event is refused.
+      expect(() => batch().casTree('event', onEvent(eventInsert(), 'q', 'another'))).toThrow(
+        /which is not the event_name it writes/,
+      )
+      // The exhibit: the rule reads the name the row binds, and no queue. A completion
+      // event takes its queue from the fenced task row, which a tree cannot compare with a
+      // string, so the queue is the definition's to get right. What holds it is the
+      // PostgreSQL and MySQL cases that keep the other side of the lock open.
+      const held: (SqlTransactionLock | undefined)[] = []
+      const executor: SqlExecutor = {
+        batch: async (_label, statements, control) => {
+          held.push(sqlTransactionLock(control))
+          return statements.map(() => ({ rows: [], rowsAffected: 1 }))
+        },
+      }
+      await batch()
+        .casTree('event', onEvent(eventInsert(), 'another-queue', 'e'))
+        .run(executor)
+      expect(held).toEqual([{ kind: 'event', queue: 'another-queue', eventName: 'e' }])
+    })
+
+    it('accepts a task state copied from a run this batch ended, which names no terminal state', async () => {
+      const taskBecomes = (state: unknown) =>
+        loose
+          .updateTable('tasks')
+          .set({ state, fence_stamp: stampValue, fence_at_ms: 5 })
+          .where((eb: Loose) => eb('task_id', 'in', fenced(eb).select('f.task_id')))
+      const ending = (state: unknown) =>
+        withCas().followOnTree('task', statement(taskBecomes(state)), 'one')
+      // The control: the same task, given the state by name, owes its completion event.
+      await expect(ending('completed').run(capturingExecutor(1).executor)).rejects.toThrow(
+        /writes a terminal tasks\.state, and no follow-on of this batch records/,
+      )
+      // The exhibit: `win` leaves its run completed, and the task copies that state, so
+      // the batch ends the task and records nothing. The copy is built from nodes, and it
+      // names no state. Every shipped copy reads a run the batch left live. What holds
+      // this one is `childTaskViolations`, over the rows.
+      const { captured, executor } = capturingExecutor(1)
+      await ending(stampedRunState('r1', 'win')).run(executor)
+      expect(captured.map((sent) => sent.sql.slice(0, 14))).toEqual([
+        'update "runs" ',
+        'update "tasks"',
+      ])
+    })
   })
 
   it('refuses a tail that is not a SELECT, and allows a fenced SELECT', () => {

@@ -15,6 +15,7 @@ import {
   sqlBatchMode,
   sqlTransactionLock,
   stampValue,
+  taskStateValue,
 } from '../src/index.js'
 import {
   type Loose,
@@ -243,7 +244,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('mirror', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'one',
     })
     expect(() => b.fence('mirror')).not.toThrow()
@@ -267,7 +268,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       withCas().derived('rhs-escape', {
         relation: 'runs-to-tasks',
         fence: 'win',
-        set: { state: `'pending', [fence_stamp] = 'forged'` },
+        set: { failure_reason: `'pending', [fence_stamp] = 'forged'` },
         rows: 'one',
       }),
     ).toThrow(/escapes its generated assignment/)
@@ -290,7 +291,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
           withCas().derived(name, {
             relation: 'runs-to-tasks',
             fence: 'win',
-            set: { state: value },
+            set: { failure_reason: value },
             rows: 'one',
           }),
         name,
@@ -306,7 +307,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
           withCas().derived(name, {
             relation: 'runs-to-tasks',
             fence: 'win',
-            set: { state: value },
+            set: { failure_reason: value },
             rows: 'one',
           }),
         name,
@@ -317,7 +318,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       withCas().derived('mysql-comment-escape', {
         relation: 'runs-to-tasks',
         fence: 'win',
-        set: { state: `'pending' # provenance would be commented out` },
+        set: { failure_reason: `'pending' # provenance would be commented out` },
         rows: 'one',
       }),
     ).toThrow(/contains a SQL comment/)
@@ -383,7 +384,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
         b.derived('too-late', {
           relation: 'runs-to-tasks',
           fence: 'win',
-          set: { state: `'pending'` },
+          set: { state: taskStateValue('pending') },
           rows: 'one',
         }),
     )
@@ -395,7 +396,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       b.derived('wrong-pair', {
         relation: 'runs.task_id-to-runs.run_id' as never,
         fence: 'win',
-        set: { state: `'pending'` },
+        set: { state: taskStateValue('pending') },
         rows: 'one',
       }),
     ).toThrow(/unknown fence relation/)
@@ -428,7 +429,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('mirror', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'one',
     })
     expect(() =>
@@ -503,7 +504,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'source-keys',
     })
 

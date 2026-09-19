@@ -1393,6 +1393,47 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
 }
 
 /**
+ * Every value a statement gives `tasks.state`: what an UPDATE's SET list or an INSERT's
+ * conflict arm assigns it, and what an INSERT's row gives it.
+ */
+function taskStateValues(tree: OperationNode): OperationNode[] {
+  if (statementTable(tree) !== 'tasks') return []
+  const assigned = assignedUpdates(tree)
+    .filter((update) => assignedColumn(update) === 'state')
+    .map((update) => update.value)
+  const inserted = InsertQueryNode.is(tree) ? insertedValue(tree, 'state') : undefined
+  return [...assigned, inserted].filter((value) => value !== undefined)
+}
+
+/**
+ * Why the state a statement gives a task cannot be read, or null when it can. A batch
+ * reads that state to know whether the statement ends the task (`writesTerminalTaskState`),
+ * and it reads nodes: a state's name is a value node, and the copy of a run's state is a
+ * subquery built from nodes. A fragment is text, and text can spell a state in more ways
+ * than a reader of text closes, so a fragment anywhere in that value is refused, whatever
+ * it holds.
+ */
+export function taskStateProblem(tree: OperationNode): string | null {
+  return taskStateValues(tree).some((value) => someNode(value, (node) => RawNode.is(node)))
+    ? "gives tasks.state a value that holds a SQL fragment: a batch reads the state a statement gives a task to know whether the statement ends it, and it cannot read text, so name the state as a value (`taskStateValue`) or copy a run's from nodes (`stampedRunState`)"
+    : null
+}
+
+/**
+ * Whether a statement can end a task, as far as its tree says: it writes `tasks`, and the
+ * value it gives `state` holds a value node that names a terminal state, anywhere inside
+ * it, so one arm of a CASE counts. A batch that holds such a statement owes the task's
+ * parent its completion event (DESIGN.md §3.2). A value that produces a terminal state
+ * and names none is not seen: the copy of a run's state, which every shipped statement
+ * takes from a run this batch left live.
+ */
+export function writesTerminalTaskState(tree: OperationNode): boolean {
+  return taskStateValues(tree).some((value) =>
+    someNode(value, (node) => isTerminalState(boundValue(node))),
+  )
+}
+
+/**
  * Why a statement is not serialized on the event it writes, or null when it is or when it
  * writes none (DESIGN.md §3.4 rule 2). An INSERT into `events` records an event, and one
  * into `waits` registers a wait on one. Either must run under that event's lock, or an

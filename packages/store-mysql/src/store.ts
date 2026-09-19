@@ -99,6 +99,7 @@ import {
   spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
+  stampedRunState,
   storageValueKind,
   storedEventRead,
   suspendCas,
@@ -106,6 +107,7 @@ import {
   sweepExpiredClaimsRead,
   taskDoneStateRead,
   taskResultRead,
+  taskStateValue,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
 } from '@durablerun/core'
@@ -337,10 +339,8 @@ function taskMirrorsRun(b: FencedBatch, queue: string, runId: string, after: str
     where: 'f.run_id = ?',
     whereArgs: [runId],
     set: {
-      state: `(SELECT f.state FROM runs f
-               WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+      state: stampedRunState(runId, after),
     },
-    setArgs: [runId],
     narrow: `state IN ${LIVE}`,
     rows: 'one',
   })
@@ -806,7 +806,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       where: `f.queue = ? AND f.state = 'running'`,
       whereArgs: [queue],
       set: {
-        state: `'running'`,
+        state: taskStateValue('running'),
         // The eligibility guard makes this exactly one. Keep the expression
         // scalar even under a guard regression so every dialect exposes that
         // regression as the same poisoned-state change instead of relying on
@@ -1161,7 +1161,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -1171,7 +1171,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_RELAUNCH_CAP],
       // Terminal only when this batch placed no rollback pass.
       narrow: `state IN ${LIVE}
@@ -1296,7 +1296,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE}
             AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries)}
@@ -1323,7 +1323,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       whereArgs: [successorId],
       set: {
         infra_retries: INFRA_RETRIES_FROM('?', b.fence('successor')),
-        state: `'pending'`,
+        state: taskStateValue('pending'),
         last_attempt_run: '?',
       },
       setArgs: [successorId, successorId],
@@ -1903,11 +1903,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
       set: {
         attempts: USER_ATTEMPTS_FROM('?', b.fence(fence)),
         max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))} + 1`,
-        state: `(SELECT f.state FROM runs f
-                 WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('rollback-pass')})`,
+        state: stampedRunState(passId, 'rollback-pass'),
         last_attempt_run: '?',
       },
-      setArgs: [failedRunId, failedRunId, passId, passId],
+      setArgs: [failedRunId, failedRunId, passId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -2126,11 +2125,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
         whereArgs: [successorId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `(SELECT f.state FROM runs f
-                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')})`,
+          state: stampedRunState(successorId, 'successor'),
           last_attempt_run: '?',
         },
-        setArgs: [runId, successorId, successorId],
+        setArgs: [runId, successorId],
         narrow: `state IN ${LIVE}`,
         rows: 'one',
       })
@@ -2143,7 +2141,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2165,7 +2163,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2511,7 +2509,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       queue,
       where: `f.wake_event = ? AND f.state = 'pending'`,
       whereArgs: [eventName],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',
     })
@@ -2807,7 +2805,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       queue,
       where: `f.run_id = ? AND f.state = 'sleeping'`,
       whereArgs: [runId],
-      set: { state: `'sleeping'` },
+      set: { state: taskStateValue('sleeping') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
