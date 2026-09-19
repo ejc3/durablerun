@@ -493,6 +493,44 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // FailedOutcomeHonest, for the error beside the outcome. `errorJson` is the failure of
+    // the rollback that ended the task. An attempt that failed with budget left ended
+    // nothing, because a pass followed it, so whatever halts the saga afterwards is not it.
+    it('names no rollback error when a cancellation or a cap halts the saga after a failed attempt that had budget left', async () => {
+      const failedWithBudgetLeft = async () => {
+        const { taskId, pass } = await rollingBack(f)
+        expect(
+          await f.store.failRollback(
+            Q,
+            pass.runId,
+            pass.claimToken,
+            CAUSE,
+            { delaySeconds: 0 },
+            triesOf('a', 1),
+          ),
+        ).toEqual({ rollingBack: true })
+        return taskId
+      }
+      const cancelled = await failedWithBudgetLeft()
+      expect(await f.store.cancelTask(Q, cancelled)).toBe(true)
+      const capped = await failedWithBudgetLeft()
+      const next = await claimActivated(f.store, Q, 'w-pass-2')
+      await f.store.fail(Q, next.runId, next.claimToken, '{"name":"PassBoom"}', {
+        delaySeconds: 0,
+      })
+      const read = async (taskId: string) => {
+        const result = await f.store.getTaskResult(Q, taskId)
+        return { state: result?.state, rollback: result?.rollback }
+      }
+      expect(
+        { cancelled: await read(cancelled), capped: await read(capped) },
+        'mutation-verdict:behavior:saga-error-is-the-ending-rollbacks',
+      ).toEqual({
+        cancelled: { state: 'cancelled', rollback: { outcome: 'failed' } },
+        capped: { state: 'failed', rollback: { outcome: 'failed' } },
+      })
+    })
+
     it('revives a failed task whose saga never began, as before', async () => {
       const spawned = await f.store.spawn(Q, 'plain', '{}')
       const run = await claimActivated(f.store, Q, 'w-1')
