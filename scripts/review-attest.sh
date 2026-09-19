@@ -22,6 +22,11 @@
 #      instead made this gate refuse the very branch that introduced it,
 #      whose design notes live there too; a mechanism that can only be
 #      satisfied by mangling good documents teaches people to bypass it.
+#      Every commit such a postmortem cites must be on the pull request's
+#      branch, and its red tests and fixes must be real, distinct, and
+#      ordered, because a commit id does not survive a rebase
+#      (check_postmortem_commits below). '--check-postmortem <path>
+#      --prove-reds' also runs the probe each cited red test names.
 #   3. The review artifacts match THIS HEAD and verifiably COMPLETED: a codex
 #      log containing exactly one matching 'review-head:' line and its
 #      'tokens used' completion marker, and a review-workflow journal with
@@ -37,12 +42,17 @@
 set -euo pipefail
 usage() {
   echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|->" >&2
-  echo "       review-attest.sh --check-postmortem <path>" >&2
+  echo "       review-attest.sh --check-postmortem <path> [<head>] [--prove-reds]" >&2
   echo "       review-attest.sh --check-codex-log <path> <head>" >&2
   echo "       review-attest.sh --check-journal <path> <head>" >&2
   echo "       review-attest.sh --check-pr-body <path>" >&2
   exit 2
 }
+
+# Both are found from this script, as the template always was, so a copy of the
+# script in another tree judges that tree.
+REPO="$(dirname "$0")/.."
+TEMPLATE="$REPO/postmortems/TEMPLATE.md"
 
 # The marker is a whole line but deliberately need not be the last one: a
 # completed Codex run prints its verdict afterward, while a failed stream can
@@ -440,12 +450,461 @@ check_postmortem_tables() {
   ' <<<"$content"
 }
 
+# --- the commits a postmortem cites -----------------------------------------
+#
+# A postmortem cites its red tests and its fixes by commit id, and an id does
+# not survive a rebase. A branch that moves after its postmortem is written
+# leaves every id naming a commit the branch no longer holds, and nothing else
+# in this gate reads them: one postmortem on main cites eleven commits that
+# were never on the branch it merged from, each with a twin there under the
+# same subject. So the ids are read here and held to the pull request's head.
+
+# Prints what a postmortem cites, tab separated, in the order it is written.
+#
+# `commit -1 ID SECTION` is a backticked id of 7 to 40 hex digits anywhere in
+# the document. The rest comes from where the template puts commits: the lines
+# of its Evidence section that carry a `<hash>` slot, the red tests' first and
+# the fixes' second. A postmortem's bullet belongs with a template line when it
+# begins with the same word, so "- Fixes, one commit for each finding:" is a
+# fixes line, a second round gets a line of its own, and a template that
+# renames a line renames what is asked for. No label is spelled in this script.
+# A bullet runs until the next one, and its wrapped lines are joined first.
+# `label N WORD LABEL` is the template's Nth such line, `line N` a bullet that
+# belongs with it, and `commit N ID WORD` an id on one, after the word WORD.
+#
+# The template line's other slots are read the same way, by the word before
+# each. An id straight after the word before `<buggy commit>`, today "against",
+# is `commit 0 ID WORD`: the code a red test ran against, neither a red test
+# nor a fix. After a red's id, the word before `<test file>`, today "probe",
+# names the test that shows it red: `probe FILE`, and `name TEXT` when another
+# backticked text follows at once.
+cited_commits() {
+  local content="$1"
+  [[ -s "$TEMPLATE" ]] || { echo "cannot read $TEMPLATE" >&2; return 1; }
+  awk -v template="$TEMPLATE" '
+    function refuse(message) {
+      print "cannot read the evidence lines of " template ": " message > "/dev/stderr"
+      refused = 1
+      exit 1
+    }
+
+    function template_line(line,    fields, word, label, rest, slot, lead) {
+      split(line, fields, /[[:space:]]+/)
+      word = fields[2]
+      sub(/[^[:alnum:]].*$/, "", word)
+      if (fields[1] != "-" || word == "" || index(line, ":") == 0) {
+        refuse("a line with a `<hash>` slot is not a labelled bullet: " line)
+      }
+      if (word in seen) {
+        refuse("two lines with a `<hash>` slot begin with the word " word)
+      }
+      seen[word] = 1
+      words[++count] = word
+      label = line
+      sub(/:.*$/, ":", label)
+      print "label\t" count "\t" word "\t" label
+      rest = line
+      while (match(rest, /[[:alpha:]]+ `<[^>]*>`/)) {
+        slot = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+        lead = tolower(slot)
+        sub(/ .*$/, "", lead)
+        if (index(slot, "`<test file>`")) {
+          probe = lead
+        } else if (!index(slot, "`<hash>`")) {
+          against[lead] = 1
+        }
+      }
+    }
+
+    function scan(text, kind,    rest, token, gap, word, named, red_seen) {
+      rest = text
+      while (match(rest, /`[^`]+`/)) {
+        token = substr(rest, RSTART + 1, RLENGTH - 2)
+        gap = substr(rest, 1, RSTART - 1)
+        rest = substr(rest, RSTART + RLENGTH)
+        gsub(/\t/, " ", token)
+        if (named && gap ~ /^[[:space:]]*$/) {
+          print "name\t" token
+          named = 0
+          continue
+        }
+        named = 0
+        sub(/[[:space:]]+$/, "", gap)
+        word = match(gap, /[[:alpha:]]+$/) ? substr(gap, RSTART, RLENGTH) : ""
+        if (kind == 1 && red_seen && probe != "" && tolower(word) == probe) {
+          print "probe\t" token
+          named = 1
+        } else if (token ~ /^[0-9a-f]+$/ && length(token) >= 7 && length(token) <= 40) {
+          if (kind > 0 && (tolower(word) in against)) {
+            print "commit\t0\t" token "\t" word
+          } else {
+            print "commit\t" kind "\t" token "\t" (kind > 0 ? word : section)
+            red_seen = red_seen || kind == 1
+          }
+        }
+      }
+    }
+
+    function emit_bullet(    i, prefix, kind) {
+      if (bullet == "") {
+        return
+      }
+      kind = -1
+      for (i = 1; i <= count; i++) {
+        prefix = "- " words[i]
+        if (substr(bullet, 1, length(prefix)) == prefix && substr(bullet, length(prefix) + 1, 1) !~ /[[:alnum:]]/) {
+          kind = i
+        }
+      }
+      if (kind > 0) {
+        print "line\t" kind
+      }
+      scan(bullet, kind)
+      bullet = ""
+    }
+
+    BEGIN {
+      section = "its opening"
+    }
+
+    NR == FNR {
+      if ($0 ~ /^## /) {
+        template_evidence = ($0 == "## Evidence")
+      } else if (template_evidence && index($0, "`<hash>`")) {
+        template_line($0)
+      }
+      next
+    }
+
+    /^## / {
+      emit_bullet()
+      section = $0
+      evidence = ($0 == "## Evidence")
+      next
+    }
+
+    evidence && /^- / {
+      emit_bullet()
+      bullet = $0
+      next
+    }
+
+    evidence && bullet != "" && /^[[:space:]]+[^[:space:]]/ {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      bullet = bullet " " line
+      next
+    }
+
+    {
+      emit_bullet()
+      scan($0, -1)
+    }
+
+    END {
+      if (refused) {
+        exit 1
+      }
+      if (count < 2) {
+        refuse("its Evidence section needs a red tests line and then a fixes line, each with a `<hash>` slot")
+      }
+      emit_bullet()
+    }
+  ' "$TEMPLATE" - <<<"$content"
+}
+
+# A rebase keeps a commit's subject and its patch and gives it a new id. When
+# exactly one commit of the branch is that twin, the refusal names it, because
+# the repair is to cite it.
+moved_hint() {
+  local id="$1" head_id="$2" subject twin patch
+  subject=$(git -C "$REPO" log -1 --format=%s "$id")
+  twin=$(git -C "$REPO" log --format='%H %s' "$head_id" \
+    | SUBJECT="$subject" awk '{ id = $1; sub(/^[^ ]+ /, ""); if ($0 == ENVIRON["SUBJECT"]) print id }')
+  [[ -n "$twin" && "$twin" != *$'\n'* ]] || return 0
+  patch=$(git -C "$REPO" show "$id" | git patch-id --stable | cut -d' ' -f1)
+  [[ -n "$patch" && "$patch" == "$(git -C "$REPO" show "$twin" | git patch-id --stable | cut -d' ' -f1)" ]] || return 0
+  echo " ${twin:0:7} on the branch has the same subject and the same patch, so the branch moved after this was written: cite ${twin:0:7}."
+}
+
+# Refuses a postmortem that cites a commit the head does not descend from. On
+# the template's lines an id must also resolve, none may be both a red test and
+# a fix, and some cited fix must descend from each red test. A postmortem of
+# several findings cites several of each, so "its fix" is any fix cited: a fix
+# line also names commits older than the reds (the one a defect came in with),
+# and a later round's red comes after the first round's fixes. Anywhere else an
+# id that names no commit here is left alone, because a digest or an id of
+# another repository is written the same way. Every stale id is reported in one
+# run, because a moved branch makes all of them stale at once.
+#
+# Sets CITED_REDS, CITED_PROBE_FILE, CITED_PROBE_NAME, CITED_HEAD and
+# CITED_SUMMARY for the caller.
+CITED_REDS=()
+declare -A CITED_PROBE_FILE=() CITED_PROBE_NAME=()
+CITED_HEAD=""
+CITED_SUMMARY=""
+check_postmortem_commits() {
+  local path="$1" content="$2" head="$3"
+  local head_id cited record first second third id where red fix ordered index problem last_red=""
+  local -a labels=() words=() problems=() reds=() fixes=()
+  local -A lines_on=() commits_on=() red_cited=() fix_cited=() others=()
+
+  head_id=$(git -C "$REPO" rev-parse --verify --quiet "${head}^{commit}" 2>/dev/null) || {
+    echo "SEV rule: the commits postmortem $path cites cannot be judged: $head is not a commit in this repository." >&2
+    echo "  Fetch the pull request's head, then run this again." >&2
+    return 1
+  }
+  cited=$(cited_commits "$content") || return 1
+
+  while IFS=$'\t' read -r record first second third; do
+    case "$record" in
+      label)
+        words[first]="$second"
+        labels[first]="$third"
+        ;;
+      line)
+        lines_on[$first]=$((${lines_on[$first]:-0} + 1))
+        ;;
+      probe)
+        [[ -z "$last_red" ]] || CITED_PROBE_FILE[$last_red]="$first"
+        ;;
+      name)
+        [[ -z "$last_red" ]] || CITED_PROBE_NAME[$last_red]="$first"
+        ;;
+      commit)
+        if [[ "$first" -lt 0 ]]; then
+          where="under $third"
+        elif [[ "$first" -eq 0 ]]; then
+          where="after \"$third\""
+        else
+          where="on its '${labels[first]}' line"
+          commits_on[$first]=$((${commits_on[$first]:-0} + 1))
+        fi
+        id=$(git -C "$REPO" rev-parse --verify --quiet "${second}^{commit}" 2>/dev/null) || {
+          [[ "$first" -lt 0 ]] \
+            || problems+=("cites \`$second\` $where, which does not resolve to a commit in this repository.")
+          continue
+        }
+        if ! git -C "$REPO" merge-base --is-ancestor "$id" "$head_id" 2>/dev/null; then
+          problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id")")
+          continue
+        fi
+        others[$id]=1
+        if [[ "$first" -eq 1 ]]; then
+          last_red="$id"
+          [[ -n "${red_cited[$id]:-}" ]] || reds+=("$id")
+          red_cited[$id]="$second"
+        elif [[ "$first" -eq 2 ]]; then
+          [[ -n "${fix_cited[$id]:-}" ]] || fixes+=("$id")
+          fix_cited[$id]="$second"
+        fi
+        ;;
+    esac
+  done <<<"$cited"
+
+  for index in "${!labels[@]}"; do
+    if [[ "${lines_on[$index]:-0}" -eq 0 ]]; then
+      problems+=("has no Evidence line that begins '- ${words[index]}', the template's '${labels[index]}' line, so what it cites there cannot be read.")
+    elif [[ "${commits_on[$index]:-0}" -eq 0 ]]; then
+      problems+=("cites no commit on a line that begins '- ${words[index]}'. The template's '${labels[index]}' line carries one.")
+    fi
+  done
+
+  # Order is judged only among commits that are real and on the branch: a stale
+  # id has no place in the history to be before or after anything.
+  if [[ ${#problems[@]} -eq 0 ]]; then
+    for red in "${reds[@]}"; do
+      if [[ -n "${fix_cited[$red]:-}" ]]; then
+        problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line and on its '${labels[2]}' line: a red test and its fix are two commits.")
+        continue
+      fi
+      ordered=0
+      for fix in "${fixes[@]}"; do
+        if git -C "$REPO" merge-base --is-ancestor "$red" "$fix" 2>/dev/null; then
+          ordered=1
+          break
+        fi
+      done
+      [[ "$ordered" -eq 1 ]] \
+        || problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line, and no commit on its '${labels[2]}' line descends from it: a red test comes before its fix.")
+    done
+  fi
+
+  if [[ ${#problems[@]} -gt 0 ]]; then
+    for problem in "${problems[@]}"; do
+      echo "SEV rule: postmortem $path $problem" >&2
+    done
+    return 1
+  fi
+  CITED_REDS=("${reds[@]}")
+  CITED_HEAD="$head_id"
+  CITED_SUMMARY="on ${head_id:0:7}: ${#reds[@]} red, ${#fixes[@]} fix, $((${#others[@]} - ${#reds[@]} - ${#fixes[@]})) other cited; each red is before a fix"
+}
+
+# --- --prove-reds: a cited red test fails where it is cited ------------------
+#
+# Ancestry cannot see a "red" commit that already holds its fix, or a test that
+# never failed. This opt-in mode runs the probe each cited red names: at the red
+# commit, in a scratch worktree with its own dependencies, at least one test
+# must fail by name. The same probe must then pass at the head, in the same
+# environment, or the failure was never the defect's: a database that is not
+# running fails every test of a store at any commit. The probe is named and not
+# derived, because a red that adds a case to a generated surface changes no
+# test file, and the test file it did change can pass. A red that names no
+# probe is not run, and the summary line counts it. It runs on the attester's
+# machine and takes seconds for a red.
+
+# A scratch copy gets its own install, so its workspace packages are its own.
+# Borrowing another tree's node_modules directories is quicker and wrong: a
+# workspace package is a relative link, and through a borrowed directory it
+# resolves in the tree it was borrowed from, which holds the fix. A red whose
+# test is in one package and whose fix is in another then passes. So every
+# dependency link is held to the copy before anything runs in it.
+scratch_copy() {
+  local commit="$1" copy="$2" inside link target links=0
+  git -C "$REPO" worktree add --quiet --detach "$copy" "$commit" >&2 || return 1
+  (cd "$copy" && pnpm install --frozen-lockfile --offline) >"$copy.install.log" 2>&1 || {
+    echo "cannot install the dependencies of ${commit:0:7} offline into a scratch copy:" >&2
+    tail -5 "$copy.install.log" >&2
+    return 1
+  }
+  inside=$(cd "$copy" && pwd -P)
+  while IFS= read -r link; do
+    links=$((links + 1))
+    target=$(readlink -f "$link" || true)
+    [[ "$target" == "$inside"/* ]] || {
+      echo "${link#"$copy"/} resolves outside the scratch copy of ${commit:0:7}, to ${target:-nothing}." >&2
+      return 1
+    }
+  done < <(find "$copy" -name .pnpm -prune -o -type l -path '*/node_modules/*' -print)
+  [[ "$links" -gt 0 ]] || {
+    echo "the install into the scratch copy of ${commit:0:7} linked no dependency." >&2
+    return 1
+  }
+}
+
+remove_scratch_copies() {
+  local work="$1" copy
+  for copy in "$work"/*/; do
+    [[ -e "$copy.git" ]] && git -C "$REPO" worktree remove --force "${copy%/}" >/dev/null 2>&1
+  done
+  rm -rf "$work"
+  git -C "$REPO" worktree prune || true
+}
+
+# Runs one probe in a scratch copy and prints "PASSED FAILED", or nothing when
+# the run left no report to read. A test the name filter skips is in vitest's
+# total and in neither count, so a name that matches nothing reads "0 0".
+run_probe() {
+  local copy="$1" report="$2" file="$3" name="$4"
+  local -a filter=()
+  [[ -z "$name" ]] || filter=(-t "$name")
+  (cd "$copy" && pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || true
+  jq -er '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || true
+}
+
+prove_reds() {
+  local path="$1" work red short file name probe copy report counts passed failed problem
+  local head_short="${CITED_HEAD:0:7}"
+  local -a proven=() unnamed=() problems=()
+
+  work=$(mktemp -d "${TMPDIR:-/tmp}/review-attest-reds.XXXXXX")
+  # shellcheck disable=SC2064
+  trap "remove_scratch_copies '$work'" EXIT
+
+  for red in "${CITED_REDS[@]}"; do
+    short="${red:0:7}"
+    file="${CITED_PROBE_FILE[$red]:-}"
+    name="${CITED_PROBE_NAME[$red]:-}"
+    probe="$file${name:+, \"$name\"}"
+    if [[ -z "$file" ]]; then
+      unnamed+=("$short")
+      echo "red $short names no probe, so it is not run"
+      continue
+    fi
+    git -C "$REPO" cat-file -e "$red:$file" 2>/dev/null || {
+      problems+=("red \`$short\` names the probe $file, which that commit does not hold.")
+      continue
+    }
+    copy="$work/red-$short"
+    report="$work/red-$short.json"
+    SECONDS=0
+    scratch_copy "$red" "$copy" || {
+      problems+=("red \`$short\` could not be run: the scratch copy above is not one a result can be trusted from.")
+      continue
+    }
+    counts=$(run_probe "$copy" "$report" "$file" "$name")
+    read -r passed failed <<<"$counts"
+    if [[ -z "$counts" ]]; then
+      tail -5 "$report.log" >&2
+      problems+=("red \`$short\`: the run of $probe at that commit left no report to read.")
+    elif [[ "$failed" -gt 0 ]]; then
+      proven+=("$red")
+      echo "red $short: $failed failed and $passed passed at that commit, in ${SECONDS}s: $probe"
+      jq -r '[.testResults[].assertionResults[]? | select(.status == "failed") | .fullName] | .[:20][] | "    " + .' "$report"
+    elif [[ "$passed" -gt 0 ]]; then
+      problems+=("red \`$short\`: its probe $probe passed ($passed) and nothing failed at that commit, so it is not a red test.")
+    else
+      problems+=("red \`$short\`: its probe $probe ran no test at that commit. The file does not load there, or no test has that name.")
+    fi
+  done
+
+  if [[ ${#proven[@]} -gt 0 ]]; then
+    copy="$work/head-$head_short"
+    SECONDS=0
+    if ! scratch_copy "$CITED_HEAD" "$copy"; then
+      problems+=("the head $head_short could not be run: the scratch copy above is not one a result can be trusted from.")
+      proven=()
+    fi
+    for red in "${proven[@]}"; do
+      short="${red:0:7}"
+      file="${CITED_PROBE_FILE[$red]}"
+      name="${CITED_PROBE_NAME[$red]:-}"
+      probe="$file${name:+, \"$name\"}"
+      report="$work/head-for-$short.json"
+      counts=$(run_probe "$copy" "$report" "$file" "$name")
+      read -r passed failed <<<"$counts"
+      if [[ -z "$counts" ]]; then
+        tail -5 "$report.log" >&2
+        problems+=("red \`$short\`: the run of $probe at the head $head_short left no report to read.")
+      elif [[ "$failed" -gt 0 ]]; then
+        problems+=("red \`$short\`: its probe $probe also fails at the head $head_short ($failed failed), so the failure is not the defect's: no fix removed it.")
+      elif [[ "$passed" -eq 0 ]]; then
+        problems+=("red \`$short\`: its probe $probe ran no test at the head $head_short, so nothing shows a fix removed the failure.")
+      else
+        echo "head $head_short: $passed passed and none failed: $probe"
+      fi
+    done
+    echo "the head took ${SECONDS}s"
+  fi
+
+  [[ ${#proven[@]} -gt 0 || ${#problems[@]} -gt 0 ]] \
+    || problems+=("none of its ${#CITED_REDS[@]} cited reds names a probe, so this run proved nothing.")
+  if [[ ${#problems[@]} -gt 0 ]]; then
+    for problem in "${problems[@]}"; do
+      echo "SEV rule: postmortem $path $problem" >&2
+    done
+    return 1
+  fi
+  echo "proved ${#proven[@]} of ${#CITED_REDS[@]} cited reds: each fails at its own commit and passes at $head_short${unnamed:+; ${#unnamed[@]} named no probe and were not run: ${unnamed[*]}}"
+}
+
+# The head defaults to HEAD, which is the pull request's head in the worktree
+# its author runs this from before pushing.
 if [[ "${1:-}" == "--check-postmortem" ]]; then
-  [[ $# -eq 2 ]] || usage
+  PROVE_REDS=0
+  if [[ "${!#}" == "--prove-reds" ]]; then
+    PROVE_REDS=1
+    set -- "${@:1:$#-1}"
+  fi
+  [[ $# -eq 2 || $# -eq 3 ]] || usage
   [[ -f "$2" ]] || { echo "no postmortem: $2" >&2; exit 1; }
   CONTENT=$(<"$2")
   ROWS=$(check_postmortem_tables "$2" "$CONTENT")
-  echo "SEV rule satisfied: $ROWS findings accounted for in $2"
+  check_postmortem_commits "$2" "$CONTENT" "${3:-HEAD}"
+  echo "SEV rule satisfied: $ROWS findings accounted for in $2; commits $CITED_SUMMARY"
+  [[ "$PROVE_REDS" -eq 0 ]] || prove_reds "$2"
   exit 0
 fi
 
@@ -498,7 +957,6 @@ if [[ "$DECLARED" -gt 0 ]]; then
     --jq '.[] | select(.status == "added") | .filename' \
     | grep -E '^postmortems/.*\.md$' | grep -vx 'postmortems/TEMPLATE.md' || true)
 
-  TEMPLATE="$(dirname "$0")/../postmortems/TEMPLATE.md"
   # Everything the checker demands is READ FROM THE TEMPLATE, so adding a
   # section or a placeholder there extends this gate automatically and the
   # checker can never describe a different document than authors copy.
@@ -540,6 +998,8 @@ if [[ "$DECLARED" -gt 0 ]]; then
       echo "SEV rule: postmortem $f still carries an unfilled-section marker" >&2; exit 1; }
     ROWS=$(check_postmortem_tables "$f" "$CONTENT")
     TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
+    check_postmortem_commits "$f" "$CONTENT" "$SHA"
+    PM_FILES="$PM_FILES  commits $CITED_SUMMARY"$'\n'
   done <<<"$ADDED"
 
   if [[ -z "$PM_FILES" ]]; then

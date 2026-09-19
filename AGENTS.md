@@ -232,7 +232,11 @@ required `adversarial-review` status unless the PR body declares
 nothing was found. A nonzero count requires the PR to ADD a postmortem
 (added files; touching or renaming an old one does not count) containing
 every section of the template, placeholders filled, findings table
-non-empty. The `reviews-abandoned: <non-empty reason>` trailer can excuse incomplete review
+non-empty. Every commit that postmortem cites must be on the pull request's
+branch, and the commits on its red and fix evidence lines must resolve, be
+distinct, and be ordered, a red before some fix, because a commit id does not
+survive a rebase and a branch moved after its postmortem was written cites
+commits it no longer holds. The `reviews-abandoned: <non-empty reason>` trailer can excuse incomplete review
 artifacts, never this gate. Bugs caught by the author's own machinery
 before review — TLC at spec time, red tests, fuzz — are the system
 working, not SEVs; declaring `review-findings: 0` over a branch with red

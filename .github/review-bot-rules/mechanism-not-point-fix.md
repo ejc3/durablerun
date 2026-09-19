@@ -183,7 +183,8 @@ or `invariants.ts` for enumeration and runtime); for an overclaimed proxy, the f
 written as code that could be pasted into this repo and would pass; and if the higher rung is
 genuinely out of reach, the missing BUILD.md sub-bullet with its destination entry named and
 live rather than DONE. Do not spend a finding on what the gate already refuses —
-`review-attest.sh` on postmortem sections, placeholders and ledger arithmetic, `gate-lint.py`
+`review-attest.sh` on postmortem sections, placeholders, ledger arithmetic and commits cited off the
+branch, `gate-lint.py`
 plus `lint-selftest.py` on checkers that cannot fail or that nothing runs, `deferral-lint.py` on
 deferrals parked under a DONE entry — say which gate covers it instead. Never let the remedy be
 "review more carefully": by this project's own ledger the reviewer caught 37 of 44 and the

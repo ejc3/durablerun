@@ -26,8 +26,8 @@ already fails the build for that).
 DESIGN.md is the spec, and CLAUDE.md makes every behaviour change update it in the same diff;
 BUILD.md owns every deferral under a *named, live* PR entry. Only fragments of this are mechanized:
 `scripts/deferral-lint.py` checks placement (a deferral sub-bullet parked under a DONE entry), and
-`scripts/review-attest.sh` checks one piece of arithmetic. The rest has no checker, and it has cost
-real money. Three incidents:
+`scripts/review-attest.sh` checks one piece of arithmetic and holds the commits a postmortem cites
+to its branch. The rest has no checker, and it has cost real money. Three incidents:
 
 **A comment that asserts a guard that does not exist.** `suspendRun`'s docblock said it was
 "reschedule's exact transition PLUS the suspension marker" while the two eligibility guards had
