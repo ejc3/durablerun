@@ -19,6 +19,7 @@ export {
   type EngineInvariantFinding,
 } from './invariants.js'
 export { childTaskViolations } from './child-tasks.js'
+export { sagaViolations } from './saga-rows.js'
 export { storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'
 export {

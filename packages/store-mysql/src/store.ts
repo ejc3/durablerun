@@ -5,6 +5,7 @@ import {
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   EventName,
+  type FailOutcome,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -25,6 +26,10 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RunTaskMemo,
+  SAGA_PHASE_CHECKPOINT,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -51,6 +56,7 @@ import {
   completeCas,
   completeTaskMirror,
   decodeBoundedInteger,
+  decodeRollbackOutcome,
   decodeTaskResult,
   deferLaunchCas,
   durationToMs,
@@ -79,6 +85,7 @@ import {
   revivalRunInsert,
   reviveCas,
   revivedRunRead,
+  rollbackPassInsert,
   serializeTaskHeaders,
   serializeTaskValue,
   spawnIdempotencyKey,
@@ -96,6 +103,9 @@ import {
   JSON_NUMBER_TYPES,
   LIVE,
   cancelDue,
+  checkpointInItsPhase,
+  checkpointIsAnAttemptRecord,
+  checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
   eligibleTask,
@@ -104,10 +114,14 @@ import {
   jsonInputValid,
   persistedColumn,
   registeredWait,
+  rollbackOutcomeColumns,
+  rollbackPending,
   runAvailableDue,
   runClaimExpired,
   runClaimUnexpired,
   runOwnedByTask,
+  sagaBegan,
+  sagaBeganOf,
   singletonAggregate,
   soleLiveRun,
   storedCurrentRunAccounting,
@@ -450,10 +464,15 @@ LIMIT ?`
  */
 const SWEEP_PIPELINE_WIDTH = 8
 
-/** The task still admits this run's completion: it is already terminal, or this is its only live run. */
+/**
+ * The task still admits this run's completion: it is already terminal, or this is its
+ * only live run and no saga began. A task that is rolling back cannot complete
+ * (DESIGN.md §3.10, specs/Sagas.tla ForwardFrozenInSaga).
+ */
 const TASK_ADMITS_COMPLETION = `EXISTS (
   SELECT 1 FROM tasks t
   WHERE ${runOwnedByTask('runs', 't')}
+    AND (t.state NOT IN ${LIVE} OR NOT ${sagaBegan('t')})
     AND (t.state NOT IN ${LIVE}
       OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
 )`
@@ -479,6 +498,38 @@ function requireIndexable(identifiers: Readonly<Record<string, unknown>>): void 
         `${what} is longer than the ${IDENTIFIER_CHARACTERS} characters a MySQL store indexes`,
       )
     }
+  }
+}
+
+/** The prefixes a saga puts before a registered step's key to name its checkpoints. */
+const SAGA_STEP_PREFIXES = [SAGA_STARTED_PREFIX, SAGA_ROLLBACK_PREFIX, SAGA_TRIES_PREFIX]
+
+/**
+ * The characters a registered step's key may have on this store: the indexed width less
+ * the longest saga prefix, `$rollback-tries:`, which is 239.
+ */
+const SAGA_STEP_KEY_CHARACTERS =
+  IDENTIFIER_CHARACTERS - Math.max(...SAGA_STEP_PREFIXES.map((prefix) => prefix.length))
+
+/**
+ * Refuse a saga checkpoint whose step key leaves no room for the step's other saga names.
+ * A checkpoint name is indexed, so it holds 255 characters here and is unbounded on the
+ * other dialects. A step registers under `$started:` and its key, which is the shortest
+ * of its saga names. Were that the only one checked, a step with a key of 240 to 246
+ * characters would start, and the batch that fails its rollback could not store the
+ * attempt record under `$rollback-tries:` and the same key, so the saga could not count
+ * a failed rollback. Every saga name of a step is therefore held to the key the longest
+ * one allows, before any statement is sent, and the refusal names what the caller passed.
+ */
+function requireSagaStepFits(what: string, name: unknown): void {
+  if (typeof name !== 'string') return
+  const prefix = SAGA_STEP_PREFIXES.find((candidate) => name.startsWith(candidate))
+  if (prefix === undefined) return
+  const key = name.slice(prefix.length)
+  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > SAGA_STEP_KEY_CHARACTERS) {
+    throw new InvalidDurableStringError(
+      `${what} names a saga step whose key is longer than ${SAGA_STEP_KEY_CHARACTERS} characters: a MySQL store indexes ${IDENTIFIER_CHARACTERS}, and '${SAGA_TRIES_PREFIX}' and the key must fit`,
+    )
   }
 }
 
@@ -1104,6 +1155,19 @@ export class MysqlSchedulerStore implements SchedulerStore {
         owner: sqlFragment(`${liveOwner} OR ${terminalOwner}`),
       }),
     )
+    // The cap is a terminal decision, so it enters the rolling-back phase when a
+    // registered step is owed its rollback (DESIGN.md §3.10, Sagas.tla InfraCap).
+    const passId = this.ids.uuidv7()
+    this.sagaPass(b, {
+      queue,
+      failedRunId: item.runId,
+      passId,
+      fence: 'cap',
+      enteringWith: REASON_RELAUNCH_CAP,
+      delayMs: 0,
+      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,
+      admissionArgs: [],
+    })
     // The task mirrors the run (the reviewed phantom-'running' divergence
     // from the TLA SweepLostLaunch action). Each arm names the CAS it
     // follows, so neither can fire for the other's outcome.
@@ -1125,7 +1189,15 @@ export class MysqlSchedulerStore implements SchedulerStore {
       whereArgs: [item.runId],
       set: { state: `'failed'`, failure_reason: '?' },
       setArgs: [REASON_RELAUNCH_CAP],
-      narrow: `state IN ${LIVE}`,
+      // Terminal only when this batch placed no rollback pass.
+      narrow: `state IN ${LIVE}
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              `(SELECT p.attempt + 1 FROM runs p
+                WHERE p.run_id = ? AND p.fence_stamp = ${b.fence('cap')})`,
+            )}`,
+      narrowArgs: [passId, item.runId],
       rows: 'one',
     })
     waitsGone(b, item.runId, 'cap')
@@ -1133,7 +1205,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       state: 'failed',
       failureReasonJson: REASON_RELAUNCH_CAP,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
     if (won === 'reopen') {
       return {
         kind: 'lost-launch',
@@ -1143,6 +1215,14 @@ export class MysqlSchedulerStore implements SchedulerStore {
       }
     }
     if (won === 'cap') {
+      if ((results['task-rolling-back']?.rowsAffected ?? 0) === 1) {
+        return {
+          kind: 'rollback-started',
+          runId: item.runId,
+          taskId: item.taskId,
+          successorRunId: passId,
+        }
+      }
       return { kind: 'relaunch-cap-exhausted', runId: item.runId, taskId: item.taskId }
     }
     return null // lost the race to another sweeper
@@ -1207,6 +1287,22 @@ export class MysqlSchedulerStore implements SchedulerStore {
       }),
       'one',
     )
+    // At the cap the batch decides the task's failure, so it enters the rolling-back
+    // phase when a registered step is owed its rollback (DESIGN.md §3.10, Sagas.tla
+    // InfraCap). The pass takes the identity the refused successor would have had, so
+    // the terminal arm below yields to it as it yields to a successor. It follows the
+    // successor's insert and shares its id, so it is placed only when no retry was: below
+    // the cap the retry holds the id, and a death there is a retry, as it always was.
+    this.sagaPass(b, {
+      queue,
+      failedRunId: item.runId,
+      passId: successorId,
+      fence: 'fail',
+      enteringWith: REASON_INFRA_CAP,
+      delayMs: 0,
+      admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}`,
+      admissionArgs: [],
+    })
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
     // actually failed to place a successor: keying on the cap alone made an
     // exact replay terminalize the task over the successor the first pass had
@@ -1269,6 +1365,14 @@ export class MysqlSchedulerStore implements SchedulerStore {
     if ((results.bookkeeping?.rowsAffected ?? 0) === 1) {
       return {
         kind: 'claim-timeout',
+        runId: item.runId,
+        taskId: item.taskId,
+        successorRunId: successorId,
+      }
+    }
+    if ((results['task-rolling-back']?.rowsAffected ?? 0) === 1) {
+      return {
+        kind: 'rollback-started',
         runId: item.runId,
         taskId: item.taskId,
         successorRunId: successorId,
@@ -1406,6 +1510,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
                            AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})
          AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
          AND ${charged} - attempts IN (0, 1)
+         AND NOT ${sagaBegan('tasks')}
          AND ${charged} <= max_attempts`,
         ),
       }),
@@ -1619,6 +1724,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'suspend',
       suspendCas({
+        // `reschedule` stays open inside the phase: a build without the task's handler
+        // must still be able to park a launch it cannot run.
+        phase: 'open',
         queue,
         runId,
         claimToken,
@@ -1653,12 +1761,23 @@ export class MysqlSchedulerStore implements SchedulerStore {
     checkpoint: CheckpointWrite,
   ): Promise<void> {
     requireIndexable({ queue, runId, checkpointName: checkpoint?.key })
+    requireSagaStepFits('checkpoint.key', checkpoint?.key)
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
     const b = new FencedBatch('suspend', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
       'suspend',
       suspendCas({
+        // A suspension commits a marker, and the forward phase is frozen once a saga began.
+        // The marker is the caller's checkpoint, so its name is checked by the predicates a
+        // plain checkpoint write's is. A rollback's name is admitted only inside the phase,
+        // where no run suspends, and the engine's own names are refused in either.
+        phase: sqlFragment(
+          `NOT ${sagaBegan('runs')}
+         AND ${checkpointInItsPhase('runs', '?')}
+         AND NOT ${checkpointIsTheEngines('?')}`,
+          [checkpoint.key, checkpoint.key, checkpoint.key],
+        ),
         queue,
         runId,
         claimToken,
@@ -1725,10 +1844,95 @@ export class MysqlSchedulerStore implements SchedulerStore {
   }
 
   /**
+   * The saga arm of a batch that decides a task's failure (DESIGN.md §3.10,
+   * specs/Sagas.tla): the rollback pass that carries the saga on, the phase marker when
+   * this batch enters the phase, and the task following the pass. Every statement keys
+   * on the pass's own stamp, so none fires unless the pass was placed. The pass runs
+   * past the user budget, so the task's budget becomes the pass's ordinal, derived from
+   * the failed run as `attempts` is. The batch's terminal arm yields to the pass by id.
+   */
+  private sagaPass(
+    b: FencedBatch,
+    pass: {
+      queue: string
+      failedRunId: string
+      passId: string
+      fence: 'fail' | 'cap'
+      /** The failure the task will end with, when this batch enters the phase. */
+      enteringWith: string | null
+      delayMs: number
+      admission: string
+      admissionArgs: readonly number[]
+    },
+  ): void {
+    const { queue, failedRunId, passId, fence } = pass
+    b.followOnTree(
+      'rollback-pass',
+      rollbackPassInsert({
+        successorId: passId,
+        runId: failedRunId,
+        delayMs: pass.delayMs,
+        fence,
+        taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+        // The batch writes the task's budget as the failed run's user ordinal plus one, so
+        // that sum must be a budget a task may have. The guard reads the ordinal the batch
+        // writes from, and never the stored budget, which the batch replaces: a task spawned
+        // with the largest budget rolls back like any other. The pass's own ordinal has room
+        // too, because every compare-and-set a pass is fenced on vouches for the accounting
+        // identity, under which a run's ordinal is its task's attempts and infrastructure
+        // retries plus one.
+        admission: sqlFragment(
+          `t.state IN ${LIVE} AND ${pass.admission}
+           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,
+          [...pass.admissionArgs],
+        ),
+        successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
+          passId,
+        ]),
+      }),
+      'one',
+    )
+    if (pass.enteringWith !== null) {
+      b.followOnTree(
+        'rolling-back',
+        checkpointWrite({
+          runId: passId,
+          checkpointName: SAGA_PHASE_CHECKPOINT,
+          stateJson: pass.enteringWith,
+          fence: 'rollback-pass',
+          attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+        }),
+        'one',
+      )
+    }
+    b.derived('task-rolling-back', {
+      relation: 'runs-to-tasks',
+      // Bound, not correlated: a source that names the target's queue is evaluated once
+      // for every task row, and the update then walks the table to find one task.
+      queue,
+      fence: 'rollback-pass',
+      where: 'f.run_id = ?',
+      whereArgs: [passId],
+      set: {
+        attempts: USER_ATTEMPTS_FROM('?', b.fence(fence)),
+        max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))} + 1`,
+        state: `(SELECT f.state FROM runs f
+                 WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('rollback-pass')})`,
+        last_attempt_run: '?',
+      },
+      setArgs: [failedRunId, failedRunId, passId, passId],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+  }
+
+  /**
    * User-code failure. Retry POLICY is decided by the caller (core's
    * decideRetry over the user ordinal); the store applies the fenced
-   * transition. This is the ONLY place tasks.attempts moves (the TLC-checked
-   * AttemptAccounting shape). A retrying failure inserts the successor run
+   * transition. tasks.attempts moves here (the TLC-checked AttemptAccounting
+   * shape) and wherever a rollback pass is placed, which is `sagaPass`, from a
+   * failure or from a sweep's cap arm. Both derive it from the failed run's own
+   * ordinal. A retrying failure inserts the successor run
    * (attempt+1, carrying SUCCESSOR_CARRIED_RUN_COLUMNS) in the same batch.
    */
   async fail(
@@ -1737,21 +1941,101 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     requireIndexable({ queue, runId })
     const successorId = retry ? this.ids.uuidv7() : null
+    const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
+    const taskId = await this.endingTask('fail', queue, runId)
+    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
+    return this.failInto(b, {
+      operation: 'fail',
+      queue,
+      runId,
+      claimToken,
+      failureJson,
+      taskId,
+      successorId,
+      retryDelayMs,
+      passId,
+    })
+  }
+
+  /**
+   * A failed rollback of a task that is rolling back (DESIGN.md §3.10, specs/Sagas.tla
+   * RollbackRetry and RollbackHalts). The batch is `fail`'s with no user retry: the
+   * attempt record lands behind the failure itself, and then either another pass
+   * follows, which the user budget does not cap, or the task ends where it stands.
+   */
+  async failRollback(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    failureJson: string,
+    retry: { delaySeconds: number } | null,
+    rollbackTry: CheckpointWrite,
+  ): Promise<FailOutcome> {
+    requireIndexable({ queue, runId, 'rollbackTry.key': rollbackTry.key })
+    requireSagaStepFits('rollbackTry.key', rollbackTry.key)
+    const passId = this.ids.uuidv7()
+    const passDelayMs =
+      retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
+    const taskId = await this.endingTask('failRollback', queue, runId)
+    const b = new FencedBatch('fail-rollback', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
+    return this.failInto(b, {
+      operation: 'failRollback',
+      queue,
+      runId,
+      claimToken,
+      failureJson,
+      taskId,
+      successorId: null,
+      retryDelayMs: null,
+      passId,
+      rollback: { tried: rollbackTry, passDelayMs },
+    })
+  }
+
+  /**
+   * The failure batch, which `fail` and `failRollback` each run under their own label.
+   * `successorId` and `retryDelayMs` are the user retry's, and `rollback` is the failed
+   * rollback's attempt record with the delay of the pass that retries it.
+   */
+  private async failInto(
+    b: FencedBatch,
+    failure: {
+      operation: 'fail' | 'failRollback'
+      queue: string
+      runId: string
+      claimToken: string
+      failureJson: string
+      taskId: string
+      successorId: string | null
+      retryDelayMs: number | null
+      passId: string
+      rollback?: { tried: CheckpointWrite; passDelayMs: number | null }
+    },
+  ): Promise<FailOutcome> {
+    const { queue, runId, claimToken, failureJson, taskId, successorId, retryDelayMs, passId } =
+      failure
+    const { rollback } = failure
+    const retry = retryDelayMs !== null
     const retryDeadlineGuard =
       retryDelayMs === null
         ? ''
         : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts
           OR ${epochAdditionFits(NOW, '?')})`
-    const taskId = await this.endingTask('fail', queue, runId)
-    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'fail',
       failCas({
+        // A failed rollback is one only while its task is rolling back. Every statement
+        // behind this one is fenced on its stamp, so none of them asks again.
+        phase: rollback === undefined ? 'open' : sqlFragment(sagaBegan('runs')),
         queue,
         runId,
         claimToken,
@@ -1766,11 +2050,60 @@ export class MysqlSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )`,
-          retryDelayMs === null ? [] : [retryDelayMs],
+         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
+          [
+            ...(retryDelayMs === null ? [] : [retryDelayMs]),
+            // The attempt record is the caller's checkpoint, and it may carry no other name.
+            ...(rollback === undefined ? [] : [rollback.tried.key]),
+          ],
         ),
       }),
     )
+    // The saga arms (DESIGN.md §3.10, specs/Sagas.tla). Outside the phase, a failure no
+    // retry follows is the task's terminal decision. When a registered step started and
+    // is not rolled back, this batch enters the phase in place of ending the task. A
+    // retry the user budget refuses is that same decision. Inside the phase the caller
+    // hands over the failed rollback's attempt record, which lands behind the failure
+    // itself, so a failed attempt is counted or the pass did not fail. A retry there is
+    // a pass the user budget does not cap, and a failure without the record is capped
+    // like any other, which halts the saga.
+    if (rollback !== undefined) {
+      b.followOnTree(
+        'rollback-tried',
+        checkpointWrite({
+          runId,
+          checkpointName: rollback.tried.key,
+          stateJson: rollback.tried.stateJson,
+          fence: 'fail',
+          attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+        }),
+        'one',
+      )
+    }
+    if (rollback === undefined) {
+      const budgetSpent = retry ? ' AND (f.attempt - t.infra_retries) >= t.max_attempts' : ''
+      this.sagaPass(b, {
+        queue,
+        failedRunId: runId,
+        passId,
+        fence: 'fail',
+        enteringWith: failureJson,
+        delayMs: 0,
+        admission: `NOT ${sagaBegan('t')} AND ${rollbackPending('t')}${budgetSpent}`,
+        admissionArgs: [],
+      })
+    } else if (rollback.passDelayMs !== null) {
+      this.sagaPass(b, {
+        queue,
+        failedRunId: runId,
+        passId,
+        fence: 'fail',
+        enteringWith: null,
+        delayMs: rollback.passDelayMs,
+        admission: epochAdditionFits('f.fence_at_ms', '?'),
+        admissionArgs: [rollback.passDelayMs],
+      })
+    }
     if (retry && successorId && retryDelayMs !== null) {
       // Only a LIVE task with user budget remaining gets a retry run. The cap
       // is expressed with the SAME user-ordinal definition the counter uses
@@ -1851,7 +2184,14 @@ export class MysqlSchedulerStore implements SchedulerStore {
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
-        narrow: `state IN ${LIVE}`,
+        // Terminal only when this batch placed no rollback pass.
+        narrow: `state IN ${LIVE}
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              '(SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)',
+            )}`,
+        narrowArgs: [passId, runId],
         rows: 'one',
       })
     }
@@ -1862,8 +2202,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
       state: 'failed',
       failureReasonJson: failureJson,
     })
-    const { won } = await b.run(this.db)
-    if (won !== 'fail') throw await this.refusal('fail', runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -1928,6 +2269,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     extendLeaseSeconds: number,
   ): Promise<void> {
     requireIndexable({ queue, taskId, runId, checkpointName })
+    requireSagaStepFits('checkpointName', checkpointName)
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     const b = new FencedBatch('set-checkpoint', this.ids.token(), {
       now: NOW_MS,
@@ -1949,6 +2291,12 @@ export class MysqlSchedulerStore implements SchedulerStore {
           [checkpointName],
         ),
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
+        // The forward phase is frozen once a saga began, and a rollback runs only in it.
+        sagaPhase: sqlFragment(
+          `${checkpointInItsPhase('runs', '?')}
+         AND NOT ${checkpointIsTheEngines('?')}`,
+          [checkpointName, checkpointName, checkpointName],
+        ),
       }),
     )
     // The attempt comparison in checkpointWrite's conflict arm is the last-writer-wins
@@ -1975,7 +2323,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'task-result',
       [
         {
-          sql: `SELECT ${TASK_RESULT_COLUMNS} FROM tasks
+          sql: `SELECT ${TASK_RESULT_COLUMNS}, ${rollbackOutcomeColumns('tasks')}
+                FROM tasks
                 WHERE task_id = ? AND queue = ?`,
           args: [taskId, queue],
         },
@@ -1983,7 +2332,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'read',
     )
     const row = rows?.rows[0]
-    return row === undefined ? null : decodeTaskResult(taskId, row)
+    if (row === undefined) return null
+    const result = decodeTaskResult(taskId, row)
+    const rollback = decodeRollbackOutcome(taskId, row)
+    return rollback === undefined ? result : { ...result, rollback }
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
@@ -2475,6 +2827,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
         ]),
         taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
         taskEligible: sqlFragment(eligibleTask('t', NOW)),
+        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),
       }),
     )
     // available_at_ms IS this wait's own timeout_at_ms, copied from the row

@@ -1,5 +1,10 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { isTreeBuiltStatement } from '@durablerun/core'
+import {
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  encodeRollbackTry,
+  isTreeBuiltStatement,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
@@ -43,8 +48,13 @@ const VARIANT_OF: VariantNamers = {
     signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
       ? 'spawned-child'
       : 'spawned',
-  // Only a retrying failure inserts a successor run.
+  // Every failure carries the rollback pass, and only a retrying one a successor run too.
   fail: (signature) =>
+    signature.filter(({ sql }) => /insert into ["`]runs["`]/.test(sql)).length > 1
+      ? 'retrying'
+      : 'final',
+  // Only a failed rollback with budget left inserts a run, the pass that retries it.
+  'fail-rollback': (signature) =>
     signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
   'await-event': (signature) =>
     signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
@@ -141,6 +151,38 @@ describe('generated SQL corpus', () => {
         // A compare-and-set that matches nothing still compiles, so each step says it won.
         expect(await store.retryTask('q', retried.taskId)).not.toBeNull()
         expect(await store.cancelTask('q', retried.taskId)).toBe(true)
+        // A saga: a registered step starts, the task fails for good, and that batch
+        // enters the rolling-back phase. The rollback fails twice, once with budget left.
+        const saga = await store.spawn('q', 'saga', '{}')
+        const forward = await claimActivated(store, 'q', 'w7b')
+        expect(forward.taskId).toBe(saga.taskId)
+        await checkpointOwned(store, 'q', forward, `${SAGA_STARTED_PREFIX}a`, '1', 30)
+        await store.fail('q', forward.runId, forward.claimToken, '{"name":"E"}', null)
+        const tried = (tries: number) => ({
+          key: `${SAGA_TRIES_PREFIX}a`,
+          stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
+        })
+        const pass = await claimActivated(store, 'q', 'w7c')
+        expect(pass.taskId).toBe(saga.taskId)
+        await store.failRollback(
+          'q',
+          pass.runId,
+          pass.claimToken,
+          '{"name":"E"}',
+          { delaySeconds: 0 },
+          tried(1),
+        )
+        const lastPass = await claimActivated(store, 'q', 'w7d')
+        expect(lastPass.taskId).toBe(saga.taskId)
+        await store.failRollback(
+          'q',
+          lastPass.runId,
+          lastPass.claimToken,
+          '{"name":"E"}',
+          null,
+          tried(2),
+        )
+        expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
         // Last, because it moves the clock. Under the early fake clock only these three
         // tasks are due: a launch that never activates, a worker that dies after
         // activating, and a task never started by its deadline.

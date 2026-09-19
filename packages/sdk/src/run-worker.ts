@@ -1,6 +1,7 @@
 import {
   type ClaimedRunAnswerReadField,
   type Clock,
+  type FailOutcome,
   type LaunchInvocation,
   type SchedulerStore,
   decideRetry,
@@ -20,7 +21,7 @@ import {
   trustedPromiseRace,
 } from './intrinsics.js'
 import {
-  type InfrastructureControlSnapshot,
+  type TaskControlSnapshot,
   createTaskControlScope,
   trustedStoreControl,
 } from './task-control.js'
@@ -40,6 +41,10 @@ export type WorkerOutcome =
   | { kind: 'suspended' } // sleep/await: parked, will wake later
   | { kind: 'retry-scheduled' } // user failure with retries left
   | { kind: 'failed' } // user failure, terminal
+  | { kind: 'rolling-back' } // the failure was decided, or a rollback failed with budget
+  //   left, and a rollback pass follows: the task has not ended (DESIGN.md §3.10)
+  | { kind: 'rolled-back' } // a pass found nothing left to roll back, and ended the task
+  | { kind: 'rollback-failed' } // a rollback failed for good: the saga halted, and the task ended
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
   | { kind: 'cancelled' } // the task was cancelled mid-run (AB001): aborted quietly
@@ -80,10 +85,15 @@ function trustedStoreOutcome(error: unknown): WorkerOutcome {
  * through to a user failure.
  */
 function infrastructureOutcome(
-  control: InfrastructureControlSnapshot | undefined,
+  control: TaskControlSnapshot | undefined,
 ): WorkerOutcome | undefined {
   if (control === undefined) return undefined
   switch (control.kind) {
+    // A suspension and the frozen phase's signal are the pass's own business.
+    case 'sleep':
+    case 'await-event':
+    case 'rollback-phase':
+      return undefined
     case 'lease-lost':
       return { kind: 'lease-lost' }
     case 'run-cancelled':
@@ -217,17 +227,77 @@ export async function runClaimedRun(
         ? ({ retry: false } as const)
         : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)
       try {
-        await store.fail(
+        // A store built before sagas answers nothing: its task is not rolling back.
+        const failed: FailOutcome | undefined = await store.fail(
           queue,
           runId,
           claimToken,
           thrown.failureJson,
           decision.retry ? { delaySeconds: decision.delaySeconds } : null,
         )
+        // The store decides: a step that started is owed a rollback, so the task lives on.
+        if (failed?.rollingBack === true) return { kind: 'rolling-back' }
       } catch (inner) {
         return trustedStoreOutcome(inner)
       }
       return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
+    }
+
+    /**
+     * A rollback pass (DESIGN.md §3.10, specs/Sagas.tla). The task function runs again so
+     * every memoized step re-registers its closure, and however that replay ends, its
+     * ending means nothing: the failure is decided. Then each rollback owed runs as a
+     * step of its own, the step that started last first, until none is left, one fails,
+     * or the saga cannot go on. Exactly one write ends the pass, as it ends any pass.
+     */
+    const rollBack = async (params: unknown, causeJson: string): Promise<WorkerOutcome> => {
+      try {
+        await handler(ctx, params)
+      } catch (error) {
+        const infrastructure = infrastructureOutcome(taskControls.snapshot(error))
+        if (infrastructure !== undefined) return infrastructure
+      }
+      for (;;) {
+        const next = ctx.nextRollback()
+        if (next.kind === 'run') {
+          try {
+            await ctx.runRollback(next.stepKey)
+            continue
+          } catch (error) {
+            const infrastructure = infrastructureOutcome(taskControls.snapshot(error))
+            if (infrastructure !== undefined) return infrastructure
+            // The attempt record lands with the failure, so a failed attempt is counted.
+            const failure = ctx.rollbackFailure(next.stepKey, snapshotTaskThrowable(error))
+            try {
+              const placed = await store.failRollback(
+                queue,
+                runId,
+                claimToken,
+                causeJson,
+                failure.retry,
+                failure.record,
+              )
+              // The store says whether a pass follows. It can end the task where the retry
+              // decision asked for a pass, when the pass does not fit the budget bound.
+              return placed.rollingBack ? { kind: 'rolling-back' } : { kind: 'rollback-failed' }
+            } catch (inner) {
+              return trustedStoreOutcome(inner)
+            }
+          }
+        }
+        try {
+          // The task ends `failed` with the failure that began the saga either way. The
+          // rollback outcome is derived from what ran, and stored nowhere.
+          if (next.kind === 'halt') {
+            await store.failRollback(queue, runId, claimToken, causeJson, null, next.record)
+          } else {
+            await store.fail(queue, runId, claimToken, causeJson, null)
+          }
+        } catch (inner) {
+          return trustedStoreOutcome(inner)
+        }
+        return next.kind === 'halt' ? { kind: 'rollback-failed' } : { kind: 'rolled-back' }
+      }
     }
 
     let resultJson: string
@@ -238,6 +308,8 @@ export async function runClaimedRun(
       } catch {
         params = run.paramsJson // legacy/opaque payloads pass through as text
       }
+      const saga = ctx.rollingBack
+      if (saga !== undefined) return await rollBack(params, saga.causeJson)
       const result = await handler(ctx, params)
       resultJson = serializeTaskValue('task result', result)
     } catch (error) {

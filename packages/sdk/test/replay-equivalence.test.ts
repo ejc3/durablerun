@@ -1,4 +1,8 @@
-import { childTaskViolations, engineInvariantViolations } from '@durablerun/conformance'
+import {
+  childTaskViolations,
+  engineInvariantViolations,
+  sagaViolations,
+} from '@durablerun/conformance'
 import {
   EventTimeoutError,
   FatalTaskError,
@@ -508,5 +512,287 @@ describe('replay equivalence (generated programs x fault points x adversarial va
         expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
       }
     }, 60_000)
+  }
+})
+
+/**
+ * Sagas (DESIGN.md §3.10, specs/Sagas.tla). A generated program registers rollbacks,
+ * fails for good, and is rolled back, and the same harness rule holds across the whole
+ * of it: interrupted at ANY store call, in the forward phase or in a rollback pass, the
+ * task ends in the same state with the same checkpoint table. On top of that, what only a
+ * saga owes: every rollback owed ran, in reverse order of step start, and is recorded
+ * exactly once. A rollback's handler runs at least once for each time it commits, so under
+ * a fault its effect may repeat, and the record may not.
+ */
+interface SagaOp {
+  kind: 'step' | 'registered' | 'sleep' | 'emit'
+  nameIndex: number
+  valueIndex: number
+  /** A registered step whose rollback can never succeed halts the saga there. */
+  rollbackAlwaysFails?: boolean
+}
+
+interface SagaProgram {
+  ops: SagaOp[]
+  /** The op whose body fails for good, or `ops.length` for a failure after every op. */
+  failsAt: number
+}
+
+function generateSagaProgram(rng: Rng): SagaProgram {
+  const length = 3 + rng.int(4)
+  const ops: SagaOp[] = []
+  for (let i = 0; i < length; i++) {
+    const roll = rng.next()
+    const base = { nameIndex: rng.int(STEP_NAMES.length), valueIndex: rng.int(VALUES.length) }
+    if (roll < 0.55)
+      ops.push({ ...base, kind: 'registered', rollbackAlwaysFails: rng.next() < 0.15 })
+    else if (roll < 0.75) ops.push({ ...base, kind: 'step' })
+    else if (roll < 0.9) ops.push({ ...base, kind: 'sleep' })
+    else ops.push({ ...base, kind: 'emit' })
+  }
+  // Every program has a rollback to run, and half of them fail inside a step's body, so
+  // a step that started and never persisted is rolled back too.
+  if (!ops.some((op) => op.kind === 'registered')) {
+    ops[0] = { kind: 'registered', nameIndex: 0, valueIndex: 0 }
+  }
+  const bodies = ops.flatMap((op, i) => (op.kind === 'registered' || op.kind === 'step' ? [i] : []))
+  const failsAt = rng.next() < 0.5 ? ops.length : (bodies[rng.int(bodies.length)] ?? ops.length)
+  return { ops, failsAt }
+}
+
+/** What the world outside the store saw: bodies that ran, and rollbacks that ran or failed. */
+interface SagaEffects {
+  log: string[]
+  handed: Record<number, string>
+}
+
+function sagaHandler(program: SagaProgram, effects: SagaEffects) {
+  return async (ctx: TaskContext) => {
+    for (const [i, op] of program.ops.entries()) {
+      const body = () => {
+        effects.log.push(`do:${i}`)
+        if (i === program.failsAt) throw new FatalTaskError(`op ${i} failed for good`)
+        return VALUES[op.valueIndex]
+      }
+      const name = STEP_NAMES[op.nameIndex] ?? 'op'
+      if (op.kind === 'registered') {
+        await ctx.step(name, body, {
+          rollback: (input) => {
+            effects.handed[i] = fingerprint(input.output)
+            if (op.rollbackAlwaysFails) {
+              effects.log.push(`try:${i}`)
+              throw new Error(`rollback ${i} cannot succeed`)
+            }
+            effects.log.push(`undo:${i}`)
+          },
+          rollbackConfig: { maxAttempts: 2, retryStrategy: { kind: 'fixed', baseSeconds: 0 } },
+        })
+      } else if (op.kind === 'step') {
+        await ctx.step(name, body)
+      } else if (op.kind === 'sleep') {
+        await ctx.sleepFor(5)
+      } else {
+        await ctx.emitEvent(`saga-ev${i}`, JSON.stringify(VALUES[op.valueIndex]) ?? 'null')
+      }
+    }
+    throw new FatalTaskError('the program failed for good')
+  }
+}
+
+/** What Sagas.tla and §3.10 say this program's rollbacks must be, from the program alone. */
+function expectedSaga(program: SagaProgram) {
+  const started = program.ops.flatMap((op, i) =>
+    op.kind === 'registered' && i <= program.failsAt ? [i] : [],
+  )
+  const undone: number[] = []
+  let halted = false
+  for (const i of [...started].reverse()) {
+    if (program.ops[i]?.rollbackAlwaysFails) {
+      halted = true
+      break
+    }
+    undone.push(i)
+  }
+  return {
+    undone,
+    outcome: halted ? 'failed' : 'complete',
+    handed: Object.fromEntries(
+      (halted ? [...undone, started[started.length - 1 - undone.length]] : undone).map((i) => [
+        i,
+        i === program.failsAt
+          ? fingerprint(undefined)
+          : fingerprint(
+              JSON.parse(
+                JSON.stringify(VALUES[program.ops[i as number]?.valueIndex ?? 0]) ?? 'null',
+              ),
+            ),
+      ]),
+    ),
+  }
+}
+
+async function runSagaProgram(
+  program: SagaProgram,
+  seed: string,
+  failAtCall: number,
+  tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
+) {
+  const raw = LibsqlExecutor.open(':memory:')
+  try {
+    const admin = new LibsqlStoreAdmin(raw)
+    await admin.migrate()
+    const real = new LibsqlSchedulerStore(raw, seededIdSource(new Rng(seed)))
+    let calls = 0
+    const store = new Proxy(tamper(real), {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver)
+        if (typeof value !== 'function' || prop === 'constructor') return value
+        return (...args: unknown[]) => {
+          calls++
+          if (calls === failAtCall)
+            return Promise.reject(new StoreUnavailableError('injected outage'))
+          return (value as (...a: unknown[]) => unknown).apply(target, args)
+        }
+      },
+    }) as SchedulerStore
+    const clock = new FakeClock()
+    await admin.setFakeNowEpochMs(clock.now)
+    const effects: SagaEffects = { log: [], handed: {} }
+    const registry: TaskRegistry = new Map([['saga', sagaHandler(program, effects)]])
+    const spawned = await real.spawn(Q, 'saga', '{}')
+    for (let round = 0; round < 80; round++) {
+      const done = await real.getTaskResult(Q, spawned.taskId)
+      if (done && !['pending', 'running', 'sleeping'].includes(done.state)) break
+      const [run] = await real.claim(Q, `w${round}`, { leaseSeconds: 60, limit: 1 })
+      if (run) {
+        await runClaimedRun(
+          { store, clock, registry },
+          { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+        ).catch(() => {})
+      }
+      clock.advance(70_000)
+      await admin.setFakeNowEpochMs(clock.now)
+      await real.sweep(Q, 10)
+    }
+    const result = await real.getTaskResult(Q, spawned.taskId)
+    const [cps] = await raw.batch(
+      't',
+      [
+        {
+          sql: `SELECT checkpoint_name, state FROM checkpoints WHERE task_id = ?
+                ORDER BY checkpoint_name`,
+          args: [spawned.taskId],
+        },
+      ],
+      'read',
+    )
+    expect(await engineInvariantViolations(raw)).toEqual([])
+    expect(await childTaskViolations(raw)).toEqual([])
+    expect(await sagaViolations(raw)).toEqual([])
+    const undos = effects.log.filter((line) => line.startsWith('undo:'))
+    return {
+      calls,
+      state: result?.state,
+      failure: result?.failureReasonJson,
+      outcome: result?.rollback?.outcome,
+      checkpoints: (cps?.rows ?? []).map(
+        (row) => `${String(row.checkpoint_name)} = ${String(row.state)}`,
+      ),
+      /** Each rollback in the order it first succeeded, and how often each ran. */
+      undone: [...new Set(undos)].map((line) => Number(line.slice('undo:'.length))),
+      undoCounts: Object.fromEntries(
+        [...new Set(undos)].map((line) => [line, undos.filter((other) => other === line).length]),
+      ),
+      handed: effects.handed,
+    }
+  } finally {
+    raw.close()
+  }
+}
+
+describe('saga replay equivalence (generated programs x fault points across the phase)', () => {
+  it('generates registered steps, failing bodies, and rollbacks that cannot succeed', () => {
+    const seen = { registered: 0, failsInABody: 0, failsAfter: 0, halts: 0, sleeps: 0 }
+    for (let seed = 0; seed < 200; seed++) {
+      const program = generateSagaProgram(new Rng(`saga-inventory-${seed}`))
+      if (program.ops.some((op) => op.kind === 'registered')) seen.registered++
+      if (program.failsAt < program.ops.length) seen.failsInABody++
+      else seen.failsAfter++
+      if (expectedSaga(program).outcome === 'failed') seen.halts++
+      if (program.ops.some((op) => op.kind === 'sleep')) seen.sleeps++
+    }
+    expect(Object.entries(seen).filter(([, n]) => n === 0)).toEqual([])
+    expect(seen.registered).toBe(200)
+  })
+
+  it('says what a fixed program rolls back, in what order, and what each rollback is handed', async () => {
+    // Two registered steps under one name, and an unregistered one between them.
+    const program: SagaProgram = {
+      ops: [
+        { kind: 'registered', nameIndex: 0, valueIndex: 0 },
+        { kind: 'step', nameIndex: 0, valueIndex: 1 },
+        { kind: 'registered', nameIndex: 1, valueIndex: 2 },
+      ],
+      failsAt: 3,
+    }
+    const run = await runSagaProgram(program, 'saga-fixed', 0)
+    expect(
+      { state: run.state, outcome: run.outcome, undone: run.undone, handed: run.handed },
+      'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
+    ).toEqual({
+      state: 'failed',
+      outcome: 'complete',
+      undone: [2, 0],
+      handed: { 0: fingerprint(VALUES[0]), 2: fingerprint(VALUES[2]) },
+    })
+  })
+
+  for (let seed = 0; seed < 8; seed++) {
+    it(`saga program ${seed}: rollbacks run in reverse start order, once each, at every fault point`, async () => {
+      const program = generateSagaProgram(new Rng(`saga-program-${seed}`))
+      const expected = expectedSaga(program)
+      const reference = await runSagaProgram(program, `saga-ref-${seed}`, 0)
+      // With no fault, the program alone says what ran, in what order, and how often.
+      expect({
+        state: reference.state,
+        outcome: reference.outcome,
+        undone: reference.undone,
+        undoCounts: reference.undoCounts,
+        handed: reference.handed,
+      }).toEqual({
+        state: 'failed',
+        outcome: expected.outcome,
+        undone: expected.undone,
+        undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
+        handed: expected.handed,
+      })
+      for (const call of faultPoints(reference.calls)) {
+        const faulted = await runSagaProgram(program, `saga-fault-${seed}-${call}`, call)
+        expect(
+          {
+            state: faulted.state,
+            failure: faulted.failure,
+            outcome: faulted.outcome,
+            checkpoints: faulted.checkpoints,
+            undone: faulted.undone,
+            handed: faulted.handed,
+          },
+          `fault at call ${call} of ${reference.calls}`,
+        ).toEqual({
+          state: reference.state,
+          failure: reference.failure,
+          outcome: reference.outcome,
+          checkpoints: reference.checkpoints,
+          undone: reference.undone,
+          handed: reference.handed,
+        })
+        // The record is exactly once, which the checkpoint table holds. The effect is at
+        // least once, and a second run needs a fault between the handler and its record.
+        const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
+        expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(
+          true,
+        )
+      }
+    }, 120_000)
   }
 })

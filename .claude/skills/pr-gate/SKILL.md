@@ -163,8 +163,10 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
   the stamped row, never bare run-id existence — a suppressed insert plus an
   id collision otherwise books a FOREIGN run. Both successor sites (fail,
   sweep claim-timeout) share the shape. [regression: fail-collide]
-- Accounting: `tasks.attempts` moves ONLY in user-failure transitions;
-  infra (`$ClaimTimeout`) successors move `infra_retries`; `run.attempt` is
+- Accounting: `tasks.attempts` moves in user-failure transitions, and where a
+  rollback pass is placed (`sagaPass`: `fail`, `fail-rollback`, and both sweep
+  cap arms), always derived from the failed run's ordinal and never
+  incremented; infra (`$ClaimTimeout`) successors move `infra_retries`; `run.attempt` is
   the fence ordinal (counts both). User ordinal = `attempt - infraRetries`.
 
 **Time and identity:**

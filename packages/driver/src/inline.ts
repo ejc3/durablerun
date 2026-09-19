@@ -15,6 +15,10 @@ const INLINE_ENDING_KINDS = {
   suspended: 'unknown',
   'retry-scheduled': 'unknown',
   failed: 'failed',
+  // A rollback pass follows, so the task has not ended. A pass that ends the task ends it failed.
+  'rolling-back': 'unknown',
+  'rolled-back': 'failed',
+  'rollback-failed': 'failed',
   superseded: 'unknown',
   'lease-lost': 'crashed',
   cancelled: 'unknown',

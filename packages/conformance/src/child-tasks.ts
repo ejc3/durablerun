@@ -6,9 +6,12 @@ import {
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SqlExecutor,
   type TaskOutcome,
   decodeTaskOutcome,
+  encodeRollbackTry,
   encodeTaskOutcome,
   isTerminalState,
   taskDoneEventName,
@@ -21,6 +24,7 @@ import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from
 import { engineInvariantViolations, eventKey } from './invariants.js'
 import {
   awaitTaskOwned,
+  checkpointOwned,
   claimActivated,
   claimOne,
   readOne,
@@ -186,7 +190,31 @@ export const TERMINAL_BATCHES: readonly TerminalBatch[] = [
         childTaskId: child.taskId,
         outcome: { state: 'failed', failureReasonJson: FAILURE },
         advanceMs: 0,
-        end: (store) => store.fail(queue, run.runId, run.claimToken, FAILURE, null),
+        end: async (store) => {
+          await store.fail(queue, run.runId, run.claimToken, FAILURE, null)
+        },
+      }
+    },
+  },
+  {
+    // A rollback that fails for good halts its saga, which ends the task (Sagas.tla).
+    label: 'fail-rollback',
+    prepare: async (f, queue) => {
+      const child = await f.store.spawn(queue, 'child', '{}')
+      const forward = await claimActivated(f.store, queue, `w-child-${queue}`)
+      await checkpointOwned(f.store, queue, forward, `${SAGA_STARTED_PREFIX}a`, '1', 60)
+      await f.store.fail(queue, forward.runId, forward.claimToken, FAILURE, null)
+      const pass = await claimActivated(f.store, queue, `w-child-pass-${queue}`)
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'failed', failureReasonJson: FAILURE },
+        advanceMs: 0,
+        end: async (store) => {
+          await store.failRollback(queue, pass.runId, pass.claimToken, FAILURE, null, {
+            key: `${SAGA_TRIES_PREFIX}a`,
+            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+          })
+        },
       }
     },
   },

@@ -5,6 +5,10 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
+  SAGA_PHASE_CHECKPOINT,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
 } from '@durablerun/core'
 
 /**
@@ -408,3 +412,95 @@ export const soleLiveRun = (run: string): string =>
   `NOT EXISTS (SELECT 1 FROM ${runsOfTask('sibling', run)}
                WHERE sibling.state IN ${LIVE}
                  AND sibling.run_id <> ${run}.run_id)`
+
+/**
+ * A saga's durable state is checkpoints under reserved names (core `sagas.ts`,
+ * DESIGN.md §3.10). `task` is any alias that carries a `task_id`: a task, or a run.
+ * The phase marker is written in the batch that decides the task's terminal failure.
+ */
+export const sagaBegan = (task: string): string => sagaBeganOf(`${task}.task_id`)
+
+/** `sagaBegan` for a task named by an expression, such as a bound id. */
+export const sagaBeganOf = (taskId: string): string =>
+  `EXISTS (SELECT 1 FROM checkpoints sp
+           WHERE sp.task_id = ${taskId}
+             AND sp.checkpoint_name = '${SAGA_PHASE_CHECKPOINT}')`
+
+/**
+ * A reserved name as the literal a name is compared with, byte for byte. A bind compared
+ * with a plain literal takes the connection's collation, and the driver's default folds
+ * case and pads spaces, so `$ROLLBACK:a` and `$rolling-back ` would read as reserved here
+ * and as plain names on the other two stores. A column compares in its own collation,
+ * which is binary, and a binary operand makes a bind compare the same way. The cast is in
+ * the statement and not a session setting, because whoever owns a foreign pool's
+ * connections can undo a session setting, with `SET NAMES` for one, and cannot change the
+ * text of a statement. Every reserved name is ASCII, so its bytes are the same in any
+ * character set a connection may use.
+ */
+const exactly = (reserved: string): string => `CAST('${reserved}' AS BINARY)`
+
+/**
+ * `name` starts with `prefix`, exactly. LIKE would not do: it folds ASCII case on one
+ * dialect and not another, and a reserved prefix is matched the same way everywhere.
+ */
+const namedUnder = (name: string, prefix: string): string =>
+  `substr(${name}, 1, ${prefix.length}) = ${exactly(prefix)}`
+
+/**
+ * What the saga phase requires of a checkpoint write, as one predicate for every name:
+ * a rollback's checkpoint is written only once the saga began, and any other only before.
+ */
+export const checkpointInItsPhase = (task: string, name: string): string =>
+  `(${namedUnder(name, SAGA_ROLLBACK_PREFIX)}) = (${sagaBegan(task)})`
+
+/**
+ * `name` is one only the engine's own batches write: the phase marker, which the batch
+ * that decides a task's failure writes, and a rollback's attempt record, which the batch
+ * that fails a pass writes. A lease holder's plain checkpoint write is refused both in
+ * either phase, so no caller of the port can forge a saga or spend a rollback's budget.
+ */
+export const checkpointIsTheEngines = (name: string): string =>
+  `(${name} = ${exactly(SAGA_PHASE_CHECKPOINT)}
+    OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
+
+/**
+ * `name` is a rollback's attempt record, the one name the batch that fails a pass may
+ * commit for its caller. Under another name that write would replace the saga's cause,
+ * commit a forward step inside the frozen phase, or record a rollback that never ran.
+ */
+export const checkpointIsAnAttemptRecord = (name: string): string =>
+  namedUnder(name, SAGA_TRIES_PREFIX)
+
+/**
+ * The rollback of the step a saga checkpoint `marker` names has run. The name is built
+ * with CONCAT, because the two-bar operator is OR under this store's fixed sql_mode.
+ */
+const rollbackRan = (marker: string, prefix: string): string =>
+  `EXISTS (SELECT 1 FROM checkpoints sr
+           WHERE sr.task_id = ${marker}.task_id
+             AND sr.checkpoint_name = CONCAT('${SAGA_ROLLBACK_PREFIX}',
+               substr(${marker}.checkpoint_name, ${prefix.length + 1})))`
+
+/** A registered step of the task started, and its rollback has not run. */
+export const rollbackPending = (task: string): string =>
+  `EXISTS (SELECT 1 FROM checkpoints ss
+           WHERE ss.task_id = ${task}.task_id
+             AND ${namedUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
+
+/**
+ * A terminal task's rollback outcome and the attempt record of the rollback that halted
+ * it, as `decodeRollbackOutcome` reads them. Both are derived from the saga's
+ * checkpoints when they are read and stored nowhere, so they cannot disagree with them:
+ * `failed` exactly when a step that started is left uncompensated. No checkpoint of a
+ * terminal task changes, so the answer does not either.
+ */
+export const rollbackOutcomeColumns = (task: string): string =>
+  `CASE WHEN ${task}.state NOT IN ${LIVE} AND ${sagaBegan(task)}
+        THEN CASE WHEN ${rollbackPending(task)} THEN 'failed' ELSE 'complete' END
+   END AS rollback_outcome,
+   (SELECT st.state FROM checkpoints st
+     WHERE st.task_id = ${task}.task_id
+       AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
+       AND NOT ${rollbackRan('st', SAGA_TRIES_PREFIX)}
+     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1) AS rollback_error`

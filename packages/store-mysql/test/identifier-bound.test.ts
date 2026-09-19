@@ -49,6 +49,11 @@ const ENTRIES: Readonly<Record<string, Entry>> = {
   ],
   complete: (s, id) => [s.complete(id, 'r', 'c', '{}'), s.complete('q', id, 'c', '{}')],
   fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
+  failRollback: (s, id) => [
+    s.failRollback(id, 'r', 'c', '{}', null, { key: 'k', stateJson: '{}' }),
+    s.failRollback('q', id, 'c', '{}', null, { key: 'k', stateJson: '{}' }),
+    s.failRollback('q', 'r', 'c', '{}', null, { key: id, stateJson: '{}' }),
+  ],
   getCheckpoints: (s, id) => [s.getCheckpoints(id, 't', 1), s.getCheckpoints('q', id, 1)],
   setCheckpoint: (s, id) => [
     s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
@@ -88,6 +93,8 @@ const INTERNAL = [
   'awaitNamedEvent',
   'taskDoneState',
   'recordTaskDone',
+  'sagaPass',
+  'failInto',
 ]
 
 const entries = (s: MysqlSchedulerStore, id: string): Promise<unknown>[] =>
@@ -187,4 +194,59 @@ it('holds a replay key to the width less the rest of the stored child key, and s
   expect(String(tooLong.outcome)).toContain('replayKey')
   expect(String(tooLong.outcome)).not.toContain('idempotencyKey')
   expect(tooLong.reached).toBe(0)
+})
+
+it('holds a saga step key to the width less the longest saga prefix, at every entry that carries one', async () => {
+  // A step's checkpoints are named by a prefix and its key, and the longest prefix,
+  // `$rollback-tries:`, is 16 characters, so a key holds 239. The shortest name is held to
+  // that too: a step registers under `$started:`, and a key that fits only there would
+  // start and could never have a failed rollback recorded.
+  const wake = { inSeconds: 1 }
+  const entries = (
+    s: MysqlSchedulerStore,
+    key: string,
+  ): Record<string, () => Promise<unknown>> => ({
+    checkpointName: () => s.setCheckpoint('q', 't', 'r', 'c', `$started:${key}`, '0', 30),
+    'checkpointName ': () => s.setCheckpoint('q', 't', 'r', 'c', `$rollback:${key}`, 'null', 30),
+    'checkpoint.key': () =>
+      s.suspendRun('q', 'r', 'c', wake, { key: `$started:${key}`, stateJson: '0' }),
+    'rollbackTry.key': () =>
+      s.failRollback('q', 'r', 'c', '{}', null, { key: `$rollback-tries:${key}`, stateJson: '{}' }),
+  })
+  const outcomesOf = async (key: string) => {
+    const { store, reached } = storeOverRecorder()
+    const results: [string, unknown][] = []
+    for (const [field, call] of Object.entries(entries(store, key))) {
+      results.push([
+        field.trim(),
+        await call().then(
+          () => 'accepted',
+          (error: unknown) => error,
+        ),
+      ])
+    }
+    return { results, reached: reached.length }
+  }
+  const fits = await outcomesOf('k'.repeat(239))
+  expect(
+    fits.results.filter(([, outcome]) => outcome instanceof InvalidDurableStringError),
+  ).toEqual([])
+  expect(fits.reached).toBeGreaterThan(0)
+  const tooLong = await outcomesOf('k'.repeat(240))
+  expect(
+    tooLong.results.map(
+      ([field, outcome]) =>
+        outcome instanceof InvalidDurableStringError && String(outcome).includes(field),
+    ),
+    'mutation-verdict:construction:mysql-saga-step-key-bound',
+  ).toEqual([true, true, true, true])
+  expect(tooLong.reached).toBe(0)
+  // A name that is not a saga's is held to the plain width and nothing less.
+  const { store, reached } = storeOverRecorder()
+  const plain = await store.setCheckpoint('q', 't', 'r', 'c', 'k'.repeat(255), '0', 30).then(
+    () => 'accepted',
+    (error: unknown) => error,
+  )
+  expect(plain).not.toBeInstanceOf(InvalidDurableStringError)
+  expect(reached.length).toBeGreaterThan(0)
 })

@@ -117,6 +117,9 @@ importers:
       '@durablerun/store-libsql':
         specifier: workspace:*
         version: link:../store-libsql
+      '@durablerun/store-postgres':
+        specifier: workspace:*
+        version: link:../store-postgres
 
   packages/store-libsql:
     dependencies:

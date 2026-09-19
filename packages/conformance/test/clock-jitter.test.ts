@@ -6,6 +6,7 @@ import {
   type SqlStatement,
   sqlBatchMode,
   sqlTransactionLock,
+  SAGA_PHASE_CHECKPOINT,
 } from '@durablerun/core'
 import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -114,6 +115,9 @@ const retryAvailabilityFromSecondClock: StatementMutator = (label, statements) =
   if (label !== 'fail') return statements
   let changed = 0
   const mutated = statements.map((statement) => {
+    // A failure's rollback pass is built by the same shared insert as its retry, so it
+    // carries the same deadline. It is told apart by the saga phase its admission reads.
+    if (statement.sql.includes(SAGA_PHASE_CHECKPOINT)) return statement
     const sql = statement.sql.replace('"f"."fence_at_ms" + ?', () => {
       changed += 1
       return `${NOW_MS} + ?`

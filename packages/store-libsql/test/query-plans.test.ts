@@ -1,4 +1,11 @@
-import type { SqlExecutor } from '@durablerun/core'
+import {
+  INFRA_RETRY_CAP,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  type SqlExecutor,
+  encodeRollbackTry,
+} from '@durablerun/core'
 import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -354,6 +361,242 @@ describe("a terminal batch's wake, which every task ending pays", () => {
   })
 })
 
+describe('every batch a saga touches', () => {
+  /**
+   * A saga's state is checkpoints under reserved names, and the batches that read it are
+   * the ones every task pays: a failure, a completion, a checkpoint, a suspension, an
+   * await, a sweep cap. Each read must reach its rows by the checkpoints' primary key
+   * with the task bound, and each statement a saga adds must find its source run and
+   * its target task by key. The statements are recovered from the real operations, so a
+   * pin cannot drift from the SQL it protects, and the rules below run over every
+   * statement of every touched label, so a statement added later is held without being
+   * listed.
+   */
+  const TOUCHED = [
+    'set-checkpoint',
+    'fail',
+    'fail-rollback',
+    'complete',
+    'retry-task',
+    'suspend',
+    'await-event',
+    'task-result',
+    'sweep:claim-timeout',
+  ] as const
+  /** The aliases saga SQL gives the checkpoints table. */
+  const SAGA_ALIAS = /\b(sp|ss|sr|st)\b/
+
+  async function shippedSagaStatements(): Promise<
+    { label: string; sql: string; args: unknown[] }[]
+  > {
+    const seen: { label: string; sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
+        return db.batch(label, statements, mode)
+      },
+    }
+    const admin = new LibsqlStoreAdmin(db)
+    await admin.setFakeNowEpochMs(1_000_000)
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('saga-query-plans'))
+    const claimed = async (worker: string) => {
+      const [run] = await store.claim('q', worker, { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error(`nothing to claim for ${worker}`)
+      await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      return run
+    }
+    type Held = { taskId: string; runId: string; claimToken: string }
+    const mark = (run: Held, name: string, state: string) =>
+      store.setCheckpoint('q', run.taskId, run.runId, run.claimToken, name, state, 60)
+    const tried = (tries: number) => ({
+      key: `${SAGA_TRIES_PREFIX}a`,
+      stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
+    })
+    const E = '{"name":"E"}'
+    const saga = await store.spawn('q', 'saga', '{}')
+    const forward = await claimed('w1')
+    await mark(forward, `${SAGA_STARTED_PREFIX}a`, '1')
+    await mark(forward, `${SAGA_STARTED_PREFIX}b`, '2')
+    expect(await store.fail('q', forward.runId, forward.claimToken, E, null)).toEqual({
+      rollingBack: true,
+    })
+    const pass = await claimed('w2')
+    await mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null')
+    await store.failRollback('q', pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried(1))
+    const last = await claimed('w3')
+    await store.failRollback('q', last.runId, last.claimToken, E, null, tried(2))
+    expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
+    expect(await store.retryTask('q', saga.taskId)).toBeNull()
+    await store.spawn('q', 'retrying', '{}', { maxAttempts: 2 })
+    const first = await claimed('w4')
+    await store.fail('q', first.runId, first.claimToken, E, { delaySeconds: 0 })
+    const second = await claimed('w5')
+    await store.awaitEvent(
+      'q',
+      second.taskId,
+      second.runId,
+      second.claimToken,
+      '$await:e',
+      'e',
+      null,
+    )
+    await store.spawn('q', 'sleeper', '{}')
+    const sleeper = await claimed('w6')
+    await store.suspendRun(
+      'q',
+      sleeper.runId,
+      sleeper.claimToken,
+      { inSeconds: 5 },
+      { key: '$sleep', stateJson: '{}' },
+    )
+    await store.spawn('q', 'done', '{}')
+    const done = await claimed('w7')
+    await store.complete('q', done.runId, done.claimToken, '{}')
+    // A worker dies at the infrastructure cap with a rollback owed: the sweep enters the phase.
+    await store.spawn('q', 'dies', '{}')
+    const dies = await claimed('w8')
+    await mark(dies, `${SAGA_STARTED_PREFIX}a`, '1')
+    await db.batch('seed-infra-cap', [
+      {
+        sql: 'UPDATE tasks SET infra_retries = ? WHERE task_id = ?',
+        args: [INFRA_RETRY_CAP, dies.taskId],
+      },
+      {
+        sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+        args: [INFRA_RETRY_CAP + 1, dies.runId],
+      },
+      {
+        sql: 'UPDATE checkpoints SET owner_attempt = ? WHERE owner_run_id = ?',
+        args: [INFRA_RETRY_CAP + 1, dies.runId],
+      },
+    ])
+    await admin.setFakeNowEpochMs(2_000_000)
+    expect((await store.sweep('q', 10)).map((swept) => swept.kind)).toEqual(['rollback-started'])
+    return seen.filter((st) => (TOUCHED as readonly string[]).includes(st.label))
+  }
+
+  /** What is wrong with one statement's plan, by the rules every saga statement is held to. */
+  function planFaults(label: string, sql: string, plan: string): string[] {
+    const faults: string[] = []
+    const lines = plan.split('\n')
+    for (const line of lines) {
+      if (!SAGA_ALIAS.test(line)) continue
+      if (!/^SEARCH (sp|ss|sr|st) USING PRIMARY KEY \(task_id=\?/.test(line)) {
+        faults.push(`a saga read does not reach checkpoints by key with the task bound: ${line}`)
+      }
+    }
+    // The statements a saga adds: the rollback pass, the phase marker, the attempt record,
+    // and the task that follows the pass.
+    // The task that follows the pass is told from a revival, which sets the same budget
+    // column, by the batch it rides in: a column's name is not what a statement is.
+    const followsThePass =
+      /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
+    const added =
+      followsThePass ||
+      (/^\s*insert into "runs"/.test(sql) && SAGA_ALIAS.test(plan)) ||
+      (/^\s*insert into "checkpoints"/.test(sql) &&
+        label !== 'set-checkpoint' &&
+        label !== 'suspend')
+    if (added) {
+      if (!plan.includes('SEARCH f USING PRIMARY KEY (run_id=?)')) {
+        faults.push('its source run is not found by key')
+      }
+      for (const walk of [
+        'SCAN tasks',
+        'SCAN runs',
+        'SCAN f',
+        'runs_poll',
+        'CORRELATED LIST SUBQUERY',
+      ]) {
+        if (plan.includes(walk)) faults.push(`it walks a backlog: ${walk}`)
+      }
+      if (
+        /^\s*update "tasks"/.test(sql) &&
+        !plan.includes('SEARCH tasks USING PRIMARY KEY (task_id=?)')
+      ) {
+        faults.push('its target task is not found by key')
+      }
+    }
+    // Of the statements a saga reads through or adds, one sorts: the task result, and
+    // what it sorts is one task's attempt records. A batch's other statements are not
+    // this pin's to hold.
+    const sagaStatement = added || lines.some((line) => SAGA_ALIAS.test(line))
+    if (sagaStatement && plan.includes('TEMP B-TREE') && label !== 'task-result') {
+      faults.push('it sorts')
+    }
+    return faults
+  }
+
+  it('reaches every saga row by key with the task bound, and walks no backlog', async () => {
+    const statements = await shippedSagaStatements()
+    const faults: string[] = []
+    const reached = { sp: 0, ss: 0, sr: 0, st: 0, followsThePass: 0, labels: new Set<string>() }
+    for (const st of statements) {
+      const plan = await writePlan(st.sql, st.args as (string | number)[])
+      for (const alias of ['sp', 'ss', 'sr', 'st'] as const) {
+        if (new RegExp(`^SEARCH ${alias} `, 'm').test(plan)) reached[alias]++
+      }
+      const followsThePass = /"max_attempts"/.test(st.sql) && st.label !== 'retry-task'
+      if (followsThePass) reached.followsThePass++
+      if (SAGA_ALIAS.test(plan) || followsThePass) reached.labels.add(st.label)
+      for (const fault of planFaults(st.label, st.sql, plan)) {
+        faults.push(`[${st.label}] ${fault} :: ${st.sql.replace(/\s+/g, ' ').slice(0, 60)}`)
+      }
+    }
+    // Compared as text, so a failure prints every fault and not a count of them.
+    expect(faults.join('\n'), 'mutation-verdict:behavior:saga-plans').toBe('')
+    // A pin over nothing passes. Every kind of saga read ran, in every touched label.
+    expect({
+      everyAliasWasPlanned: [reached.sp, reached.ss, reached.sr, reached.st].every((n) => n > 0),
+      theTaskFollowedAPass: reached.followsThePass > 0,
+      labels: [...reached.labels].sort(),
+    }).toEqual({
+      everyAliasWasPlanned: true,
+      theTaskFollowedAPass: true,
+      labels: [...TOUCHED].sort(),
+    })
+  })
+
+  it('refuses the two shapes it exists to refuse', async () => {
+    // A task update whose source names the target's queue, which is the shape a generated
+    // write has when its queue is correlated and not bound: the table is walked.
+    const correlated = await writePlan(
+      `update "tasks" set "max_attempts" = 2
+       WHERE task_id IN (SELECT f.task_id FROM runs f
+                         WHERE f.run_id = ? AND f.queue = tasks.queue)
+         AND state IN ('pending','running','sleeping')`,
+      ['r'],
+    )
+    const bound = await writePlan(
+      `update "tasks" set "max_attempts" = 2
+       WHERE task_id IN (SELECT f.task_id FROM runs f WHERE f.run_id = ? AND f.queue = ?)
+         AND queue = ? AND state IN ('pending','running','sleeping')`,
+      ['r', 'q', 'q'],
+    )
+    // A saga read with no task bound.
+    const unbound = await writePlan(
+      `update "runs" set "state" = 'failed'
+       WHERE run_id = ? AND EXISTS (SELECT 1 FROM checkpoints sp
+                                    WHERE sp.checkpoint_name = '$rolling-back')`,
+      ['r'],
+    )
+    const sqlOf = (kind: string) => `update "${kind}" set "max_attempts" = 2`
+    expect({
+      correlated: planFaults('fail', sqlOf('tasks'), correlated).length > 0,
+      bound: planFaults('fail', sqlOf('tasks'), bound.replace('SEARCH f', 'SEARCH f')),
+      unbound: planFaults('fail', 'update "runs"', unbound).length > 0,
+    }).toEqual({
+      correlated: true,
+      // The bound shape has no fault but the one this literal cannot avoid: it names no fence.
+      bound: planFaults('fail', sqlOf('tasks'), bound),
+      unbound: true,
+    })
+    expect(correlated).toContain('SCAN tasks')
+    expect(bound).toContain('SEARCH tasks USING PRIMARY KEY (task_id=?)')
+    expect(unbound).toMatch(/SCAN sp|SEARCH sp USING (?!PRIMARY KEY \(task_id)/)
+  })
+})
+
 describe('cancellation deadlines', () => {
   it('the cancellation sweep seeks tasks_cancel, never scanning tasks', async () => {
     const p = await plan(
@@ -387,6 +630,7 @@ describe('every write a store ships, by the table it writes', () => {
     'emit-event',
     'complete',
     'fail',
+    'fail-rollback',
     'retry-task',
     'cancel-task',
     'sweep:lost-launch',
@@ -449,6 +693,45 @@ describe('every write a store ships, by the table it writes', () => {
     await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
     const failed = await started('fails', { maxAttempts: 1 })
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    // A saga (DESIGN.md §3.10). A registered step starts, and the failure that ends the
+    // forward phase places the rollback pass, which `fail` ships. A rollback's failed
+    // attempt places the next pass, and the one after it halts the saga, which
+    // `fail-rollback` ships both ways.
+    const saga = await started('rolls-back', { maxAttempts: 1 })
+    await store.setCheckpoint(
+      'q',
+      saga.taskId,
+      saga.runId,
+      saga.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
+    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
+    const sagaTried = (tries: number) => ({
+      key: `${SAGA_TRIES_PREFIX}a`,
+      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
+    })
+    const passOf = async () => {
+      claims += 1
+      const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+      if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
+      await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
+      return pass
+    }
+    const firstPass = await passOf()
+    const again = await store.failRollback(
+      'q',
+      firstPass.runId,
+      firstPass.claimToken,
+      '{}',
+      { delaySeconds: 0 },
+      sagaTried(1),
+    )
+    if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
+    const lastPass = await passOf()
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
     await store.retryTask('q', failed.taskId)
     await store.cancelTask('q', failed.taskId)
     // One run whose launch is lost and one whose worker dies, then the clock passes both leases.

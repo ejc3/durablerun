@@ -45,6 +45,7 @@
   "devDependencies": {
     "@durablerun/conformance": "workspace:*",
     "@durablerun/harness": "workspace:*",
-    "@durablerun/store-libsql": "workspace:*"
+    "@durablerun/store-libsql": "workspace:*",
+    "@durablerun/store-postgres": "workspace:*"
   }
 }

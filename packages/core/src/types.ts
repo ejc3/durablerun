@@ -173,6 +173,8 @@ export type SweptRun =
   | { kind: 'claim-timeout'; runId: string; taskId: string; successorRunId: string }
   | { kind: 'relaunch-cap-exhausted'; runId: string; taskId: string }
   | { kind: 'infra-cap-exhausted'; runId: string; taskId: string }
+  /** A cap decided the task's failure and a registered step is owed its rollback (§3.10). */
+  | { kind: 'rollback-started'; runId: string; taskId: string; successorRunId: string }
   | { kind: 'cancelled'; runId: string | null; taskId: string }
 
 /**
@@ -197,4 +199,22 @@ export interface TaskResult {
   state: TaskState
   completedPayloadJson?: string
   failureReasonJson?: string
+  /** Present on a terminal task whose saga began (DESIGN.md §3.10). */
+  rollback?: RollbackOutcome
+}
+
+/** What a failure did to its task's saga (DESIGN.md §3.10). */
+export interface FailOutcome {
+  /** The batch placed a rollback pass, so the task is rolling back and has not ended. */
+  readonly rollingBack: boolean
+}
+
+/**
+ * How a saga ended. `failed` means a step that started is left uncompensated, by a
+ * rollback that failed for good, a cancellation, or an infrastructure cap. `errorJson`
+ * is the failure of the rollback that halted it, when one did.
+ */
+export interface RollbackOutcome {
+  outcome: 'complete' | 'failed'
+  errorJson?: string
 }

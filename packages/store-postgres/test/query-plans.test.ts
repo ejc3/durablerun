@@ -1,4 +1,9 @@
-import type { SqlExecutor } from '@durablerun/core'
+import {
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  type SqlExecutor,
+  encodeRollbackTry,
+} from '@durablerun/core'
 import { Client } from 'pg'
 import { expect, it } from 'vitest'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
@@ -22,10 +27,15 @@ it('reaches tasks by an index condition in every shipped task update', async () 
   try {
     await db.admin.setFakeNowEpochMs(1_000_000)
     const seen = new Map<string, string>()
+    const reached = new Set<string>()
     const recorder: SqlExecutor = {
       batch: (label, statements, control) => {
         for (const st of statements) {
-          if (/^\s*update "tasks"/i.test(st.sql) && !seen.has(st.sql)) seen.set(st.sql, label)
+          if (!/^\s*update "tasks"/i.test(st.sql)) continue
+          // A label is reached when it sends a task update, whichever label sent that text
+          // first: every task update `fail-rollback` sends is one `fail` sends too.
+          reached.add(label)
+          if (!seen.has(st.sql)) seen.set(st.sql, label)
         }
         return db.raw.batch(label, statements, control)
       },
@@ -54,8 +64,46 @@ it('reaches tasks by an index condition in every shipped task update', async () 
     await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    // A saga (DESIGN.md §3.10): the failure that ends the forward phase places a rollback
+    // pass, and a rollback's failed attempt places the next. Each ships a task update that
+    // follows the pass, under `fail` and under `fail-rollback`.
+    const saga = await started('rolls-back')
+    await store.setCheckpoint(
+      'q',
+      saga.taskId,
+      saga.runId,
+      saga.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
+    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
+    const sagaTried = (tries: number) => ({
+      key: `${SAGA_TRIES_PREFIX}a`,
+      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
+    })
+    const passOf = async () => {
+      claims += 1
+      const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+      if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
+      await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
+      return pass
+    }
+    const firstPass = await passOf()
+    const again = await store.failRollback(
+      'q',
+      firstPass.runId,
+      firstPass.claimToken,
+      '{}',
+      { delaySeconds: 0 },
+      sagaTried(1),
+    )
+    if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
+    const lastPass = await passOf()
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
     await store.cancelTask('q', waiting.taskId)
-    const labels = new Set(seen.values())
+    const labels = reached
     expect(
       [
         'claim',
@@ -64,6 +112,7 @@ it('reaches tasks by an index condition in every shipped task update', async () 
         'await-event',
         'complete',
         'fail',
+        'fail-rollback',
         'cancel-task',
       ].filter((label) => !labels.has(label)),
     ).toEqual([])

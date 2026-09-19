@@ -18,12 +18,21 @@ type SuspendControlSnapshot =
     }
   | { readonly kind: 'await-event' }
 
+/**
+ * The forward phase is frozen once a task is rolling back (DESIGN.md §3.10), so a pass's
+ * replay of the task function ends at the first durable call it has no memo for.
+ */
+type SagaControlSnapshot = { readonly kind: 'rollback-phase' }
+
 export type InfrastructureControlSnapshot =
   | { readonly kind: 'lease-lost' }
   | { readonly kind: 'run-cancelled' }
   | { readonly kind: 'store-unavailable' }
 
-export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControlSnapshot
+export type TaskControlSnapshot =
+  | SuspendControlSnapshot
+  | SagaControlSnapshot
+  | InfrastructureControlSnapshot
 
 /**
  * The half of a per-invocation authority that ReplayContext may hold. The
@@ -33,6 +42,7 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
 export interface TaskControlIssuer {
   sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
+  rollbackPhase(): never
   leaseEnded(reason: LeaseEnd, run: Pick<ClaimedRun, 'runId'>): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
@@ -59,6 +69,7 @@ const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
   value: unknown,
 ) => boolean
 const AWAIT_EVENT = freeze({ kind: 'await-event' } as const)
+const ROLLBACK_PHASE = freeze({ kind: 'rollback-phase' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const RUN_CANCELLED = freeze({ kind: 'run-cancelled' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
@@ -76,6 +87,11 @@ export function trustedStoreControl(error: unknown): InfrastructureControlSnapsh
     // A hostile proxy is not one of the store's typed infrastructure errors.
   }
   return undefined
+}
+
+/** What a frozen forward phase throws. Task code that catches it meets it again at its next durable call. */
+class RollbackPhaseSignal extends Error {
+  override readonly name = 'RollbackPhaseSignal'
 }
 
 /**
@@ -105,6 +121,13 @@ export function createTaskControlScope(): TaskControlScope {
 
     awaitEvent(): never {
       return enroll(new SuspendSignal('await-event'), AWAIT_EVENT)
+    },
+
+    rollbackPhase(): never {
+      return enroll(
+        new RollbackPhaseSignal('the task is rolling back, so its forward phase is frozen'),
+        ROLLBACK_PHASE,
+      )
     },
 
     leaseEnded(reason: LeaseEnd, run: Pick<ClaimedRun, 'runId'>): never {

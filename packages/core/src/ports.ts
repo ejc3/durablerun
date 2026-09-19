@@ -3,6 +3,7 @@ import type {
   Checkpoint,
   CheckpointWrite,
   ClaimedRun,
+  FailOutcome,
   LaunchIdentity,
   LeaseState,
   SpawnOptions,
@@ -126,14 +127,43 @@ export interface SchedulerStore {
     checkpoint: CheckpointWrite,
   ): Promise<void>
 
-  /** Retry policy decided in core; the store applies the fenced transition. */
+  /**
+   * Retry policy decided in core; the store applies the fenced transition.
+   *
+   * A failure with no retry left is the task's terminal decision. When a registered
+   * step of the task started and is not rolled back, the same batch enters the
+   * rolling-back phase instead of ending the task: it writes the phase marker and
+   * places a rollback pass (DESIGN.md §3.10). Inside the phase a failure with no retry
+   * ends the task: that is how a pass that ran every rollback finishes the saga, and
+   * the rollback outcome is derived from what ran. A failed rollback is `failRollback`.
+   * A retry asked for here in the phase is capped like any other, which halts the saga.
+   */
   fail(
     queue: string,
     runId: string,
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-  ): Promise<void>
+  ): Promise<FailOutcome>
+
+  /**
+   * A rollback of a task that is rolling back failed (DESIGN.md §3.10, specs/Sagas.tla
+   * RollbackRetry and RollbackHalts). `rollbackTry` is that rollback's attempt record,
+   * and it commits with the failure, so a failed attempt is counted or the run did not
+   * fail. With `retry` another pass follows, and the user attempt budget does not cap
+   * it. With none the saga halts, and the task ends `failed` with `failureJson`, which
+   * the caller passes as the failure that began the saga. Refused outside the phase.
+   * It is its own method and batch label ('fail-rollback'), not an option of `fail`,
+   * so nothing that forwards `fail` can drop the record.
+   */
+  failRollback(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    failureJson: string,
+    retry: { delaySeconds: number } | null,
+    rollbackTry: CheckpointWrite,
+  ): Promise<FailOutcome>
 
   /** §3.1 steps 0–1: cancellation policies + expired leases, classified by activation state. */
   sweep(queue: string, limit: number): Promise<SweptRun[]>

@@ -15,6 +15,7 @@ const EXPECTED_SURFACE_IDS = [
   'timestamp-boundaries',
   'wake-witness',
   'child-tasks',
+  'sagas',
   'schema-admin',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
@@ -78,4 +79,20 @@ describe('shared conformance enrollment is one indivisible door', () => {
       )
     }
   })
+})
+
+describe('every checkpoint write in a store is a door the saga surface knows', () => {
+  // A saga's durable state is checkpoints under reserved names. Each site that writes a
+  // checkpoint writes the engine's name or takes its caller's: set-checkpoint, the marker
+  // of suspend, and the attempt record of fail-rollback take a caller's, and the phase
+  // marker is the engine's. The saga surface's table case holds every caller-named one
+  // against every reserved name in both phases. A fifth site is a new door or a new
+  // engine name: give it its row in that table first, then raise this count.
+  it.each(EXPECTED_DIALECTS)(
+    'the %s store has the four checkpoint writes the saga table covers',
+    (dialect) => {
+      const source = readFileSync(`${ROOT}/packages/store-${dialect}/src/store.ts`, 'utf8')
+      expect(source.match(/\bcheckpointWrite\(/g)?.length).toBe(4)
+    },
+  )
 })

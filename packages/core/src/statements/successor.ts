@@ -77,7 +77,12 @@ export type FailureSuccessor = {
  * foreign row fails loudly. Its instants are the failed run's own, so a delay runs from
  * the moment of failure and not from a second clock read.
  */
-export function failureSuccessor(binds: FailureSuccessor, state: Expression<string>) {
+export function failureSuccessor(
+  binds: FailureSuccessor,
+  state: Expression<string>,
+  /** The compare-and-set of this batch that failed the run. */
+  fence: 'fail' | 'cap' = 'fail',
+) {
   const eb = sources()
   const { columns, selections } = insertedRun({
     runId: binds.successorId,
@@ -95,7 +100,7 @@ export function failureSuccessor(binds: FailureSuccessor, state: Expression<stri
         .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')))
         .select(selections)
         .where('f.run_id', '=', binds.runId)
-        .where('f.fence_stamp', '=', fenceValue('fail'))
+        .where('f.fence_stamp', '=', fenceValue(fence))
         .where(rawSql<boolean>(binds.admission, 'predicate'))
         .where(rawSql<boolean>(binds.successorFree, 'predicate')),
     )

@@ -176,6 +176,7 @@ describe('MySQL spelling of the shared statement trees', () => {
         timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
         taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),
         taskEligible: sqlFragment('t.cancel_at_ms IS NULL'),
+        phase: 'open',
       }),
     )
     // The stored row is named, because an INSERT … SELECT makes the bare column ambiguous.

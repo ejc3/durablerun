@@ -28,11 +28,24 @@ import {
   uncoveredConditionIds,
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
+import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
 import { timestampBoundaryConformance } from './time-boundaries.js'
 
 const FAULT_SEEDS = [1, 2] as const
+
+/**
+ * How long one ownership test of the fault matrix may take. It runs every generated cell
+ * and seed from one starting state, one after another, and how long that takes is the
+ * runner's to decide: one tree ran the slowest of the five on PostgreSQL in 68 seconds on
+ * one CI runner and in more than 120 on another. So the limit is set against the slowest
+ * CI runner observed, not against a local figure. There the four older starting states
+ * took 106 to 116 seconds, and the saga block runs 10 to 15 percent above them, so about
+ * 130. This is a bit over twice that, so a cell that hangs still ends its test in five
+ * minutes. BUILD.md's PR3.4 entry has the measurements.
+ */
+const OWNERSHIP_TEST_TIMEOUT_MS = 300_000
 
 function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`fault matrix [${dialect}] (label x fault x starting state, generated)`, () => {
@@ -48,34 +61,39 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
     )
 
     for (const preState of MATRIX_PRE_STATES) {
-      it(`owns ${preState} across every generated label/fault cell and seed`, async () => {
-        const observed = []
-        for (const { label, fault, seed } of cellSeedVector) {
-          observed.push(
-            await runFaultMatrixCase(makeFixture, label, fault, seed, preState).then(
-              () => ({ label, fault, seed, outcome: 'resolved' as const }),
-              () => ({ label, fault, seed, outcome: 'rejected' as const }),
-            ),
-          )
-        }
+      it(
+        `owns ${preState} across every generated label/fault cell and seed`,
+        async () => {
+          const observed = []
+          for (const { label, fault, seed } of cellSeedVector) {
+            observed.push(
+              await runFaultMatrixCase(makeFixture, label, fault, seed, preState).then(
+                () => ({ label, fault, seed, outcome: 'resolved' as const }),
+                () => ({ label, fault, seed, outcome: 'rejected' as const }),
+              ),
+            )
+          }
 
-        const crossingMarker = {
-          fresh: 'mutation-verdict:behavior:fault-matrix-edge-crossing:fresh',
-          'infra-cap-edge': 'mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge',
-          'relaunch-cap-edge':
-            'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
-          'attempt-cap-edge':
-            'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
-        }[preState]
-        expect(observed, crossingMarker).toEqual(
-          cellSeedVector.map(({ label, fault, seed }) => ({
-            label,
-            fault,
-            seed,
-            outcome: 'resolved',
-          })),
-        )
-      }, 120_000)
+          const crossingMarker = {
+            fresh: 'mutation-verdict:behavior:fault-matrix-edge-crossing:fresh',
+            'infra-cap-edge': 'mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge',
+            'relaunch-cap-edge':
+              'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
+            'attempt-cap-edge':
+              'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
+            'saga-cap-edges': 'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
+          }[preState]
+          expect(observed, crossingMarker).toEqual(
+            cellSeedVector.map(({ label, fault, seed }) => ({
+              label,
+              fault,
+              seed,
+              outcome: 'resolved',
+            })),
+          )
+        },
+        OWNERSHIP_TEST_TIMEOUT_MS,
+      )
     }
   })
 }
@@ -203,8 +221,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(duplicatePoisonWitnessIds()).toEqual([])
       expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(114)
       expect(POISON_WITNESS_COUNT).toBe(145)
-      expect(POISON_WRITE_LABELS).toHaveLength(20)
-      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(2_900)
+      expect(POISON_WRITE_LABELS).toHaveLength(21)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_045)
       expect(POISON_TARGET_CASES).toHaveLength(50)
       expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
@@ -429,6 +447,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'record-task-done',
             'complete',
             'fail',
+            'fail-rollback',
             'cancel-task',
             'retry-task',
             'expire-lease-now',
@@ -1230,5 +1249,6 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
   { id: 'child-tasks', run: childTaskConformance },
+  { id: 'sagas', run: sagaConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

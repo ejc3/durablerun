@@ -1,4 +1,9 @@
-import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
+import {
+  InvalidDurableStringError,
+  SchemaMismatchError,
+  encodeRollbackTry,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
@@ -340,6 +345,70 @@ describe('MysqlExecutor against a real server', () => {
         'the lock was released',
         'the task whose event is locked ended',
       ])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('rolls a task back whatever budget it was spawned with, and halts where a rollback fails for good', async () => {
+    // The rollback pass runs past the user budget, so its batch writes the task's budget
+    // as the pass's own ordinal. Its guard reads the ordinal the batch writes from and
+    // never the stored budget, which the batch replaces: a task with the largest budget
+    // rolls back like any other. Each task has a queue of its own, because a rollback
+    // pass is claimable work.
+    const db = await openMysqlTestDb({ idNamespace: 'saga-budget', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      for (const maxAttempts of [1, 1_000_000]) {
+        const queue = `budget-${maxAttempts}`
+        const task = await store.spawn(queue, 'job', '{}', { maxAttempts })
+        const [run] = await store.claim(queue, 'forward', { leaseSeconds: 60, limit: 1 })
+        if (run === undefined) throw new Error('the task was not claimed')
+        await store.activate(queue, run.runId, run.claimToken, run.claimGen)
+        await store.setCheckpoint(
+          queue,
+          task.taskId,
+          run.runId,
+          run.claimToken,
+          '$started:charge',
+          '0',
+          60,
+        )
+        expect(await store.fail(queue, run.runId, run.claimToken, '{"why":"boom"}', null)).toEqual({
+          rollingBack: true,
+        })
+        const [budget] = await db.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: 'SELECT state, attempts, max_attempts FROM tasks WHERE task_id = ?',
+              args: [task.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(budget?.rows).toEqual([{ state: 'pending', attempts: 1, max_attempts: 2 }])
+        // The rollback fails with no retry left: the attempt record lands, and the saga halts.
+        const [pass] = await store.claim(queue, 'pass', { leaseSeconds: 60, limit: 1 })
+        if (pass === undefined) throw new Error('the rollback pass was not claimed')
+        await store.activate(queue, pass.runId, pass.claimToken, pass.claimGen)
+        const halted = await store.failRollback(
+          queue,
+          pass.runId,
+          pass.claimToken,
+          '{"why":"boom"}',
+          null,
+          {
+            key: '$rollback-tries:charge',
+            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"why":"refund failed"}' }),
+          },
+        )
+        expect(halted).toEqual({ rollingBack: false })
+        expect(await store.getTaskResult(queue, task.taskId)).toMatchObject({
+          state: 'failed',
+          rollback: { outcome: 'failed', errorJson: '{"why":"refund failed"}' },
+        })
+      }
     } finally {
       await db.close()
     }

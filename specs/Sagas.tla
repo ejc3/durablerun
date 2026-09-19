@@ -68,17 +68,26 @@
 \*  - A saga with nothing to roll back is complete at entry.  The SQL may skip
 \*    the phase for it.
 \*
-\* Ledger, modeled ahead of implementation (spec-first).  The quoted labels are
-\* today's batches.  The step-start write and the finishing pass are new batches
-\* with no label yet.  scripts/spec-ledger.py reads Scheduler.tla only, so
-\* nothing checks this block, and Scheduler.tla lists 'set-checkpoint' as excluded.
-\*   the step-start write -> StartStep;  'set-checkpoint' of a step -> FinishStep
-\*   'fail' with no retry -> UserTerminal  [cas-fenced]
-\*   'sweep:lost-launch' cap, 'sweep:claim-timeout' at the infra cap -> InfraCap
-\*   'set-checkpoint' of rollback:<step>#<count> -> RunRollback
-\*   'fail' with a retry, in the phase -> RollbackRetry;  with none -> RollbackHalts
-\*   the pass that finds nothing left -> FinishSaga
+\* Ledger.  The quoted labels are the stores' batches, and DESIGN.md S3.10 gives
+\* the same mapping as a table.  A saga's state is checkpoints under reserved
+\* names (core sagas.ts), so no action needed a new kind of statement, and one
+\* new label exists: 'fail-rollback'.  scripts/spec-ledger.py reads Scheduler.tla
+\* only, where 'fail-rollback' is listed and 'set-checkpoint' is excluded, so
+\* nothing checks this block.  Every guard below has an executable twin on every
+\* dialect: the `sagas` conformance surface and the SDK's saga suite.
+\*   'set-checkpoint' of $started:<step> -> StartStep;  of a step -> FinishStep
+\*   'fail' with no retry, or with a retry the budget refuses, in the forward
+\*     phase -> UserTerminal  [cas-fenced]
+\*   'sweep:lost-launch' cap, 'sweep:claim-timeout' at the infra cap -> InfraCap,
+\*     in either phase: it enters the phase from the forward one, and ends the
+\*     task inside it
+\*   'set-checkpoint' of $rollback:<step> -> RunRollback
+\*   'fail-rollback' with a retry -> RollbackRetry;  with none -> RollbackHalts
+\*   'fail' with no retry, in the rolling-back phase -> FinishSaga
 \*   'cancel-task', 'sweep:cancel' -> Cancel;  'retry-task' -> Revive
+\* LateMarker and LateEnter exist only for the vacuity probes and map to nothing.
+\* The model's CancelMidRollback, ReviveAfterSaga, and InfraCapRollsBack are
+\* decided: "halts", "refused", and TRUE.
 EXTENDS Naturals
 
 CONSTANTS

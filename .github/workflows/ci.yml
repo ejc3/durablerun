@@ -306,135 +306,48 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_entry(repaired, candidate, name):
-              # Replace one top-level entry of the base registry with this tree's entry of the
-              # same name, for a mutation whose target line this tree rewrote. Its name and its
-              # file must stand, so only the find, the replacement and the description move.
-              def span(text):
-                  key = f'        "{name}",\n'
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  start = text.rindex('    (\n', 0, text.index(key))
-                  if not text.startswith('    (\n' + key, start):
-                      raise SystemExit(f'{name}: the bridge re-aims only a top-level entry.')
-                  return start, text.index('    ),\n', start) + len('    ),\n')
-              start, end = span(repaired)
-              new_start, new_end = span(candidate)
-              if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                  raise SystemExit(f'{name}: the bridge may change only find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          def list_conditions(repaired, candidate, file, lines):
-              # List condition lines of a tree rule whose mutations this tree registers and the
-              # base predates, so the base's derived coverage check reads them as held.
-              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
-              opening = f'    "{file}": {{\n'
-              if repaired.count(table) != 1 or repaired.count(opening, repaired.index(table)) != 1:
-                  raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
-              at = repaired.index(opening, repaired.index(table)) + len(opening)
-              for line in lines:
-                  if f'"{line}": (' in repaired or line not in candidate:
-                      raise SystemExit(f'{line}: the bridge lists only a line this tree mutates and the base does not list.')
-              entries = ''.join(
-                  f'        "{line}": (\n            "held by mutations the head registry registers, which the base predates"\n        ),\n'
-                  for line in lines
-              )
-              return repaired[:at] + entries + repaired[at:]
-          def unlist_conditions(repaired, candidate, file, lines):
-              # Drop listed condition lines of a tree rule file that this tree deleted or moved
-              # to another file, so the base's derived coverage check does not read them as
-              # stale. This tree's registry must no longer list them for that file.
-              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
-              opening = f'    "{file}": {{\n'
-              def section(text):
-                  if text.count(table) != 1 or text.count(opening, text.index(table)) != 1:
-                      raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
-                  start = text.index(opening, text.index(table)) + len(opening)
-                  return start, text.index('\n    },\n', start) + 1
-              head_start, head_end = section(candidate)
-              for line in lines:
-                  key = f'        "{line}": (\n'
-                  start, end = section(repaired)
-                  if repaired.count(key, start, end) != 1 or key in candidate[head_start:head_end]:
-                      raise SystemExit(f'{line}: the bridge unlists only a line the base lists once and this tree no longer lists.')
-                  at = repaired.index(key, start, end)
-                  repaired = repaired[:at] + repaired[repaired.index('        ),\n', at) + len('        ),\n'):]
-              return repaired
-          if digest == '841b2d76bb5f4aae00927222cdce6df72f0b6430e8384d481032fe736c5c42ae':
-              # The generic reading of a node's children moved from sql-tree.ts to
-              # tree-walk.ts, which the base's coverage check does not read, so the
-              # lines the base lists for the old reader are unlisted. The rule that holds a
-              # statement to one definition of eligibility is new: the head registry
-              # registers a mutation for each of its conditions or lists the line with what
-              # a sweep showed, the base predates all of them, and so its lines are listed
-              # and its verdict markers exempted. One base entry is re-aimed: the mutant of
-              # retry-task-requires-failed-task spelled a list of states the new rule
-              # refuses, so it never reached its own test, and it now lists the terminal
-              # states, which the rule admits and which still revives a cancelled task.
-              repaired = previous
-              for name in (
-                  'retry-task-requires-failed-task',
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
-              repaired = unlist_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  "for (const item of value) if (isNode(item)) out.push(item)",
-                  "if (Array.isArray(value)) {",
-                  "if (ValueNode.is(node)) return []",
-                  "return test(node) || children(node).some((child) => someNode(child, test))",
-                  "typeof (value as { kind?: unknown }).kind === 'string'",
-                  "typeof value === 'object' &&",
-                  "value !== null &&",
-                  "} else if (isNode(value)) {",
-              ))
-              repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  "if (values.length < 2) return null",
-                  "if (!values.some((value) => isLiveState(value) || isTerminalState(value))) return null",
-                  "const defined = STATE_SETS.some(",
-                  "(set) => set.length === values.length && set.every((state) => values.includes(state)),",
-                  "return defined ? null : STATE_LIST_PROBLEM",
-                  "item[1] === undefined ? bind++ : item[1].split(QUOTE + QUOTE).join(QUOTE),",
-                  "if (stateListTextCount < STATE_LIST_TEXT_CAP) {",
-                  "return node !== undefined && ValueNode.is(node) ? node.value : undefined",
-                  "if (SelectQueryNode.is(node)) return false",
-                  "referencedColumn(node) === column || children(node).some((child) => namesColumn(child, column))",
-                  "if (RawNode.is(node)) {",
-                  "list.map((item) => (typeof item === 'number' ? boundValue(node.parameters[item]) : item)),",
-                  "if (problem !== null) return problem",
-                  "if (!BinaryOperationNode.is(node)) return null",
-                  "if (LIST_OPERATORS.includes(operator) && namesColumn(node.leftOperand, 'state')) {",
-                  "if (PrimitiveValueListNode.is(list)) return stateListProblem(list.values)",
-                  "if (ValueListNode.is(list)) return stateListProblem(list.values.map(boundValue))",
-                  "const tested = namesDeadline(node.leftOperand) || namesDeadline(node.rightOperand)",
-                  "return tested && !DEADLINE_TESTS.includes(operator) ? DEADLINE_PROBLEM : null",
-                  "return problem !== null",
-              ))
-              repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
-                  "if (second !== null) throw new Error(`${at} holds ${second}`)",
-              ))
-              repaired = exempt(repaired, candidate, (
-                  "mutation-verdict:construction:tree-state-list-built-from-nodes",
-                  "mutation-verdict:construction:tree-state-list-of-value-nodes",
-                  "mutation-verdict:construction:tree-state-set-live",
-                  "mutation-verdict:construction:tree-state-set-queued",
-                  "mutation-verdict:construction:tree-state-set-terminal",
-                  "mutation-verdict:construction:tree-state-list-one-state",
-                  "mutation-verdict:construction:tree-state-list-names-a-state",
-                  "mutation-verdict:construction:tree-state-list-length",
-                  "mutation-verdict:construction:tree-state-list-members",
-                  "mutation-verdict:construction:tree-state-list-keys-on-the-column",
-                  "mutation-verdict:construction:tree-state-list-in-a-fragment",
-                  "mutation-verdict:construction:tree-state-list-bound-in-a-fragment",
-                  "mutation-verdict:construction:tree-state-list-fragment-keys-on-the-column",
-                  "mutation-verdict:construction:tree-state-list-every-list-of-a-fragment",
-                  "mutation-verdict:construction:tree-eligibility-first-problem-stands",
-                  "mutation-verdict:construction:tree-eligibility-asked-of-every-statement",
-                  "mutation-verdict:construction:tree-deadline-refuses-a-comparison",
-                  "mutation-verdict:construction:tree-deadline-either-side",
-                  "mutation-verdict:construction:tree-deadline-under-a-call",
-                  "mutation-verdict:construction:tree-deadline-test-is-null",
-                  "mutation-verdict:construction:tree-deadline-test-is-not-null",
-                  "mutation-verdict:construction:tree-deadline-names-the-column",
-                  "mutation-verdict:construction:tree-deadline-stops-at-a-subquery",
-                  "mutation-verdict:construction:tree-walk-reads-below-the-root",
+          if digest == 'b4be3a2657a3d6772d18e4028b55e2011e887a7ff44a8b985b83dab3c2a98d3d':
+              # Sagas register verdict markers this registry predates, and re-aim nothing:
+              # every find of this registry still occurs exactly once in this tree. The
+              # arm is keyed on main's registry as of the merge of PR3.9e part 3c, whose
+              # own arm it replaces. One marker is the MySQL port's, for the one guard
+              # that is new in that store: main's registry reads that store's tests.
+              repaired = exempt(previous, candidate, (
+                  'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
+                  'mutation-verdict:behavior:saga-attempt-record-is-the-engines',
+                  'mutation-verdict:behavior:saga-attempt-record-name-is-checked',
+                  'mutation-verdict:behavior:saga-budget-boundary',
+                  'mutation-verdict:behavior:saga-caller-named-checkpoint-doors',
+                  'mutation-verdict:behavior:saga-cap-with-nothing-owed-ends-the-task',
+                  'mutation-verdict:behavior:saga-endings',
+                  'mutation-verdict:behavior:saga-failed-rollback-needs-the-phase',
+                  'mutation-verdict:behavior:saga-finish-is-honest',
+                  'mutation-verdict:behavior:saga-forward-phase-is-frozen',
+                  'mutation-verdict:behavior:saga-only-an-owed-terminal-failure-enters',
+                  'mutation-verdict:behavior:saga-pass-fits-the-largest-budget',
+                  'mutation-verdict:behavior:saga-phase-entry',
+                  'mutation-verdict:behavior:saga-phase-is-entered-once',
+                  'mutation-verdict:behavior:saga-phase-marker-is-the-engines',
+                  'mutation-verdict:behavior:saga-plans',
+                  'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
+                  'mutation-verdict:behavior:saga-reserved-names-match-exactly',
+                  'mutation-verdict:behavior:saga-rollback-only-inside-the-phase',
+                  'mutation-verdict:behavior:saga-row-checker-names-the-defect',
+                  'mutation-verdict:behavior:saga-sdk-attempts-counted',
+                  'mutation-verdict:behavior:saga-sdk-bad-registration',
+                  'mutation-verdict:behavior:saga-sdk-concurrent-start',
+                  'mutation-verdict:behavior:saga-sdk-corrupt-state',
+                  'mutation-verdict:behavior:saga-sdk-fatal-rollback',
+                  'mutation-verdict:behavior:saga-sdk-frozen-emit',
+                  'mutation-verdict:behavior:saga-sdk-marker-first',
+                  'mutation-verdict:behavior:saga-sdk-order',
+                  'mutation-verdict:behavior:saga-sdk-pass-attempt',
+                  'mutation-verdict:behavior:saga-sdk-replay-cut',
+                  'mutation-verdict:behavior:saga-sdk-unpersisted-step',
+                  'mutation-verdict:behavior:saga-sdk-unregistered',
+                  'mutation-verdict:behavior:saga-suspension-marker-name-is-checked',
+                  'mutation-verdict:behavior:saga-sweep-cap-enters',
+                  'mutation-verdict:construction:mysql-saga-step-key-bound',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

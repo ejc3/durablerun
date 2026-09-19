@@ -15,6 +15,7 @@
   "emit-event": ["emitted"],
   "set-checkpoint": ["written"],
   "fail": ["retrying", "final"],
+  "fail-rollback": ["retrying", "final"],
   "retry-task": ["revived"],
   "cancel-task": ["cancelled"],
   "sweep:cancel": ["cancelled"],
