@@ -240,52 +240,62 @@ describe('the wake a terminal batch owes the parent of its task, on MySQL', () =
   })
 })
 
+const RECORD_LOCKS = {
+  sql: "SELECT COUNT(*) AS held, COALESCE(SUM(INDEX_NAME = 'PRIMARY'), 0) AS `rows` FROM performance_schema.data_locks WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'runs' AND LOCK_TYPE = 'RECORD'",
+  args: [],
+}
+
+/**
+ * Claim through the store, measuring the batch's first statement, which owns the legs:
+ * the rows it walked, and the record locks on `runs` the batch held straight after it,
+ * with how many of them are rows, which is what a lock on the primary key is. Both are
+ * read inside the batch's own transaction, so every gate index moves by what was put
+ * ahead of it. The server's plan for the statement is read first, when asked for, because
+ * a statement explained ahead of itself walks less than one that arrives cold.
+ */
+async function claimMeasuringTheLegs(db: TestDb, limit: number, explained = false) {
+  let legs = { walked: Number.NaN, locksHeld: Number.NaN, rowsLocked: Number.NaN, target: '' }
+  const measuring: SqlExecutor = {
+    batch: async (label, statements, control) => {
+      const [first, ...rest] = statements
+      if (label !== 'claim' || first === undefined) {
+        return db.raw.batch(label, statements, control)
+      }
+      const moved = (gate: number) => (gate === 0 ? 1 : gate + 3)
+      const [plan] = explained
+        ? await db.raw.batch('fixture:explain', [
+            { sql: `EXPLAIN ${first.sql}`, args: [...first.args] },
+          ])
+        : []
+      const updated = plan?.rows.find((row) => row.select_type === 'UPDATE')
+      const shifted: SqlStatement[] = rest.map((statement) =>
+        statement.skipUnlessWrote === undefined
+          ? statement
+          : { ...statement, skipUnlessWrote: moved(statement.skipUnlessWrote) },
+      )
+      const [before, claimed, after, locks, ...followOns] = await db.raw.batch(
+        label,
+        [READ_COUNTERS, first, READ_COUNTERS, RECORD_LOCKS, ...shifted],
+        control,
+      )
+      if (claimed === undefined) throw new Error('the claim batch answered with no result')
+      legs = {
+        walked: walkedRows(after) - walkedRows(before),
+        locksHeld: Number(locks?.rows[0]?.held),
+        rowsLocked: Number(locks?.rows[0]?.rows),
+        target: `${String(updated?.type)} on ${String(updated?.key)}`,
+      }
+      return [claimed, ...followOns]
+    },
+  }
+  const claimed = await new MysqlSchedulerStore(measuring, db.ids).claim(Q, 'worker', {
+    leaseSeconds: 60,
+    limit,
+  })
+  return { ...legs, claimed: claimed.map((run) => run.runId).sort() }
+}
+
 describe("the claim's candidate legs on MySQL", () => {
-  const RECORD_LOCKS = {
-    sql: "SELECT COUNT(*) AS held FROM performance_schema.data_locks WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'runs' AND LOCK_TYPE = 'RECORD'",
-    args: [],
-  }
-
-  /**
-   * Claim through the store, measuring the batch's first statement, which owns the legs:
-   * the rows it walked, and the record locks on `runs` the batch held straight after it.
-   * Both are read inside the batch's own transaction, so every gate index moves by what
-   * was put ahead of it.
-   */
-  async function claimMeasuringTheLegs(db: TestDb, limit: number) {
-    let legs = { walked: Number.NaN, locksHeld: Number.NaN }
-    const measuring: SqlExecutor = {
-      batch: async (label, statements, control) => {
-        const [first, ...rest] = statements
-        if (label !== 'claim' || first === undefined) {
-          return db.raw.batch(label, statements, control)
-        }
-        const moved = (gate: number) => (gate === 0 ? 1 : gate + 3)
-        const shifted: SqlStatement[] = rest.map((statement) =>
-          statement.skipUnlessWrote === undefined
-            ? statement
-            : { ...statement, skipUnlessWrote: moved(statement.skipUnlessWrote) },
-        )
-        const [before, claimed, after, locks, ...followOns] = await db.raw.batch(
-          label,
-          [READ_COUNTERS, first, READ_COUNTERS, RECORD_LOCKS, ...shifted],
-          control,
-        )
-        if (claimed === undefined) throw new Error('the claim batch answered with no result')
-        legs = {
-          walked: walkedRows(after) - walkedRows(before),
-          locksHeld: Number(locks?.rows[0]?.held),
-        }
-        return [claimed, ...followOns]
-      },
-    }
-    const claimed = await new MysqlSchedulerStore(measuring, db.ids).claim(Q, 'worker', {
-      leaseSeconds: 60,
-      limit,
-    })
-    return { ...legs, claimed: claimed.map((run) => run.runId).sort() }
-  }
-
   it('walks each state in claim order and stops at the limit, locking only the runs it takes, beside a backlog of due runs', async () => {
     // InnoDB locks a row when it reads it, before any sort or LIMIT, so a leg that reads
     // more than it returns locks more than it claims, and concurrent claimers skip those
@@ -393,6 +403,173 @@ describe("the claim's candidate legs on MySQL", () => {
         'mutation-verdict:behavior:mysql-claim-leg-names-its-index',
       ).toBeLessThanOrEqual(2 * 2 * LIMIT)
       expect(legs.walked, `rows the legs walked beside ${BACKLOG} due runs`).toBeLessThan(100)
+    } finally {
+      await db.close()
+    }
+  })
+})
+
+/** A keyed write's table and key column: `update` or `delete`, then a required `column in (subquery)`. */
+const KEYED_WRITE =
+  /^(?:update|delete)\b[^`]*`(\w+)`[\s\S]*?(?<![.\w])`(\w+)` in \(\s*\(?\s*select\b/i
+
+/** The index each keyed write should reach its target through, by table and key column. */
+const KEY_OF: Readonly<Record<string, string>> = {
+  'runs.run_id': 'PRIMARY',
+  'runs.task_id': 'runs_task_attempt',
+  'tasks.task_id': 'PRIMARY',
+  'waits.run_id': 'PRIMARY',
+}
+
+describe('a keyed write on MySQL', () => {
+  it('locks the runs a claim takes and no other run, over two rows, over four, and at a limit of half the table', async () => {
+    // A write keyed by a subquery, `WHERE key IN (SELECT ...)`, is a join to the server,
+    // and the server picks its order. Measured on MySQL 8.4: over a small `runs` table, or
+    // with a limit that is a large part of the table, it read `runs` first, by a scan, and
+    // the claim's update then held a lock on every run of the table, where a claimer
+    // already holds the run its locking leg chose. Two claimers each waited for the
+    // other's run, and InnoDB rolled one back. Every row was locked at one to five rows
+    // with a limit of one, and at 20, 120, and 400 rows with a limit of half the table.
+    const measured: { claimed: number; rowsLocked: number; target: string }[] = []
+    for (const [rows, limit] of [
+      [2, 1],
+      [4, 1],
+      [20, 10],
+    ] as const) {
+      const db = await openMysqlTestDb({
+        idNamespace: `plan-keyed-claim-${rows}`,
+        nowMs: 1_000_000,
+      })
+      try {
+        const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'seed', '{}')
+        await cloneRows(
+          db,
+          'tasks',
+          `src.task_id = '${seed.taskId}'`,
+          { task_id: "CONCAT('keyed-task-', seq.n)", idempotency_key: 'NULL' },
+          rows - 1,
+        )
+        await cloneRows(
+          db,
+          'runs',
+          `src.run_id = '${seed.runId}'`,
+          {
+            run_id: "CONCAT('keyed-run-', LPAD(seq.n, 4, '0'))",
+            task_id: "CONCAT('keyed-task-', seq.n)",
+            available_at_ms: '1000000 - seq.n',
+          },
+          rows - 1,
+        )
+        await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
+        const claim = await claimMeasuringTheLegs(db, limit, true)
+        measured.push({
+          claimed: claim.claimed.length,
+          rowsLocked: claim.rowsLocked,
+          target: claim.target,
+        })
+      } finally {
+        await db.close()
+      }
+    }
+    expect(measured.map((claim) => claim.claimed)).toEqual([1, 1, 10])
+    // The plan over four rows, beside the locks it explains. It is soft so that a failure
+    // shows both.
+    expect
+      .soft(measured[1]?.target, 'how the update reaches the runs of a four-row table')
+      .toBe('eq_ref on PRIMARY')
+    expect(
+      measured.map((claim) => claim.rowsLocked),
+      'mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last',
+    ).toEqual([1, 1, 10])
+  })
+
+  it('reaches its target through its key in every keyed write a small database sends', async () => {
+    // The class, and not the claim alone: every update or delete the store keys by a
+    // subquery. Each is explained inside its own batch, just ahead of itself, over the few
+    // rows a new database holds, which is where the server would sooner read the target
+    // first. Measured as shipped over such a database: 16 of 165 keyed writes did not take
+    // their key, in claim, complete, emit-event, and cancel-task, and an emit held a lock
+    // on four runs to write one.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-keyed-class', nowMs: 1_000_000 })
+    try {
+      const seen: { write: string; key: string; target: string; warnings: string[] }[] = []
+      const explaining: SqlExecutor = {
+        batch: async (label, statements, control) => {
+          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
+          if (mode === 'read') return db.raw.batch(label, statements, control)
+          const sent: SqlStatement[] = []
+          const at: number[] = []
+          const explained: { i: number; table: string; key: string; at: number }[] = []
+          statements.forEach((statement, i) => {
+            const keyed = KEYED_WRITE.exec(statement.sql)
+            if (keyed !== null) {
+              explained.push({ i, table: String(keyed[1]), key: String(keyed[2]), at: sent.length })
+              sent.push(
+                { sql: `EXPLAIN ${statement.sql}`, args: statement.args },
+                { sql: 'SHOW WARNINGS', args: [] },
+              )
+            }
+            at[i] = sent.length
+            const gate =
+              statement.skipUnlessWrote === undefined ? undefined : at[statement.skipUnlessWrote]
+            sent.push(gate === undefined ? statement : { ...statement, skipUnlessWrote: gate })
+          })
+          const all = await db.raw.batch(label, sent, control)
+          for (const { i, table, key, at: where } of explained) {
+            const target = all[where]?.rows.find((row) => row.table === table)
+            seen.push({
+              write: `${label}[${i}] ${table}`,
+              key: `${table}.${key}`,
+              // A target the server read ahead of the statement has no row of its own.
+              target: target === undefined ? 'read ahead' : `${target.type} on ${target.key}`,
+              // 1003 is the rewritten statement, and 1276 a correlated reference resolved.
+              warnings: (all[where + 1]?.rows ?? [])
+                .filter((warning) => ![1003, 1276].includes(Number(warning.Code)))
+                .map((warning) => `${warning.Code} ${warning.Message}`),
+            })
+          }
+          return statements.map((_statement, i) => {
+            const result = all[at[i] ?? -1]
+            if (result === undefined) throw new Error(`${label}: statement ${i} has no result`)
+            return result
+          })
+        },
+      }
+      const store = new MysqlSchedulerStore(explaining, db.ids)
+      const waiter = await store.spawn(Q, 'waiter', '{}')
+      const job = await store.spawn(Q, 'job', '{}')
+      const victim = await store.spawn(Q, 'victim', '{}')
+      const claimed = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 3 })
+      const runOf = (taskId: string) => {
+        const run = claimed.find((candidate) => candidate.taskId === taskId)
+        if (run === undefined) throw new Error(`${taskId} was not claimed`)
+        return run
+      }
+      for (const run of claimed) await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      const waiting = runOf(waiter.taskId)
+      await store.awaitEvent(Q, waiter.taskId, waiting.runId, waiting.claimToken, 'step', 'go', 60)
+      await store.emitEvent(Q, 'go', '{}')
+      await store.complete(Q, runOf(job.taskId).runId, runOf(job.taskId).claimToken, '{}')
+      await store.cancelTask(Q, victim.taskId)
+      const [woken] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 3 })
+      if (woken === undefined) throw new Error('the woken run was not claimed')
+      await store.activate(Q, woken.runId, woken.claimToken, woken.claimGen)
+      await store.fail(Q, woken.runId, woken.claimToken, '{}', null)
+
+      // The matcher saw every kind of keyed write, so an empty list below means something.
+      expect([...new Set(seen.map((write) => write.key))].sort()).toEqual(
+        Object.keys(KEY_OF).sort(),
+      )
+      const keyed = (write: (typeof seen)[number]) =>
+        write.target === 'read ahead' ||
+        ['const', 'eq_ref', 'ref'].some(
+          (type) => write.target === `${type} on ${KEY_OF[write.key]}`,
+        )
+      expect(
+        seen.filter((write) => !keyed(write)).map((write) => `${write.write}: ${write.target}`),
+        'mutation-verdict:behavior:mysql-keyed-write-takes-its-key',
+      ).toEqual([])
+      expect(seen.flatMap((write) => write.warnings)).toEqual([])
     } finally {
       await db.close()
     }
