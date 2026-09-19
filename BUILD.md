@@ -60,7 +60,15 @@ a last docs PR gives a live owner to every open bullet that is left.
    library holds every identifier column of a snapshot to the width of a
    durable identifier: it reports the over-width rows `legacy-rows.test.ts`
    plants and nothing else there, and a walk fails when a store entry's width
-   check is removed.
+   check is removed. This is met. PR4.5b's axis takes every room from
+   `packages/sdk/test/name-rooms.ts`, and
+   `sdk-repeated-name-key-held-with-its-counter` is registered to the harness,
+   where only the `step used twice` member catches it. The invariant library's
+   `identifier/over-width` condition reads every column of
+   `IDENTIFIER_COLUMNS`, `legacy-rows.test.ts` expects exactly the rows it
+   plants, and a pinned case of eight fuzz walks owns
+   `libsql-emitted-name-held-at-the-entry`, which removes one store entry's
+   width check.
 2. PR4.4a: on MySQL and PostgreSQL a batch of one statement that carries no
    lock is sent alone, in one round trip, when the executor can show that what
    the transaction gave still holds. Any other batch keeps its transaction, and
@@ -1724,13 +1732,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
-  - Deferred from `postmortems/pr4.5-identifier-width-review.md`: a name-length
-    axis for the replay-equivalence harness. It draws every name from a list of
-    six, the longest six characters, so no generated program builds a key near
-    the 255 character width of a durable identifier, and a refusal the store
-    gives by a name's length is met by no generated SDK program. The axis is,
-    for every keyed call the harness generates, a name at its room, one under,
-    and one past.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
@@ -2264,11 +2265,83 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (`fixture-id-namespace.ts`): spelled out when the ids leave 64 characters of
     room in the width, hashed when they would not, so no fixture mints an id the
     contract says cannot exist.
-  - An option, not built: a check that finds rows whose names pass the width,
-    a stranded queue above all. The invariant library derives and pins its
-    inventory of conditions, so a width probe there is a new family of
-    conditions with its own enrollment, and no database anyone has observed
-    holds such a row.
+
+- **PR4.5b the identifier width's two checks**: DONE. PR4.5 parked two checks
+  of rule 10 (DESIGN.md §3.4), and this builds both.
+  - The replay-equivalence harness has a name-length axis. Every generated
+    call that passes a name runs with a name one character under its room, at
+    its room, and one past it: a step, a step used twice, a step that
+    registers a rollback, `awaitEvent`, `emitEvent`, `spawn`, and `awaitTask`.
+    `packages/sdk/test/name-rooms.ts` states the longest durable name the
+    engine builds from each name, and a room is what that leaves of
+    `IDENTIFIER_CHARACTERS`, so no room is typed as a number. The axis is a
+    record typed by the generated methods, so a new one does not compile
+    without its members. `identifier-width.test.ts` typed the same rooms by
+    hand. It now takes every length from that one table and states the numbers
+    DESIGN.md gives once, in one expectation. Under and at its room a program
+    ends as its reference run did at every sampled fault point, and the run
+    left a name of the length the member claims. Past it, on every schedule,
+    the task fails for good with a `FatalTaskError` that names what the task
+    passed, no body at or after the refused call runs, the task is charged one
+    attempt, and once the refused call starts the SDK makes no store call but
+    the one that records the failure. A child's task name is the documented
+    exception: the store builds the child key and refuses it, so that member
+    expects the one `spawn` call first. An awaited child's id is the engine's,
+    so that member pads the first id minted inside the child's spawn and
+    checks the stored id's length.
+  - The axis can fail, and the audit keeps checking that it can. Each
+    mutation runs only its registered test, and the four mutations of the
+    SDK's hold are registered to `identifier-width.test.ts`, which runs its 16
+    cases in 2.2 s on libSQL and PostgreSQL where the harness file takes
+    13.9 s on libSQL alone. They stay there. One new mutation,
+    `sdk-repeated-name-key-held-with-its-counter`, names the harness: the SDK
+    holds the name a task passed and not the key it derives, so `name#2`
+    passes the width, and only the `step used twice` member sees it. By hand,
+    every member goes red by name under a registered mutant: `step`,
+    `step used twice`, `step that registers a rollback`, `awaitEvent`, and
+    `awaitTask` under `sdk-durable-key-held-before-the-body-runs`, `emitEvent`
+    under `sdk-emitted-event-name-held`, and `spawn` under core's
+    `stored-child-key-held-to-the-width`. The axis stays green under
+    `sdk-key-already-stored-is-not-held` and
+    `sdk-started-key-held-to-the-width`, which need a name an older build
+    stored, and no generated program has one.
+  - Measured over five interleaved rounds against main on one machine, the
+    SDK suite goes from 12.4 s to 16.4 s at the median and from 167 tests to
+    174, all of it in the harness file, 10.3 s to 13.9 s. The suite runs
+    inside CI's verify job.
+  - The invariant library has the condition `identifier/over-width`. One
+    inventory, `IDENTIFIER_COLUMNS`, names the 22 columns of the six table
+    snapshots that hold a durable identifier and selects them into the
+    snapshot, and the condition reads each with core's `fitsCharacters`. It is
+    rule 10's executable twin on libSQL and PostgreSQL, whose columns do not
+    bound a name, and every sim, scenario, and fuzz walk runs it. It reads
+    snapshots in tests. It is not an admin check of a production database. It
+    is enrolled as the library demands: 115 pinned conditions, one poison
+    witness through a new storage corruption variant, injected on libSQL and
+    PostgreSQL and structurally rejected by MySQL's column with error 1406, 146
+    witnesses and 3,066 cells, one checker case that plants a name at the
+    width and one past it in every column, a second that holds the inventory
+    to the columns MySQL's migrations bound at the width, and three mutations.
+    `legacy-rows.test.ts` expects exactly the violations for the rows it
+    plants.
+  - No walk could trip the condition, so the operation fuzz gained one op.
+    With the libSQL store's `emitEvent` hold removed, a run of 608 seeds by 100
+    steps passed whole. The op passes the port a name one character past the
+    width about one step in ten, from a random stream of its own, and leaves
+    an accepted name for the condition to report. With the op, the same
+    removal fails all 32 shard files and the pinned regression seeds, 37 walks
+    naming the condition on `events.event_name`, and removing core's stored
+    child key hold fails all 32 shard files, 71 walks naming it on
+    `tasks.idempotency_key`. Over 60 seeds by 100 steps every counter of every
+    walk equals main's. The audit keeps checking this too: a pinned case of
+    eight such walks owns `libsql-emitted-name-held-at-the-entry`, which
+    removes that one store entry's hold. The case sits in the checker test,
+    because the audit leaves the fuzz files out of a mutation's run.
+  - The mutation registry goes from 873 to 878.
+  - An option, not built: an admin command that lists rows whose names pass
+    the width, a stranded queue above all. No database anyone has observed
+    holds one. The harness's other stated gaps stay where the sagas entry lists
+    them.
 
 ## Phase 5 — operations + sharding
 
