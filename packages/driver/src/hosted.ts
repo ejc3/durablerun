@@ -308,6 +308,15 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         if (result.failureReasonJson !== undefined) {
           response.failure = parseTaskValueJson(result.failureReasonJson)
         }
+        // How the task's saga ended, when one began (DESIGN.md §3.10): the error is the
+        // failure of the rollback that ended the task, decoded as the failure above is.
+        if (result.rollback !== undefined) {
+          const { outcome, errorJson } = result.rollback
+          response.rollback =
+            errorJson === undefined
+              ? { outcome }
+              : { outcome, error: parseTaskValueJson(errorJson) }
+        }
         return jsonResponse(response)
       },
     }),

@@ -2335,7 +2335,9 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   and idempotency keys outside the portable durable-string domain return 400
   before store I/O. Emit accepts
   `{eventName, payload?}`. Inspection returns the state plus the canonically
-  decoded result/failure when present. Every response is stable JSON with
+  decoded result/failure when present, and for a task whose saga began, how it
+  ended: `rollback.outcome`, with `rollback.error` decoded the same way when a
+  rollback's failure ended the task (§3.10). Every response is stable JSON with
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
@@ -2903,6 +2905,21 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   is never named, and a saga that a cancellation or a cap halts after such an
   attempt names no rollback error. The outcome cannot disagree with the
   checkpoints, and no checkpoint of an ended task changes.
+- **Who sees the rollback outcome.** `getTaskResult` reads it, and the hosted
+  inspect route shows it beside the state. A parent that awaits the child does
+  not see it, and the completion event is why. The wire is not the obstacle. A
+  build that predates the field reads the payload's state and the two fields
+  it knows, and ignores any other, so an added field would ride through a
+  rolling deploy, and a core test holds that. The writer is the obstacle. A
+  terminal batch binds a payload that was built before the batch ran, and the
+  rollback outcome is a fact only that batch's SQL knows: whether the saga
+  began, and whether a rollback is still owed, are read from the checkpoints
+  inside the batch, in a cancellation and a sweep as much as in a failure.
+  Choosing among bound payloads in SQL would need the saga predicates in the
+  select list of the event's follow-on insert, which the statement tree
+  refuses as raw fragments, or a second representation of those predicates as
+  tree nodes. Until the predicates are nodes, the outcome is read from the
+  child's task result, and the parent's view stays open in BUILD.md.
 - **A saga with nothing to roll back skips the phase.** The task fails as it
   did before sagas, and its result carries no rollback field. The model calls
   that saga complete at entry and allows the skip. The engine records nothing
