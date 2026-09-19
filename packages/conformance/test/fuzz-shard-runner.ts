@@ -13,11 +13,16 @@ function knob(name: string, fallback: number): number {
   return value
 }
 
-function zeroBasedKnob(name: string, fallback: number): number {
+/**
+ * A batch index has no default. Unset, the process was given no index and runs every batch.
+ * An empty value is refused as knob() refuses one: Number('') is 0, so a workflow that built
+ * the index from a misspelled key would walk batch 0 only and report a green shard.
+ */
+function indexKnob(name: string): number | undefined {
   const raw = process.env[name]
-  if (raw === undefined) return fallback
+  if (raw === undefined) return undefined
   const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
+  if (raw.trim() === '' || !Number.isInteger(value) || value < 0) {
     throw new Error(`${name}='${raw}' is not a nonnegative integer — refusing a vacuous fuzz run`)
   }
   return value
@@ -26,8 +31,7 @@ function zeroBasedKnob(name: string, fallback: number): number {
 const SEEDS = knob('FUZZ_SEEDS', 64)
 const STEPS = knob('FUZZ_STEPS', 60)
 const BATCH_COUNT = knob('FUZZ_BATCHES', 1)
-const BATCH_INDEX =
-  process.env.FUZZ_BATCH_INDEX === undefined ? undefined : zeroBasedKnob('FUZZ_BATCH_INDEX', 0)
+const BATCH_INDEX = indexKnob('FUZZ_BATCH_INDEX')
 
 export interface FuzzBatchCoordinates {
   readonly totalSeeds: number

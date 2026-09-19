@@ -487,7 +487,10 @@ describe('deep fuzz batches', () => {
 
   it('runs both batches of a real shard file in one process that is given a batch count and no batch index', () => {
     const run = runShardFile({ FUZZ_SEEDS: '64', FUZZ_BATCHES: '2' })
-    expect({ exitCode: run.exitCode, batchTests: run.batchTests }).toEqual({
+    expect(
+      { exitCode: run.exitCode, batchTests: run.batchTests },
+      'mutation-verdict:construction:deep-fuzz-unset-index-runs-every-batch',
+    ).toEqual({
       exitCode: 0,
       batchTests: [
         'passed: operation fuzz shard 0/32, batch 0/2 (1 of 64 total seeds x 60 steps)',

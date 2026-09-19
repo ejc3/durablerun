@@ -5157,6 +5157,13 @@ MUTATION_SPECS.extend(
             "an empty fuzz process is credited as a planned batch",
         ),
         (
+            "deep-fuzz-unset-index-runs-every-batch",
+            "packages/conformance/test/fuzz-shard-runner.ts",
+            "  if (raw === undefined) return undefined",
+            "  if (raw === undefined) return 0",
+            "a process given a batch count and no batch index walks batch 0 only and reports a green shard",
+        ),
+        (
             "nightly-fuzz-workflow-enrollment",
             ".github/workflows/nightly.yml",
             "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]",
@@ -9924,6 +9931,12 @@ VERDICTS.update(
             "packages/conformance/test/nightly-fuzz-plan.test.ts",
             "fuzz shard batch plan rejects an empty process batch",
             "mutation-verdict:construction:nightly-fuzz-plan-empty-rejected",
+        ),
+        "deep-fuzz-unset-index-runs-every-batch": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "deep fuzz batches runs both batches of a real shard file in one process that is given a batch count and no batch index",
+            "mutation-verdict:construction:deep-fuzz-unset-index-runs-every-batch",
         ),
         "nightly-fuzz-workflow-enrollment": ExpectedVerdict(
             "construction",
@@ -16365,7 +16378,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 831:
+        if len(MUTATIONS) != 832:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
