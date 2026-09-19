@@ -968,10 +968,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
     const extensionMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
-    // MySQL has no RETURNING, so the remainder is a second statement, and a second
-    // statement needs a fence on the first one's post-state. The compare-and-set
-    // stamps the run and the read keys on that stamp. The read touches no clock:
-    // it subtracts the two instants the update stored from one clock read.
+    // Two statements under one fence, the shape every dialect sends. The compare-and-set
+    // extends the lease from one read of the clock and stamps the run. The read keys on
+    // that stamp and subtracts the two instants the update stored. It touches no clock,
+    // so the answer cannot drift from the write.
     const b = new FencedBatch('heartbeat', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
       'extend',

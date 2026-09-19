@@ -107,9 +107,10 @@ Allowed cases (do NOT flag these):
 - **A classification list whose harvest is total, or that a machine reconciles.** `MATRIX_WRITE_LABELS`
   / `MATRIX_READ_LABELS` / `MATRIX_EXEMPT_LABELS` (`fault-matrix.ts`) duplicate the store's
   labels on purpose — they classify them — and `packages/conformance/test/label-inventory.test.ts`
-  asserts equality against the same harvester the spec ledger uses. Likewise `READS`,
-  `SINGLE_WRITES`, `TOKEN_FENCED`, `DYNAMIC` in `scripts/batch-lint.py`
-  (an unclassified label fails the lint), `NOT_IN_GATE` in `scripts/gate-lint.py` (deliberately in
+  asserts equality against the same harvester the spec ledger uses. Likewise `scripts/text-statements.json`, from
+  which `scripts/batch-lint.py` derives `READS`, `SINGLE_WRITES` and `TOKEN_FENCED`, and its `DYNAMIC`
+  (an unclassified label fails the lint, and `packages/conformance/test/text-statements.test.ts`
+  holds every store to the list), `NOT_IN_GATE` in `scripts/gate-lint.py` (deliberately in
   the script, not the tree, and checked in both directions), `EXEMPT` in
   `scripts/lint-selftest.py`, and key lists the type system reconciles (`FuzzStats` totals in
   `packages/conformance/test/fuzz-shard-runner.ts`). Adding an entry to one of these is how

@@ -596,6 +596,20 @@ def text_statement_view(visible: str, calls: tuple[BatchCall, ...]) -> str:
     return "".join(kept)
 
 
+def text_statement_calls(
+    root: Path,
+    source_paths: tuple[Path, ...],
+    program: str,
+) -> dict[str, tuple[BatchCall, ...]]:
+    """The batch calls text_statement_view narrows by, for a lint's store sources.
+
+    Only TypeScript holds a batch call. A tree of SQL files alone has none to find, so
+    the analyzer is not started for it.
+    """
+    typescript = tuple(path for path in source_paths if path.suffix == ".ts")
+    return batch_calls(root, typescript, program) if typescript else {}
+
+
 def sql_file_view(
     source: str,
     preserve_literals: frozenset[str] = frozenset(),

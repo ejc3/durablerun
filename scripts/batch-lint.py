@@ -26,8 +26,8 @@ Usage: batch-lint.py [root]   (root defaults to the repo; the self-test
 passes a fixture tree, which is how this checker gets checked.)
 """
 
-import re
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -252,9 +252,8 @@ for path in source_paths:
             violations.append(
                 f"{rel}: raw this.db.batch('{label}') is unclassified — a "
                 f"multi-statement WRITE must use FencedBatch (post-state fence); "
-                f"a read or single write is declared in READS / SINGLE_WRITES, "
-                f"and a caller-token-fenced write in TOKEN_FENCED with a reason, "
-                f"in scripts/batch-lint.py"
+                f"a statement that cannot be a tree is listed in "
+                f"scripts/text-statements.json with its shape and the reason"
             )
             continue
 

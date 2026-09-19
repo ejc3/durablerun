@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { type SqlExecutor, isTreeBuiltStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { claimActivated, withFixture } from '../src/scenario.js'
@@ -13,7 +14,7 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  */
 const LIST = JSON.parse(
   readFileSync(new URL('../../../scripts/text-statements.json', import.meta.url), 'utf8'),
-) as { statements: Record<string, { shape: string; why: string }> }
+) as { statements: Record<string, { shape: string; why: string; fence?: string }> }
 const LISTED = Object.keys(LIST.statements).sort()
 
 /** Sent only to a database with no schema yet, which no fixture hands out. The source case holds them. */
@@ -27,23 +28,18 @@ describe('the statements a store sends as text', () => {
 
   it('are the raw batches of every store, read from its sources, and no others', () => {
     // A raw batch is the only door for SQL text: the source analyzer lets a store's
-    // executor reach a FencedBatch or this call and nothing else. A label that is a
-    // template is listed by its prefix and a star.
-    const packages = new URL('../../', import.meta.url)
-    const stores = readdirSync(packages).filter((name) => name.startsWith('store-'))
-    expect(stores.length).toBeGreaterThanOrEqual(3)
-    for (const store of stores) {
-      const sources = new URL(`${store}/src/`, packages)
-      const text = readdirSync(sources, { recursive: true, encoding: 'utf8' })
-        .filter((file) => file.endsWith('.ts'))
-        .map((file) => readFileSync(new URL(file, sources), 'utf8'))
-        .join('\n')
-      // A label that is not a literal cannot be read here. batch-lint refuses one, through
-      // the source analyzer, which also tells a store's batch from its driver's own.
-      const labels = [...text.matchAll(/\.batch\(\s*[`']([^`'$]+)(\$?)/g)].map(
-        (found) => `${found[1]}${found[2] === '$' ? '*' : ''}`,
-      )
-      expect([...new Set(labels)].sort(), `${store}'s text statements`).toEqual(LISTED)
+    // executor reach a FencedBatch or this call and nothing else. The labels come from
+    // the harvester the spec ledger and the fault matrix use, which reads a template
+    // label as its prefix and a star.
+    const harvested: Record<string, string[]> = JSON.parse(
+      execFileSync('python3', ['scripts/spec-ledger.py', '--text-labels'], {
+        cwd: new URL('../../../', import.meta.url),
+        encoding: 'utf8',
+      }),
+    )
+    expect(Object.keys(harvested).length).toBeGreaterThanOrEqual(3)
+    for (const [store, labels] of Object.entries(harvested)) {
+      expect(labels, `${store}'s text statements`).toEqual(LISTED)
     }
   })
 

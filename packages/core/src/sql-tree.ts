@@ -1131,9 +1131,9 @@ const CLOCK_FUNCTIONS = [
 ]
 
 /**
- * A database clock spelled out in raw SQL text. This is a spelling list, the same one
- * `scripts/clock-lint.py` applies to store sources, because raw text is the one place a
- * tree cannot be read. A date function with no argument is on it, because SQLite reads
+ * A database clock spelled out in raw SQL text. This is a spelling list, the one
+ * `scripts/clock-lint.py` applies to store sources and one spelling more, because raw text
+ * is the one place a tree cannot be read. A date function with no argument is on it, because SQLite reads
  * `datetime()` as the current time, and so is the literal 'now', whatever function takes it.
  * The test clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read
  * the clock by a door no function names. The only clock a tree may hold is the clock token, and

@@ -14,10 +14,10 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 from source_lex import (
-    batch_calls,
     sql_file_view,
     sql_template_view,
     store_sql_sources,
+    text_statement_calls,
     text_statement_view,
     validated_root,
 )
@@ -33,11 +33,7 @@ try:
     source_paths = store_sql_sources(root, "fragment-lint.py")
     # What this lint scans is the store text that reaches no statement tree. A file that
     # builds trees is narrowed to its raw batch calls (source_lex.text_statement_view).
-    call_inventory = batch_calls(
-        root,
-        tuple(path for path in source_paths if path.suffix == ".ts"),
-        "fragment-lint.py",
-    )
+    call_inventory = text_statement_calls(root, source_paths, "fragment-lint.py")
 except ValueError as error:
     sys.exit(str(error))
 
