@@ -1478,6 +1478,13 @@ MUTATION_SPECS = [
         "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
     ),
     (
+        "tree-clock-spelling-fake-clock-arm",
+        "packages/core/src/sql-tree.ts",
+        "    String.raw`\\bfake_now_ms\\b`,\n",
+        "    String.raw`[^\\s\\S]`,\n",
+        "a fragment reads the fake clock's row in meta, a read of the clock no function names, and goes unseen",
+    ),
+    (
         "tree-clock-function-unixepoch",
         "packages/core/src/sql-tree.ts",
         "  'unixepoch',\n",
@@ -7993,6 +8000,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
         "mutation-verdict:construction:tree-clock-spelling-no-argument-arm",
+    ),
+    "tree-clock-spelling-fake-clock-arm": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses a read of the fake clock row in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-fake-clock-arm",
     ),
     "tree-clock-function-unixepoch": ExpectedVerdict(
         "construction",
@@ -16921,7 +16934,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 871:
+        if len(MUTATIONS) != 872:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
