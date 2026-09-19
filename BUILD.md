@@ -31,11 +31,61 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+## Current milestone — the follow-ups the last milestone's reviews deferred
 
-**Status: COMPLETE once PR3.9f part 2 merges (named 2026-09-16): main and that
-pull request together meet every exit test below. Pause after its green merge
-until the maintainer names the next milestone.** The maintainer named six items, in
+**Status: IN PROGRESS (named 2026-09-19).** The maintainer asked for the
+tractable follow-ups that the reviews of the last milestone deferred. Tractable
+means the repository and a development machine are enough: no account, secret,
+or decision that only the maintainer has. Each item lands as its own PR. They
+are built side by side and merge one at a time, and each rebases onto the ones
+that merged before it.
+
+**Exit test:**
+
+1. PR4.5b: the SDK's replay-equivalence harness draws, for every keyed call it
+   generates, a name at its room, one under, and one past, and it fails when
+   the SDK's hold on a derived key is removed. The invariant library holds
+   every identifier column of a snapshot to the width of a durable identifier,
+   and a walk can trip it.
+2. PR4.4a: on MySQL a batch that holds one statement and carries no lock costs
+   one round trip, pinned against a real server, and the claim's
+   `FORCE INDEX (runs_poll)` legs have a measured plan test.
+3. PR3.3b: core declares the event lock, and a batch that adds a completion
+   event without it is refused where it is built. A tree rule refuses a
+   statement that writes a terminal `tasks.state` unless its batch carries the
+   completion event's follow-on. The child await's engine logic and its two
+   reads exist once, in core.
+4. PR4.4c: a conformance surface generated from the port runs every store call
+   concurrently with itself on libSQL, PostgreSQL, and MySQL, and it fails when
+   the fix for the transition PR #50 found, or for the one PR4.3's review
+   found, is reverted. An executor counts the deadlocks it retries, and
+   PostgreSQL's count is held at zero in that surface, the concurrency cases,
+   and the fuzz.
+5. PR4.4b: the migration lock travels in `SqlBatchControl` as a lock
+   coordinate, so a wrapper cannot drop it. A version that was half applied
+   converges when `migrate()` runs again, and `migrate()` on a current database
+   costs one read and one locked batch.
+6. PR4.4d: the test id source, the admin's version read and versioned write,
+   the fixture's corruption-table switch, and the stores' dialect-free
+   declarations each exist once.
+7. PR3.14b: the three statements of `claim` that select their source rows by
+   queue and state are measured on libSQL beside a growing number of running
+   runs. Either they are keyed and a plan test holds that, or the measurement
+   is recorded with the reason a key is not worth its cost to every write.
+
+**Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
+dropping the row lock of a caller's event, which needs a stated oldest build;
+the other bullets of the PR3.3 entry and the deferrals of the PR3.2
+postmortems, which wait until this list is done; active-wait identity (PR3.8);
+the condition-mutation ratchet (PR3.10); operations and sharding (Phase 5);
+dedicated placement (Phase 6); and the cloudification PRs.
+
+## Completed milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+
+**Status: COMPLETE (named 2026-09-16, complete 2026-09-19).** PR3.9f part 2
+merged as PR #59, and `ci` passed on the merge commit `5b203f4` in
+[run 35441588376](https://github.com/ejc3/durablerun/actions/runs/35441588376).
+Main meets every exit test below. The maintainer named six items, in
 this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
 PR3.9 ends with PR3.9f, which the review of PR3.9e part 3c added: exit test 3
 needs it, so it is the last part of PR3.9 and not a seventh item.
