@@ -66,7 +66,6 @@ READS = {
 # and cannot disagree with itself about the time.
 SINGLE_WRITES = {
     "expire-lease-now",
-    "heartbeat",
     "admin:set-fake-now",
     "admin:clear-fake-now",
 }

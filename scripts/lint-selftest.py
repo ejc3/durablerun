@@ -1433,7 +1433,7 @@ export class S {
             """
 export class S {
   async probe(suffix: string) {
-    await this.db.batch('heartbeat' + suffix, [
+    await this.db.batch('admin:set-fake-now' + suffix, [
       { sql: `UPDATE tasks SET a = 1`, args: [] },
     ])
   }
@@ -1525,7 +1525,7 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: `UPDATE runs SET a = 1 WHERE id = ?`, args: [q] },
       { sql: `UPDATE tasks SET state = 'running'`, args: [] },
     ])
@@ -1533,7 +1533,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "a label declared a SINGLE write must fail once it grows a second statement",
     ),
     (
@@ -1542,7 +1542,7 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: `UPDATE runs SET note = ']})' WHERE id = ?`, args: [q] },
       { sql: `UPDATE tasks SET state = 'running'`, args: [] },
     ])
@@ -1550,7 +1550,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "a bracket inside SQL must not truncate the batch shape",
     ),
     (
@@ -1559,7 +1559,7 @@ export class S {
             r"""
 export class S {
   async probe(q: string) {
-    await this.db.batch('heartbeat', [
+    await this.db.batch('admin:set-fake-now', [
       { sql: 'x', args: [/\]\}\]\)/.test(q)] },
       { sql: 'y', args: [] },
     ])
@@ -1567,7 +1567,7 @@ export class S {
 }
 """
         ),
-        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "'admin:set-fake-now' is declared a SINGLE write but carries 2 statements",
         "delimiter-looking regex tokens must not hide a later statement",
     ),
     (
@@ -3940,7 +3940,7 @@ export class Store {
 export class S {
   async ok(q: string) {
     await this.db.batch(
-      'heartbeat',
+      'admin:set-fake-now',
       [{ sql: `UPDATE runs SET a = 1`, args: [/sql:/.test(q), q.length / 2] }],
     )
   }

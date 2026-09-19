@@ -4285,12 +4285,10 @@ MUTATION_SPECS = [
     (
         "heartbeat-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "                AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
-        "                AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
+        "                   WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,\n",
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
+        "                   WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,\n",
         "heartbeat extends a run after its task crosses the immutable queue boundary",
     ),
     (
@@ -4726,12 +4724,10 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "heartbeat-lease",
         "heartbeat lease deadline",
-        "                AND ${epochAdditionFits(NOW_MS, '?')}\n"
-        "              RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms",
-        "epochAdditionFits(NOW_MS, '?')",
-        "                claim_expires_at_ms = ${NOW_MS} + ?,\n"
-        "                heartbeat_at_ms = ${NOW_MS}",
-        "${NOW_MS} + ?",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extensionMs]),",
+        "epochAdditionFits(NOW, '?')",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extensionMs]),",
+        "${NOW} + ?",
     ),
     (
         "lost-launch-relaunch",

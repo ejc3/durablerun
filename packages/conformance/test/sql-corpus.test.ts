@@ -72,7 +72,6 @@ describe('generated SQL corpus', () => {
         )
         await store.spawn('q', 'job', '{}')
         const run = await claimActivated(store, 'q', 'w1')
-        // MySQL builds the heartbeat as a fenced batch, because it has no RETURNING.
         expect((await store.heartbeat('q', run.runId, run.claimToken, 30)).held).toBe(true)
         // The reads, beside a live run. A read changes nothing, so where it stands is free.
         // An activated claim has no name left to learn, and the statement is sent all the same.

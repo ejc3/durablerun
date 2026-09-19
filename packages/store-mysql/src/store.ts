@@ -64,6 +64,8 @@ import {
   encodeTaskOutcome,
   failCas,
   failClaimTimeoutCas,
+  heartbeatCas,
+  heartbeatRemainingRead,
   isTerminalState,
   mapLimit,
   materializeTaskDoneCas,
@@ -143,7 +145,7 @@ import {
   successorOwned,
   taskOwnsEveryRun,
 } from './fragments.js'
-import { heartbeatCas, heartbeatRemainingRead, nextWakeRead } from './statements.js'
+import { nextWakeRead } from './statements.js'
 import { NOW_MS } from './time.js'
 import { TREE_DIALECT } from './tree.js'
 
@@ -965,7 +967,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     // Buggify: lease-lost can arrive at ANY heartbeat: workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
-    const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
+    const extensionMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     // MySQL has no RETURNING, so the remainder is a second statement, and a second
     // statement needs a fence on the first one's post-state. The compare-and-set
     // stamps the run and the read keys on that stamp. The read touches no clock:
@@ -977,8 +979,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
         queue,
         runId,
         claimToken,
-        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extendMs]),
-        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
+        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extensionMs]),
+        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extensionMs]),
         taskIsLive: sqlFragment(
           `EXISTS (SELECT 1 FROM tasks t
                    WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
