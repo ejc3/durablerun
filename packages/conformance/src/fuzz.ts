@@ -229,25 +229,27 @@ async function runWalk(
   const passNamePastTheWidth = async (): Promise<void> => {
     const past = 'w'.repeat(IDENTIFIER_CHARACTERS + 1)
     const run = held[widthRng.int(held.length + 1)]
-    const kind = widthRng.int(run === undefined ? 2 : 4)
+    const passes: (() => Promise<unknown>)[] = [
+      () => f.store.emitEvent(Q, past, '{}'),
+      () => f.store.spawn(Q, 'past-the-width', '{}', { idempotencyKey: past }),
+    ]
+    if (run !== undefined) {
+      passes.push(
+        () => checkpointOwned(f.store, Q, run, past, '1', 60),
+        () =>
+          f.store.spawn(Q, 'past-the-width', '{}', {
+            childOf: {
+              parentQueue: Q,
+              parentTaskId: run.taskId,
+              runId: run.runId,
+              claimToken: run.claimToken,
+              replayKey: 'w'.repeat(IDENTIFIER_CHARACTERS),
+            },
+          }),
+      )
+    }
     try {
-      if (kind === 0) {
-        await f.store.emitEvent(Q, past, '{}')
-      } else if (kind === 1) {
-        await f.store.spawn(Q, 'past-the-width', '{}', { idempotencyKey: past })
-      } else if (run !== undefined && kind === 2) {
-        await checkpointOwned(f.store, Q, run, past, '1', 60)
-      } else if (run !== undefined) {
-        await f.store.spawn(Q, 'past-the-width', '{}', {
-          childOf: {
-            parentQueue: Q,
-            parentTaskId: run.taskId,
-            runId: run.runId,
-            claimToken: run.claimToken,
-            replayKey: 'w'.repeat(IDENTIFIER_CHARACTERS),
-          },
-        })
-      }
+      await passes[widthRng.int(passes.length)]?.()
     } catch (error) {
       if (error instanceof InvalidDurableStringError) stats.overWidthRefusals++
       // A store that let the name by may still refuse the write for a lost lease.

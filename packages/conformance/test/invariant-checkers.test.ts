@@ -20,44 +20,27 @@ import {
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
- * Every column a migration list bounds with VARCHAR, and its width. MySQL is the one
- * dialect whose schema bounds a durable identifier, so its migrations say which columns
- * hold one. A definition is read between the commas that separate definitions, whatever
- * lines they sit on, and a later ADD COLUMN is read too.
+ * Every column a migration list types as VARCHAR, and its width. MySQL is the one dialect
+ * whose schema bounds a durable identifier, so its migrations say which columns hold one.
+ * Any `name VARCHAR(n)` in a CREATE TABLE or an ALTER TABLE is read, however it is laid out,
+ * so a column cannot be missed, and text that is read and is no column fails the pin loudly.
  */
 function boundedColumns(
   migrations: readonly { readonly statements: readonly string[] }[],
 ): { table: string; column: string; width: number }[] {
-  const bounded: { table: string; column: string; width: number }[] = []
-  const read = (table: string, definition: string): void => {
-    const match = /^\s*`?(\w+)`?\s+VARCHAR\((\d+)\)/i.exec(definition)
-    if (match?.[1] && match[2]) {
-      bounded.push({ table, column: match[1], width: Number(match[2]) })
-    }
-  }
-  for (const sql of migrations.flatMap((migration) => migration.statements)) {
-    const created = /^\s*CREATE TABLE(?: IF NOT EXISTS)?\s+`?(\w+)`?\s*\(([\s\S]*)\)[^)]*$/i.exec(
-      sql,
-    )
-    if (created?.[1] && created[2] !== undefined) {
-      // Split at the commas outside parentheses: a key clause has commas of its own.
-      const body = created[2]
-      let depth = 0
-      let start = 0
-      for (let at = 0; at <= body.length; at++) {
-        if (body[at] === '(') depth++
-        else if (body[at] === ')') depth--
-        else if (at === body.length || (body[at] === ',' && depth === 0)) {
-          read(created[1], body.slice(start, at))
-          start = at + 1
-        }
-      }
-      continue
-    }
-    const added = /^\s*ALTER TABLE\s+`?(\w+)`?\s+ADD(?: COLUMN)?\s+([\s\S]*)$/i.exec(sql)
-    if (added?.[1] && added[2]) read(added[1], added[2])
-  }
-  return bounded
+  return migrations
+    .flatMap((migration) => migration.statements)
+    .flatMap((sql) => {
+      const table = /^\s*(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE)\s+`?(\w+)`?/i.exec(
+        sql,
+      )?.[1]
+      if (table === undefined) return []
+      return [...sql.matchAll(/`?(\w+)`?\s+VARCHAR\((\d+)\)/gi)].map((match) => ({
+        table,
+        column: String(match[1]),
+        width: Number(match[2]),
+      }))
+    })
 }
 
 /**
