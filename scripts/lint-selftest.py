@@ -4635,6 +4635,44 @@ CITED_COMMIT_CASES = (
         says=": 2 red, 3 fix, 0 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
+        "a fix line may name the red test it turns green",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test).
+- Fixes: commit `{fix}`, which turns `{red}` green; gate after fix: the suite passed.
+""",
+        None,
+        says=": 1 red, 1 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "a red line may name the fix that answers it",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test), which commit `{fix}` turned green.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        None,
+        says=": 1 red, 1 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "a red test and its fix may share a line, the fix after a label of its own, which may be "
+        "the template's word cut short, before a colon or straight before the id",
+        """
+- Red test: commit `{red}`, run and seen failing (1 test): `the case`. Fix: commit `{fix}`.
+- Red test: commit `{later_red}`, run and seen failing (1 test). Fix `{later_fix}` (2).
+""",
+        None,
+        says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "the code a red test ran against is no red test when words stand between the word and "
+        "the id",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test) against the reviewed head `{moved}`.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        None,
+        says=": 1 red, 1 fix, 1 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
         "the whole attestation accepts a pull request whose added postmortem cites its branch",
         ONE_RED_AND_ITS_FIX,
         None,
