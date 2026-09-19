@@ -236,6 +236,9 @@ const NAMES_INTO = /\bINTO\b/i
  *   read-only transaction.
  * - The schema-version read's READ COMMITTED. Alone it would run at the session's default
  *   level, which belongs to whoever owns the pool, so it keeps its transaction.
+ * - A deadlock victim's second run. PostgreSQL aborts the victim's transaction, which for
+ *   a statement sent alone is the statement. It committed nothing, so it is run again as
+ *   any write batch is, with no ROLLBACK to send first.
  * A lock coordinate keeps the transaction too, because both kinds of lock end with it.
  */
 function sentAlone(
@@ -427,14 +430,13 @@ export class PgExecutor implements SqlExecutor {
                   : new Error('PostgreSQL rollback failed', { cause: rollbackError })
             }
           }
-          // PostgreSQL ends a deadlock by aborting one transaction, which for a statement
-          // sent alone is the statement. That batch committed nothing, so running it again
-          // is a first delivery, and the other transaction has its locks by now. Reported
-          // as an outage, a finished run would be left for the sweep to charge an
-          // infrastructure retry. Only a write batch is run again: a read batch takes no
-          // row lock, so a deadlock there is not this engine's lock order. It is run again
-          // at once, because PostgreSQL chose the victim only after `deadlock_timeout`, and
-          // a store source has no timer to wait on.
+          // PostgreSQL ends a deadlock by aborting one transaction. That batch committed
+          // nothing, so running it again is a first delivery, and the other transaction
+          // has its locks by now. Reported as an outage, a finished run would be left for
+          // the sweep to charge an infrastructure retry. Only a write batch is run again:
+          // a read batch takes no row lock, so a deadlock there is not this engine's lock
+          // order. It is run again at once, because PostgreSQL chose the victim only
+          // after `deadlock_timeout`, and a store source has no timer to wait on.
           if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
             mode !== 'read' &&

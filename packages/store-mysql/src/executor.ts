@@ -356,6 +356,9 @@ const endsInASpace = (argument: PreparedStatement['args'][number]): boolean =>
  *   cut with a note, so a write whose bound strings do not end in one cannot have a bound
  *   value cut, and any other keeps its transaction. No single write of the store stores
  *   a string it builds in SQL. A cut of one would still be reported, after it committed.
+ * - A deadlock victim's second run. InnoDB rolls the victim's transaction back, which for
+ *   a statement sent alone is the statement. It committed nothing, so it is run again as
+ *   any write batch is, with no ROLLBACK to send first.
  * A lock coordinate keeps the transaction as well.
  */
 function sentAlone(
@@ -623,14 +626,13 @@ export class MysqlExecutor implements SqlExecutor {
               )
             }
           }
-          // InnoDB ends a deadlock by rolling one transaction back, which for a statement
-          // sent alone is the statement. That batch committed nothing, so running it again
-          // is a first delivery, and the other transaction has its locks by now. Reported
-          // as an outage, a finished run would be left for the sweep to charge an
-          // infrastructure retry. Only a write batch is run again: a read batch takes no
-          // row lock, so a deadlock there is not this engine's lock order. The named lock
-          // is held across the attempts, because it was taken before the transaction and a
-          // rollback does not release it.
+          // InnoDB ends a deadlock by rolling one transaction back. That batch committed
+          // nothing, so running it again is a first delivery, and the other transaction
+          // has its locks by now. Reported as an outage, a finished run would be left for
+          // the sweep to charge an infrastructure retry. Only a write batch is run again:
+          // a read batch takes no row lock, so a deadlock there is not this engine's lock
+          // order. The named lock is held across the attempts, because it was taken before
+          // the transaction and a rollback does not release it.
           const runAgain =
             mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)
           if (!runAgain) throw error
