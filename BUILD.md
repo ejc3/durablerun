@@ -1963,7 +1963,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     SDK's derived keys to the store's refusal, which the SDK retries, so a
     step body could run on every attempt. And the store held every saga name
     to the step key, so a saga in flight under a longer key could not record
-    that its rollback ran and lost its cause.
+    that its rollback ran and lost its cause. One narrow re-review of the fold
+    found a ninth defect, which the fold had made: a step that had started and
+    never persisted was excused the width along with a memo, so under a longer
+    stored key its body ran again on every remaining attempt.
   - The conformance fixture for MySQL hashed the seed into its id namespace and
     the other two spelled it out in hexadecimal. The hashing cannot go. Measured:
     spelled out, 12 of the 50 poison target cases mint ids of 258 to 276

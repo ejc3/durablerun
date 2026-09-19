@@ -14,6 +14,16 @@ port, and every layer above the port turns a permanent refusal into something
 else: the SDK retries it, the driver swallows it, and a task in flight from
 before the rule meets it on replay. Our own machinery found none of the eight.
 
+One narrow re-review of that fold followed. It found nothing of HIGH or MEDIUM
+severity and four LOW items, and one of the four is a defect the fold made.
+The allowance that lets a key that is already stored replay also covered a
+step that had started and never persisted, and under a stored key past the
+width its body then ran again on every remaining attempt. It is finding 9,
+fixed as a red test and a fix. The other three are a missing pin, a sentence
+of the spec that was false for a child task name, and a step name echoed at
+any length into a stored failure, which is listed in the pull request's
+description.
+
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** Never "who wrote it", "should have noticed", "was careless" — those
 explain nothing and are not actionable. Always "what would have made this
@@ -65,25 +75,30 @@ check of three parent identifiers at a child spawn was held by no test.
 | 5 | No test passed an over-width parent queue, parent task id or parent run id at a child spawn | A deleted check would ship unseen, against a spec that claims a call for every place an identifier enters | The entries table of the shared conformance surface, which is typed by the port | It is typed by method. A position inside an options object is not a method, so the type is satisfied without it | The three calls, a mutation for each of the two checks a deletion can reach, and the third check removed because the stored child key already holds it (3) |
 | 7 | The spec gave an awaited child id 244 characters where the SDK gives it 243, and the SDK's own key was left to the store's refusal | The same retry as finding 1, behind a forged handle | The same as finding 1 | The same as finding 1 | The same hold as finding 1. The spec now gives both numbers. No test holds 243 (3 for the hold, none for the number) |
 | 8 | A driver id past the width was refused on every registry beat, and the beat's catch swallowed it | A driver runs and never registers, with nothing logged | The driver's construction test, whose comment says a misconfigured loop must fail at construction | The knobs it refuses are listed by hand, one at a time | The constructor holds the queue and the id, with one mutation (3) |
+| 9 | Fix-induced, by the fix for finding 2. The allowance for a key that is already stored covered a step that had started and never persisted, as well as a memo | Under a stored key past the width the body runs again on every remaining attempt, ahead of a write that can never succeed. With four attempts it ran four times | The fold's own case for a task in flight | It stored a memo. A started step with no memo is the other way a key can be already stored, and no case built one | A memo skips the hold. A started step is excused only the saga room, and is held to the width while the task runs forward (3: one case on two dialects and one mutation) |
 | 11 | The description left out that a wait on a longer event name can no longer be woken by an emit | A reader of the pull request misjudges what the rule strands | Nothing. No machine compares the description with the spec | There is no such layer | The sentence is added. No mechanism |
 
 ## Detection ledger
 
 The branch had passed every local gate before the review read it, with the
-unfiltered audit at 835 of 835. Every counted finding came from the review.
+unfiltered audit at 835 of 835, and the fold had passed them again, with the
+audit at 870 of 870, before the re-review read it. Every counted finding came
+from a reviewer.
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | The one full review: the built-in review skill at high effort with its finders and one verifier, the built-in simplify skill, and the reviewer's own probes on libSQL at the head and at the base and on MySQL 8.4 | 8 | No |
+| The one narrow re-review of the fold: the built-in review skill at high effort with one finder, and the reviewer's own probes on libSQL with the tip before the fold as the control | 1 | No |
 | This project's machinery on the reviewed head: the shared conformance surface on three dialects, the SDK suites and the replay-equivalence harness, the fault and poison matrices, the fuzz, the lints, the unfiltered mutation audit | 0 | Yes |
 
-Self-catch rate: 0 of 8, or 0% (previous round on main, PR3.9f part 1's: 0%. The previous round on this work, the MySQL store's: 0%).
+Self-catch rate: 0 of 9, or 0% (previous round on main, PR3.9f part 1's: 0%. The previous round on this work, the MySQL store's: 0%).
 
 Zero again, and for a reason that is not about effort. Every gate this change
 ran, it ran at the layer where the rule was written. The shared surface drives
 the port. The mutation audit breaks the port's checks and asks the port's
-tests. All eight findings are about what a layer above the port does with the
-port's new refusal, and no check of ours crosses that line with a name near
+tests. All eight findings of the first round are about what a layer above the
+port does with the port's new refusal, and the ninth is inside the fix for one
+of them. No check of ours crosses that line with a name near
 the width in its hand.
 
 Our machinery did catch four defects of the fold's own making before any
@@ -130,7 +145,10 @@ property that nothing an older build could have stored is broken by this one.
 A new rule over old values is not a migration, adds no column, and enrols
 nothing. The two cases this change added to that surface were written by hand,
 drove the port, and asserted `complete()`, which is why they passed while a
-task in flight failed.
+task in flight failed. Finding 9 is the same class again, inside this round.
+The fold's case for a task in flight was also written by hand, and it stored a
+memo. A started step with no memo is the other shape an older build leaves,
+and nothing enumerates the shapes.
 
 **A sentence in the spec that the code contradicts.** This recurs in most
 rounds, and no mechanism has ever been instituted against it, here included.
@@ -142,7 +160,8 @@ Each row was run against the fixed code, except where it says it was not.
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
 | The SDK holds every key where its one key builder makes it, and the builder requires what the task passed | 1 for the signature, 3 for the behaviour | A key built anywhere else is held by nothing in the SDK. Three are today: `$started:`, `$rollback:` and `$rollback-tries:` and a step's key. They are safe only because the key was held to 239 when the step was admitted. Ran, with a stored key of 240 and a rollback that throws: the saga ends failed in one pass with `rollbackTry.key is longer than the 255 characters a durable identifier holds` in place of its cause, and the whole SDK suite passes |
-| A key that is already stored is not held, so it replays | 3, one case and one mutation | "Already stored" is read from the memo and from the started steps. An await parked before the rule is stored as a wait, and is in neither. Ran, with a real emit waking the run and only the wake it carries rewritten to a 250 character event name: the woken pass fails the task at once with `event name is too long`. It is not retried, and it does not finish |
+| A key that is already stored is not held, so it replays | 3, one case and one mutation | "Already stored" is read from the memo alone. An await parked before the rule is stored as a wait, and has no memo. Ran, with a real emit waking the run and only the wake it carries rewritten to a 250 character event name: the woken pass fails the task at once with `event name is too long`. It is not retried, and it does not finish |
+| A memo skips the hold, and a started step is held to the width while the task runs forward | 3, one case and one mutation | It holds the width and not the room the step's other saga names need. Ran, with a started step under a stored key of 250, which fits the width, and a body that always throws: the body runs again, the budget ends, the rollback runs once, its record under `$rollback:` and the key is refused, and the saga ends failed with `rollbackTry.key is longer than the 255 characters a durable identifier holds` in place of its cause |
 | A saga step's key is held where the step starts, and its other saga names to the plain width | 1 for the one definition in core, 3 for what it lets a saga in flight do | It lets a saga in flight record a rollback only while `$rollback:` and the key fit. Ran at 245 and 246: at 245 the saga rolls back, outcome complete, with its cause. At 246 the rollback runs once, its record is refused, and the saga ends failed without its cause |
 | The entries table of the shared surface is typed by the port | 1 for a method, 3 for a position | The case reads the class of the error and not which check refused. Ran before the redundant check was removed: deleting the parent task id's line passed 4 of 4, because the stored child key holds that id and refused it. A new identifier inside an options object still compiles with no call here. Not run: it is a statement about a parameter that does not exist |
 | A driver holds its queue and its id when it is constructed | 3, one case and one mutation | It holds their length and nothing else. Ran: a driver id of `d`, a NUL and `x`, and one ending in a lone surrogate, both construct without complaint. PostgreSQL refuses both on every beat, and the beat's catch is unchanged |
@@ -151,24 +170,37 @@ Each row was run against the fixed code, except where it says it was not.
 
 ## Fix-induced defects
 
-None of the eight was introduced by a fix made in this round. All eight were
-in the change as the review first read it. One of them, finding 2, came from
+One of the nine. Finding 9 was introduced by the fix for finding 2, inside
+this round's fold, and the narrow re-review found it. That fix let a key that
+is already stored skip the hold, and counted a started step as stored. That is
+true of the step's start marker and false of what matters. A memo is never
+written again, and a started step's result is. The fold tested the allowance
+with a memo and with nothing else.
+
+None of the first eight was introduced by a fix made in this round. All eight
+were in the change as the review first read it. One of them, finding 2, came from
 an addition the change made beyond what it was asked for. It put the width
 into the SDK's name parser to stop a retry loop, which is the reasoning of a
 fix, and it was tested for the refusal and never for replay.
 
-The fold's own changes have not been reviewed. They were tested, by ten red
-tests, six registered mutations and five probes whose results are in the audit
-above, and one narrow re-review of the SDK's behaviour is planned. One change
-in the fold is not in the SDK, and that re-review should read it as new code:
-the store's saga key rule now holds at the start marker only, so the shared
-surface accepts a `$rollback:` name under a 240 character key that it refused
-before.
+The fold was then re-reviewed as new code, narrowly: the SDK's behaviour
+changes, with the tip before the fold as the control. That is how finding 9
+was found. The re-review also read the one change outside the SDK, the store's
+saga key rule now holding at the start marker only, and found it still bounded
+by the plain width.
+
+The fix for finding 9 has not been reviewed, and no third review is planned.
+It was tested by one red case on two dialects, by one mutation, by the
+reviewer's own probe rerun unchanged against it, and by the probe in the audit
+above.
 
 ## Evidence
 
 - Red tests: commit `1df5e17`, run and seen failing, ten tests, which are five cases on libSQL and on PostgreSQL, against `283aad4`, the head the review read once it was rebased onto main. The repeated step took three passes and ran its second body three times. The 250 character event name and the 245 character registered step each took three passes. The task in flight ended `failed` where it should complete. The saga in flight ended `failed` with `"outcome": "failed"` and without `boom`. The original change's own red is `3d61eb6`: three of four cases failed on libSQL and on PostgreSQL, and none on MySQL.
 - Fixes: commit `4a2d8c4`. Commit `2697877` holds the documented rooms, and `c667afd` records the reason the registry's self-test demanded. Gate after fix: the ten red tests pass, a filtered run caught each of the nine new and re-aimed mutations by its exact verdict at `4a2d8c4`, and the registry's self-test passed with 870 live mutations at `c667afd`. The whole gate list runs on the head that holds this document, and its table is in the pull request's description.
+- Finding 9's red test: commit `8abdcfa`, run and seen failing, two tests, which is one case on libSQL and on PostgreSQL, against `c685296`. With a stored 300 character key and four attempts the body ran four times across three retried passes, where it should run once. The same case's other half, a stored 250 character key that runs again and completes, passed before and after.
+- Finding 9's fix: commit `005041a`. Gate after fix: the case passes on both dialects, and a filtered run caught each of the ten mutations of this work that it selects, the two re-aimed at the rewritten lines and the new one among them, by its exact verdict at `005041a`. The reviewer's own probe, rerun unchanged against the fix: under the stored 300 character key the body runs once, the task fails, and the rollback runs once. Under 250 the step runs again and completes.
+- Finder of finding 9: the one narrow re-review, quoted verdict: "It found one narrow behaviour gap in the replay allowance and two LOWs. Three of the four scope items are clean." Its reproduction, quoted: "passes were `retry-scheduled, retry-scheduled, retry-scheduled, rolling-back, failed`. The body ran 4 times, then `undo`."
 - Finder: the one review, quoted verdict: "The store-level rule is sound: every entry checks the width first, and nothing can exceed MySQL's column. The defects are one layer up, in the SDK, where the new refusals land."
 - The reviewer's reproductions, quoted: "A 254-character step name used twice ran the second step's body 3 times, then failed with `checkpointName is longer...`", "With a 300-character step name, the head gives `FatalTaskError` on the first pass. The base gives `suspended`", and for the saga, "Head: the rollback handler runs once, then the result reads `rollbackTry.key is longer...` with `rollback.outcome: failed`. Base: the cause stays `boom` with `rollback.outcome: complete`."
 - The control for finding 5, run on libSQL after the three calls were added: without the parent queue's check, 1 of 4 cases fails. Without the parent run id's, 1 of 4 fails. Without the parent task id's, 4 of 4 pass.
@@ -192,6 +224,10 @@ surface and the SDK has a generated program surface, and they meet only on
 faults, which are transient by construction. A refusal that depends on the
 length of a name is permanent, and sits in neither.
 
+Finding 9 is the same cause one level in. The fold wrote an allowance for what
+an older build stored, and tested it with the one stored shape its author had
+in hand.
+
 ## Mechanisms
 
 Built in this PR:
@@ -204,6 +240,9 @@ Built in this PR:
 - Core holds a saga step's key at its start marker, in one definition (rung 1
   for the definition, rung 3 for the behaviour), with the shared surface's
   expectation on every dialect and one mutation.
+- A memo skips the SDK's hold, and a started step is held to the width while
+  the task runs forward (rung 3), with one case on two dialects and one
+  mutation.
 - A driver holds its queue and its id at construction (rung 3), with one
   mutation.
 - The shared surface passes every parent identifier of a child spawn, with a
@@ -224,6 +263,10 @@ Deferred (recorded in BUILD.md):
 A key the SDK builds outside its one key builder would ship unheld today, and
 the store's refusal of it would be retried. The saga names are three such
 keys, safe only through the step key's 239.
+
+A step that started before the rule under a stored key of 240 to 255 characters
+runs its body again, and if it then fails for good its rollback cannot be
+recorded, so the saga ends failed without its cause.
 
 A refusal the store gains tomorrow, for any reason that depends on a value a
 task passes, would reach the retry decision as an ordinary failure. Nothing
