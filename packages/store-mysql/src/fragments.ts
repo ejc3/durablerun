@@ -9,6 +9,7 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
+  firstNamePast,
 } from '@durablerun/core'
 
 /**
@@ -447,6 +448,17 @@ const namedUnder = (name: string, prefix: string): string =>
   `substr(${name}, 1, ${prefix.length}) = ${exactly(prefix)}`
 
 /**
+ * The checkpoints named under `prefix`, as a range of the key: from the prefix itself up
+ * to the first name past it. The literals are plain, and not `exactly`. A column compares
+ * in its own collation, which is binary, so the range is byte for byte as it stands and
+ * holds exactly the names `namedUnder` admits. A binary operand would stop the key from
+ * serving it: measured on 8.4, the cast reads the same rows by an index lookup on the
+ * task alone, which walks every checkpoint the task has.
+ */
+const rangeUnder = (column: string, prefix: string): string =>
+  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`
+
+/**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
  * a rollback's checkpoint is written only once the saga began, and any other only before.
  */
@@ -485,7 +497,7 @@ const rollbackRan = (marker: string, prefix: string): string =>
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
-             AND ${namedUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND ${rangeUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
              AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
 
 /**
@@ -507,11 +519,16 @@ export const rollbackOutcome = (task: string): string =>
  * followed it and became the task's last run, so the record of an attempt that ended
  * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
  * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
- * task-result statement names both values, so neither carries an alias here.
+ * records are read only for a failed task whose saga began. A rollback's failure ends
+ * its task as failed, so no other task has a halt to name, and the result read of a
+ * plain task touches no attempt record. The task-result statement names both values, so
+ * neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
-  `SELECT st.state FROM checkpoints st
-     WHERE st.task_id = ${task}.task_id
-       AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
-       AND st.owner_run_id = ${task}.last_attempt_run
-     ORDER BY st.checkpoint_name LIMIT 1`
+  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}
+        THEN (SELECT st.state FROM checkpoints st
+               WHERE st.task_id = ${task}.task_id
+                 AND ${rangeUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
+                 AND st.owner_run_id = ${task}.last_attempt_run
+               ORDER BY st.checkpoint_name LIMIT 1)
+   END`

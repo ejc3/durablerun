@@ -16,6 +16,7 @@ import {
   decodeRollbackTry,
   encodeRollbackTry,
   encodeTaskOutcome,
+  firstNamePast,
 } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { childTaskViolations } from './child-tasks.js'
@@ -1011,6 +1012,33 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
     // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
     // that dies is recovered by the lease story like any run, and the pass that follows
     // finds what ran and carries on from there.
+    // The names under a reserved prefix are read as a range of the checkpoints key where a
+    // name compares by its bytes, and by a test of each name where it does not. Either
+    // way the names beside that range are no start marker: the prefix in another case,
+    // the prefix without its colon, the name just below the range, and the first past it.
+    it('owes no rollback to a name that only looks like a start marker', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}')
+      const run = await claimActivated(f.store, Q, 'w-forward')
+      for (const name of [
+        startMarker('a').toUpperCase(),
+        SAGA_STARTED_PREFIX.slice(0, -1),
+        `${SAGA_STARTED_PREFIX.slice(0, -1)}9`,
+        firstNamePast(SAGA_STARTED_PREFIX),
+      ]) {
+        await checkpointOwned(f.store, Q, run, name, '1', 60)
+      }
+      expect(
+        {
+          failed: await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null),
+          result: await f.store.getTaskResult(Q, spawned.taskId),
+        },
+        'mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix',
+      ).toEqual({
+        failed: { rollingBack: false },
+        result: { state: 'failed', failureReasonJson: CAUSE },
+      })
+    })
+
     it('resumes a rollback pass that died where it died', async () => {
       const { taskId, pass } = await rollingBack(f, ['a', 'b'])
       await checkpointOwned(f.store, Q, pass, rollbackOf('b'), 'null', 60)

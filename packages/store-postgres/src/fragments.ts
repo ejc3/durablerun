@@ -466,7 +466,13 @@ const rollbackRan = (marker: string, prefix: string): string =>
              AND sr.checkpoint_name = '${SAGA_ROLLBACK_PREFIX}'
                || substr(${marker}.checkpoint_name, ${prefix.length + 1}))`
 
-/** A registered step of the task started, and its rollback has not run. */
+/**
+ * A registered step of the task started, and its rollback has not run. The start markers
+ * are found by a test of each name among the task's own checkpoints. The other two
+ * stores read them as a range of the key, and this one must not: a name here compares
+ * and orders under the database's collation, and under a linguistic one the names that
+ * begin `$started:` are not the names from `$started:` to `$started;` (DESIGN.md §3.4).
+ */
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
@@ -492,11 +498,16 @@ export const rollbackOutcome = (task: string): string =>
  * followed it and became the task's last run, so the record of an attempt that ended
  * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
  * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
- * task-result statement names both values, so neither carries an alias here.
+ * records are read only for a failed task whose saga began. A rollback's failure ends
+ * its task as failed, so no other task has a halt to name, and the result read of a
+ * plain task touches no attempt record. The task-result statement names both values, so
+ * neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
-  `SELECT st.state FROM checkpoints st
-     WHERE st.task_id = ${task}.task_id
-       AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
-       AND st.owner_run_id = ${task}.last_attempt_run
-     ORDER BY st.checkpoint_name LIMIT 1`
+  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}
+        THEN (SELECT st.state FROM checkpoints st
+               WHERE st.task_id = ${task}.task_id
+                 AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
+                 AND st.owner_run_id = ${task}.last_attempt_run
+               ORDER BY st.checkpoint_name LIMIT 1)
+   END`
