@@ -1405,8 +1405,74 @@ def tree_store(text_statement: str, fragment: str) -> dict[str, str]:
     )
 
 
+def tree_store_sending_a_constant(text: str) -> dict[str, str]:
+    """A store file that builds a tree, and sends by a listed raw batch text written outside the call."""
+    return store(
+        "import { FencedBatch } from '@durablerun/core'\n"
+        f"const TEXT = `{text}`\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    return new FencedBatch('claim', token(), {})\n"
+        "  }\n"
+        "  async text() {\n"
+        "    await this.db.batch('expire-lease-now', [{ sql: TEXT, args: [] }])\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def tree_store_with_a_typed_fragment(fragment: str) -> dict[str, str]:
+    """A store file whose tree-built statement carries a fragment typed in place."""
+    return store(
+        "import { FencedBatch, sqlFragment } from '@durablerun/core'\n"
+        "export class S {\n"
+        "  async transition() {\n"
+        "    const b = new FencedBatch('claim', token(), {})\n"
+        f"    b.casTree('claim', claimCas({{ liveTask: sqlFragment(`{fragment}`) }}))\n"
+        "    return b\n"
+        "  }\n"
+        "}\n"
+    )
+
+
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
+    (
+        "clock-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET claim_expires_at_ms = unixepoch() * 1000 WHERE run_id = ?"
+        ),
+        "raw wall-clock function in store SQL",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET x = 1 WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.cancel_at_ms <= 5)"
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_sending_a_constant(
+            "UPDATE runs SET x = 1 WHERE state IN ('pending', 'running')"
+        ),
+        "raw state list outside fragments.ts",
+        "text a listed raw batch sends is read wherever in the file it is written",
+    ),
+    (
+        "fragment-lint.py",
+        tree_store_with_a_typed_fragment("t.state IN ${LIVE} AND t.cancel_at_ms < ${NOW}"),
+        "cancellation-deadline comparison outside fragments.ts",
+        "no tree rule reads a comparison typed into a fragment, so this lint must",
+    ),
+    (
+        "clock-lint.py",
+        tree_store_with_a_typed_fragment("r.claim_expires_at_ms < unixepoch() * 1000"),
+        "raw wall-clock function in store SQL",
+        "a clock call typed into a fragment is refused at build time, before any test builds the statement",
+    ),
     (
         "clock-lint.py",
         tree_store("UPDATE runs SET claim_expires_at_ms = NOW()", "x = 1"),
