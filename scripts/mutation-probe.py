@@ -12900,7 +12900,7 @@ MUTATION_SPECS.extend(
             "sdk-durable-key-held-before-the-body-runs",
             "packages/sdk/src/context.ts",
             "    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)\n",
-            "    // MUTATION: the key is not held\n",
+            "    requireRoom(what, key, started ? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER) // MUTATION: no key is held\n",
             "a name that fits is stored under a key that does not, every store refuses it on every pass, and the step's body runs again on each retry until the budget is gone",
         ),
         (
