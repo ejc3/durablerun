@@ -2,6 +2,7 @@ import { LibsqlExecutor, LibsqlSchedulerStore, MIGRATIONS } from '@durablerun/st
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
+import { refusalName } from '../src/scenario.js'
 
 /**
  * Rows an OLDER SCHEMA VERSION wrote.
@@ -336,13 +337,8 @@ describe('names stored before an identifier had a width', () => {
       ])
 
       const read = await f.store.getCheckpoints(Q, spawned.taskId, run.attempt)
-      const refusal = (call: Promise<unknown>) =>
-        call.then(
-          () => 'accepted',
-          (error: unknown) => (error instanceof Error ? error.name : String(error)),
-        )
-      const respawn = await refusal(f.store.spawn(Q, 'job', '{}', { idempotencyKey: longKey }))
-      const rewrite = await refusal(
+      const respawn = await refusalName(f.store.spawn(Q, 'job', '{}', { idempotencyKey: longKey }))
+      const rewrite = await refusalName(
         f.store.setCheckpoint(Q, spawned.taskId, run.runId, run.claimToken, longStep, '2', 60),
       )
       await f.store.complete(Q, run.runId, run.claimToken, '"done"')
@@ -374,16 +370,11 @@ describe('names stored before an identifier had a width', () => {
         { sql: 'UPDATE tasks SET queue = ? WHERE task_id = ?', args: [longQueue, spawned.taskId] },
         { sql: 'UPDATE runs SET queue = ? WHERE task_id = ?', args: [longQueue, spawned.taskId] },
       ])
-      const refusal = (call: Promise<unknown>) =>
-        call.then(
-          () => 'accepted',
-          (error: unknown) => (error instanceof Error ? error.name : String(error)),
-        )
       const reached = {
-        claim: await refusal(f.store.claim(longQueue, 'w1', { leaseSeconds: 60, limit: 1 })),
-        sweep: await refusal(f.store.sweep(longQueue, 10)),
-        getTaskResult: await refusal(f.store.getTaskResult(longQueue, spawned.taskId)),
-        cancelTask: await refusal(f.store.cancelTask(longQueue, spawned.taskId)),
+        claim: await refusalName(f.store.claim(longQueue, 'w1', { leaseSeconds: 60, limit: 1 })),
+        sweep: await refusalName(f.store.sweep(longQueue, 10)),
+        getTaskResult: await refusalName(f.store.getTaskResult(longQueue, spawned.taskId)),
+        cancelTask: await refusalName(f.store.cancelTask(longQueue, spawned.taskId)),
       }
       const [rows] = await f.raw.batch(
         'legacy-long-queue-read',

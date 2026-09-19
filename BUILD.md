@@ -1930,24 +1930,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that one transition, so the class is expected again until the surface is
     generated.
 
-## Phase 5 — operations + sharding
-
 - **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
   item of PR4.3: the engine behaves identically on every dialect, so the 255
   character width that only MySQL enforced is a rule of core (DESIGN.md §3.4
   rule 10). `IDENTIFIER_CHARACTERS` and `requireIdentifiersFit` live in core,
   counted in Unicode code points. Every entry of all three stores calls it
   first, the stored child key is held inside `spawnIdempotencyKey`, an awaited
-  child id through `EventName.awaitedTaskDone`, and a saga step key through
-  core's `requireSagaStepFits`. The MySQL store's own `requireIndexable`,
-  `requireSagaStepFits`, and width constant are deleted, and its schema imports
-  the width. The executor's refusal of error 1406 and of a cut write stays,
-  because it guards the column. The SDK's `UserName.parse` holds the same
-  width, so a longer step or event name fails its task for good. The
-  MySQL-only unit test became the shared `identifier-bound` conformance
-  surface, which libSQL and PostgreSQL failed before the fix. Rows written
-  before the rule are left alone, and what that means is in rule 10 and held
-  by two cases in `legacy-rows.test.ts`.
+  child id through `EventName.awaitedTaskDone`, and a saga step key, where the
+  step starts, through core's `requireSagaStepFits`. The MySQL store's own
+  `requireIndexable`, `requireSagaStepFits`, and width constant are deleted,
+  and its schema imports the width. The executor's refusal of error 1406 and
+  of a cut write stays, because it guards the column. The SDK holds each key
+  it builds (`name#<count>`, `$await:`, `$await-task:`, `$spawn:`, and a
+  registered step's saga key) where it builds it and after the memo lookup, so
+  a key past its room fails the task for good before the body runs, and a key
+  that is already stored still replays. A driver holds its queue and its id
+  when it is constructed. The MySQL-only unit test became the shared
+  `identifier-bound` conformance surface, which libSQL and PostgreSQL failed
+  before the fix. Rows written before the rule are left alone, and what that
+  means, including what still breaks, is in rule 10.
+  - The review found one root with three faces, recorded in
+    `postmortems/pr4.5-identifier-width-review.md`. The first version held the
+    width in the SDK's name parser, which runs ahead of the memo lookup, so a
+    task in flight under a stored longer name failed for good. It left the
+    SDK's derived keys to the store's refusal, which the SDK retries, so a
+    step body could run on every attempt. And the store held every saga name
+    to the step key, so a saga in flight under a longer key could not record
+    that its rollback ran and lost its cause.
   - The conformance fixture for MySQL hashed the seed into its id namespace and
     the other two spelled it out in hexadecimal. The hashing cannot go. Measured:
     spelled out, 12 of the 50 poison target cases mint ids of 258 to 276
@@ -1961,6 +1970,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (`fixture-id-namespace.ts`): spelled out when the ids leave 64 characters of
     room in the width, hashed when they would not, so no fixture mints an id the
     contract says cannot exist.
+  - An option, not built: a check that finds rows whose names pass the width,
+    a stranded queue above all. The invariant library derives and pins its
+    inventory of conditions, so a width probe there is a new family of
+    conditions with its own enrollment, and no database anyone has observed
+    holds such a row.
+
+## Phase 5 — operations + sharding
+
 - **PR5.1 registry + fan-out**: status semantics (active/draining/paused),
   routing with versioned cache, multi-shard tick fan-out, driver adoption caps.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics

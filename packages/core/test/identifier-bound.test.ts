@@ -97,7 +97,7 @@ describe('the width of a durable identifier', () => {
     )
   })
 
-  it('holds every saga name of a step to the key the longest prefix allows', () => {
+  it('holds a step key to 239 characters where the step starts, and leaves its other saga names to the plain width', () => {
     const outcome = (name: unknown) => {
       try {
         requireSagaStepFits('checkpointName', name)
@@ -115,7 +115,7 @@ describe('the width of a durable identifier', () => {
     expect({
       ...outcomes,
       'the phase marker': outcome(SAGA_PHASE_CHECKPOINT),
-      // A name that is not a saga's is held to the plain width by the entry, not here.
+      // Every name but a start marker is held to the plain width by the entry, not here.
       'a plain name of 300': outcome('k'.repeat(300)),
       'not a string': outcome(undefined),
     }).toEqual({
@@ -123,10 +123,10 @@ describe('the width of a durable identifier', () => {
       '$started:<240>': 'refused',
       '$started:<239 pairs>': 'accepted',
       '$rollback:<239>': 'accepted',
-      '$rollback:<240>': 'refused',
+      '$rollback:<240>': 'accepted',
       '$rollback:<239 pairs>': 'accepted',
       '$rollback-tries:<239>': 'accepted',
-      '$rollback-tries:<240>': 'refused',
+      '$rollback-tries:<240>': 'accepted',
       '$rollback-tries:<239 pairs>': 'accepted',
       'the phase marker': 'accepted',
       'a plain name of 300': 'accepted',

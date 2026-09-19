@@ -1687,46 +1687,87 @@ are load-bearing):
    entry of the port holds every identifier it is passed to the width first,
    before any statement is sent, and refuses a longer one with
    `InvalidDurableStringError`, whatever the excess is, trailing spaces
-   included. A task name, a claim token, and a payload are not identifiers:
-   nothing indexes them and nothing bounds their length. The SDK holds a name
-   a task passes to the same width where it parses it, so a longer one fails
-   the task for good and is never retried.
+   included. A driver holds its queue and its id the same way when it is
+   constructed, because a refused tick reads as an outage and a refused
+   registry beat is swallowed. A task name, a claim token, and a payload are
+   not identifiers: nothing indexes them, and the port does not bound their
+   length. A child's task name is still bounded through `ctx.spawn`, which
+   stores the spawn under a key built from the name (below).
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,
    and the refusal names what the caller passed and never the derived name.
-   - An awaited child task id holds 244 characters, because its completion
-     event name, `$task-done:` and the id, must fit.
-   - A `ctx.spawn` replay key is held as the child key that is stored:
+   - An awaited child task id holds 244 characters at the port, because its
+     completion event name, `$task-done:` and the id, must fit.
+   - A child spawn's replay key is held as the child key that is stored:
      `$spawn:`, the length of the parent task id, the id, the replay key, and
      two colons. Under a 36-character parent id that leaves 208 characters.
+     The parent's task id is held through that key, and the parent's queue and
+     run id are held on their own.
    - A registered saga step's key holds 239 characters (§3.10). A step's
      checkpoints are named by a prefix and its key, and the longest prefix is
-     `$rollback-tries:`, 16 characters. Every saga name of a step is held to
-     that key, at the three entries that carry a checkpoint name
-     (`setCheckpoint`, `suspendRun`, `failRollback`), and not only the name
-     being written: a step registers under its shortest name, `$started:`, so
-     a key of 240 to 246 characters would start, and the batch that fails its
-     rollback could never store the attempt record.
-   - A repeated step name is stored as `name#<count>`, a checkpoint name like
-     any other, and is held to the width at the write.
+     `$rollback-tries:`, 16 characters. The key is held where the step starts:
+     a start marker, `$started:` and the key, is refused past 239 at the
+     entries that carry a checkpoint name. `$started:` is the shortest of the
+     saga names, so a key held only to the width there, 240 to 246 characters,
+     would start, and the batch that fails its rollback could never store the
+     attempt record. A step's other saga names are held to the plain width,
+     like any checkpoint name. A step that started under this rule has room
+     for them, and one that started before it must still be able to record
+     that its rollback ran (below).
+
+   The SDK stores a task's names under keys of its own, and holds each key
+   where it builds it, to the same constant. A repeated step name is
+   `name#<count>`, an await is `$await:` and the event name, a child await is
+   `$await-task:` and the child's id, a spawn is `$spawn:` and the child's task
+   name, and a step that registers a rollback has the 239 of its saga key. So
+   through the SDK an awaited event name holds 248 characters. An awaited
+   child id holds 243, one fewer than at the port, because the SDK's prefix is
+   one longer. A child task name holds 201 on the first spawn from a call site
+   under a 36-character parent id, which is what the stored child key leaves
+   its replay key. An emitted event name has no key and is held as it is. A
+   key past its room fails the task for good, with a `FatalTaskError` that
+   names what the task passed, before the step's body runs and before any
+   store call, and it is never retried. The store's own refusal would be
+   retried: the SDK reads it as an ordinary failure, so every earlier side
+   effect would run again on each attempt until the budget was gone.
 
    The rule is held on the way in, and nothing rewrites a row. A row written
    before the rule can hold a longer name only on libSQL or PostgreSQL, since
-   MySQL never could. A name the engine only hands back stays readable: a
-   longer idempotency key or checkpoint name is returned by a read, and its
-   task still finishes. A name a caller must pass again is refused like any
-   other. A longer idempotency key is no longer deduplicated, a longer
-   checkpoint name cannot be written again, a wait on a longer event name can
-   no longer be woken by an emit, and a task in a longer queue is out of the
-   port's reach, because claim, sweep, read, and cancel all refuse its queue,
-   until its rows are renamed in SQL. `legacy-rows.test.ts` holds the readable
-   case and the queue case. The `identifier-bound` conformance surface holds
-   the rest on every dialect: a table typed by the port, so a method without an
-   entry does not compile, with a call for each place an identifier enters each
-   method, refused before anything is sent; the code point count; each derived
-   name at its last fitting length and one past it; and the longest names that
-   fit, stored and read back exactly as they were passed.
+   MySQL never could. What is already stored still works where the engine
+   hands it back, and is refused where a caller must pass it in again.
+   - A key that is already stored, as a memo or as a started step, replays.
+     The SDK looks the memo up before it holds a key, so a task in flight
+     under a longer step name finishes. A read returns a longer checkpoint
+     name, and the port's `complete` still ends the task.
+   - A saga in flight under a step key of 240 to 245 characters still rolls
+     back, records that each rollback ran, and ends with the failure that
+     began it. It cannot record a rollback that fails, because the attempt
+     record, `$rollback-tries:` and the key, is past the width: such a saga
+     ends failed in one pass, with a failed rollback outcome and the store's
+     refusal in place of its cause. Under a key of 246 it cannot record a
+     rollback at all.
+   - An await parked under a key past the width, which takes an event name
+     past 248, cannot record its wake, so its task fails for good when it
+     wakes.
+   - A longer idempotency key is no longer deduplicated, a longer checkpoint
+     name cannot be written again, and a wait on a longer event name can no
+     longer be woken by an emit.
+   - A task in a longer queue is out of the port's reach, because claim,
+     sweep, read, and cancel all refuse its queue, until its rows are renamed
+     in SQL. Nothing detects such rows: no invariant and no admin check reads
+     the length of a name.
+
+   Three things hold this. The `identifier-bound` conformance surface runs on
+   every dialect: a table typed by the port, so a method without an entry does
+   not compile, with a call for each place an identifier enters each method,
+   refused before anything is sent; the code point count; each derived name at
+   its last fitting length and one past it; and the longest names that fit,
+   stored and read back exactly as they were passed.
+   `packages/sdk/test/identifier-width.test.ts` runs on libSQL and PostgreSQL:
+   each SDK key one past its room fails its task on the first pass, and the
+   task and the saga in flight finish. Two cases in `legacy-rows.test.ts` hold
+   the readable row and the unreachable queue at the port.
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,

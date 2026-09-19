@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto'
 import { IDENTIFIER_CHARACTERS } from '@durablerun/core'
 
-/** What the test id source puts after the namespace: `-id-` and six digits. */
-const ID_SUFFIX_CHARACTERS = 10
 /**
- * The room an id leaves in the width for the names the engine derives from it, the
- * longest of which is a stored child key: `$spawn:`, a length, the parent id, a colon,
+ * The longest namespace that is spelled out: the width, less the `-id-000001` the test id
+ * source appends, less 64 characters of room for the names the engine derives from an id.
+ * The longest of those is a stored child key: `$spawn:`, a length, the parent id, a colon,
  * and the replay key.
  */
-const DERIVED_NAME_ROOM = 64
+const SPELLED_NAMESPACE_CAP = IDENTIFIER_CHARACTERS - '-id-000001'.length - 64
 
 /**
  * The id namespace a conformance fixture gives its test id source, the same on every
@@ -24,9 +23,7 @@ export function conformanceIdNamespace(seed: number | string): string {
     .map((character) => character.codePointAt(0)?.toString(16))
     .join('_')
   const namespace = `conformance-${spelled || 'empty'}`
-  if (namespace.length + ID_SUFFIX_CHARACTERS + DERIVED_NAME_ROOM <= IDENTIFIER_CHARACTERS) {
-    return namespace
-  }
+  if (namespace.length <= SPELLED_NAMESPACE_CAP) return namespace
   const digest = createHash('sha256').update(String(seed)).digest('hex').slice(0, 24)
   return `conformance-h-${digest}`
 }

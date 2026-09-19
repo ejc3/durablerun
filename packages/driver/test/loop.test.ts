@@ -1,4 +1,4 @@
-import { LaunchOutcome } from '@durablerun/core'
+import { InvalidDurableStringError, LaunchOutcome } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -287,6 +287,15 @@ describe('DriverLoop review regressions', () => {
     ).toThrow(RangeError)
     // An empty driver id becomes a '' primary-key row.
     expect(() => new DriverLoop(deps, { ...OPTS, driverId: '' })).toThrow(RangeError)
+    // A queue or a driver id past the width is refused by every store call, which the tick
+    // reads as an outage and the registry beat swallows.
+    expect(
+      () => new DriverLoop(deps, { ...OPTS, driverId: 'd'.repeat(256) }),
+      'mutation-verdict:construction:driver-holds-its-identifiers-at-construction',
+    ).toThrow(InvalidDurableStringError)
+    expect(() => new DriverLoop(deps, { ...OPTS, queue: 'q'.repeat(256) })).toThrow(
+      InvalidDurableStringError,
+    )
     // A registry interval whose doubled TTL fails downstream validation
     // must fail HERE, not silently on every beat.
     expect(() => new DriverLoop(deps, { ...OPTS, registryIntervalSeconds: 2_000_000_000 })).toThrow(

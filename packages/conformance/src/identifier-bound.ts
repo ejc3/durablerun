@@ -8,10 +8,10 @@ import {
   childSpawnKey,
   encodeRollbackTry,
 } from '@durablerun/core'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { checkpointOwned, claimActivated, refusalName } from './scenario.js'
+import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
 /**
  * A durable identifier holds 255 characters, counted in Unicode code points, on every
@@ -37,13 +37,22 @@ function storeOverRecorder(f: StoreFixture) {
 
 type Entry = (s: SchedulerStore, id: string) => Promise<unknown>[]
 
+/** A parent as a child spawn names it. Each identifier in it enters the port too. */
+const PARENT = { parentQueue: 'q', parentTaskId: 'p', runId: 'r', claimToken: 'c', replayKey: 'k' }
+
 /**
  * For every method of the port, one call for each place an identifier enters it. The
  * type makes a port method with no entry here a compile error, so a new method cannot
  * arrive unchecked.
  */
 const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
-  spawn: (s, id) => [s.spawn(id, 't', '{}'), s.spawn('q', 't', '{}', { idempotencyKey: id })],
+  spawn: (s, id) => [
+    s.spawn(id, 't', '{}'),
+    s.spawn('q', 't', '{}', { idempotencyKey: id }),
+    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentQueue: id } }),
+    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentTaskId: id } }),
+    s.spawn('q', 't', '{}', { childOf: { ...PARENT, runId: id } }),
+  ],
   claim: (s, id) => [s.claim(id, 'w', { leaseSeconds: 30, limit: 1 })],
   activate: (s, id) => [s.activate(id, 'r', 'c', 1), s.activate('q', id, 'c', 1)],
   claimedTaskName: (s, id) => [
@@ -110,7 +119,7 @@ async function refusalsAtEveryEntry(
   return refusals
 }
 
-/** What one call answered over the recorder: its error, or 'accepted', and the batches sent. */
+/** What one call answered over the recorder: its error, or 'accepted', and whether anything was sent. */
 async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<unknown>) {
   const { store, reached } = storeOverRecorder(f)
   const outcome = await call(store).then(
@@ -120,7 +129,7 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
   return {
     refused: outcome instanceof Error && outcome.name === REFUSED,
     message: String(outcome),
-    sent: reached.length,
+    sent: reached.length > 0,
   }
 }
 
@@ -129,11 +138,13 @@ export function identifierBoundConformance(
   makeFixture: StoreFixtureFactory,
 ): void {
   describe(`identifier bound conformance [${dialect}]`, () => {
+    // The first three cases send nothing, because their stores sit over a recorder. They
+    // share one fixture, and it is not migrated: only its store constructor is used.
     let f: StoreFixture
-    beforeEach(async () => {
-      f = await makeFixture('identifier-bound')
+    beforeAll(async () => {
+      f = await makeFixture('identifier-bound', { migrate: false })
     })
-    afterEach(async () => {
+    afterAll(async () => {
       await f.close()
     })
 
@@ -183,8 +194,8 @@ export function identifierBoundConformance(
           }),
         )
       // A step's saga names are a prefix and its key, and the longest prefix,
-      // `$rollback-tries:`, is 16 characters, so a key holds 239. Every saga name is held to
-      // that key: a step registers under its shortest name, `$started:`, and a key that fit
+      // `$rollback-tries:`, is 16 characters, so a key holds 239. The key is held where the
+      // step starts, under `$started:`, which is the shortest of its names: a key that fit
       // only there would start and could never have a failed rollback recorded.
       const sagaEntries: Record<string, (s: SchedulerStore, key: string) => Promise<unknown>> = {
         'checkpointName, as a start marker': (s, key) =>
@@ -209,29 +220,30 @@ export function identifierBoundConformance(
           outcomes[field] = {
             refused: outcome.refused,
             namesIt: outcome.message.includes(field.split(',')[0] ?? field),
-            sent: outcome.sent > 0,
+            sent: outcome.sent,
           }
         }
         return outcomes
       }
       const fits = { refused: false, sent: true }
+      const refusedNamingIt = { refused: true, namesIt: true, sent: false }
       const childFits = await awaited('x'.repeat(244))
       const childTooLong = await awaited('x'.repeat(245))
       const keyFits = await spawned('k'.repeat(208))
       const keyTooLong = await spawned('k'.repeat(209))
       expect(
         {
-          childFits: { refused: childFits.refused, sent: childFits.sent > 0 },
+          childFits: { refused: childFits.refused, sent: childFits.sent },
           childTooLong: {
             refused: childTooLong.refused,
-            sent: childTooLong.sent > 0,
+            sent: childTooLong.sent,
             namesTheChild: childTooLong.message.includes('childTaskId'),
             namesTheEvent: childTooLong.message.includes('eventName'),
           },
-          keyFits: { refused: keyFits.refused, sent: keyFits.sent > 0 },
+          keyFits: { refused: keyFits.refused, sent: keyFits.sent },
           keyTooLong: {
             refused: keyTooLong.refused,
-            sent: keyTooLong.sent > 0,
+            sent: keyTooLong.sent,
             namesTheReplayKey: keyTooLong.message.includes('replayKey'),
             namesAnIdempotencyKey: keyTooLong.message.includes('idempotencyKey'),
           },
@@ -240,7 +252,7 @@ export function identifierBoundConformance(
           // A name that is not a saga's is held to the plain width and nothing less.
           plainCheckpoint: await outcomeOf(f, (s) =>
             s.setCheckpoint('q', 't', 'r', 'c', 'k'.repeat(WIDTH), '0', 30),
-          ).then(({ refused, sent }) => ({ refused, sent: sent > 0 })),
+          ).then(({ refused, sent }) => ({ refused, sent })),
         },
         'mutation-verdict:behavior:derived-names-held-to-the-identifier-width',
       ).toEqual({
@@ -256,130 +268,132 @@ export function identifierBoundConformance(
         sagaFits: Object.fromEntries(
           Object.keys(sagaEntries).map((field) => [field, { ...fits, namesIt: false }]),
         ),
-        sagaTooLong: Object.fromEntries(
-          Object.keys(sagaEntries).map((field) => [
-            field,
-            { refused: true, namesIt: true, sent: false },
-          ]),
-        ),
+        sagaTooLong: {
+          'checkpointName, as a start marker': refusedNamingIt,
+          // A rollback record is held to the plain width and not to the key: a step that
+          // started before the rule, under a longer key, must still be able to record that
+          // its rollback ran.
+          'checkpointName, as a rollback record': { ...fits, namesIt: false },
+          'checkpoint.key': refusedNamingIt,
+          // `$rollback-tries:` and 240 characters are 256, which the plain width refuses.
+          'rollbackTry.key': refusedNamingIt,
+        },
         plainCheckpoint: fits,
       })
     })
 
-    it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', async () => {
-      // Four-byte characters, so the widest value a dialect has to index is what is stored.
-      const queue = '\u{1F600}'.repeat(WIDTH)
-      const childQueue = 'c'.repeat(WIDTH)
-      const idempotencyKey = '\u{1F511}'.repeat(WIDTH)
-      const eventName = '\u{1F4E3}'.repeat(WIDTH)
-      const stepName = 's'.repeat(WIDTH)
-      const checkpointName = 'p'.repeat(WIDTH)
-      const stepKey = 'k'.repeat(239)
+    it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', () =>
+      // The one case that reads and writes, so it has a migrated fixture of its own.
+      withFixture(makeFixture, 'identifier-bound-round-trip', async (live) => {
+        // Four-byte characters, so the widest value a dialect has to index is what is stored.
+        const queue = '\u{1F600}'.repeat(WIDTH)
+        const childQueue = 'c'.repeat(WIDTH)
+        const idempotencyKey = '\u{1F511}'.repeat(WIDTH)
+        const eventName = '\u{1F4E3}'.repeat(WIDTH)
+        const stepName = 's'.repeat(WIDTH)
+        const checkpointName = 'p'.repeat(WIDTH)
+        const stepKey = 'k'.repeat(239)
 
-      const spawned = await f.store.spawn(queue, 'job', '{}', { idempotencyKey })
-      const again = await f.store.spawn(queue, 'job', '{}', { idempotencyKey })
-      const first = await claimActivated(f.store, queue, 'w-first')
-      // The await registers and parks the run, so the step and the event are stored as
-      // the wait's names, and the emit hands both back through the next claim.
-      const awaited = await f.store.awaitEvent(
-        queue,
-        first.taskId,
-        first.runId,
-        first.claimToken,
-        stepName,
-        eventName,
-        null,
-      )
-      await f.store.emitEvent(queue, eventName, '{"x":1}')
-      const run = await claimActivated(f.store, queue, 'w-forward')
-      await checkpointOwned(f.store, queue, run, checkpointName, '1', 60)
+        const spawned = await live.store.spawn(queue, 'job', '{}', { idempotencyKey })
+        const again = await live.store.spawn(queue, 'job', '{}', { idempotencyKey })
+        const first = await claimActivated(live.store, queue, 'w-first')
+        // The await registers and parks the run, so the step and the event are stored as
+        // the wait's names, and the emit hands both back through the next claim.
+        const awaited = await live.store.awaitEvent(
+          queue,
+          first.taskId,
+          first.runId,
+          first.claimToken,
+          stepName,
+          eventName,
+          null,
+        )
+        await live.store.emitEvent(queue, eventName, '{"x":1}')
+        const run = await claimActivated(live.store, queue, 'w-forward')
+        await checkpointOwned(live.store, queue, run, checkpointName, '1', 60)
 
-      // The stored child key holds the parent task id as well, so the room left for the
-      // replay key is measured against the key as the engine builds it.
-      const room = WIDTH - [...childSpawnKey(spawned.taskId, '')].length
-      const childOf = {
-        parentQueue: queue,
-        parentTaskId: spawned.taskId,
-        runId: run.runId,
-        claimToken: run.claimToken,
-      }
-      const child = await f.store.spawn(childQueue, 'child', '{}', {
-        childOf: { ...childOf, replayKey: 'r'.repeat(room) },
-      })
-      const oneMore = await refusalName(
-        f.store.spawn(childQueue, 'child', '{}', {
-          childOf: { ...childOf, replayKey: 'r'.repeat(room + 1) },
-        }),
-      )
+        // The stored child key holds the parent task id as well, so the room left for the
+        // replay key is measured against the key as the engine builds it.
+        const room = WIDTH - [...childSpawnKey(spawned.taskId, '')].length
+        const childOf = {
+          parentQueue: queue,
+          parentTaskId: spawned.taskId,
+          runId: run.runId,
+          claimToken: run.claimToken,
+        }
+        const child = await live.store.spawn(childQueue, 'child', '{}', {
+          childOf: { ...childOf, replayKey: 'r'.repeat(room) },
+        })
+        const oneMore = await refusalName(
+          live.store.spawn(childQueue, 'child', '{}', {
+            childOf: { ...childOf, replayKey: 'r'.repeat(room + 1) },
+          }),
+        )
 
-      // A registered step under the longest key, taken through a rollback that fails for
-      // good, which writes all three of its saga names.
-      await checkpointOwned(f.store, queue, run, `${SAGA_STARTED_PREFIX}${stepKey}`, '1', 60)
-      await f.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
-      const pass = await claimActivated(f.store, queue, 'w-pass')
-      await f.store.failRollback(queue, pass.runId, pass.claimToken, CAUSE, null, {
-        key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-        stateJson: encodeRollbackTry({ tries: 1, errorJson: CAUSE }),
-      })
+        // A registered step under the longest key, taken through a rollback that fails for
+        // good, which writes all three of its saga names.
+        await checkpointOwned(live.store, queue, run, `${SAGA_STARTED_PREFIX}${stepKey}`, '1', 60)
+        await live.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
+        const pass = await claimActivated(live.store, queue, 'w-pass')
+        await live.store.failRollback(queue, pass.runId, pass.claimToken, CAUSE, null, {
+          key: `${SAGA_TRIES_PREFIX}${stepKey}`,
+          stateJson: encodeRollbackTry({ tries: 1, errorJson: CAUSE }),
+        })
 
-      const [tasks, events, checkpoints] = await f.raw.batch(
-        'identifier-bound-readback',
-        [
-          { sql: 'SELECT task_id, queue, idempotency_key FROM tasks ORDER BY task_id', args: [] },
-          { sql: 'SELECT queue, event_name FROM events WHERE event_name = ?', args: [eventName] },
-          {
-            sql: 'SELECT checkpoint_name FROM checkpoints WHERE task_id = ? ORDER BY checkpoint_name',
-            args: [spawned.taskId],
-          },
-        ],
-        'read',
-      )
-      const read = await f.store.getCheckpoints(queue, spawned.taskId, pass.attempt)
-      expect({
-        replayFindsTheTask: again.taskId === spawned.taskId && !again.created,
-        awaited,
-        wake: run.wake,
-        oneMore,
-        tasks: tasks?.rows.map((row) => ({
-          taskId: String(row.task_id),
-          queue: String(row.queue),
-          key: String(row.idempotency_key),
-        })),
-        events: events?.rows.map((row) => ({
-          queue: String(row.queue),
-          eventName: String(row.event_name),
-        })),
-        checkpoints: checkpoints?.rows.map((row) => String(row.checkpoint_name)),
-        readThroughThePort: read.map((checkpoint) => checkpoint.checkpointName).sort(),
-      }).toEqual({
-        replayFindsTheTask: true,
-        awaited: { emitted: false },
-        wake: { event: eventName, step: stepName, payloadJson: '{"x":1}' },
-        oneMore: REFUSED,
-        tasks: [
-          { taskId: spawned.taskId, queue, key: idempotencyKey },
-          {
-            taskId: child.taskId,
-            queue: childQueue,
-            key: childSpawnKey(spawned.taskId, 'r'.repeat(room)),
-          },
-        ].sort((a, b) => (a.taskId < b.taskId ? -1 : 1)),
-        events: [{ queue, eventName }],
-        checkpoints: [
+        const [tasks, events, checkpoints] = await live.raw.batch(
+          'identifier-bound-readback',
+          [
+            { sql: 'SELECT task_id, queue, idempotency_key FROM tasks ORDER BY task_id', args: [] },
+            { sql: 'SELECT queue, event_name FROM events WHERE event_name = ?', args: [eventName] },
+            {
+              sql: 'SELECT checkpoint_name FROM checkpoints WHERE task_id = ? ORDER BY checkpoint_name',
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        const read = await live.store.getCheckpoints(queue, spawned.taskId, pass.attempt)
+        const storedNames = [
           `${SAGA_TRIES_PREFIX}${stepKey}`,
           `${SAGA_STARTED_PREFIX}${stepKey}`,
           SAGA_PHASE_CHECKPOINT,
           checkpointName,
-        ].sort(),
-        readThroughThePort: [
-          `${SAGA_TRIES_PREFIX}${stepKey}`,
-          `${SAGA_STARTED_PREFIX}${stepKey}`,
-          SAGA_PHASE_CHECKPOINT,
-          checkpointName,
-        ].sort(),
-      })
-      expect([...childSpawnKey(spawned.taskId, 'r'.repeat(room))]).toHaveLength(WIDTH)
-      expect(await engineInvariantViolations(f.raw)).toEqual([])
-    })
+        ].sort()
+        expect({
+          replayFindsTheTask: again.taskId === spawned.taskId && !again.created,
+          awaited,
+          wake: run.wake,
+          oneMore,
+          tasks: tasks?.rows.map((row) => ({
+            taskId: String(row.task_id),
+            queue: String(row.queue),
+            key: String(row.idempotency_key),
+          })),
+          events: events?.rows.map((row) => ({
+            queue: String(row.queue),
+            eventName: String(row.event_name),
+          })),
+          checkpoints: checkpoints?.rows.map((row) => String(row.checkpoint_name)),
+          readThroughThePort: read.map((checkpoint) => checkpoint.checkpointName).sort(),
+        }).toEqual({
+          replayFindsTheTask: true,
+          awaited: { emitted: false },
+          wake: { event: eventName, step: stepName, payloadJson: '{"x":1}' },
+          oneMore: REFUSED,
+          tasks: [
+            { taskId: spawned.taskId, queue, key: idempotencyKey },
+            {
+              taskId: child.taskId,
+              queue: childQueue,
+              key: childSpawnKey(spawned.taskId, 'r'.repeat(room)),
+            },
+          ].sort((a, b) => (a.taskId < b.taskId ? -1 : 1)),
+          events: [{ queue, eventName }],
+          checkpoints: storedNames,
+          readThroughThePort: storedNames,
+        })
+        expect([...childSpawnKey(spawned.taskId, 'r'.repeat(room))]).toHaveLength(WIDTH)
+        expect(await engineInvariantViolations(live.raw)).toEqual([])
+      }))
   })
 }

@@ -990,14 +990,9 @@ export class UserName {
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
       )
     }
-    // A name a task passes becomes a durable identifier, and every store refuses one past
-    // the width on every pass. Refused here, the same input fails the task once and for
-    // good. The name is not echoed: it is at least 256 characters long.
-    if (!fitsCharacters(raw, IDENTIFIER_CHARACTERS)) {
-      throw new FatalTaskError(
-        `${what} is longer than the ${IDENTIFIER_CHARACTERS} characters a durable identifier holds`,
-      )
-    }
+    // The width of a durable identifier is not held here. A name is stored under a key
+    // that is longer than it, and a key that is already stored has to replay, so the SDK
+    // holds the key where it builds it, after it has looked the memo up.
     return new UserName(raw)
   }
 }

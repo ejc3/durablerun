@@ -32,12 +32,15 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       const task = await f.store.spawn(Q, 'job', '{}', THREE_TRIES)
       const outcomes = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({
-        outcomes,
-        ran,
-        state: result?.state,
-        namesWhatTheTaskPassed: failureOf(result).includes('step name'),
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          ran,
+          state: result?.state,
+          namesWhatTheTaskPassed: failureOf(result).includes('step name'),
+        },
+        'mutation-verdict:behavior:sdk-holds-the-durable-key-before-the-body-runs',
+      ).toEqual({
         outcomes: ['failed'],
         ran: ['first'],
         state: 'failed',
@@ -84,6 +87,27 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       await f.close()
     })
 
+    it('fails a task for good on its first pass when it emits an event name past the width', async () => {
+      const f = await open('width-emitted-name')
+      const reg = registry({
+        job: async (ctx) => {
+          await ctx.emitEvent('e'.repeat(256), '{}')
+        },
+      })
+      const task = await f.store.spawn(Q, 'job', '{}', THREE_TRIES)
+      const outcomes = await drive(f, reg, task.taskId)
+      const result = await f.store.getTaskResult(Q, task.taskId)
+      expect(
+        {
+          outcomes,
+          state: result?.state,
+          namesWhatTheTaskPassed: failureOf(result).includes('event name'),
+        },
+        'mutation-verdict:behavior:sdk-holds-an-emitted-event-name',
+      ).toEqual({ outcomes: ['failed'], state: 'failed', namesWhatTheTaskPassed: true })
+      await f.close()
+    })
+
     it('still finishes a task in flight whose step name was stored before the rule and is longer than the width', async () => {
       const f = await open('width-in-flight-step')
       const longName = 'p'.repeat(300)
@@ -112,13 +136,16 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       await f.advance(2_000)
       const rest = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({
-        first,
-        rest,
-        ran,
-        state: result?.state,
-        payload: result?.completedPayloadJson,
-      }).toEqual({
+      expect(
+        {
+          first,
+          rest,
+          ran,
+          state: result?.state,
+          payload: result?.completedPayloadJson,
+        },
+        'mutation-verdict:behavior:sdk-replays-a-key-already-stored',
+      ).toEqual({
         first: 'suspended',
         rest: ['completed'],
         ran: ['body'],

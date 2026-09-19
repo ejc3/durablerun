@@ -12864,8 +12864,8 @@ MUTATION_SPECS.extend(
         (
             "saga-step-key-held-to-the-longest-prefix",
             "packages/core/src/sagas.ts",
-            "    if (!fitsCharacters(name, prefix.length + SAGA_STEP_KEY_CHARACTERS)) {\n",
-            "    if (!fitsCharacters(name, IDENTIFIER_CHARACTERS)) { // MUTATION\n",
+            "  if (!fitsCharacters(name, SAGA_STARTED_PREFIX.length + SAGA_STEP_KEY_CHARACTERS)) {\n",
+            "  if (!fitsCharacters(name, IDENTIFIER_CHARACTERS)) { // MUTATION\n",
             "a step whose key fits only its shortest saga name starts, and the batch that fails its rollback can never store the attempt record",
         ),
         (
@@ -12882,6 +12882,48 @@ MUTATION_SPECS.extend(
             "      // MUTATION: the stored key is not held\n",
             "a replay key that fits on its own is stored inside a child key past the width, which one dialect cannot index",
         ),
+        (
+            "parent-queue-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.parentQueue': childOf.parentQueue,\n",
+            "      // MUTATION: the parent's queue is not held\n",
+            "a child spawn is accepted with a parent queue past the width, so an identifier is refused at every entry of the port but this one",
+        ),
+        (
+            "parent-run-id-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.runId': childOf.runId,\n",
+            "      // MUTATION: the parent's run id is not held\n",
+            "a child spawn is accepted with a parent run id past the width, so an identifier is refused at every entry of the port but this one",
+        ),
+        (
+            "sdk-durable-key-held-before-the-body-runs",
+            "packages/sdk/src/context.ts",
+            "      requireRoom(what, key, room)\n",
+            "      // MUTATION: the key is not held\n",
+            "a name that fits is stored under a key that does not, every store refuses it on every pass, and the step's body runs again on each retry until the budget is gone",
+        ),
+        (
+            "sdk-key-already-stored-is-not-held",
+            "packages/sdk/src/context.ts",
+            "    if (!taskMapHas(this.seen, key) && !taskMapHas(this.startIndexes, key)) {\n",
+            "    if (!taskMapHas(this.startIndexes, key)) { // MUTATION\n",
+            "a task in flight whose step name was stored before the rule fails for good where it used to finish",
+        ),
+        (
+            "sdk-emitted-event-name-held",
+            "packages/sdk/src/context.ts",
+            "    requireRoom('event name', parsed.value, IDENTIFIER_CHARACTERS)\n",
+            "    // MUTATION: an emitted name is not held\n",
+            "an emit of a name past the width is refused by the store on every pass, and the task is retried until its budget is gone",
+        ),
+        (
+            "driver-identifiers-held-at-construction",
+            "packages/driver/src/loop.ts",
+            "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
+            "    // MUTATION: not held at construction\n",
+            "a driver configured with a queue or an id past the width runs forever and does nothing: every tick reads as an outage and every registry beat is swallowed",
+        ),
     )
 )
 for _verdict, _names in (
@@ -12895,6 +12937,8 @@ for _verdict, _names in (
         ),
         (
             "identifier-past-the-width-refused",
+            "parent-queue-held-to-the-width",
+            "parent-run-id-held-to-the-width",
         ),
     ),
     (
@@ -12921,6 +12965,50 @@ for _verdict, _names in (
             "saga-step-key-held-to-the-longest-prefix",
             "awaited-child-event-name-held-to-the-width",
             "stored-child-key-held-to-the-width",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] fails a task for good on its first pass when a repeated step name leaves its second key past the width, and never runs the second body",
+            "mutation-verdict:behavior:sdk-holds-the-durable-key-before-the-body-runs",
+        ),
+        (
+            "sdk-durable-key-held-before-the-body-runs",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] still finishes a task in flight whose step name was stored before the rule and is longer than the width",
+            "mutation-verdict:behavior:sdk-replays-a-key-already-stored",
+        ),
+        (
+            "sdk-key-already-stored-is-not-held",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] fails a task for good on its first pass when it emits an event name past the width",
+            "mutation-verdict:behavior:sdk-holds-an-emitted-event-name",
+        ),
+        (
+            "sdk-emitted-event-name-held",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/driver/test/loop.test.ts",
+            "DriverLoop review regressions degenerate knobs are refused at construction",
+            "mutation-verdict:construction:driver-holds-its-identifiers-at-construction",
+        ),
+        (
+            "driver-identifiers-held-at-construction",
         ),
     ),
 ):
@@ -16807,7 +16895,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 864:
+        if len(MUTATIONS) != 870:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

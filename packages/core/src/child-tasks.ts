@@ -208,11 +208,11 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
       requireDurableString('childOf.replayKey', childOf.replayKey),
     )
     // The key is built from the parent's task and the call site, so the width is held to
-    // the key as it will be stored, and to the parent's identifiers. A child spawn passes
-    // no idempotency key, so its refusal names the replay key it did pass.
+    // the key as it will be stored, which holds the parent's task id with it, and to the
+    // parent's queue and run. A child spawn passes no idempotency key, so its refusal
+    // names the replay key it did pass.
     requireIdentifiersFit({
       'childOf.parentQueue': childOf.parentQueue,
-      'childOf.parentTaskId': childOf.parentTaskId,
       'childOf.runId': childOf.runId,
       'childOf.replayKey, as the stored child key, which also holds the parent task id,': childKey,
     })
