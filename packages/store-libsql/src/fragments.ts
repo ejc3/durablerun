@@ -409,12 +409,14 @@ const namedUnder = (name: string, prefix: string): string =>
 
 /**
  * The checkpoints named under `prefix`, as a range of the key: from the prefix itself up
- * to the first name past it. A column compares by its bytes here, so the range holds
- * exactly the names `namedUnder` admits, and the key's second column serves it. A test
- * of each name walks every checkpoint the task has.
+ * to the first name past it. `alias` names a checkpoints row, and the range is over its
+ * name column, which compares by its bytes here. So the range holds exactly the names
+ * `namedUnder` admits, and the key's second column serves it. A test of each name walks
+ * every checkpoint the task has.
  */
-const rangeUnder = (column: string, prefix: string): string =>
-  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`
+const rangeUnder = (alias: string, prefix: `${string}:`): string =>
+  `${alias}.checkpoint_name >= '${prefix}'
+   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`
 
 /**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
@@ -452,7 +454,7 @@ const rollbackRan = (marker: string, prefix: string): string =>
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
-             AND ${rangeUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND ${rangeUnder('ss', SAGA_STARTED_PREFIX)}
              AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
 
 /**
@@ -483,7 +485,7 @@ export const rollbackError = (task: string): string =>
   `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}
         THEN (SELECT st.state FROM checkpoints st
                WHERE st.task_id = ${task}.task_id
-                 AND ${rangeUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
+                 AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
                  AND st.owner_run_id = ${task}.last_attempt_run
-               ORDER BY st.checkpoint_name LIMIT 1)
+               LIMIT 1)
    END`

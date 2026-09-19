@@ -449,14 +449,17 @@ const namedUnder = (name: string, prefix: string): string =>
 
 /**
  * The checkpoints named under `prefix`, as a range of the key: from the prefix itself up
- * to the first name past it. The literals are plain, and not `exactly`. A column compares
- * in its own collation, which is binary, so the range is byte for byte as it stands and
- * holds exactly the names `namedUnder` admits. A binary operand would stop the key from
- * serving it: measured on 8.4, the cast reads the same rows by an index lookup on the
- * task alone, which walks every checkpoint the task has.
+ * to the first name past it. `alias` names a checkpoints row, and the range is always
+ * over its name column and never over a bind. A column compares in its own collation,
+ * which is binary, so the plain literals make the range byte for byte, and it holds
+ * exactly the names `namedUnder` admits. Over a bind they would compare under the
+ * connection's collation. A binary operand, which is what `exactly` gives a bind, would
+ * stop the key from serving the range: measured on 8.4, the cast reads the same rows by
+ * an index lookup on the task alone, which walks every checkpoint the task has.
  */
-const rangeUnder = (column: string, prefix: string): string =>
-  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`
+const rangeUnder = (alias: string, prefix: `${string}:`): string =>
+  `${alias}.checkpoint_name >= '${prefix}'
+   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`
 
 /**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
@@ -497,7 +500,7 @@ const rollbackRan = (marker: string, prefix: string): string =>
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
-             AND ${rangeUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND ${rangeUnder('ss', SAGA_STARTED_PREFIX)}
              AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
 
 /**
@@ -528,7 +531,7 @@ export const rollbackError = (task: string): string =>
   `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}
         THEN (SELECT st.state FROM checkpoints st
                WHERE st.task_id = ${task}.task_id
-                 AND ${rangeUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
+                 AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
                  AND st.owner_run_id = ${task}.last_attempt_run
-               ORDER BY st.checkpoint_name LIMIT 1)
+               LIMIT 1)
    END`

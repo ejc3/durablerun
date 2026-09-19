@@ -12264,22 +12264,22 @@ MUTATION_SPECS.extend(
         (
             "saga-names-begin-at-the-prefix",
             "packages/store-libsql/src/fragments.ts",
-            "  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`\n",
-            "  `${column} < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
             "a name below a reserved prefix is read as a name under it",
         ),
         (
             "saga-names-end-before-the-first-name-past-the-prefix",
             "packages/store-libsql/src/fragments.ts",
-            "  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`\n",
-            "  `${column} >= '${prefix}'`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'`\n",
             "every name past a reserved prefix is read as a name under it",
         ),
         (
             "mysql-saga-name-range-keeps-plain-literals",
             "packages/store-mysql/src/fragments.ts",
-            "  `${column} >= '${prefix}' AND ${column} < '${firstNamePast(prefix)}'`\n",
-            "  `${column} >= ${exactly(prefix)} AND ${column} < ${exactly(firstNamePast(prefix))}`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= ${exactly(prefix)}\n   AND ${alias}.checkpoint_name < ${exactly(firstNamePast(prefix))}`\n",
             "a binary operand stops the key from serving a saga's name range, so the task's checkpoints are walked",
         ),
         (

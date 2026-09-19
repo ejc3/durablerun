@@ -9,7 +9,7 @@ import {
 describe('the names under a reserved saga prefix, as a range of names compared by bytes', () => {
   it('ends before the prefix with a semicolon where its colon was', () => {
     expect(
-      [SAGA_STARTED_PREFIX, SAGA_ROLLBACK_PREFIX, SAGA_TRIES_PREFIX].map(firstNamePast),
+      ([SAGA_STARTED_PREFIX, SAGA_ROLLBACK_PREFIX, SAGA_TRIES_PREFIX] as const).map(firstNamePast),
     ).toEqual(['$started;', '$rollback;', '$rollback-tries;'])
   })
 
@@ -33,7 +33,8 @@ describe('the names under a reserved saga prefix, as a range of names compared b
   })
 
   it('refuses a prefix that does not end in a colon', () => {
-    expect(() => firstNamePast('$started')).toThrow(RangeError)
-    expect(() => firstNamePast('')).toThrow(RangeError)
+    // The type refuses these where a call is compiled, and the check where it is not.
+    expect(() => firstNamePast('$started' as `${string}:`)).toThrow(RangeError)
+    expect(() => firstNamePast('' as `${string}:`)).toThrow(RangeError)
   })
 })

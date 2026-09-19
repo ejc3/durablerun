@@ -509,5 +509,5 @@ export const rollbackError = (task: string): string =>
                WHERE st.task_id = ${task}.task_id
                  AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
                  AND st.owner_run_id = ${task}.last_attempt_run
-               ORDER BY st.checkpoint_name LIMIT 1)
+               LIMIT 1)
    END`

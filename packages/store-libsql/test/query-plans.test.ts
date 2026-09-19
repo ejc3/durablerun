@@ -559,8 +559,7 @@ describe('every batch a saga touches', () => {
         faults.push('its target task is not found by key')
       }
     }
-    // None of the statements a saga reads through or adds sorts. The one ORDER BY among
-    // them is over a range of the key, which is the key's own order. A batch's other
+    // None of the statements a saga reads through or adds sorts. A batch's other
     // statements are not this pin's to hold.
     const sagaStatement = added || lines.some((line) => SAGA_ALIAS.test(line))
     if (sagaStatement && plan.includes('TEMP B-TREE')) faults.push('it sorts')

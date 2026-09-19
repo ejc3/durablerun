@@ -49,7 +49,7 @@ export const SAGA_TRIES_PREFIX = '$rollback-tries:'
  * reads the names under a prefix as that range of the checkpoints key. A store whose
  * names order under a collation must not (DESIGN.md §3.4).
  */
-export function firstNamePast(prefix: string): string {
+export function firstNamePast(prefix: `${string}:`): string {
   const last = prefix.length - 1
   if (prefix[last] !== ':') {
     throw new TrustedRangeError(`'${prefix}' is no reserved prefix: it does not end in a colon`)
