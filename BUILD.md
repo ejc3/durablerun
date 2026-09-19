@@ -1442,9 +1442,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   figure. On that runner the saga block, which runs 10 to 15 percent above the
   other four, needs about 130 seconds. The limit is now 300, a bit over twice
   that, so a cell that hangs still ends its test in five minutes, and the
-  test's cells, seeds, and assertions are unchanged. An option, and no part of
-  this entry: `verify` and `base-gate` are the CI jobs with no
-  `timeout-minutes` of their own, and `verify` is the long one.
+  test's cells, seeds, and assertions are unchanged. `verify` and `base-gate`
+  were the CI jobs with no `timeout-minutes` of their own, and the PR3.13
+  entry records the limits they were then given.
   One outside review of the implementation found twelve defects, two of them
   HIGH, and none was found by this entry's own machinery. A task spawned with
   the largest budget never rolled back, because the pass's guard read the
@@ -1584,11 +1584,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   two loops, one for each generated case list and each on its own fixture. The
   test takes 16 to 22 seconds on CI, and its longer loop was one stretch of
   15.1 seconds here. If it grows, build a fixture for each chunk of cases, or
-  split the test, which needs its registered mutations re-aimed by name. (2)
-  `verify:fuzz:deep` sets no `FUZZ_BATCHES`, so each shard is one test of
-  about 3,125 walks, some 830 seconds at the 0.266 seconds a walk that the
-  review's verifier measured, past that test's own 600 second budget. It is
-  older than this entry and runs in no gate. (3) Not explained: three of PR
+  split the test, which needs its registered mutations re-aimed by name.
+  Measured again on 2026-09-18, after child tasks and sagas landed: the libSQL
+  test took 10.4 to 21.3 seconds across seven CI runs, so it has not grown and
+  nothing changes. (2) Closed. `verify:fuzz:deep` set no `FUZZ_BATCHES`, so
+  each shard file was one test of 3,125 walks. One batch of 782 walks took 286
+  seconds on the development host, 0.37 seconds a walk where the review's
+  verifier had measured 0.266, so a shard needs about 1,140 seconds, and run
+  as the script stood the shard timed out at its 600 second budget. The
+  obvious repair hid a second defect: the shard runner read an unset
+  `FUZZ_BATCH_INDEX` as batch 0, so a run given `FUZZ_BATCHES` alone walked
+  one batch of its seeds and reported a green shard. A process given a batch
+  count and no index now runs every batch, each as its own test with its own
+  budget, and the hosted nightly, which names its batch, is unchanged. The
+  script sets `FUZZ_BATCHES=8`: one shard file ran as eight tests of 390 or
+  391 walks that took 140 to 144 seconds each and 1,136 seconds in all, and
+  `nightly-fuzz-plan.test.ts` holds that the eight batches of every shard
+  cover the 100,000 seeds exactly once. It still runs in no gate.
+  (3) Not explained: three of PR
   #42's last four runs hit the error and none of eleven other runs did, on a
   branch whose one executed change finishes in the first ten seconds. (4)
   Eighteen files under test directories open a libSQL database through
@@ -1598,6 +1611,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
   where the determinism lint bans timers. The review rounds are
   `postmortems/verify-event-loop-yield-review.md` and
   `postmortems/verify-fixture-yield-review.md`.
+  Time limits, measured on 2026-09-18 from seven CI `verify` logs, four of
+  main and three of the PR3.4 branch, one of them on a runner about 1.6 times
+  slower than main's slowest. A per-test limit is set against the slowest CI
+  runner observed, not against a local figure, and a test whose worst case
+  passes half its limit gets a new one. Only two kinds of test ever ran longer
+  than 45 seconds. The five PostgreSQL fault-matrix ownership tests took 106
+  to 120 seconds on the slow runner, and PR3.4 moved their limit from 120 to
+  300. The PostgreSQL wake-witness conformance test took 37.9 to 58.8 seconds
+  on main's runs and 96.9 on the slow runner under a limit of 120, which is
+  now 300. It stays a numeric literal in the call, because the formatter
+  re-indents a test body whose limit is a named constant, and registered
+  mutations find their text in test bodies. Every other explicit limit of 60
+  seconds or more in the conformance package is far from its worst case and
+  is unchanged: the fuzz regression walk 0.7 seconds of 120, the losing
+  sweeper regression 6.6 of 60, the two PostgreSQL lock-order tests 2.0 and
+  1.6 of 60, and the four PostgreSQL terminal-lock tests 5.2 of 120, 0.7 of
+  60, 0.7 of 60, and 1.4 of 120. `verify` and `base-gate` were the two CI jobs
+  with no `timeout-minutes`, so a hung run could hold a runner for the six
+  hour default. Over the last twelve pull request runs `verify` took 1,096 to
+  1,767 seconds and `base-gate` 187 to 316, and their limits are now 60 and 20
+  minutes.
 
 - **PR3.14 keyed generated follow-ons**: on libSQL, eleven shipped writes
   scanned the table they wrote: the task update of claim, activate,
