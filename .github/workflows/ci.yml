@@ -399,9 +399,9 @@ jobs:
               # registers a mutation for each new condition, the base predates them, and so
               # their lines are listed and their verdict markers exempted. Two lines the base
               # lists gained a condition: each is listed under its new text and unlisted
-              # under its old. Thirteen base entries are re-aimed, and each mutant is the
+              # under its old. Fourteen base entries are re-aimed, and each mutant is the
               # one it was. The two clock mutants quote the line that gained `!reading`. The
-              # other eleven quoted the libSQL store's read text, which is gone: the queue
+              # other twelve quoted the libSQL store's read text, which is gone: the queue
               # condition of claimed-task-name and the owner join of get-checkpoints are now
               # nodes of the shared statements, and the bounds and admissions of next-wake,
               # of the sweep's two scans, and of the checkpoint owner are the fragments the
@@ -423,6 +423,7 @@ jobs:
                   'timestamp-sweep-lost-launch-lower-before-limit',
                   'timestamp-sweep-timeout-lower-before-limit',
                   'timestamp-cancel-lower-before-limit',
+                  'heartbeat-names-cancellation',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
               repaired = drop_question_reasons(repaired, candidate, (
@@ -433,18 +434,25 @@ jobs:
                   "if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
               ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  "const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true",
+                  "if (!isBind(node.rightOperand)) return false",
+                  "return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))",
                   "const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all",
+                  "if (reading && BinaryOperationNode.is(node) && comparesStateWithBind(node)) {",
                   "if (SetOperationNode.is(node)) {",
                   "if (!reading) return 'a set operation outside a batch of reads'",
                   "if (!isUnionAll(node)) return 'a set operation other than UNION ALL'",
               ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {",
+                  "const needed = readsClock && this.clockReads.length !== 0",
+                  "const excused = drift.trim() !== ''",
+                  "if (needed !== excused) {",
+                  "if (readsClock) this.clockReads.push(name)",
                   "const reading = asked === 'read'",
                   "const open = asked === 'openTail' || reading",
-                  "if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {",
                   "if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {",
-                  "if (reading && compiled.sql.includes(this.now)) {",
-                  "if (this.clockReads.length !== 0 && drift.trim() === '') {",
+                  "if (reading) this.countClockRead(at, name, drift, compiled.sql.includes(this.now))",
                   "if (reading) this.reads.push(name)",
               ))
               repaired = exempt(repaired, candidate, (
@@ -456,6 +464,12 @@ jobs:
                   "mutation-verdict:construction:tree-second-clock-read-needs-a-reason",
                   "mutation-verdict:construction:tree-clock-read-counted",
                   "mutation-verdict:construction:tree-clock-read-counts-reads-only",
+                  "mutation-verdict:construction:tree-clockless-read-needs-no-reason",
+                  "mutation-verdict:construction:tree-clock-reason-is-not-blank",
+                  "mutation-verdict:construction:tree-clock-reason-needs-a-clock-read",
+                  "mutation-verdict:construction:tree-prepared-read-shape-is-fixed",
+                  "mutation-verdict:construction:tree-prepared-read-bind-kind",
+                  "mutation-verdict:construction:tree-prepared-read-clock-counted",
                   "mutation-verdict:construction:tree-read-recorded",
                   "mutation-verdict:construction:tree-reads-run-in-read-mode",
                   "mutation-verdict:construction:tree-read-grammar-is-the-reads",
@@ -464,6 +478,12 @@ jobs:
                   "mutation-verdict:construction:tree-set-operation-union-all-only",
                   "mutation-verdict:construction:tree-union-needs-all",
                   "mutation-verdict:construction:tree-set-operation-is-union",
+                  "mutation-verdict:construction:tree-read-state-literal",
+                  "mutation-verdict:construction:tree-read-state-literal-admitted",
+                  "mutation-verdict:construction:tree-read-state-names-the-column",
+                  "mutation-verdict:construction:tree-read-bind-is-not-immediate",
+                  "mutation-verdict:construction:tree-read-bind-is-a-value",
+                  "mutation-verdict:construction:tree-read-status-is-a-state",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

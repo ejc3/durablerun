@@ -1009,7 +1009,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statements on each dialect and no enrolled statement changed. The read
     labels left `batch-lint`'s tables, and the stores no longer export
     `NEXT_WAKE_SQL` and the two sweep scans: the query-plan suites record the
-    statements a real operation sends. The registry holds 848 mutations.
+    statements a real operation sends. Its one review round is
+    `postmortems/pr3.9f-part1-review.md`. It found that every read was built,
+    checked and compiled again on each call, about 120 microseconds for
+    `next-wake` where its text had cost 1, on every driver tick. A store now
+    prepares each read once (`prepareRead`, `readPrepared`) and a call costs 2
+    to 4 microseconds. It also found two reads binding a state their text had
+    written inline: they write it inline again (`literalValue`), and a batch of
+    reads refuses a state or status column compared with a bound value. Two
+    shapes still pass that rule and wait for part 2's decision about
+    fragments: a state bound inside a store fragment, and a one-state IN list
+    of a bound value. The registry holds 860 mutations.
   - PR3.9f part 2, not started, and most of it needs a decision before it is
     built. What a store still sends as text is `heartbeat` on libSQL and
     PostgreSQL, `expire-lease-now`, `driver-heartbeat`, and the admin's
