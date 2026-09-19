@@ -389,7 +389,7 @@ jobs:
               ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
                   'if (unreadState !== null) throw new Error(`${at} ${unreadState}`)',
-                  "written === 'events' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null",
+                  "following !== null && written === 'events'",
                   'if (ended !== null) recordsEndOf = gateName',
                   'if (unserialized !== null) throw new Error(`${at} ${unserialized}`)',
               ))
@@ -398,6 +398,7 @@ jobs:
                   'mutation-verdict:construction:batch-holds-the-lock-its-statement-names',
                   'mutation-verdict:construction:batch-lock-may-be-named-again',
                   'mutation-verdict:construction:completion-event-is-an-event',
+                  'mutation-verdict:construction:completion-event-is-an-insert',
                   'mutation-verdict:construction:completion-event-names-the-ending-statement',
                   'mutation-verdict:construction:statement-carries-the-lock-it-names',
                   'mutation-verdict:construction:task-state-takes-no-fragment',

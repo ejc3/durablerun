@@ -79,25 +79,36 @@ describe('a read is built once and sent many times', () => {
   it('no store sends a read it builds on every call, and neither does the engine logic core runs for it', () => {
     // task-done-state is reached only through a transition, which compiles on every call,
     // so it is held here with every other read: readTree builds per call. It and run-task
-    // are sent by core's side of a task's ending, for every store, so that file is held
-    // to the same three things as a store's sources, with its own floor.
+    // are sent by core's side of a task's ending, for every store. Every file of core that
+    // prepares or sends a read is found here and held to the same three things as a
+    // store's sources, so the next one is held without being named.
     const packages = new URL('../../', import.meta.url)
+    const sourcesOf = (directory: string) => {
+      const sources = new URL(directory, packages)
+      return readdirSync(sources, { recursive: true, encoding: 'utf8' })
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => ({ file, text: readFileSync(new URL(file, sources), 'utf8') }))
+    }
     const stores = readdirSync(packages).filter((name) => name.startsWith('store-'))
     expect(stores.length).toBeGreaterThanOrEqual(3)
+    const core = sourcesOf('core/src/').filter(({ text }) =>
+      /\.readPrepared\(|= prepareRead\(/.test(text),
+    )
+    // The scan found the file that sends both reads of a task's ending, so it can find one.
+    expect(core.map(({ file }) => file)).toContain('task-done.ts')
     const held = [
-      ...stores.map((store) => {
-        const sources = new URL(`${store}/src/`, packages)
-        const text = readdirSync(sources, { recursive: true, encoding: 'utf8' })
-          .filter((file) => file.endsWith('.ts'))
-          .map((file) => readFileSync(new URL(file, sources), 'utf8'))
-          .join('\n')
-        return { name: store, text, reads: 7 }
-      }),
-      {
-        name: 'core/src/task-done.ts',
-        text: readFileSync(new URL('core/src/task-done.ts', packages), 'utf8'),
-        reads: 2,
-      },
+      ...stores.map((store) => ({
+        name: store,
+        text: sourcesOf(`${store}/src/`)
+          .map(({ text }) => text)
+          .join('\n'),
+        reads: 7,
+      })),
+      ...core.map(({ file, text }) => ({
+        name: `core/src/${file}`,
+        text,
+        reads: file === 'task-done.ts' ? 2 : 1,
+      })),
     ]
     for (const { name, text, reads } of held) {
       expect(text.match(/\.readTree\(/g) ?? [], `${name} builds a read on every call`).toEqual([])

@@ -73,6 +73,7 @@ import {
   parseTaskValueJson,
   prepareRead,
   rawSql,
+  readRows,
   refusalStateRead,
   refusedLease,
   refusedWriteError,
@@ -533,6 +534,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   ) {}
 
   private readonly runTasks = new RunTaskMemo()
+  private taskDoneFacts: TaskDoneDialect | undefined
 
   async spawn(
     queue: string,
@@ -1589,10 +1591,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
 
   /** The rows of the read a batch holds under a name. A name it does not hold is refused, never read as no row. */
   private async rows(b: FencedBatch, name: string): Promise<SqlRow[]> {
-    const result = (await b.run(this.db)).results[name]
-    if (result === undefined)
-      throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
-    return result.rows
+    return readRows(b, await b.run(this.db), name)
   }
 
   /**
@@ -1798,7 +1797,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     resultJson: string,
   ): Promise<void> {
     requireIdentifiersFit({ queue, runId })
-    const taskId = await endingTask(this.taskDoneDialect(), this.runTasks, 'complete', queue, runId)
+    const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
       'complete',
@@ -1922,7 +1921,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
-    const taskId = await endingTask(this.taskDoneDialect(), this.runTasks, 'fail', queue, runId)
+    const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     return this.failInto(b, {
       operation: 'fail',
@@ -1956,13 +1955,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
-    const taskId = await endingTask(
-      this.taskDoneDialect(),
-      this.runTasks,
-      'failRollback',
-      queue,
-      runId,
-    )
+    const taskId = await this.endingTask('failRollback', queue, runId)
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -2362,9 +2355,13 @@ export class MysqlSchedulerStore implements SchedulerStore {
     }
   }
 
-  /** What this dialect supplies to core's side of a task's ending and of a child await. */
+  /**
+   * What this dialect supplies to core's side of a task's ending and of a child await,
+   * built on first use: a worker's own terminal write finds its task in the memo and
+   * needs none of it.
+   */
   private taskDoneDialect(): TaskDoneDialect {
-    return {
+    this.taskDoneFacts ??= {
       run: (batch: FencedBatch) => batch.run(this.db),
       open: {
         runTask: () => new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
@@ -2376,7 +2373,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
             tree: TREE_DIALECT,
           }),
       },
-      awaitNamedEvent: (awaited, name, awaitedTaskId) =>
+      awaitNamedEvent: (awaited, name) =>
         this.awaitNamedEvent(
           awaited.queue,
           awaited.taskId,
@@ -2385,13 +2382,19 @@ export class MysqlSchedulerStore implements SchedulerStore {
           awaited.stepName,
           name,
           awaited.timeoutSeconds,
-          awaitedTaskId,
+          awaited.childTaskId,
         ),
       refusal: (operation, runId) => this.refusal(operation, runId),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
       liveTask: sqlFragment(`t.state IN ${LIVE}`),
       storedPayloadType: sqlFragment(STORED_PAYLOAD_TYPE),
     }
+    return this.taskDoneFacts
+  }
+
+  /** A run's task, before the batch that ends the run: core's read, behind this store's memo. */
+  private endingTask(operation: string, queue: string, runId: string): Promise<string> {
+    return endingTask(this.taskDoneDialect(), this.runTasks, operation, queue, runId)
   }
 
   /**
@@ -2588,15 +2591,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     return answer
   }
 
-  /**
-   * The child await (DESIGN.md §3.2, specs/ChildTasks.tla): `await-event` for the
-   * completion event of `childTaskId`. The batch decides everything the model's await
-   * does in one step: it hits an event that exists, and it registers only on a live
-   * child in this queue. An await that did neither reads the child, once, to say why.
-   * A child in another queue, or no such task, is refused. A child that ended with
-   * nothing recorded has its outcome recorded by the await itself, in a second batch
-   * fenced on the row that was read. Anything else is this run's own claim, lost.
-   */
+  /** The child await (DESIGN.md §3.2). The protocol is core's `awaitTaskDone`, and this dialect supplies its facts. */
   async awaitTaskDone(
     queue: string,
     taskId: string,

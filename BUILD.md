@@ -91,7 +91,7 @@ a last docs PR gives a live owner to every open bullet that is left.
    terminal-state rule reads value nodes (`taskStateValue`) and refuses a
    fragment in a task's state, `awaitTaskDone`, its decoder, and `endingTask`
    are core's, and what holds all of it is the conformance suite on three
-   dialects, the PostgreSQL case for each batch label, 25 registered
+   dialects, the PostgreSQL case for each batch label, 26 registered
    mutations, and an accepted exhibit of each mechanism's false negative.
 4. PR4.4c: a conformance surface generated from the store's two ports runs
    every call concurrently with itself on libSQL, PostgreSQL, and MySQL, the

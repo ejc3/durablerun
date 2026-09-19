@@ -208,7 +208,7 @@ export interface DefinedStatement {
 }
 
 /** The event a statement definition names as its lock. The name is one core minted. */
-export type EventLockDeclaration = { readonly queue: string; readonly eventName: EventName }
+type EventLockDeclaration = { readonly queue: string; readonly eventName: EventName }
 
 const definedStatements = new TrustedWeakSet<object>()
 

@@ -19,6 +19,7 @@ import type {
   SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
+  SqlRow,
   SqlStatement,
   SqlTransactionLock,
 } from './primitives.js'
@@ -330,8 +331,9 @@ export class FencedBatch {
 
   /** A batch holds one lock. A statement may name the lock the batch already holds. */
   private holdTransactionLock(lock: SqlTransactionLock): this {
-    const coordinate = lock.kind === 'event' ? lock.eventName : lock.claimToken
-    if (typeof lock.queue !== 'string' || typeof coordinate !== 'string') {
+    // Every coordinate of every kind of lock is a string the executor binds.
+    const coordinates: Readonly<Record<string, unknown>> = lock
+    if (objectKeys(coordinates).some((name) => typeof coordinates[name] !== 'string')) {
       throw new TypeError(
         `FencedBatch[${this.label}] ${lock.kind} lock coordinates must be strings`,
       )
@@ -992,7 +994,9 @@ export class FencedBatch {
       // when it ends a task, and `run` holds every such statement to it. The lock rule
       // below has the statement's lock name the event its row names.
       const ended =
-        written === 'events' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null
+        following !== null && written === 'events'
+          ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '')
+          : null
       if (ended !== null) recordsEndOf = gateName
       const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
       // A skipped statement answers with no rows, which is also what it answers unmatched,
@@ -1163,6 +1167,13 @@ export class FencedBatch {
     })
     return { won, count, results }
   }
+}
+
+/** The rows of the read a batch held under a name. A name it does not hold is refused, never read as no row. */
+export function readRows(b: FencedBatch, ran: FencedResult, name: string): SqlRow[] {
+  const result = ran.results[name]
+  if (result === undefined) throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
+  return result.rows
 }
 
 /** The values a prepared read is sent with. Each reaches the statement as an argument and as nothing else. */

@@ -57,6 +57,7 @@ import {
   successor,
   taskFollowOn,
   taskInsert,
+  tasksSetting,
   tasksWhere,
   throughDerived,
   unguardedWaitInsert,
@@ -1889,13 +1890,12 @@ describe('FencedBatch tree statements', () => {
     })
 
     it('accepts a task state copied from a run this batch ended, which names no terminal state', async () => {
-      const taskBecomes = (state: unknown) =>
-        loose
-          .updateTable('tasks')
-          .set({ state, fence_stamp: stampValue, fence_at_ms: 5 })
-          .where((eb: Loose) => eb('task_id', 'in', fenced(eb).select('f.task_id')))
       const ending = (state: unknown) =>
-        withCas().followOnTree('task', statement(taskBecomes(state)), 'one')
+        withCas().followOnTree(
+          'task',
+          statement(tasksSetting({ state, fence_stamp: stampValue, fence_at_ms: 5 })),
+          'one',
+        )
       // The control: the same task, given the state by name, owes its completion event.
       await expect(ending('completed').run(capturingExecutor(1).executor)).rejects.toThrow(
         /writes a terminal tasks\.state, and no follow-on of this batch records/,

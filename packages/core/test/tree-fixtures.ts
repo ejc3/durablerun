@@ -12,12 +12,12 @@ import {
   compileOnlyBuilder,
   treeBuilder as db,
   defineStatement,
+  eventLockProblem,
   fenceValue,
   nowValue,
   rawSql,
   sqlFragment,
   stampValue,
-  statementTable,
 } from '../src/index.js'
 
 /** What `fenced-batch-tree.test.ts` and `fenced-batch-tree-verdicts.test.ts` both build on. */
@@ -33,11 +33,11 @@ export const onEvent = (builder: Builder, queue = 'q', eventName = 'e') =>
     () => builder as never,
     () => ({ queue, eventName: EventName.fromPort('test', eventName) }),
   )({})
-/** True of an INSERT into `events` or `waits`, which a batch admits only under its event's lock. */
-const insertsAnEvent = (builder: Builder) => {
-  const tree = builder.toOperationNode()
-  return tree.kind === 'InsertQueryNode' && ['events', 'waits'].includes(statementTable(tree) ?? '')
-}
+/** True of a statement the lock rule would refuse for naming no lock: an INSERT of an event or a wait. */
+const insertsAnEvent = (builder: Builder) =>
+  eventLockProblem(builder.toOperationNode(), null) !== null
+/** A statement minted with no lock named, whatever it writes. */
+export const unlocked = (builder: Builder) => defineStatement('test', () => builder as never)({})
 /**
  * A statement minted the way stores mint them, with no binds of its own. These fixtures
  * have one event, `e` of queue `q`, and a statement that records it or registers a wait on
@@ -45,7 +45,7 @@ const insertsAnEvent = (builder: Builder) => {
  * one that answers. The lock rule's own cases mint their statements themselves.
  */
 export const statement = (builder: Builder) =>
-  insertsAnEvent(builder) ? onEvent(builder) : defineStatement('test', () => builder as never)({})
+  insertsAnEvent(builder) ? onEvent(builder) : unlocked(builder)
 export const predicate = (text: string, args: SqlFragment['args'] = []) =>
   rawSql<boolean>(sqlFragment(text, args), 'predicate')
 export const value = <T>(text: string, args: SqlFragment['args'] = []) =>
@@ -272,7 +272,7 @@ export const joinedRead = (stamp: string) =>
     .select('f.state')
     .where(stamp, '=', fenceValue('win'))
 
-export const taskInsert = () =>
+export const taskInsert = (state = 'pending') =>
   db.insertInto('tasks').values({
     task_id: 't1',
     queue: 'q',
@@ -280,7 +280,7 @@ export const taskInsert = () =>
     params: '{}',
     retry_strategy: '{}',
     max_attempts: 1,
-    state: 'pending',
+    state,
     attempts: 0,
     infra_retries: 0,
     enqueue_at_ms: nowValue,

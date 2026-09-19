@@ -17,6 +17,7 @@ import {
   sqlFragment,
   stampValue,
   taskDoneEventInsert,
+  taskDoneEventName,
 } from '../src/index.js'
 import { attributeExpectedFailure, requireExpectedFailure } from '../src/testing.js'
 import {
@@ -48,11 +49,13 @@ import {
   successor,
   tail,
   taskFollowOn,
+  taskInsert,
   tasksSetting,
   tasksWhere,
   throughDerived,
   tiedBy,
   tiedKeys,
+  unlocked,
   value,
   waitInsert,
   winCas,
@@ -1256,9 +1259,7 @@ describe('the tree path', () => {
   })
 
   describe('the lock of an event', () => {
-    // Minted with no lock named, which the fixtures' `statement` never does for these rows.
-    const unlocked = (builder: { toOperationNode(): unknown }) =>
-      defineStatement('test', () => builder as never)({})
+    // `unlocked` mints with no lock named, which the fixtures' `statement` never does for these rows.
     const NO_LOCK = /its definition names no event lock/
     const ANOTHER_EVENT = /which is not the event_name it writes/
     const eventUpdate = () =>
@@ -1426,7 +1427,7 @@ describe('the tree path', () => {
                   eb.val('s').as('step_name'),
                   eb.ref('f.queue').as('queue'),
                   eb.ref('f.task_id').as('task_id'),
-                  eb.val('$task-done:t1').as('event_name'),
+                  eb.val(taskDoneEventName('t1')).as('event_name'),
                   aliasedAs(stampValue, 'fence_stamp'),
                   eb.ref('f.fence_at_ms').as('fence_at_ms'),
                 ])
@@ -1440,6 +1441,33 @@ describe('the tree path', () => {
         { kind: 'construction', mutation: 'completion-event-is-an-event' },
         OWES,
         () => run(ends().followOnTree('wait', waiting, 'one')),
+      )
+    })
+
+    it('is not paid by a statement that updates the completion event and inserts none', async () => {
+      const restamped = defineStatement(
+        'test',
+        () =>
+          loose
+            .updateTable('events')
+            .set({ fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb: Loose) =>
+              eb(
+                'queue',
+                'in',
+                eb
+                  .selectFrom('tasks as f')
+                  .select('f.queue')
+                  .where('f.task_id', '=', 't1')
+                  .where('f.fence_stamp', '=', fenceValue('end')),
+              ),
+            ) as never,
+        () => ({ queue: 'q', eventName: EventName.taskDone('t1') }),
+      )({})
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'completion-event-is-an-insert' },
+        OWES,
+        () => run(ends().followOnTree('restamp', restamped, 'one')),
       )
     })
 
@@ -1531,25 +1559,10 @@ describe('the tree path', () => {
     })
 
     it('reads the state an INSERT gives a new task', async () => {
-      const born = loose.insertInto('tasks').values({
-        task_id: 't1',
-        queue: 'q',
-        task_name: 'job',
-        params: '{}',
-        retry_strategy: '{}',
-        max_attempts: 1,
-        state: 'cancelled',
-        attempts: 0,
-        infra_retries: 0,
-        enqueue_at_ms: nowValue,
-        created_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      })
       await requireExpectedFailure(
         { kind: 'construction', mutation: 'terminal-task-state-of-an-insert' },
         OWES,
-        () => run(batch().casTree('born', statement(born))),
+        () => run(batch().casTree('born', statement(taskInsert('cancelled')))),
       )
     })
   })

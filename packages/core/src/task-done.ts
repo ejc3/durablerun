@@ -5,9 +5,8 @@ import {
   childAwaitRefusal,
   encodeTaskOutcome,
 } from './child-tasks.js'
-import { type FencedBatch, type FencedResult, prepareRead } from './fenced-batch.js'
+import { type FencedBatch, type FencedResult, prepareRead, readRows } from './fenced-batch.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { SqlRow } from './primitives.js'
 import type { SqlFragment } from './sql-tree.js'
 import {
   emittedEventRead,
@@ -96,14 +95,10 @@ export interface TaskDoneDialect {
     recordTaskDone(): FencedBatch
   }
   /**
-   * The dialect's `await-event` batch for the completion event `name` of `awaitedTaskId`:
-   * its answer, or null when it neither hit the event nor registered a wait.
+   * The dialect's `await-event` batch for `name`, the completion event of the awaited
+   * child: its answer, or null when it neither hit the event nor registered a wait.
    */
-  awaitNamedEvent(
-    awaited: ChildAwait,
-    name: EventName,
-    awaitedTaskId: string,
-  ): Promise<AwaitAnswer | null>
+  awaitNamedEvent(awaited: ChildAwait, name: EventName): Promise<AwaitAnswer | null>
   /** Why the fence of `runId` refused a write, as the error to throw. */
   refusal(operation: string, runId: string): Promise<Error>
   /** The store's join of the run `r` to the task `t` that owns it. */
@@ -121,13 +116,6 @@ const RUN_TASK = prepareRead(
 const TASK_DONE_STATE = prepareRead({ taskId: 'string' }, (binds: { taskId: string }) =>
   taskDoneStateRead(binds),
 )
-
-/** The rows of the read a batch holds under a name. A name it does not hold is refused, never read as no row. */
-async function rowsOf(dialect: TaskDoneDialect, b: FencedBatch, name: string): Promise<SqlRow[]> {
-  const result = (await dialect.run(b)).results[name]
-  if (result === undefined) throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
-  return result.rows
-}
 
 /**
  * A run's task, read before the batch that ends the run. A terminal batch names its
@@ -148,7 +136,7 @@ export async function endingTask(
   if (known !== undefined) return known
   const b = dialect.open.runTask()
   b.readPrepared('task', RUN_TASK, { queue, runId })
-  const rows = await rowsOf(dialect, b, 'task')
+  const rows = readRows(b, await dialect.run(b), 'task')
   const taskId = rows[0]?.task_id
   if (typeof taskId !== 'string') throw await dialect.refusal(operation, runId)
   return taskId
@@ -174,7 +162,7 @@ export async function awaitTaskDone(
   // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
   // the claim is lost, the task is cancelled, or the timeout does not fit.
   for (let round = 0; round < 2; round++) {
-    const answer = await dialect.awaitNamedEvent(awaited, name, childTaskId)
+    const answer = await dialect.awaitNamedEvent(awaited, name)
     if (answer !== null) return answer
     const child = await taskDoneState(dialect, childTaskId)
     const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
@@ -203,7 +191,7 @@ async function taskDoneState(
 ): Promise<{ queue: string; outcome: TaskResult; stamp: string | null } | null> {
   const b = dialect.open.taskDoneState()
   b.readPrepared('task', TASK_DONE_STATE, { taskId })
-  const rows = await rowsOf(dialect, b, 'task')
+  const rows = readRows(b, await dialect.run(b), 'task')
   const row = rows[0]
   if (row === undefined) return null
   return {
@@ -224,7 +212,7 @@ async function recordTaskDone(
   awaited: ChildAwait,
   childStamp: string | null,
   outcome: TaskOutcome,
-): Promise<{ emitted: true; payloadJson: string } | null> {
+): Promise<Extract<AwaitAnswer, { emitted: true }> | null> {
   const { queue, taskId, runId, claimToken, childTaskId } = awaited
   const name = EventName.taskDone(childTaskId)
   const b = dialect.open.recordTaskDone()

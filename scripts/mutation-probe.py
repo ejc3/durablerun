@@ -13514,9 +13514,16 @@ MUTATION_SPECS.extend(
         (
             "completion-event-is-an-event",
             "packages/core/src/fenced-batch.ts",
-            "        written === 'events' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null\n",
-            "        written !== 'tasks' ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '') : null\n",
+            "        following !== null && written === 'events'\n",
+            "        following !== null && written !== 'tasks'\n",
             "a wait registered on the completion event is taken for the event, and the task ends with nothing recorded",
+        ),
+        (
+            "completion-event-is-an-insert",
+            "packages/core/src/fenced-batch.ts",
+            "        following !== null && written === 'events'\n",
+            "        written === 'events'\n",
+            "a statement that updates the completion event is taken for the insert that records it, and the task ends with nothing recorded",
         ),
         (
             "completion-event-is-recognised",
@@ -13682,6 +13689,17 @@ for _verdict, _names in (
         ),
         (
             "completion-event-is-an-event",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a statement that updates the completion event and inserts none",
+            "mutation-verdict:construction:completion-event-is-an-insert",
+        ),
+        (
+            "completion-event-is-an-insert",
         ),
     ),
     (
@@ -17541,7 +17559,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 905:
+        if len(MUTATIONS) != 906:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
