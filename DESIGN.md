@@ -2185,7 +2185,7 @@ Dialect implementations:
 | Concern | Turso/libSQL | MySQL 8 | Postgres |
 |---|---|---|---|
 | claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; the shared claim `UPDATE`, its candidates a derived table of one `FOR UPDATE SKIP LOCKED` leg per state; no RETURNING, so the receipt is the batch's own read by token | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
-| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | a transaction at READ COMMITTED for every batch of more than one statement or under a lock, and a batch of one statement alone under autocommit (the 20s PlanetScale cap is ample for a claim of a few statements) | the same split: a transaction for more than one statement or under a lock, and one statement alone |
+| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | a transaction at READ COMMITTED for every write batch, and for every read batch but one: a single read the executor knows to be a read is sent alone under autocommit (the 20s PlanetScale cap is ample for a claim of a few statements) | the same split: a transaction for every batch but a single read the executor knows to be a read |
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
@@ -2237,66 +2237,61 @@ realized in the store's compiler, executor, fragments, or schema:
   the same reason, a pool handed to `fromPool` must not have its session state
   changed by anything else that uses it: the store does not send the settings
   again.
-- **A batch of one statement is sent alone.** A transaction around one
-  statement cost two more round trips, and a read batch three more, because
-  two statements begin it. The session has autocommit on, which the store sets
-  with its other session settings, so the server commits a statement sent
-  alone by itself, and one statement is atomic. Seven of the store's eight
-  tree-built read batches hold one statement, the next-wake read of every
-  driver tick and the read that tells a refused worker write why among them,
-  and both of its text reads do. What the transaction gave a batch of one
-  statement still holds, each part checked against a server:
+- **One read that the executor knows to be a read is sent alone.** A
+  transaction around one statement cost a read batch three more round trips,
+  because two statements begin it. The session has autocommit on, which the
+  store sets with its other session settings, so the server commits a
+  statement sent alone by itself. Seven of the store's eight tree-built read
+  batches hold one statement, the next-wake read of every driver tick and the
+  read that tells a refused worker write why among them. What the transaction
+  gave such a read still holds, each part checked against a server:
+  - *The executor knows, and does not guess.* Core brands what `readTree` and
+    `readPrepared` compile (`isTreeBuiltRead`). Both refuse a root that is not
+    a SELECT, inside a grammar whose functions are a closed list, so such a
+    statement writes nothing. The executor asks that of the statement it
+    receives, and of nothing else, apart from the canonical schema-version
+    read, which it matches by its whole text. How a statement's text begins
+    shows nothing, because a text that begins with SELECT can call what
+    writes. A read sent as text therefore keeps the read-only transaction, so
+    the server still refuses a write sent as a read, which a server test
+    holds.
   - *The snapshot.* Under READ COMMITTED one statement reads through one view,
     its subqueries included: a statement that counts a table, sleeps, and
     counts it again answered with one count while another session committed a
     row during the sleep, where two statements of one READ COMMITTED
     transaction answered with two counts. A read batch of more than one
     statement keeps its consistent snapshot.
-  - *READ ONLY.* Inside a read batch's transaction the server refuses a write.
-    A statement tree needs no such guard, because `readTree` and
-    `readPrepared` refuse a root that is not a SELECT when the read is built.
-    The guard is for text, and the executor keeps it for every statement it
-    cannot prove is a SELECT. A read is sent alone only when it begins with
-    the keyword SELECT. In MySQL's grammar that statement changes no row of
-    any table, and this schema installs no stored routine for one to call.
-    The two listed text reads, of the schema version and of the test clock,
-    begin with SELECT. Anything else sent as a read keeps the read-only
-    transaction, so the server still refuses a write sent as a read, which a
-    server test holds. The transaction also refused a locking read, which a
-    statement sent alone would run. It changes nothing, and no read of the
-    store takes a lock.
   - *The schema-version read* needs READ COMMITTED with no snapshot taken
     ahead of it (rule 9). One statement sent alone under the session's READ
-    COMMITTED is exactly that, so the executor has no special case for it,
-    and the migrator races of the shared suite hold it as before.
-  - *The refusal of a write MySQL cut to fit* reads the warning count the
-    server returns with every result, and then `SHOW WARNINGS` on the same
-    connection, which costs a round trip only when there is a warning. It can
-    only refuse before the commit, and a statement sent alone has committed
-    by then. MySQL cuts only trailing spaces with a note, and any other
-    excess is error 1406, which writes nothing. So a single write is sent
-    alone only when none of its bound strings ends in a space, and any other
-    keeps its transaction, where the cut rolls back: on a server, a single
-    write of a key of 255 characters and a space is refused with nothing
-    written. No single write of the store stores a string it builds in SQL.
-    A cut of one would still be reported, after it committed.
-  - *A deadlock victim* sent alone is rolled back whole, as a transaction is,
-    so the executor runs it again under the same rule, with nothing to roll
-    back first. *The session settings* are sent once for each physical
-    connection and never reset, as above, and a statement sent alone leaves
-    no transaction open on the connection it returns.
+    COMMITTED is exactly that, so the executor has no transaction of its own
+    for it, and the migrator races of the shared suite hold it as before.
+  - *The session settings* are sent once for each physical connection and
+    never reset, as above. Autocommit is one of them, and a unit case holds
+    it: with autocommit off, a read sent alone would open a transaction that
+    stays open on the pooled connection it returns.
 
-  A lock coordinate keeps the transaction. Counted where the executor sends
-  them, and pinned against a server by `round-trips.test.ts`: the next-wake
-  read, the task result, and the schema-version read each went from four
-  queries to one, `expire-lease-now` from three to one, and a refused
-  heartbeat from seven to four. Measured on loopback against main, medians of
-  interleaved rounds on one shared machine: next-wake went from 345 to 156
-  microseconds a call, the task result from 301 to 119, a refused heartbeat
-  from 755 to 523, and `expire-lease-now` from 208 to 92. A held heartbeat,
-  which is two statements, did not move. Neither did one idle driver tick,
-  within what the rounds spread: a claim with nothing to claim is 3.3 of its
-  4.7 milliseconds, and the next-wake read's saving is a twentieth of it.
+  **A write always keeps its transaction.** The transaction is what rolls a
+  write back when MySQL cut a value to fit, or when the executor refuses its
+  result, and the executor learns of either only after the server has run the
+  statement. Nothing about a statement's text or binds shows that neither
+  will happen: MySQL cuts a trailing tab or line break with a note as it cuts
+  a space, in a bind sent as bytes or a literal in the text as in a bound
+  string. On a server, a single write of a key of 255 characters and a tab is
+  refused with nothing written. The only single writes the store sends are
+  `expire-lease-now` and the two test clock writes.
+
+  Counted where the executor sends them, and pinned against a server by
+  `round-trips.test.ts`: the next-wake read, the task result, and the
+  schema-version read each went from four queries to one, and a refused
+  heartbeat from seven to four, because its second batch is the prepared read
+  of why it was refused. `expire-lease-now` stays at three. Measured on
+  loopback against main, medians of interleaved rounds on one shared machine:
+  next-wake went from 345 to 156 microseconds a call, the task result from
+  301 to 119, and a refused heartbeat from 755 to 523. A held heartbeat, which
+  is two statements, did not move. Neither did one idle driver tick, 4218
+  microseconds against 4235 in the same run. A claim with nothing to claim is
+  most of a tick, 3.3 of 4.7 milliseconds in a second run of the same kind,
+  and the next-wake read's saving is a twentieth of it.
 - **A write with no index to find its rows locks every row it scans**, under
   READ COMMITTED too, and waits on rows other transactions hold. The driver
   registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats
@@ -2383,45 +2378,45 @@ realized in the store's compiler, executor, fragments, or schema:
   so are 64 of the 67 lines of saga fragments. That one operator is why the
   saga fragments stay in the stores and are not hoisted into core.
 
-**PostgreSQL sends a batch of one statement alone too**, outside a transaction
-block, where the server runs it in a transaction of its own: one query where
-`BEGIN`, the statement, and `COMMIT` were three. The same parts, in the same
-order:
+**PostgreSQL sends one read alone too, when the executor knows it for a
+read**, outside a transaction block, where the server runs it in a
+transaction of its own: one query where `BEGIN`, the statement, and `COMMIT`
+were three. The same parts, in the same order:
 
+- *The executor knows, and does not guess.* It asks `isTreeBuiltRead` of the
+  statement it receives, as MySQL's does. A text that begins with SELECT can
+  call `nextval`, and the simple query protocol runs `SELECT 1; DELETE ...`
+  whole, so a read sent as text keeps the read-only transaction. A server
+  test holds that a DELETE, a SELECT that names INTO, and a DELETE sent behind
+  a SELECT are each refused with nothing changed.
 - *The snapshot.* One statement reads through one snapshot, its subqueries
   included, at any isolation level, measured the way MySQL's was. Sent alone
-  it runs at the session's level, and under READ COMMITTED the server takes
-  the snapshot after the statement has resolved its names and waited for its
-  locks, where the REPEATABLE READ transaction took it before them, which
-  `postgres-bootstrap-window.test.ts` shows on a server. It is one snapshot
-  either way, and the schema-version read is the only read that depends on
-  which.
-- *READ ONLY.* The guard stays for every read the executor cannot prove writes
-  nothing. A read is sent alone only when it begins with SELECT and does not
-  name INTO: `SELECT ... INTO` creates a table, a statement that changes rows
-  from inside a query must begin with WITH, and this schema installs no
-  function for a query to call. Anything else sent as a read keeps the
-  read-only transaction, and a server test holds that a DELETE and a SELECT
-  that names INTO are both still refused. The transaction also refused a
-  locking read, as MySQL's did, and no read of the store takes a lock.
-- *The schema-version read* keeps its transaction. Alone it would run at the
-  session's default level, which belongs to whoever owns the pool, and rule 9
-  needs READ COMMITTED.
-- *Nothing is cut to fit.* A TEXT column holds what it is given, so a single
-  write has no condition here.
-- *A deadlock victim* sent alone is run again with nothing to roll back first,
-  and a statement sent alone that failed leaves its client with no open
-  transaction.
+  it runs at the session's default level, which belongs to whoever owns the
+  pool, where the transaction asked for REPEATABLE READ by name. Under READ
+  COMMITTED the server takes the snapshot after the statement has resolved
+  its names and waited for its locks, where REPEATABLE READ took it before
+  them, which `postgres-bootstrap-window.test.ts` shows on a server. It is
+  one snapshot either way. Under a pool whose default is SERIALIZABLE the
+  read runs at that level, and a serialization failure there is reported as
+  an outage and not run again, so the owner of a pool leaves its default at
+  READ COMMITTED or REPEATABLE READ.
+- *The schema-version read* is text, so it keeps its transaction, and with it
+  the READ COMMITTED that rule 9 needs.
 
-A lock coordinate keeps the transaction, because both kinds of lock end with
-it. Counted the same way, and pinned by the store's `round-trips.test.ts`: the
-next-wake read, the task result, and `expire-lease-now` each went from three
-queries to one, and a refused heartbeat from six to four. A held heartbeat
-stays at four, because it is two statements. Measured against main as MySQL
-was: the task result went from 695 to 521 microseconds a call,
-`expire-lease-now` from 472 to 325, a refused heartbeat from 1113 to 981, and
-next-wake from 1252 to 1139, where the statement itself is most of the call. A
-held heartbeat and an idle driver tick did not move.
+**A write always keeps its transaction**, as on MySQL. The transaction is what
+rolls a write back when the executor refuses its result, which it learns only
+after the server has run the statement: on a server, a single UPDATE whose
+RETURNING the executor refuses leaves the row as it was. A statement such as
+LOCK TABLE needs the block as well.
+
+Counted the same way, and pinned by the store's `round-trips.test.ts`: the
+next-wake read and the task result each went from three queries to one, and a
+refused heartbeat from six to four. `expire-lease-now` stays at three, and a
+held heartbeat at four, because it is two statements. Measured against main as
+MySQL was: the task result went from 695 to 521 microseconds a call, a refused
+heartbeat from 1113 to 981, and next-wake from 1252 to 1139, where the
+statement itself is most of the call. A held heartbeat and an idle driver tick
+did not move.
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
 `events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot

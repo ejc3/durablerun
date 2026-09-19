@@ -75,10 +75,13 @@ a last docs PR gives a live owner to every open bullet that is left.
    the server still refuses a write sent as a read. The counts are pinned
    against a real server on both dialects. The claim's
    `FORCE INDEX (runs_poll)` legs have a plan test, with rows in the table,
-   that fails when the hint is removed from a leg. This is met. PR4.4a sends
-   such a batch alone in both server executors, `round-trips.test.ts` in
-   each store pins the counts against a server, and a server case on each
-   dialect holds the refusal. The plan case over a small backlog in
+   that fails when the hint is removed from a leg. This is met. In both
+   server executors PR4.4a sends alone a read that core's read path built,
+   and MySQL's schema-version read, which are the statements it knows to be
+   reads. Every write, and every read sent as text, keeps its transaction.
+   `round-trips.test.ts` in each store pins the counts against a server, and
+   server cases on each dialect hold the refusal and a single write's
+   rollback. The plan case over a small backlog in
    `store-mysql/test/query-plans.test.ts` fails with the hint removed, which
    a registered mutation keeps checking.
 3. PR3.3b: the lines that take the event lock leave the dialect stores. Core
@@ -2227,48 +2230,45 @@ these three things; nothing else in the system does I/O, time, or randomness.
     coordinate. With it goes the case no test has: a version that was half
     applied, rerun through `migrate()`. It changes core's batch control and
     every executor, which PR3.9e part 3b and the child-task fold are editing.
-  - Done in PR4.4a: a batch of one statement with no lock coordinate is sent
+  - Done in PR4.4a: one read that the executor knows to be a read is sent
     alone, under the session's autocommit, where a read batch cost four round
-    trips and a single write three. What the transaction gave such a batch
-    still holds, and DESIGN.md's MySQL notes say how. One statement reads one
-    view. A read is sent alone only when it begins with SELECT, and anything
-    else sent as a read keeps the read-only transaction. The schema-version
-    read needs no special case. A single write is sent alone only when no
-    bound string ends in a space, because the refusal of a write MySQL cut to
-    fit can only precede a commit. A deadlock victim is run again as before.
-    PostgreSQL has the same rule, where a read must also not name INTO and the
-    schema-version read keeps its transaction. `round-trips.test.ts` in each
-    store pins the counts against a server. Measured on loopback against main,
-    medians of interleaved rounds on one shared machine, in microseconds a
-    call:
+    trips. The executor knows because core brands what its read path
+    compiles, which refuses a root that is not a SELECT, and MySQL's canonical
+    schema-version read is matched by its whole text. A read sent as text
+    keeps the read-only transaction, and every write keeps its transaction,
+    because what a transaction gives a write, its rollback when MySQL cut a
+    value to fit or when its result is refused, cannot be shown from the
+    statement. DESIGN.md's MySQL notes say how each part was checked.
+    PostgreSQL has the same rule, where the schema-version read is text and so
+    keeps its transaction. `round-trips.test.ts` in each store pins the counts
+    against a server. Measured on loopback against main, medians of
+    interleaved rounds on one shared machine, in microseconds a call:
 
     | Call | MySQL, main | MySQL | PostgreSQL, main | PostgreSQL |
     |---|---|---|---|---|
     | next-wake | 345 | 156 | 1252 | 1139 |
     | task result | 301 | 119 | 695 | 521 |
     | heartbeat, refused | 755 | 523 | 1113 | 981 |
-    | expire-lease-now | 208 | 92 | 472 | 325 |
     | heartbeat, held | 530 | 547 | 1056 | 1118 |
     | one idle driver tick | 4218 | 4235 | 9181 | 8890 |
 
     The last two rows did not move. A held heartbeat is two statements. A
-    claim with nothing to claim is 3.3 ms of MySQL's idle tick and 6.8 ms of
-    PostgreSQL's, and the next-wake read's saving is lost in what the rounds
-    spread. Ten mutations hold the rule's conditions and the plan test below,
-    and the mutant of MySQL's schema-version read is re-aimed at the rule.
+    claim with nothing to claim is most of an idle tick, 3.3 ms of MySQL's
+    4.7 ms and 6.8 ms of PostgreSQL's 11 ms in a second run of the same kind,
+    and the next-wake read's saving is lost in what the rounds spread. Ten
+    mutations hold the rule's conditions, the session's autocommit, core's
+    brand, and the plan tests below, and the mutant of MySQL's schema-version
+    read is re-aimed at the rule. The rule first decided from a statement's
+    text and binds. The review of this PR reproduced, against main, a write
+    that MySQL cut at a trailing tab and committed before it was refused, and
+    a DELETE sent behind a SELECT that ran as a read on PostgreSQL. The
+    postmortem of that review records both.
     - Option, not a deferral of this PR: the sweep's discovery scan is a read
       batch of two statements, five round trips on MySQL and four on
       PostgreSQL. As two batches of one statement it would be two. Nothing a
       sweep does needs the two reads to share a snapshot, because every
       transition it then makes checks its own row again, but it changes a
       batch's shape on all three stores.
-    - Option, not a deferral of this PR: both executors prove from its text
-      that a read writes nothing. Core proved it from the tree when the read
-      was built, and does not pass the fact on, because a statement carries
-      only its text, its binds, and its gate. A statement that said it was
-      built as a read would replace the text test in both executors. That is
-      a change to core's statement, and the text test fails safe: what it
-      cannot prove keeps the transaction.
   - Deferred from PR4.3: `migrate()` reads the version before each of the four
     empty versions and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
