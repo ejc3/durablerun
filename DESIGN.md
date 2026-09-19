@@ -2233,6 +2233,66 @@ realized in the store's compiler, executor, fragments, or schema:
   the same reason, a pool handed to `fromPool` must not have its session state
   changed by anything else that uses it: the store does not send the settings
   again.
+- **A batch of one statement is sent alone.** A transaction around one
+  statement cost two more round trips, and a read batch three more, because
+  two statements begin it. The session has autocommit on, which the store sets
+  with its other session settings, so the server commits a statement sent
+  alone by itself, and one statement is atomic. Seven of the store's eight
+  tree-built read batches hold one statement, the next-wake read of every
+  driver tick and the read that tells a refused worker write why among them,
+  and both of its text reads do. What the transaction gave a batch of one
+  statement still holds, each part checked against a server:
+  - *The snapshot.* Under READ COMMITTED one statement reads through one view,
+    its subqueries included: a statement that counts a table, sleeps, and
+    counts it again answered with one count while another session committed a
+    row during the sleep, where two statements of one READ COMMITTED
+    transaction answered with two counts. A read batch of more than one
+    statement keeps its consistent snapshot.
+  - *READ ONLY.* Inside a read batch's transaction the server refuses a write.
+    A statement tree needs no such guard, because `readTree` and
+    `readPrepared` refuse a root that is not a SELECT when the read is built.
+    The guard is for text, and the executor keeps it for every statement it
+    cannot prove is a SELECT. A read is sent alone only when it begins with
+    the keyword SELECT. In MySQL's grammar that statement changes no row of
+    any table, and this schema installs no stored routine for one to call.
+    The two listed text reads, of the schema version and of the test clock,
+    begin with SELECT. Anything else sent as a read keeps the read-only
+    transaction, so the server still refuses a write sent as a read, which a
+    server test holds. The transaction also refused a locking read, which a
+    statement sent alone would run. It changes nothing, and no read of the
+    store takes a lock.
+  - *The schema-version read* needs READ COMMITTED with no snapshot taken
+    ahead of it (rule 9). One statement sent alone under the session's READ
+    COMMITTED is exactly that, so the executor has no special case for it,
+    and the migrator races of the shared suite hold it as before.
+  - *The refusal of a write MySQL cut to fit* reads the warning count the
+    server returns with every result, and then `SHOW WARNINGS` on the same
+    connection, which costs a round trip only when there is a warning. It can
+    only refuse before the commit, and a statement sent alone has committed
+    by then. MySQL cuts only trailing spaces with a note, and any other
+    excess is error 1406, which writes nothing. So a single write is sent
+    alone only when none of its bound strings ends in a space, and any other
+    keeps its transaction, where the cut rolls back: on a server, a single
+    write of a key of 255 characters and a space is refused with nothing
+    written. No single write of the store stores a string it builds in SQL.
+    A cut of one would still be reported, after it committed.
+  - *A deadlock victim* sent alone is rolled back whole, as a transaction is,
+    so the executor runs it again under the same rule, with nothing to roll
+    back first. *The session settings* are sent once for each physical
+    connection and never reset, as above, and a statement sent alone leaves
+    no transaction open on the connection it returns.
+
+  A lock coordinate keeps the transaction. Counted where the executor sends
+  them, and pinned against a server by `round-trips.test.ts`: the next-wake
+  read, the task result, and the schema-version read each went from four
+  queries to one, `expire-lease-now` from three to one, and a refused
+  heartbeat from seven to four. Measured on loopback against main, medians of
+  interleaved rounds on one shared machine: next-wake went from 345 to 156
+  microseconds a call, the task result from 301 to 119, a refused heartbeat
+  from 755 to 523, and `expire-lease-now` from 208 to 92. A held heartbeat,
+  which is two statements, did not move. Neither did one idle driver tick,
+  within what the rounds spread: a claim with nothing to claim is 3.3 of its
+  4.7 milliseconds, and the next-wake read's saving is a twentieth of it.
 - **A write with no index to find its rows locks every row it scans**, under
   READ COMMITTED too, and waits on rows other transactions hold. The driver
   registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats

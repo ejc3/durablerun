@@ -414,20 +414,68 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
-  it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
+  it('runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read', async () => {
+    // A read of one statement is sent alone only when it begins with SELECT. Anything
+    // else sent as a read keeps the read-only transaction, where the server refuses it.
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
       const [write] = await db.raw.batch('fixture:isolation', [
-        { sql: 'SELECT @@transaction_isolation AS level', args: [] },
+        { sql: 'SELECT @@transaction_isolation AS level, @@autocommit AS autocommit', args: [] },
       ])
-      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED' }])
-      await expect(
-        db.raw.batch(
+      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED', autocommit: 1 }])
+      await db.raw.batch('fixture:seed', [
+        { sql: "INSERT INTO meta (`key`, value) VALUES ('kept', 'v')", args: [] },
+      ])
+      const outcome = await db.raw
+        .batch(
           'fixture:read-only',
-          [{ sql: "DELETE FROM meta WHERE `key` = 'nothing'", args: [] }],
+          [{ sql: "DELETE FROM meta WHERE `key` = 'kept'", args: [] }],
           'read',
-        ),
-      ).rejects.toThrow(/READ ONLY/)
+        )
+        .then(
+          () => 'accepted',
+          (error: unknown) => (/READ ONLY/.test(String(error)) ? 'refused by the server' : error),
+        )
+      const [kept] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE `key` = 'kept'", args: [] }],
+        'read',
+      )
+      expect(
+        { outcome, kept: kept?.rows },
+        'mutation-verdict:behavior:mysql-lone-read-begins-with-select',
+      ).toEqual({ outcome: 'refused by the server', kept: [{ n: 1 }] })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses a single write MySQL would cut to fit its column, and writes nothing', async () => {
+    // Sent alone, a write has committed before its warning count arrives, so a write that
+    // binds a string ending in a space keeps its transaction, and the cut rolls back.
+    const db = await openMysqlTestDb({ idNamespace: 'cut-alone' })
+    try {
+      const outcome = await db.raw
+        .batch('fixture:cut-alone', [
+          {
+            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+            args: [`${'k'.repeat(255)} `, 'v'],
+          },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      expect(outcome).toBeInstanceOf(InvalidDurableStringError)
+      const [rows] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'v'", args: [] }],
+        'read',
+      )
+      expect(
+        rows?.rows,
+        'mutation-verdict:behavior:mysql-lone-write-binds-no-trailing-space',
+      ).toEqual([{ n: 0 }])
     } finally {
       await db.close()
     }

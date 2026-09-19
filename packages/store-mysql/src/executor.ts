@@ -82,8 +82,11 @@ class MysqlResultContractError extends TypeError {}
  *   truncation, whatever the server's default is. Backslash escapes stay on.
  * - UTC, English server messages, because the affected-row normalization reads the
  *   server's `Rows matched:` line.
+ * - Autocommit on. It is the server's default, and a batch of one statement depends on
+ *   it: the statement is sent alone, and the server commits it (`sentAlone`).
  */
 const SESSION_SETUP = `SET SESSION
+  autocommit = 1,
   transaction_isolation = 'READ-COMMITTED',
   sql_mode = 'STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ONLY_FULL_GROUP_BY,NO_ZERO_DATE,NO_ZERO_IN_DATE',
   time_zone = '+00:00',
@@ -274,23 +277,10 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch sees one consistent snapshot, and cannot write. */
+/** A read batch of more than one statement sees one consistent snapshot, and cannot write. */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
-] as const
-/**
- * The one-statement schema-version read begins under READ COMMITTED, with no snapshot
- * taken ahead of it. A consistent snapshot is older than the statement that reads
- * through it, and MySQL refuses to read a table whose definition committed after the
- * snapshot (error 1412, "Table definition has changed"), so a version read racing a
- * bootstrap failed. Measured over 250 cold starts with six racing readers: 1500 such
- * refusals under the snapshot and none under READ COMMITTED, where the statement sees
- * either no table or the table with its row.
- */
-const BEGIN_VERSION_READ = [
-  'SET TRANSACTION ISOLATION LEVEL READ COMMITTED',
-  'START TRANSACTION READ ONLY',
 ] as const
 
 /** Matching coordinates hash to one server-wide lock name, scoped to this database. */
@@ -343,6 +333,47 @@ async function refuseWriteCutToFit(
   }
 }
 
+const BEGINS_WITH_SELECT = /^\s*SELECT\b/i
+const endsInASpace = (argument: PreparedStatement['args'][number]): boolean =>
+  typeof argument === 'string' && argument.endsWith(' ')
+
+/**
+ * Whether a batch is sent as its one statement alone, with no transaction around it. The
+ * session has autocommit on, so the server commits the statement by itself. It is as
+ * atomic as the batch was, in one round trip where the transaction cost three, and four
+ * for a read. What the transaction gave a batch of one statement still holds:
+ * - A read batch's snapshot. One statement reads through one view under READ COMMITTED,
+ *   its subqueries included. The schema-version read is such a statement, and has to be:
+ *   a snapshot taken ahead of it is older than a table created since, and MySQL refuses
+ *   to read such a table (error 1412). Measured over 250 cold starts with six racing
+ *   readers: 1500 such refusals under a snapshot, and none for one statement under READ
+ *   COMMITTED, which sees either no table or the table with its row.
+ * - A read batch's READ ONLY, under which the server refuses a write. A statement that
+ *   begins with SELECT writes no row in MySQL, and this schema installs no stored routine
+ *   for one to call. Any other statement sent as a read keeps the read-only transaction.
+ * - A write's rollback when MySQL cut a value to fit (`refuseWriteCutToFit`). Alone, the
+ *   statement has committed before its warning count arrives. Only trailing spaces are
+ *   cut with a note, so a write whose bound strings do not end in one cannot have a bound
+ *   value cut, and any other keeps its transaction. No single write of the store stores
+ *   a string it builds in SQL. A cut of one would still be reported, after it committed.
+ * A lock coordinate keeps the transaction as well.
+ */
+function sentAlone(
+  prepared: readonly PreparedStatement[],
+  mode: SqlBatchMode,
+  lock: LockCoordinates | null,
+): boolean {
+  const [statement] = prepared
+  if (statement === undefined || prepared.length !== 1) return false
+  if (lock !== null) return false
+  if (mode === 'read') return BEGINS_WITH_SELECT.test(statement.sql)
+  return !statement.args.some(endsInASpace)
+}
+
+/**
+ * The canonical version read, for which a missing table means a database with no schema
+ * yet. It is one statement that begins with SELECT, so it is sent alone.
+ */
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -412,9 +443,11 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over mysql2. Every batch owns one connection and one transaction, so
- * statements are ordered and observe earlier statements of the same batch. Write batches
- * run at READ COMMITTED. Read batches run in a read-only consistent snapshot.
+ * SqlExecutor over mysql2. Every batch owns one connection. A batch of more than one
+ * statement owns one transaction, so its statements are ordered, atomic, and observe
+ * earlier statements of the same batch: a write batch at READ COMMITTED, a read batch
+ * in a read-only consistent snapshot. A batch of one statement is sent alone, because
+ * one statement is atomic and reads one view by itself (`sentAlone`).
  *
  * Statements that carry arguments go through the server's prepared-statement protocol,
  * so a bind is data and never SQL text.
@@ -516,7 +549,7 @@ export class MysqlExecutor implements SqlExecutor {
         await connection.query(SESSION_SETUP)
         this.configured.add(physical)
       }
-      return await this.transact(connection, prepared, mode, lock, schemaVersionRead)
+      return await this.transact(connection, prepared, mode, lock)
     } catch (error) {
       discard = !(error instanceof MysqlResultContractError) && errorNumber(error) === undefined
       throw classifyError(error, label, schemaVersionRead)
@@ -531,8 +564,8 @@ export class MysqlExecutor implements SqlExecutor {
     prepared: readonly PreparedStatement[],
     mode: SqlBatchMode,
     lock: LockCoordinates | null,
-    schemaVersionRead: boolean,
   ): Promise<SqlResult[]> {
+    const alone = sentAlone(prepared, mode, lock)
     let locked = false
     try {
       if (lock !== null) {
@@ -542,14 +575,14 @@ export class MysqlExecutor implements SqlExecutor {
       for (let attempt = 1; ; attempt += 1) {
         let transactionStarted = false
         try {
-          if (mode === 'read') {
-            for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {
-              await connection.query(statement)
+          if (!alone) {
+            if (mode === 'read') {
+              for (const statement of BEGIN_READ) await connection.query(statement)
+            } else {
+              await connection.query('START TRANSACTION')
             }
-          } else {
-            await connection.query('START TRANSACTION')
+            transactionStarted = true
           }
-          transactionStarted = true
           const results: SqlResult[] = []
           for (const statement of prepared) {
             // Each statement is a round trip here. One whose gating statement wrote no row
@@ -572,7 +605,7 @@ export class MysqlExecutor implements SqlExecutor {
               normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql),
             )
           }
-          await connection.query('COMMIT')
+          if (transactionStarted) await connection.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {
@@ -590,7 +623,8 @@ export class MysqlExecutor implements SqlExecutor {
               )
             }
           }
-          // InnoDB ends a deadlock by rolling one transaction back. That batch committed
+          // InnoDB ends a deadlock by rolling one transaction back, which for a statement
+          // sent alone is the statement. That batch committed
           // nothing, so running it again is a first delivery, and the other transaction
           // has its locks by now. Reported as an outage, a finished run would be left for
           // the sweep to charge an infrastructure retry. Only a write batch is run again:
