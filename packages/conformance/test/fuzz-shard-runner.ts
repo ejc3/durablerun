@@ -13,11 +13,16 @@ function knob(name: string, fallback: number): number {
   return value
 }
 
-function zeroBasedKnob(name: string, fallback: number): number {
+/**
+ * A batch index has no default. Unset, the process was given no index and runs every batch.
+ * An empty value is refused as knob() refuses one: Number('') is 0, so a workflow that built
+ * the index from a misspelled key would walk batch 0 only and report a green shard.
+ */
+function indexKnob(name: string): number | undefined {
   const raw = process.env[name]
-  if (raw === undefined) return fallback
+  if (raw === undefined) return undefined
   const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
+  if (raw.trim() === '' || !Number.isInteger(value) || value < 0) {
     throw new Error(`${name}='${raw}' is not a nonnegative integer — refusing a vacuous fuzz run`)
   }
   return value
@@ -26,7 +31,7 @@ function zeroBasedKnob(name: string, fallback: number): number {
 const SEEDS = knob('FUZZ_SEEDS', 64)
 const STEPS = knob('FUZZ_STEPS', 60)
 const BATCH_COUNT = knob('FUZZ_BATCHES', 1)
-const BATCH = zeroBasedKnob('FUZZ_BATCH_INDEX', 0)
+const BATCH_INDEX = indexKnob('FUZZ_BATCH_INDEX')
 
 export interface FuzzBatchCoordinates {
   readonly totalSeeds: number
@@ -87,14 +92,32 @@ export function fuzzBatchSeeds({
  * in-process pooling cannot use the cores; thread-per-file can.
  */
 export function runFuzzShard(shard: number, of: number): void {
+  for (const batch of fuzzProcessBatches(BATCH_COUNT, BATCH_INDEX)) runFuzzBatch(shard, of, batch)
+}
+
+/**
+ * The batches one process runs. The hosted nightly starts a fresh process for each batch and
+ * names it with FUZZ_BATCH_INDEX. A process given a batch count and no index runs every batch,
+ * each as its own test with its own time budget: an unset index once meant batch 0, so a run
+ * that set FUZZ_BATCHES alone walked one batch of its seeds and reported a green shard.
+ */
+export function fuzzProcessBatches(
+  batchCount: number,
+  batchIndex: number | undefined,
+): readonly number[] {
+  if (batchIndex !== undefined) return [batchIndex]
+  return Array.from({ length: batchCount }, (_, batch) => batch)
+}
+
+function runFuzzBatch(shard: number, of: number, batch: number): void {
   const seeds = fuzzBatchSeeds({
     totalSeeds: SEEDS,
     shard,
     shardCount: of,
-    batch: BATCH,
+    batch,
     batchCount: BATCH_COUNT,
   })
-  describe(`operation fuzz shard ${shard}/${of}, batch ${BATCH}/${BATCH_COUNT} (${seeds.length} of ${SEEDS} total seeds x ${STEPS} steps)`, () => {
+  describe(`operation fuzz shard ${shard}/${of}, batch ${batch}/${BATCH_COUNT} (${seeds.length} of ${SEEDS} total seeds x ${STEPS} steps)`, () => {
     it('upholds the engine invariants on every seeded walk', async () => {
       const failures: string[] = []
       const totals: FuzzStats = {

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { fuzzBatchSeeds } from './fuzz-shard-runner.js'
+import { fuzzBatchSeeds, fuzzProcessBatches } from './fuzz-shard-runner.js'
 
 interface HostedFuzzProcess {
   readonly shard: number
@@ -75,6 +75,53 @@ printf 'nightly-fuzz-executed-batch=missing\\n'
       .split('\n')
       .filter((line) => line.startsWith('nightly-fuzz-executed-batch='))
       .map((line) => Number(line.slice('nightly-fuzz-executed-batch='.length)))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+interface ShardFileRun {
+  readonly exitCode: number | null
+  readonly batchTests: readonly string[]
+  readonly output: string
+}
+
+// One real shard file in a child vitest, as `verify:fuzz:deep` runs it, under exactly the FUZZ_
+// variables given. The runner reads its knobs once, when its module loads, so only a fresh
+// process shows what a process does with them.
+function runShardFile(fuzzEnvironment: Readonly<Record<string, string>>): ShardFileRun {
+  const directory = mkdtempSync(join(tmpdir(), 'durablerun-fuzz-shard-run-'))
+  try {
+    const report = join(directory, 'report.json')
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !/^(FUZZ_|VITEST)/.test(name)),
+    )
+    const child = spawnSync(
+      process.execPath,
+      [
+        join(ROOT, 'node_modules/vitest/vitest.mjs'),
+        'run',
+        'packages/conformance/test/fuzz-00.test.ts',
+        '--reporter=json',
+        `--outputFile=${report}`,
+      ],
+      { cwd: ROOT, encoding: 'utf8', env: { ...inherited, ...fuzzEnvironment } },
+    )
+    const files = (
+      JSON.parse(readFileSync(report, 'utf8')) as {
+        testResults: readonly {
+          message: string
+          assertionResults: readonly { status: string; ancestorTitles: readonly string[] }[]
+        }[]
+      }
+    ).testResults
+    return {
+      exitCode: child.status,
+      batchTests: files.flatMap((file) =>
+        file.assertionResults.map((test) => `${test.status}: ${test.ancestorTitles.join(' > ')}`),
+      ),
+      output: [child.stdout, child.stderr, ...files.map((file) => file.message)].join('\n'),
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -397,4 +444,67 @@ describe('fuzz shard batch plan', () => {
       },
     )
   })
+})
+
+describe('deep fuzz batches', () => {
+  // `verify:fuzz:deep` runs one process for each shard file, and each test has a 600 second
+  // budget. One batch of 782 walks took 286 seconds on the development host, 0.37 seconds a
+  // walk, so a whole shard of 3,125 walks cannot fit one test.
+  const DEEP = { totalSeeds: 100_000, shardCount: 32, batchCount: 8 }
+
+  it('runs every batch in a process that is given a batch count and no batch index', () => {
+    expect({
+      named: fuzzProcessBatches(DEEP.batchCount, 5),
+      unnamed: fuzzProcessBatches(DEEP.batchCount, undefined),
+      single: fuzzProcessBatches(1, undefined),
+    }).toEqual({ named: [5], unnamed: [0, 1, 2, 3, 4, 5, 6, 7], single: [0] })
+  })
+
+  it('gives the deep script a batch count that covers every seed once, in tests a quarter of their budget', () => {
+    const script = (
+      JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>
+      }
+    ).scripts['verify:fuzz:deep']
+    expect(script).toContain(`FUZZ_SEEDS=${DEEP.totalSeeds} `)
+    expect(script).toContain(`FUZZ_BATCHES=${DEEP.batchCount} `)
+    expect(script).not.toContain('FUZZ_BATCH_INDEX')
+    const planned: number[] = []
+    let largest = 0
+    for (let shard = 0; shard < DEEP.shardCount; shard++) {
+      for (const batch of fuzzProcessBatches(DEEP.batchCount, undefined)) {
+        const seeds = fuzzBatchSeeds({ ...DEEP, shard, batch })
+        largest = Math.max(largest, seeds.length)
+        planned.push(...seeds)
+      }
+    }
+    expect({
+      planned: planned.length,
+      unique: new Set(planned).size,
+      largestTestFitsAQuarterOfItsBudget: largest * 0.37 <= 150,
+    }).toEqual({ planned: 100_000, unique: 100_000, largestTestFitsAQuarterOfItsBudget: true })
+  })
+
+  it('runs both batches of a real shard file in one process that is given a batch count and no batch index', () => {
+    const run = runShardFile({ FUZZ_SEEDS: '64', FUZZ_BATCHES: '2' })
+    expect(
+      { exitCode: run.exitCode, batchTests: run.batchTests },
+      'mutation-verdict:construction:deep-fuzz-unset-index-runs-every-batch',
+    ).toEqual({
+      exitCode: 0,
+      batchTests: [
+        'passed: operation fuzz shard 0/32, batch 0/2 (1 of 64 total seeds x 60 steps)',
+        'passed: operation fuzz shard 0/32, batch 1/2 (1 of 64 total seeds x 60 steps)',
+      ],
+    })
+  }, 120_000)
+
+  it('refuses an empty batch index instead of reading it as batch 0', () => {
+    const run = runShardFile({ FUZZ_SEEDS: '64', FUZZ_BATCHES: '2', FUZZ_BATCH_INDEX: '' })
+    expect({
+      failed: run.exitCode !== 0,
+      batchTests: run.batchTests,
+      refused: run.output.includes("FUZZ_BATCH_INDEX='' is not a nonnegative integer"),
+    }).toEqual({ failed: true, batchTests: [], refused: true })
+  }, 120_000)
 })

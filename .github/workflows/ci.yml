@@ -13,6 +13,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # 18 to 30 minutes across recent runs. Three times the slowest, the margin the per-test limits have: a slow runner must
+    # not cancel a required check, and a hung run must not hold a runner for the six hour default.
+    timeout-minutes: 90
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # The dialects this job has servers for. MySQL runs the same suite in its
@@ -166,6 +169,8 @@ jobs:
   base-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # Three to five and a half minutes across recent runs. Its longest step is main's registry self-test over the head tree.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -306,48 +311,13 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'b4be3a2657a3d6772d18e4028b55e2011e887a7ff44a8b985b83dab3c2a98d3d':
-              # Sagas register verdict markers this registry predates, and re-aim nothing:
-              # every find of this registry still occurs exactly once in this tree. The
-              # arm is keyed on main's registry as of the merge of PR3.9e part 3c, whose
-              # own arm it replaces. One marker is the MySQL port's, for the one guard
-              # that is new in that store: main's registry reads that store's tests.
+          if digest == '93068a37ccdffaa168da13eaae8009339253aa1f9a4383516c8e4d38bd85df9d':
+              # One verdict marker is newer than this registry: the deep fuzz case that runs a
+              # real shard file with a batch count and no batch index. Nothing is re-aimed:
+              # every find of this registry still occurs exactly once in this tree. The arm is
+              # keyed on main's registry as of the merge of PR3.4, whose own arm it replaces.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
-                  'mutation-verdict:behavior:saga-attempt-record-is-the-engines',
-                  'mutation-verdict:behavior:saga-attempt-record-name-is-checked',
-                  'mutation-verdict:behavior:saga-budget-boundary',
-                  'mutation-verdict:behavior:saga-caller-named-checkpoint-doors',
-                  'mutation-verdict:behavior:saga-cap-with-nothing-owed-ends-the-task',
-                  'mutation-verdict:behavior:saga-endings',
-                  'mutation-verdict:behavior:saga-failed-rollback-needs-the-phase',
-                  'mutation-verdict:behavior:saga-finish-is-honest',
-                  'mutation-verdict:behavior:saga-forward-phase-is-frozen',
-                  'mutation-verdict:behavior:saga-only-an-owed-terminal-failure-enters',
-                  'mutation-verdict:behavior:saga-pass-fits-the-largest-budget',
-                  'mutation-verdict:behavior:saga-phase-entry',
-                  'mutation-verdict:behavior:saga-phase-is-entered-once',
-                  'mutation-verdict:behavior:saga-phase-marker-is-the-engines',
-                  'mutation-verdict:behavior:saga-plans',
-                  'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
-                  'mutation-verdict:behavior:saga-reserved-names-match-exactly',
-                  'mutation-verdict:behavior:saga-rollback-only-inside-the-phase',
-                  'mutation-verdict:behavior:saga-row-checker-names-the-defect',
-                  'mutation-verdict:behavior:saga-sdk-attempts-counted',
-                  'mutation-verdict:behavior:saga-sdk-bad-registration',
-                  'mutation-verdict:behavior:saga-sdk-concurrent-start',
-                  'mutation-verdict:behavior:saga-sdk-corrupt-state',
-                  'mutation-verdict:behavior:saga-sdk-fatal-rollback',
-                  'mutation-verdict:behavior:saga-sdk-frozen-emit',
-                  'mutation-verdict:behavior:saga-sdk-marker-first',
-                  'mutation-verdict:behavior:saga-sdk-order',
-                  'mutation-verdict:behavior:saga-sdk-pass-attempt',
-                  'mutation-verdict:behavior:saga-sdk-replay-cut',
-                  'mutation-verdict:behavior:saga-sdk-unpersisted-step',
-                  'mutation-verdict:behavior:saga-sdk-unregistered',
-                  'mutation-verdict:behavior:saga-suspension-marker-name-is-checked',
-                  'mutation-verdict:behavior:saga-sweep-cap-enters',
-                  'mutation-verdict:construction:mysql-saga-step-key-bound',
+                  'mutation-verdict:construction:deep-fuzz-unset-index-runs-every-batch',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
