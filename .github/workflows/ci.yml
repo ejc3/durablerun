@@ -348,7 +348,7 @@ jobs:
                   for line in lines
               )
               return repaired[:at] + entries + repaired[at:]
-          if digest == 'f9dad5c95c4f619d9765c799f2aa8fab12d5d1cc80d87ffe9c3687aa01ecc6cb':
+          if digest == '9f67faf87a57b5d78e48a7b0f64405956fc6fe246a230144efb7b8137fe3c367':
               # heartbeat became a fenced batch of two trees on libSQL and PostgreSQL, the
               # shape MySQL already sent. Two base entries quoted the libSQL heartbeat's SQL
               # text, which is gone, and are re-aimed at the fragments the store now hands the
@@ -367,6 +367,7 @@ jobs:
               ))
               repaired = exempt(repaired, candidate, (
                   "mutation-verdict:construction:tree-clock-spelling-fake-clock-arm",
+                  "mutation-verdict:behavior:text-statement-list-holds-every-raw-batch",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

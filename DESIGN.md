@@ -1314,19 +1314,20 @@ are load-bearing):
    the dialect that compiles one, and the scanners that read a
    statement's text are deleted. A batch reads a statement's object graph
    once for all of its checks. `scripts/fragment-lint.py` and
-   `scripts/clock-lint.py` still read store SQL text, scoped to the text that
-   no tree holds: `expire-lease-now`, `driver-heartbeat`, and the admin's
-   statements. That text is one list, `scripts/text-statements.json`, with
-   the reason each statement cannot be a tree, and `scripts/batch-lint.py`
-   classifies a store's raw batches from it. In a store file that builds a
-   `FencedBatch` the two lints read only its raw batch calls, and they read
-   any other store file whole. The scope is checked and not remembered:
-   `packages/conformance/test/text-statements.test.ts` fails when a store's
-   source, or a store on a real backend, sends SQL text under a label that is
-   not on the list, and when a listed statement is no longer sent. The
-   narrowing has a cost. A deadline comparison hand-written in a fragment
-   outside `fragments.ts` is seen by neither lint nor tree, because a tree
-   cannot tell where a fragment was written. A store's reads are batches of reads built as
+   `scripts/clock-lint.py` still read every store source file whole, because
+   two kinds of text reach no tree rule. One is the statements no tree holds:
+   `expire-lease-now`, `driver-heartbeat`, and the admin's statements. That
+   text is one list, `scripts/text-statements.json`, with the reason each
+   statement cannot be a tree. `scripts/batch-lint.py` classifies a store's
+   raw batches from it, and `packages/conformance/test/text-statements.test.ts`
+   fails when a store's source, or a store on a real backend, sends SQL text
+   under a label that is not on the list, and when a listed statement is no
+   longer sent. The other is a comparison hand-written inside a fragment. A
+   tree carries a fragment as text, and `eligibilityDefinitionProblem` does
+   not read a comparison written there, so `fragment-lint` is what refuses a
+   cancellation deadline compared outside `fragments.ts`. The lints read a
+   file and not a call, so text that a raw batch sends is read wherever in
+   the file it is written. A store's reads are batches of reads built as
    trees. `heartbeat` is a fenced batch of two trees on every dialect, the
    shape MySQL needs because it has no RETURNING: the compare-and-set extends
    the lease and stamps the run, and a gated read subtracts the two instants
