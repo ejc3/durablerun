@@ -13086,6 +13086,60 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The invariant library's width condition (DESIGN.md S3.4 rule 10). It reads every
+# identifier column of the six table snapshots, it counts as core counts, and its list of
+# columns is held to the columns MySQL's migrations bound at the width.
+MUTATION_SPECS.extend(
+    (
+        (
+            "invariant-identifier-width-read",
+            "packages/conformance/src/invariants.ts",
+            "        if (typeof value !== 'string' || fitsCharacters(value, IDENTIFIER_CHARACTERS)) continue\n",
+            "        if (typeof value !== 'string' || fitsCharacters(value, Number.MAX_SAFE_INTEGER)) continue\n",
+            "a stored name past the width is reported by nothing on libSQL and PostgreSQL, whose columns do not bound it",
+        ),
+        (
+            "invariant-identifier-width-counts-code-points",
+            "packages/conformance/src/invariants.ts",
+            "fitsCharacters(value, IDENTIFIER_CHARACTERS)) continue\n",
+            "value.length <= IDENTIFIER_CHARACTERS) continue\n",
+            "a stored name of 255 characters outside the basic plane is reported as too long, which the port accepted",
+        ),
+        (
+            "identifier-column-inventory-holds-every-bounded-column",
+            "packages/conformance/src/invariants.ts",
+            "  runs: ['run_id', 'queue', 'task_id', 'wake_event', 'wake_step'],\n",
+            "  runs: ['run_id', 'queue', 'task_id', 'wake_event'],\n",
+            "an identifier column the width condition does not read: a wake step past the width is stored and reported by nothing",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption reports a name past the width in every identifier column, and none at the width, counted in code points",
+            "mutation-verdict:behavior:identifier-over-width-read-in-every-column",
+        ),
+        (
+            "invariant-identifier-width-read",
+            "invariant-identifier-width-counts-code-points",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption reads every column MySQL bounds at the width, and no other",
+            "mutation-verdict:construction:identifier-columns-are-the-bounded-columns",
+        ),
+        ("identifier-column-inventory-holds-every-bounded-column",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
@@ -16978,7 +17032,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 875:
+        if len(MUTATIONS) != 878:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

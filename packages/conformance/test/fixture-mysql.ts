@@ -1,14 +1,15 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { META_TABLE_SQL, MysqlSchedulerStore, MysqlStoreAdmin } from '@durablerun/store-mysql'
 import {
-  openMysqlTestDb,
   mysqlPersistedIntegerCatalogStatements,
+  openMysqlTestDb,
 } from '@durablerun/store-mysql/testing'
-import type {
-  StorageCorruption,
-  StorageCorruptionAttempt,
-  StoreFixture,
-  StoreFixtureOptions,
+import {
+  type StorageCorruption,
+  type StorageCorruptionAttempt,
+  type StoreFixture,
+  type StoreFixtureOptions,
+  overWidthWrite,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
@@ -34,7 +35,19 @@ function mysqlErrno(error: unknown): number | undefined {
 /** A scalar subquery that returns two rows: MySQL refuses it only when it is evaluated. */
 const ER_SUBQUERY_NO_1_ROW = 1242
 
+/** A string longer than its column holds, which strict mode refuses and does not cut. */
+const ER_DATA_TOO_LONG = 1406
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'over-width') {
+    return {
+      statements: [overWidthWrite(corruption)],
+      isStructuralRejection: (error) => mysqlErrno(error) === ER_DATA_TOO_LONG,
+      verify: () => {
+        throw new Error(`MySQL accepted a name past the width in tasks.${corruption.column}`)
+      },
+    }
+  }
   let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
   let where: string
   let identityArgs: string[]

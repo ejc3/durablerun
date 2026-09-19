@@ -1,12 +1,13 @@
-import type {
-  Buggify,
-  PersistedCounterFieldDescriptor,
-  PersistedTemporalFieldDescriptor,
-  SchedulerStore,
-  SqlExecutor,
-  SqlResult,
-  SqlStatement,
-  StoreAdmin,
+import {
+  type Buggify,
+  IDENTIFIER_CHARACTERS,
+  type PersistedCounterFieldDescriptor,
+  type PersistedTemporalFieldDescriptor,
+  type SchedulerStore,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+  type StoreAdmin,
 } from '@durablerun/core'
 import type { SelfRaceName } from './self-concurrency.js'
 
@@ -22,7 +23,8 @@ type InvalidNumericRepresentation = 'fractional-real' | 'non-integer'
  * A deliberately invalid storage representation used by the generated poison
  * surface. A permissive backend may inject it; a strict native type may reject
  * it structurally. Keeping this descriptor above every dialect fixture avoids
- * baking SQLite's dynamic typing into the shared scenarios.
+ * baking SQLite's dynamic typing into the shared scenarios. A name past the width of a
+ * durable identifier is one of these: a dialect whose schema bounds the column refuses it.
  */
 export type StorageCorruption =
   | {
@@ -71,6 +73,49 @@ export type StorageCorruption =
       column: 'fence_stamp'
       invalidRepresentation: 'non-text'
     }
+  | {
+      table: 'tasks'
+      taskId: string
+      column: 'idempotency_key'
+      invalidRepresentation: 'over-width'
+    }
+
+type OverWidthCorruption = Extract<StorageCorruption, { invalidRepresentation: 'over-width' }>
+
+/** The write of a name one character past the width, which is the same SQL on every dialect. */
+export function overWidthWrite(corruption: OverWidthCorruption): SqlStatement {
+  return {
+    sql: `UPDATE tasks SET ${corruption.column} = ? WHERE task_id = ?`,
+    args: ['w'.repeat(IDENTIFIER_CHARACTERS + 1), corruption.taskId],
+  }
+}
+
+/**
+ * The over-width attempt on a dialect whose identifier columns are unbounded text: the
+ * write lands, and the attempt proves it by reading the stored length back.
+ */
+export function unboundedOverWidthAttempt(
+  corruption: OverWidthCorruption,
+): StorageCorruptionAttempt {
+  return {
+    statements: [
+      overWidthWrite(corruption),
+      {
+        sql: `SELECT LENGTH(${corruption.column}) AS width FROM tasks WHERE task_id = ?`,
+        args: [corruption.taskId],
+      },
+    ],
+    isStructuralRejection: () => false,
+    verify: (results) => {
+      const width = Number(results[1]?.rows[0]?.width)
+      if (width !== IDENTIFIER_CHARACTERS + 1) {
+        throw new Error(
+          `the name past the width was not stored whole: tasks.${corruption.column} holds ${width} characters`,
+        )
+      }
+    },
+  }
+}
 
 export type StorageCorruptionDisposition = 'injected' | 'structurally-rejected'
 

@@ -1,4 +1,5 @@
 import {
+  IDENTIFIER_CHARACTERS,
   INFRA_RETRY_CAP,
   MAX_COUNT,
   MAX_EPOCH_MS,
@@ -7,13 +8,56 @@ import {
   type SqlExecutor,
   type SqlResult,
 } from '@durablerun/core'
+import { MIGRATIONS as MYSQL_MIGRATIONS } from '@durablerun/store-mysql'
 import { describe, expect, it } from 'vitest'
 import {
+  IDENTIFIER_COLUMNS,
   bindInvariantSnapshotRows,
   engineInvariantFindings,
   engineInvariantViolations,
 } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
+
+/**
+ * Every column a migration list bounds with VARCHAR, and its width. MySQL is the one
+ * dialect whose schema bounds a durable identifier, so its migrations say which columns
+ * hold one. A definition is read between the commas that separate definitions, whatever
+ * lines they sit on, and a later ADD COLUMN is read too.
+ */
+function boundedColumns(
+  migrations: readonly { readonly statements: readonly string[] }[],
+): { table: string; column: string; width: number }[] {
+  const bounded: { table: string; column: string; width: number }[] = []
+  const read = (table: string, definition: string): void => {
+    const match = /^\s*`?(\w+)`?\s+VARCHAR\((\d+)\)/i.exec(definition)
+    if (match?.[1] && match[2]) {
+      bounded.push({ table, column: match[1], width: Number(match[2]) })
+    }
+  }
+  for (const sql of migrations.flatMap((migration) => migration.statements)) {
+    const created = /^\s*CREATE TABLE(?: IF NOT EXISTS)?\s+`?(\w+)`?\s*\(([\s\S]*)\)[^)]*$/i.exec(
+      sql,
+    )
+    if (created?.[1] && created[2] !== undefined) {
+      // Split at the commas outside parentheses: a key clause has commas of its own.
+      const body = created[2]
+      let depth = 0
+      let start = 0
+      for (let at = 0; at <= body.length; at++) {
+        if (body[at] === '(') depth++
+        else if (body[at] === ')') depth--
+        else if (at === body.length || (body[at] === ',' && depth === 0)) {
+          read(created[1], body.slice(start, at))
+          start = at + 1
+        }
+      }
+      continue
+    }
+    const added = /^\s*ALTER TABLE\s+`?(\w+)`?\s+ADD(?: COLUMN)?\s+([\s\S]*)$/i.exec(sql)
+    if (added?.[1] && added[2]) read(added[1], added[2])
+  }
+  return bounded
+}
 
 /**
  * Checkers must be checked: every invariant added to the library gets a
@@ -604,6 +648,97 @@ describe('invariant checkers fire on constructed corruption', () => {
       ),
     ).toEqual([])
     await f.close()
+  })
+
+  it('reports a name past the width in every identifier column, and none at the width, counted in code points', async () => {
+    // 255 code points in 510 UTF-16 units: a count of units would call this name too long.
+    const atTheWidth = '\u{1F600}'.repeat(IDENTIFIER_CHARACTERS)
+    const observed: Record<string, { atTheWidth: string[]; pastTheWidth: string[] }> = {}
+    const expected: typeof observed = {}
+    for (const [table, columns] of Object.entries(IDENTIFIER_COLUMNS)) {
+      for (const column of columns) {
+        const f = await seeded(`width-${table}-${column}`)
+        try {
+          // One row in each of the four tables the seed world leaves empty.
+          await f.raw.batch('every-table', [
+            {
+              sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, owner_run_id,
+                      owner_attempt, updated_at_ms)
+                    VALUES ('t1', 'cp', ?, '1', 'r1', 1, ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                    VALUES (?, 'go', '{"x":1}', ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, created_at_ms)
+                    VALUES ('r1', '$await:other', ?, 't1', 'other', ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+                    VALUES (?, 'd1', ?, ?)`,
+              args: [Q, NOW, NOW + 30_000],
+            },
+          ])
+          const found = async (name: string): Promise<string[]> => {
+            await f.raw.batch('name', [{ sql: `UPDATE ${table} SET ${column} = ?`, args: [name] }])
+            return (await engineInvariantFindings(f.raw))
+              .filter((finding) => finding.conditionId === 'identifier/over-width')
+              .map((finding) => `${finding.subjectIdentity[0]}.${finding.subjectIdentity.at(-1)}`)
+          }
+          observed[`${table}.${column}`] = {
+            atTheWidth: await found(atTheWidth),
+            pastTheWidth: await found(`${atTheWidth}w`),
+          }
+          expected[`${table}.${column}`] = {
+            atTheWidth: [],
+            pastTheWidth: [`${table}.${column}`],
+          }
+        } finally {
+          await f.close()
+        }
+      }
+    }
+    expect(
+      observed,
+      'mutation-verdict:behavior:identifier-over-width-read-in-every-column',
+    ).toEqual(expected)
+  })
+
+  it('reads every column MySQL bounds at the width, and no other', () => {
+    const tables = Object.keys(IDENTIFIER_COLUMNS)
+    expect(
+      boundedColumns(MYSQL_MIGRATIONS)
+        .filter(({ table, width }) => tables.includes(table) && width === IDENTIFIER_CHARACTERS)
+        .map(({ table, column }) => `${table}.${column}`)
+        .sort(),
+      'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
+    ).toEqual(
+      Object.entries(IDENTIFIER_COLUMNS)
+        .flatMap(([table, columns]) => columns.map((column) => `${table}.${column}`))
+        .sort(),
+    )
+  })
+
+  it('finds bounded columns in SQL formatting it did not anticipate', () => {
+    expect(
+      boundedColumns([
+        {
+          statements: [
+            'create table if not exists `a` (`id` varchar(255) NOT NULL, name VARCHAR(16), n BIGINT,\n PRIMARY KEY (id, name)) ENGINE=InnoDB',
+            'CREATE INDEX a_name ON a (name)',
+            'ALTER TABLE a\n  ADD COLUMN later VARCHAR(255)',
+          ],
+        },
+      ]),
+    ).toEqual([
+      { table: 'a', column: 'id', width: 255 },
+      { table: 'a', column: 'name', width: 16 },
+      { table: 'a', column: 'later', width: 255 },
+    ])
   })
 
   it('stays silent on the consistent seed world', async () => {
