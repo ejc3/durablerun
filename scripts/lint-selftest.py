@@ -25,6 +25,8 @@ just as useless as one that fails nothing.
 Run by `pnpm verify`. A new lint belongs in LINTS below with at least one bad
 fixture per rule it claims to enforce.
 """
+import atexit
+import functools
 import json
 import io
 import os
@@ -37,6 +39,7 @@ import sys
 import tempfile
 import time
 import types
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -4360,36 +4363,451 @@ GOOD_INVOCATIONS = [
         ("--check-pr-body", "{root}/body.md"),
         "one canonical review finding count is accepted",
     ),
-    (
-        "review-attest.sh",
-        {
-            "postmortem.md": """# Postmortem: fixture
-
-## Findings
-
-| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
-|---|--------|--------|----------------------------------|------------------|-------------------------|
-| 1 | one | impact | layer | reason | mechanism |
-| 2 | two | impact | layer | reason | mechanism |
-| 3 | three | impact | layer | reason | mechanism |
-| 4 | four | impact | layer | reason | mechanism |
-| 5 | five | impact | layer | reason | mechanism |
-| 6 | six | impact | layer | reason | mechanism |
-| 7 | seven | impact | layer | reason | mechanism |
-
-## Detection ledger
-
-| Detector | Findings | Ours? |
-|----------|----------|-------|
-| no findings | **0** | — |
-| first detector | 1 + 1 | no |
-| second detector | 3 + 2 | **yes** |
-""",
-        },
-        ("--check-postmortem", "{root}/postmortem.md"),
-        "the canonical tables accept bold zeroes and additive finding counts",
-    ),
 ]
+
+
+# review-attest.sh reads the commits a postmortem cites, so its fixtures need a repository whose
+# commits they can name. Every case below is given the same small history, which git itself builds:
+#
+#   main    base - moved
+#   topic   base - old_red - old_fix                                  before `git rebase main`
+#   topic          moved - red - fix - bundled - later_red - later_fix    after it, and HEAD
+#   side    base - side_fix                                           never merged
+#
+# old_red and old_fix are what a rebase leaves behind: the same subject and the same patch under
+# another id, still in the object database and no longer on the branch. side_fix has fix's subject
+# and another patch, so it is no copy of anything. `bundled` adds a test and
+# its fix in one commit. A red adds packages/a/test/NAME.test.ts and its fix adds NAME.fix, which is
+# how the stand-in for the test runner below tells a tree that holds a fix from one that does not.
+def hermetic_git(environment: dict[str, str]) -> dict[str, str]:
+    """git, told nothing by the machine it runs on: no user or system configuration, no repository
+    inherited from a hook's environment, one author and one date, so the ids never change."""
+    return {
+        **{key: value for key, value in environment.items() if not key.startswith("GIT_")},
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+        "GIT_EDITOR": "true",
+    }
+
+
+@functools.cache
+def cited_history() -> tuple[Path, dict[str, str]]:
+    root = Path(tempfile.mkdtemp(prefix="lint-selftest-cited-history-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    environment = hermetic_git(dict(os.environ))
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def commit(subject: str, *files: str) -> str:
+        tree(root, {rel: f"{subject}\n" for rel in files})
+        git("add", "--", *files)
+        git("commit", "-q", "-m", subject)
+        return git("rev-parse", "--short=7", "HEAD")
+
+    git("init", "-q", "-b", "main")
+    ids = {"base": commit("Start", "README")}
+    git("checkout", "-q", "-b", "topic")
+    ids["old_red"] = commit("Red: the case fails", "packages/a/test/case.test.ts")
+    ids["old_fix"] = commit("Fix the case", "case.fix")
+    git("checkout", "-q", "-b", "side", ids["base"])
+    ids["side_fix"] = commit("Fix the case", "side.fix")
+    git("checkout", "-q", "main")
+    ids["moved"] = commit("Main moves", "moved.txt")
+    git("rebase", "-q", "main", "topic")
+    ids["red"] = git("rev-parse", "--short=7", "HEAD~1")
+    ids["fix"] = git("rev-parse", "--short=7", "HEAD")
+    ids["bundled"] = commit(
+        "Test and fix in one commit", "packages/a/test/bundled.test.ts", "bundled.fix"
+    )
+    ids["later_red"] = commit("Red: a later case fails", "packages/a/test/later.test.ts")
+    ids["later_fix"] = commit("Fix the later case", "later.fix")
+    return root, ids
+
+
+POSTMORTEM_TEMPLATE = (SCRIPTS.parent / "postmortems" / "TEMPLATE.md").read_text()
+FINDINGS_HEADER = """| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+"""
+LEDGER_HEADER = """| Detector | Findings | Ours? |
+|----------|----------|-------|
+"""
+FILLED_IN = "Filled in for the fixture.\n"
+
+
+def fixture_postmortem(evidence: str, findings: int, ledger: str, severity: str) -> str:
+    """A filled-in postmortem with every section the real template has, so the whole attestation
+    accepts it and a section added to the template reaches these fixtures without an edit here."""
+    bodies = {
+        "## Severity": severity,
+        "## Findings": FINDINGS_HEADER
+        + "".join(
+            f"| {number} | defect | impact | layer | reason | mechanism |\n"
+            for number in range(1, findings + 1)
+        ),
+        "## Detection ledger": LEDGER_HEADER + ledger,
+        "## Evidence": evidence.strip() + "\n",
+    }
+    sections = [line for line in POSTMORTEM_TEMPLATE.splitlines() if line.startswith("## ")]
+    return "# Postmortem: a fixture round (PR #12)\n\n" + "\n".join(
+        f"{section}\n\n{bodies.get(section, FILLED_IN)}" for section in sections
+    )
+
+
+# Shell functions that stand in for the two tools review-attest.sh calls and a fixture cannot run.
+# `gh` answers for a pull request whose head is the fixture history's and which adds the fixture's
+# postmortem. `pnpm` installs by making the one link a workspace install makes, inside the copy
+# unless the fixture holds `link-outside`, and runs a test file by looking for its fix in the tree
+# it is run in, so a run passes or fails by the commit that is checked out, as a real one does.
+FAKE_TOOLS = r"""FIXTURE_ROOT="${BASH_SOURCE[0]%/*}"
+gh() {
+  if [[ "$1" == pr && "$2" == view ]]; then
+    case "$5" in
+      headRefOid) git -C "$FIXTURE_ROOT" rev-parse HEAD ;;
+      body) printf '%s\n' 'review-findings: 1' 'reviews-abandoned: a fixture has no review to run' ;;
+      commits) ;;
+      *) return 2 ;;
+    esac
+    return 0
+  fi
+  [[ "$1" == api ]] || return 2
+  case "$2" in
+    */files) printf '%s\n' postmortems/fixture-review.md ;;
+    */contents/*) base64 <"$FIXTURE_ROOT/postmortems/fixture-review.md" ;;
+    */statuses/*) ;;
+    *) return 2 ;;
+  esac
+}
+pnpm() {
+  local argument name report="" failed=0 passed=0 skip=0
+  if [[ "$1" == install ]]; then
+    mkdir -p packages/a/node_modules/@fixture packages/b
+    if [[ -e "$FIXTURE_ROOT/link-outside" ]]; then
+      ln -s "$FIXTURE_ROOT/scripts" packages/a/node_modules/@fixture/b
+    else
+      ln -s ../../../b packages/a/node_modules/@fixture/b
+    fi
+    return 0
+  fi
+  [[ "$1" == exec && "$2" == vitest && "$3" == run ]] || return 2
+  for argument in "${@:4}"; do
+    if [[ "$skip" -eq 1 ]]; then
+      skip=0
+      continue
+    fi
+    case "$argument" in
+      -t) skip=1 ;;
+      --outputFile=*) report="${argument#--outputFile=}" ;;
+      --*) ;;
+      *)
+        name="${argument##*/}"
+        if [[ -e "${name%.test.ts}.fix" && ! -e "$FIXTURE_ROOT/always-fail" ]]; then
+          passed=$((passed + 1))
+        else
+          failed=$((failed + 1))
+        fi
+        ;;
+    esac
+  done
+  printf '{"numTotalTests": %d, "numFailedTests": %d, "numPassedTests": %d, "testResults": []}\n' \
+    "$((passed + failed))" "$failed" "$passed" >"$report"
+  [[ "$failed" -eq 0 ]]
+}
+"""
+
+FIXTURE_POSTMORTEM = "postmortems/fixture-review.md"
+CHECK_POSTMORTEM = ("--check-postmortem", "{root}/" + FIXTURE_POSTMORTEM)
+PROVE_REDS = (*CHECK_POSTMORTEM, "--prove-reds")
+WHOLE_ATTESTATION = ("12", "{root}/no-codex.log", "-")
+ONE_RED_AND_ITS_FIX = """
+- Red tests: commit `{red}`, run and seen failing (1 test) against `{moved}`.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+"""
+ONE_PROBED_RED = """
+- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts` `the case`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+"""
+
+
+def with_commit_ids(text: str) -> str:
+    for name, commit in cited_history()[1].items():
+        text = text.replace("{" + name + "}", commit)
+    return text
+
+
+@dataclass(frozen=True)
+class CitedCommitsCase:
+    """One postmortem over the fixture history. `refusal` is the text the refusal must carry, or
+    None when the postmortem must be accepted, and then `says` is text the output must carry.
+    `{name}` in any of them is a commit of the history, and the head is `{later_fix}`."""
+
+    why: str
+    evidence: str
+    refusal: str | None
+    args: tuple[str, ...] = CHECK_POSTMORTEM
+    files: tuple[tuple[str, str], ...] = ()
+    findings: int = 1
+    ledger: str = "| outside review | 1 | no |\n"
+    severity: str = FILLED_IN
+    says: str = ""
+
+    def prepare(self, root: Path) -> None:
+        shutil.copytree(cited_history()[0] / ".git", root / ".git")
+        text = fixture_postmortem(self.evidence, self.findings, self.ledger, self.severity)
+        tree(root, {FIXTURE_POSTMORTEM: with_commit_ids(text)})
+
+
+CITED_COMMIT_CASES = (
+    CitedCommitsCase(
+        "one red test before its fix, cited as the template writes them, is accepted",
+        ONE_RED_AND_ITS_FIX,
+        None,
+        says=": 1 red, 1 fix, 1 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "the canonical tables accept bold zeroes and additive finding counts",
+        ONE_RED_AND_ITS_FIX,
+        None,
+        findings=7,
+        ledger=(
+            "| no findings | **0** | — |\n"
+            "| first detector | 1 + 1 | no |\n"
+            "| second detector | 3 + 2 | **yes** |\n"
+        ),
+        says="7 findings accounted for",
+    ),
+    CitedCommitsCase(
+        "lines that wrap, labels that say more, a second round, a fix that a later red ran "
+        "against, a fix line that names the commit a defect came in with, and a digest that is "
+        "no commit are accepted",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test) against
+  `{moved}`. Commit `{later_red}`, run and seen failing (1 test) against
+  `{fix}`, the first fix.
+- Fixes, one commit for each finding: `{fix}` (1) and `{later_fix}` (2). The
+  defect came in with `{moved}`.
+- Red test: commit `{later_red}` again, as the second round cited it.
+- Finder: one review, of the tree whose registry digest begins `9f60ddc6`.
+""",
+        None,
+        says=": 2 red, 3 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "the whole attestation accepts a pull request whose added postmortem cites its branch",
+        ONE_RED_AND_ITS_FIX,
+        None,
+        args=WHOLE_ATTESTATION,
+        says="attested via explicit abandonment",
+    ),
+    CitedCommitsCase(
+        "a red test that names no commit in the repository is refused",
+        """
+- Red tests: commit `0123abc`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "on its '- Red tests:' line, which does not resolve to a commit",
+    ),
+    CitedCommitsCase(
+        "a fix on a branch the pull request never merged is refused, and is not called a moved "
+        "copy of the branch's fix, whose subject it shares and whose patch it does not",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test).
+- Fixes: commit `{side_fix}`; gate after fix: the suite passed.
+""",
+        "on its '- Fixes:' line, which is not an ancestor of the head {later_fix}.\n",
+    ),
+    CitedCommitsCase(
+        "the copy of a red test that a rebase left behind has the same subject and the same "
+        "patch, and is refused because the branch no longer holds it",
+        """
+- Red tests: commit `{old_red}`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "has the same subject and the same patch",
+    ),
+    CitedCommitsCase(
+        "the whole attestation refuses the copy of a fix that a rebase left behind",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test).
+- Fixes: commit `{old_fix}`; gate after fix: the suite passed.
+""",
+        "has the same subject and the same patch",
+        args=WHOLE_ATTESTATION,
+    ),
+    CitedCommitsCase(
+        "the code a red test ran against is held to the branch as well",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test) against `{old_fix}`.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        'after "against", which is not an ancestor of the head',
+    ),
+    CitedCommitsCase(
+        "a second round cited under a label of its own is held to the branch too",
+        ONE_RED_AND_ITS_FIX
+        + "- Second round. Red test: commit `{old_red}`, seen failing. Fix: commit `{fix}`.\n",
+        "under ## Evidence, which is not an ancestor of the head",
+    ),
+    CitedCommitsCase(
+        "a commit cited outside the Evidence section is held to the branch too",
+        ONE_RED_AND_ITS_FIX,
+        "under ## Severity, which is not an ancestor of the head",
+        severity="The defect came in with `{old_fix}` and would have shipped.\n",
+    ),
+    CitedCommitsCase(
+        "one commit cited as the red test and as its fix is refused",
+        """
+- Red tests: commit `{bundled}`, run and seen failing (1 test).
+- Fixes: commit `{bundled}`; gate after fix: the suite passed.
+""",
+        "a red test and its fix are two commits",
+    ),
+    CitedCommitsCase(
+        "a red test that no cited fix descends from is refused",
+        """
+- Red tests: commit `{later_red}`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "a red test comes before its fix",
+    ),
+    CitedCommitsCase(
+        "reds and fixes cited only under other labels leave the template's lines unread, which "
+        "is refused",
+        """
+- Finding 1. Red: commit `{red}`, 1 of 2 caught. Green: commit `{fix}`, 2 of 2.
+""",
+        "has no Evidence line that begins '- Red'",
+    ),
+    CitedCommitsCase(
+        "a red line that cites its commit by subject leaves nothing to check, which is refused",
+        """
+- Red tests, by commit subject: "Red: the case fails" failed 1 test.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "cites no commit on a line that begins '- Red'",
+    ),
+    CitedCommitsCase(
+        "the labels are read from the template, so a template that renames its red line asks "
+        "for the new name",
+        ONE_RED_AND_ITS_FIX,
+        "has no Evidence line that begins '- Failing'",
+        files=(
+            (
+                "postmortems/TEMPLATE.md",
+                POSTMORTEM_TEMPLATE.replace("- Red tests: commit", "- Failing tests: commit"),
+            ),
+        ),
+    ),
+    CitedCommitsCase(
+        "a head that is not a commit judges nothing, which is refused",
+        ONE_RED_AND_ITS_FIX,
+        "is not a commit in this repository",
+        args=(*CHECK_POSTMORTEM, "0123abc"),
+    ),
+    CitedCommitsCase(
+        "each red test fails at its own commit and passes at the head, with a test name and "
+        "without one",
+        """
+- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts` `the case`, run and seen
+  failing (1 test). Commit `{later_red}`, probe `packages/a/test/later.test.ts`, 1 test.
+- Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
+""",
+        None,
+        args=PROVE_REDS,
+        says="proved 2 of 2 cited reds",
+    ),
+    CitedCommitsCase(
+        "a red test that names no probe is not run, and the line that sums up says so",
+        """
+- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts`, run and seen failing
+  (1 test). Commit `{later_red}`, a case of a generated surface, 1 test.
+- Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
+""",
+        None,
+        args=PROVE_REDS,
+        says="proved 1 of 2 cited reds: each fails at its own commit and passes at",
+    ),
+    CitedCommitsCase(
+        "a run that proves no red is refused, not reported as a success",
+        ONE_RED_AND_ITS_FIX,
+        "so this run proved nothing",
+        args=PROVE_REDS,
+    ),
+    CitedCommitsCase(
+        "a commit that holds its own fix passes its probe, so it is no red test",
+        """
+- Red tests: commit `{bundled}`, probe `packages/a/test/bundled.test.ts`, run and seen failing.
+- Fixes: commit `{later_fix}`; gate after fix: the suite passed.
+""",
+        "and nothing failed at that commit, so it is not a red test",
+        args=PROVE_REDS,
+    ),
+    CitedCommitsCase(
+        "a probe that the red commit does not hold cannot show it red",
+        """
+- Red tests: commit `{red}`, probe `packages/a/test/later.test.ts`, run and seen failing.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "which that commit does not hold",
+        args=PROVE_REDS,
+    ),
+    CitedCommitsCase(
+        "a scratch copy whose dependency link resolves in another tree would run that tree's "
+        "code, so it proves nothing",
+        ONE_PROBED_RED,
+        "resolves outside the scratch copy",
+        args=PROVE_REDS,
+        files=(("link-outside", ""),),
+    ),
+    CitedCommitsCase(
+        "a probe that fails at the head as well fails for a reason no fix removed",
+        ONE_PROBED_RED,
+        "also fails at the head",
+        args=PROVE_REDS,
+        files=(("always-fail", ""),),
+    ),
+)
+
+
+def cited_commit_problems() -> list[str]:
+    problems = []
+    for case in CITED_COMMIT_CASES:
+        result = run(
+            "review-attest.sh",
+            {"fake-tools.sh": FAKE_TOOLS, **dict(case.files)},
+            case.args,
+            environment={"BASH_ENV": "{root}/fake-tools.sh"},
+            prepare=case.prepare,
+        )
+        output = result.stdout + result.stderr
+        if case.refusal is not None:
+            problem = refusal_problem(result, with_commit_ids(case.refusal))
+        elif result.returncode != 0:
+            problem = "REJECTED a good invocation"
+        elif case.says not in output:
+            problem = f"ACCEPTED a good invocation without saying {case.says!r}"
+        else:
+            problem = None
+        if problem:
+            problems.append(
+                f"review-attest.sh {problem}: {case.why}\n"
+                f"    {' '.join(case.args)}\n"
+                f"    {output.strip()[-400:]}"
+            )
+    return problems
 
 
 def run(
@@ -4399,6 +4817,7 @@ def run(
     git_state: str = "tracked",
     environment: dict[str, str] | None = None,
     forbidden_artifact: str | None = None,
+    prepare: Callable[[Path], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `lint` against a throwaway tree that looks like the repo.
 
@@ -4430,6 +4849,10 @@ def run(
             (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(
                 (SCRIPTS / "typescript-verdict-analyzer.cjs").read_text()
             )
+        if lint == "review-attest.sh" and not (root / "postmortems" / "TEMPLATE.md").exists():
+            tree(root, {"postmortems/TEMPLATE.md": POSTMORTEM_TEMPLATE})
+        if prepare is not None:
+            prepare(root)
         if lint == "review-bot-lint.py":
             if git_state not in {"unavailable", "empty", "tracked"}:
                 raise ValueError(f"unknown Git fixture state: {git_state}")
@@ -4464,6 +4887,8 @@ def run(
                 for key, value in (environment or {}).items()
             },
         }
+        if lint == "review-attest.sh":
+            process_environment = hermetic_git(process_environment)
         if lint == "mutation-probe.py":
             dependency_root = str(SCRIPTS.parent / "node_modules")
             inherited_node_path = process_environment.get("NODE_PATH")
@@ -5898,6 +6323,8 @@ for lint, files, args, why in GOOD_INVOCATIONS:
             f"    {(result.stdout + result.stderr).strip()[:200]}"
         )
 
+failures.extend(cited_commit_problems())
+
 no_bytecode = run(
     "mutation-probe.py",
     {},
@@ -5934,6 +6361,7 @@ if ledger_no_bytecode.returncode != 0:
         f"    {(ledger_no_bytecode.stdout + ledger_no_bytecode.stderr).strip()[-200:]}"
     )
 
+CITED_REFUSALS = sum(case.refusal is not None for case in CITED_COMMIT_CASES)
 for f in failures:
     print(f"lint-selftest: {f}")
 if failures:
@@ -5941,6 +6369,7 @@ if failures:
 print(
     f"lint-selftest: {len(BAD_CASES)} bad inputs, {len(GIT_BAD_CASES)} Git-state "
     f"inputs, {len(ENV_BAD_CASES)} environment inputs, and "
-    f"{len(BAD_INVOCATIONS) + len(ENV_BAD_INVOCATIONS)} bad invocations rejected, "
-    f"{len(GOOD_CASES) + len(GOOD_INVOCATIONS)} good inputs accepted"
+    f"{len(BAD_INVOCATIONS) + len(ENV_BAD_INVOCATIONS) + CITED_REFUSALS} bad invocations "
+    f"rejected, {len(GOOD_CASES) + len(GOOD_INVOCATIONS) + len(CITED_COMMIT_CASES) - CITED_REFUSALS} "
+    "good inputs accepted"
 )
