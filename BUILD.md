@@ -83,7 +83,16 @@ a last docs PR gives a live owner to every open bullet that is left.
    its batch carries the completion event's follow-on, and the rule reads a
    declared node or field, not a fragment's text. `awaitTaskDone`'s engine
    logic, the same 43 lines in each store today, and the `taskDoneState`
-   decoder exist once, in core.
+   decoder exist once, in core. This is met. PR3.3b names the lock in the four
+   core statements that insert into `events` or `waits`, a batch holds the
+   lock of a statement it admits and refuses such an insert whose definition
+   names no lock or another event's, and the completion event's statement is
+   where it is decided that a batch which ends no task holds the lock too. The
+   terminal-state rule reads value nodes (`taskStateValue`) and refuses a
+   fragment in a task's state, `awaitTaskDone`, its decoder, and `endingTask`
+   are core's, and what holds all of it is the conformance suite on three
+   dialects, the PostgreSQL case for each batch label, 25 registered
+   mutations, and an accepted exhibit of each mechanism's false negative.
 4. PR4.4c: a conformance surface generated from the store's two ports runs
    every call concurrently with itself on libSQL, PostgreSQL, and MySQL, the
    admin's `migrate()` included, and it fails when the fix for the transition
@@ -1666,26 +1675,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     with every test green. The property is that no write scans a table once
     for each row of another, and a check generated from the corpus would hold
     it for every statement. It is its own change.
-  - Delivered in PR3.3b, the hoists the second review named, on three stores.
-    A statement that records an event or registers a wait names that event's
-    lock where core defines it, and a batch holds the lock of a statement it
-    admits. The eighteen lines that took the lock left the two server stores,
-    and an INSERT into `events` or `waits` whose definition names no lock, or
-    another event's, is refused when the batch is built. Whether a batch that
-    ends no task needs the lock is decided once, where the completion event
-    names it: it does, because a lock is taken before the transaction's first
-    statement. A batch that writes a terminal `tasks.state` and records no
-    completion event under that statement's stamp is refused when it runs.
-    The child await's rounds, its refusal, its two reads, and the batch that
-    records an unrecorded ending are core's (`awaitTaskDone`, `endingTask`),
-    and a dialect supplies facts. On the prevention ladder the first is rung 1
-    for a store and rung 2 for a new statement, the second is rung 2, and the
-    third is rung 1. Each has its false negative written and run as an
-    accepted exhibit in core's tests: a lock that names the event in another
-    queue, a task state copied from a run the batch ended, and a dialect fact
-    that is wrong. What holds those is what held them before: the PostgreSQL
-    and MySQL lock cases, `childTaskViolations`, and the conformance suite on
-    each dialect.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -1702,6 +1691,31 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Promoted to PR3.14 below: the generated follow-ons that select their source
     by key correlated it to `tasks` on the queue, and on libSQL their plan was
     a scan of `tasks`.
+- **PR3.3b the hoists of the child-task review**: the second review of PR3.3
+  named three hoists, and this builds them on three stores. A statement that
+  records an event or registers a wait names that event's lock where core
+  defines it, and a batch holds the lock of a statement it admits. The
+  eighteen lines that took the lock left the two server stores, and an INSERT
+  into `events` or `waits` whose definition names no lock, or another event's,
+  is refused when the batch is built. Whether a batch that ends no task needs
+  the lock is decided once, where the completion event names it: it does,
+  because a lock is taken before the transaction's first statement. The state
+  a statement gives a task is typed: a named state is a value node
+  (`taskStateValue`), the copy of a run's state is a subquery built from nodes
+  (`stampedRunState`), and a fragment in a task's state is refused. On that, a
+  batch that writes a terminal `tasks.state` and records no completion event
+  under that statement's stamp is refused when it runs. The child await's
+  rounds, its refusal, its decoder, its two reads, and the batch that records
+  an unrecorded ending are core's (`awaitTaskDone`, `endingTask`), and a
+  dialect supplies facts. On the prevention ladder the first is rung 1 for a
+  store and rung 2 for a new statement, the second is rung 2, and the third is
+  rung 1. Each has its false negative written and run as an accepted exhibit
+  in core's tests: a lock that names the event in another queue, a task state
+  copied from a run the batch ended, and a dialect fact that is wrong. What
+  holds those is what held them before: the PostgreSQL and MySQL lock cases,
+  `childTaskViolations`, and the conformance suite on each dialect. The SQL
+  corpus moved in one way: on each dialect 30 of 298 values differ, each only
+  in how a task's state is spelled.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
