@@ -1,5 +1,4 @@
 import { type Expression, type Kysely, isExpression } from 'kysely'
-import type { EventName } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -16,6 +15,7 @@ import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
   SqlClaimLockCoordinates,
+  SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
   SqlStatement,
@@ -29,6 +29,7 @@ import {
   columnValue,
   defineStatement,
   eligibilityDefinitionProblem,
+  eventLockProblem,
   fenceValue,
   followOnInsertProvenance,
   fragmentBinds,
@@ -282,44 +283,58 @@ export class FencedBatch {
   }
 
   /**
-   * Serialize this event transition against every transition for the same
-   * `(queue, eventName)` coordinate.
-   *
-   * The lock is a transaction prelude rather than a statement: callers name
-   * only inert key data, while the dialect executor owns the lock SQL. It must
-   * be declared before the batch's first statement, and the first statement
-   * after it must be the fenced CAS whose branch the lock protects.
-   */
-  lockEvent(coordinates: { readonly queue: string; readonly eventName: EventName }): this {
-    const { queue, eventName } = coordinates
-    return this.addTransactionLock({ kind: 'event', queue, eventName: eventName?.value })
-  }
-
-  /**
    * Serialize same-token claim attempts before either selects candidates.
    * Candidate row locks alone are disjoint, so they cannot provide this gate.
+   *
+   * A lock is a transaction prelude rather than a statement: a batch names only inert
+   * key data, while the dialect executor owns the lock SQL and takes the lock before the
+   * batch's first statement. A caller declares this one before the batch's first
+   * statement, and the first statement after it must be the fenced CAS whose branch the
+   * lock protects.
    */
   lockClaim(coordinates: SqlClaimLockCoordinates): this {
     const { queue, claimToken } = coordinates
-    return this.addTransactionLock({ kind: 'claim', queue, claimToken })
+    if (this.statements.length !== 0) {
+      throw new Error(
+        `FencedBatch[${this.label}] claim lock must be declared before every SQL statement`,
+      )
+    }
+    return this.holdTransactionLock({ kind: 'claim', queue, claimToken })
   }
 
-  private addTransactionLock(lock: SqlTransactionLock): this {
+  /**
+   * Serialize this batch against every batch that holds the lock of the same
+   * `(queue, eventName)` (§3.4 rule 2). No caller declares it. A statement that records
+   * an event or registers a wait names its event where core defines it, and the batch
+   * holds that lock from the moment it admits the statement, so a store cannot leave the
+   * lock out and has no line that takes it. The executor takes a batch's lock before its
+   * first statement wherever in the batch the statement stands, which is why a terminal
+   * batch's completion event, a follow-on, can bring it.
+   */
+  private holdEventLock(lock: SqlEventLockCoordinates): this {
+    return this.holdTransactionLock({ kind: 'event', ...lock })
+  }
+
+  /** A batch holds one lock. A statement may name the lock the batch already holds. */
+  private holdTransactionLock(lock: SqlTransactionLock): this {
     const coordinate = lock.kind === 'event' ? lock.eventName : lock.claimToken
     if (typeof lock.queue !== 'string' || typeof coordinate !== 'string') {
       throw new TypeError(
         `FencedBatch[${this.label}] ${lock.kind} lock coordinates must be strings`,
       )
     }
-    if (this.statements.length !== 0) {
+    const held = this.transactionLocks[0]
+    const same =
+      held?.kind === 'event' &&
+      lock.kind === 'event' &&
+      held.queue === lock.queue &&
+      held.eventName === lock.eventName
+    if (held !== undefined && !same) {
       throw new Error(
-        `FencedBatch[${this.label}] ${lock.kind} lock must be declared before every SQL statement`,
+        `FencedBatch[${this.label}] already has a transaction lock: a batch is serialized on one claim or one event`,
       )
     }
-    if (this.transactionLocks.length !== 0) {
-      throw new Error(`FencedBatch[${this.label}] already has a transaction lock`)
-    }
-    this.transactionLocks.push(Object.freeze({ ...lock }))
+    if (held === undefined) this.transactionLocks.push(Object.freeze({ ...lock }))
     return this
   }
 
@@ -1035,6 +1050,10 @@ export class FencedBatch {
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
     }
     weakSetAdd(treeBuilt, held.compiled)
+    // Asked and held last, so a statement one of the rules above refused leaves no lock behind.
+    const unserialized = eventLockProblem(tree, statement.eventLock)
+    if (unserialized !== null) throw new Error(`${at} ${unserialized}`)
+    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)
     this.statements.push(held)
     if (reading) this.reads.push(name)
     return this
@@ -1053,9 +1072,9 @@ export class FencedBatch {
     if (transactionLock !== undefined && mode !== 'write') {
       throw new Error(`FencedBatch[${this.label}] transaction lock requires a write batch`)
     }
-    // Preserve the string control used by every existing libSQL transition.
-    // Only a batch that explicitly declared a lock exercises the structured
-    // control variant.
+    // A batch that holds no lock keeps the plain string control. One that holds a lock
+    // hands every dialect's executor the same coordinate, libSQL's included, which reads
+    // it as an ordinary write because its single writer is the lock.
     const raw =
       transactionLock === undefined
         ? await db.batch(this.label, compiled, mode)

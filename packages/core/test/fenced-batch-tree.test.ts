@@ -153,7 +153,7 @@ describe('FencedBatch tree statements', () => {
   })
 
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {
-    const forged = { name: 'forged', tree: winCas().toOperationNode() }
+    const forged = { name: 'forged', tree: winCas().toOperationNode(), eventLock: null }
     expect(() => batch().casTree('win', forged)).toThrow(/must come from defineStatement/)
     const keyed = defineStatement('keyed', (binds: { runId: string }) =>
       db.updateTable('runs').set({ state: 'completed' }).where('run_id', '=', binds.runId),

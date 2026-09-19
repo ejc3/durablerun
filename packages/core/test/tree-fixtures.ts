@@ -1,6 +1,7 @@
 import { type OperationNode, SqliteQueryCompiler } from 'kysely'
 import { expect } from 'vitest'
 import {
+  EventName,
   FencedBatch,
   type SqlExecutor,
   type SqlFragment,
@@ -16,6 +17,7 @@ import {
   rawSql,
   sqlFragment,
   stampValue,
+  statementTable,
 } from '../src/index.js'
 
 /** What `fenced-batch-tree.test.ts` and `fenced-batch-tree-verdicts.test.ts` both build on. */
@@ -24,8 +26,26 @@ const dialect = new TreeDialect(new SqliteQueryCompiler())
 
 export type Builder = { toOperationNode(): OperationNode }
 
-/** A statement minted the way stores mint them, with no binds of its own. */
-export const statement = (builder: Builder) => defineStatement('test', () => builder as never)({})
+/** A statement whose definition names the lock of an event, as core's event statements do. */
+export const onEvent = (builder: Builder, queue = 'q', eventName = 'e') =>
+  defineStatement(
+    'test',
+    () => builder as never,
+    () => ({ queue, eventName: EventName.fromPort('test', eventName) }),
+  )({})
+/** True of an INSERT into `events` or `waits`, which a batch admits only under its event's lock. */
+const insertsAnEvent = (builder: Builder) => {
+  const tree = builder.toOperationNode()
+  return tree.kind === 'InsertQueryNode' && ['events', 'waits'].includes(statementTable(tree) ?? '')
+}
+/**
+ * A statement minted the way stores mint them, with no binds of its own. These fixtures
+ * have one event, `e` of queue `q`, and a statement that records it or registers a wait on
+ * it names its lock as core's event statements do, so the rule each test is about is the
+ * one that answers. The lock rule's own cases mint their statements themselves.
+ */
+export const statement = (builder: Builder) =>
+  insertsAnEvent(builder) ? onEvent(builder) : defineStatement('test', () => builder as never)({})
 export const predicate = (text: string, args: SqlFragment['args'] = []) =>
   rawSql<boolean>(sqlFragment(text, args), 'predicate')
 export const value = <T>(text: string, args: SqlFragment['args'] = []) =>

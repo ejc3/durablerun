@@ -5,7 +5,6 @@ import {
   type SqlResult,
   type SqlStatement,
   sqlBatchMode,
-  sqlTransactionLock,
   SAGA_PHASE_CHECKPOINT,
 } from '@durablerun/core'
 import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
@@ -59,10 +58,10 @@ class JitteringExecutor implements SqlExecutor {
     statements: readonly SqlStatement[],
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
+    // A batch that names an event lock is decomposed like any other. This executor wraps
+    // libSQL alone, whose single writer is the lock: its executor reads a lock-bearing
+    // batch as an ordinary write, so the single statements sent below lose nothing.
     const mode = sqlBatchMode(control)
-    if (sqlTransactionLock(control) !== undefined) {
-      throw new Error(`clock-jitter executor cannot decompose a transaction-locked batch`)
-    }
     if (mode === 'read' || label.startsWith('admin:') || label.startsWith('migrate')) {
       return this.real.batch(label, statements, control)
     }
@@ -291,15 +290,16 @@ async function run(
 }
 
 describe('moving the clock between statements changes neither progress nor state', () => {
-  it('fails closed instead of stripping a transaction lock while decomposing a batch', async () => {
+  it('decomposes a batch that names an event lock, which libSQL reads as an ordinary write', async () => {
     const { raw } = await openTestDb({ nowMs: NOW, idNamespace: 'clock-locked-batch' })
     try {
-      await expect(
-        new JitteringExecutor(raw, 1).batch('emit-event', [], {
-          mode: 'write',
-          transactionLock: { kind: 'event', queue: Q, eventName: 'go' },
-        }),
-      ).rejects.toThrow(/cannot decompose a transaction-locked batch/)
+      const clock = { sql: `SELECT value FROM meta WHERE key = 'fake_now_ms'`, args: [] }
+      const results = await new JitteringExecutor(raw, 7).batch('emit-event', [clock, clock], {
+        mode: 'write',
+        transactionLock: { kind: 'event', queue: Q, eventName: 'go' },
+      })
+      // Each statement saw its own instant, so the batch was sent one statement at a time.
+      expect(results.map((result) => Number(result.rows[0]?.value))).toEqual([NOW, NOW + 7])
     } finally {
       raw.close()
     }

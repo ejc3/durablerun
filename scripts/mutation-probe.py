@@ -6849,37 +6849,37 @@ MUTATION_SPECS.extend(
         ),
         (
             "postgres-lost-launch-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })\n    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    const guard = ",
-            "    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    const guard = ",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'sweep:lost-launch') this.holdEventLock(statement.eventLock)\n",
             "the relaunch cap ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-claim-timeout-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })\n    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    // Ownership CAS",
-            "    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    // Ownership CAS",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'sweep:claim-timeout') this.holdEventLock(statement.eventLock)\n",
             "the infrastructure cap ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-cancel-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "  ): Promise<boolean> {\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "  ): Promise<boolean> {\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'cancel-task' && this.label !== 'sweep:cancel') this.holdEventLock(statement.eventLock)\n",
             "a cancellation ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-complete-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'complete') this.holdEventLock(statement.eventLock)\n",
             "complete ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-fail-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'fail') this.holdEventLock(statement.eventLock)\n",
             "a terminal fail ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
@@ -7010,9 +7010,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "postgres-recording-await-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
-            "    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'record-task-done') this.holdEventLock(statement.eventLock)\n",
             "two awaits that record the outcome of one child insert the same event row, and the second is reported as an outage",
         ),
         (
@@ -7031,16 +7031,16 @@ MUTATION_SPECS.extend(
         ),
         (
             "postgres-emit-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
-            "    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'emit-event') this.holdEventLock(statement.eventLock)\n",
             "an emit inserts its event between an await reading none and registering its wait, and the waiter sleeps for ever",
         ),
         (
             "postgres-await-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
-            "    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'await-event') this.holdEventLock(statement.eventLock)\n",
             "an await registers its wait after a terminal batch that did not wait for it has looked for one, and the parent sleeps for ever",
         ),
         (
@@ -12264,9 +12264,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "saga-postgres-fail-rollback-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "      tree: TREE_DIALECT,\n    })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
-            "      tree: TREE_DIALECT,\n    })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'fail-rollback') this.holdEventLock(statement.eventLock)\n",
             "a rollback that halts ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
@@ -13365,6 +13365,188 @@ QUESTION_TOKEN_DELTA_REASONS = {
         "replacement adds a TypeScript optional-chaining token while re-reading the task accessor"
     ),
 }
+
+# PR3.3b, the hoists of the child-task review. Core holds the lock a statement names, so the
+# nine mutants that each dropped one store's lock line are re-aimed above at that one line,
+# each for its own batch label. One condition for each mutation below.
+MUTATION_SPECS.extend(
+    (
+        (
+            "statement-carries-the-lock-it-names",
+            "packages/core/src/sql-tree.ts",
+            "      named === null\n",
+            "      true\n",
+            "a statement's definition names the lock of its event and the statement carries none, so no batch holds it",
+        ),
+        (
+            "tree-event-lock-inserts-only",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (written !== 'events' && written !== 'waits') return null\n",
+            "a statement that updates or deletes an event or a wait is asked for a lock only an insert needs, and every such batch is refused",
+        ),
+        (
+            "tree-event-lock-events",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (!InsertQueryNode.is(tree) || written !== 'waits') return null\n",
+            "a statement records an event under no lock, so an await can read no event and register a wait the emit never sees",
+        ),
+        (
+            "tree-event-lock-waits",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (!InsertQueryNode.is(tree) || written !== 'events') return null\n",
+            "a statement registers a wait under no lock, so an emit can record the event between the await's check and its wait",
+        ),
+        (
+            "tree-event-lock-missing",
+            "packages/core/src/sql-tree.ts",
+            "  if (lock === null) {\n",
+            "  if (false) {\n",
+            "a statement that names no lock is answered with a crash inside the rule, and not told to name one",
+        ),
+        (
+            "tree-event-lock-names-the-row",
+            "packages/core/src/sql-tree.ts",
+            "  if (eventName !== lock.eventName) {\n",
+            "  if (false) {\n",
+            "a statement records one event under the lock of another, which excludes nothing that touches its event",
+        ),
+        (
+            "tree-event-lock-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unserialized !== null) throw new Error(`${at} ${unserialized}`)\n",
+            "    if (false && unserialized !== null) throw new Error(`${at} ${unserialized}`)\n",
+            "the batch asks the lock rule and admits the statement whatever it answers",
+        ),
+        (
+            "batch-holds-the-lock-its-statement-names",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (false && statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "no batch takes the lock its statement names, so every emit, await, and task ending runs unserialized",
+        ),
+        (
+            "batch-holds-one-lock",
+            "packages/core/src/fenced-batch.ts",
+            "    if (held !== undefined && !same) {\n",
+            "    if (false && held !== undefined && !same) {\n",
+            "a batch whose statements name two events keeps the first lock in silence, and the second event is unserialized",
+        ),
+        (
+            "batch-lock-may-be-named-again",
+            "packages/core/src/fenced-batch.ts",
+            "      held.eventName === lock.eventName\n",
+            "      held.eventName !== lock.eventName\n",
+            "a batch whose second statement names the lock it already holds is refused, and one that names another event is admitted",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is carried by the statement whose definition names it",
+            "mutation-verdict:construction:statement-carries-the-lock-it-names",
+        ),
+        (
+            "statement-carries-the-lock-it-names",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is asked of an INSERT, and of no other statement",
+            "mutation-verdict:construction:tree-event-lock-inserts-only",
+        ),
+        (
+            "tree-event-lock-inserts-only",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is named by a statement that records an event",
+            "mutation-verdict:construction:tree-event-lock-events",
+        ),
+        (
+            "tree-event-lock-events",
+            "tree-event-lock-refuses",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is named by a statement that registers a wait",
+            "mutation-verdict:construction:tree-event-lock-waits",
+        ),
+        (
+            "tree-event-lock-waits",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event says a statement that names no lock names none",
+            "mutation-verdict:construction:tree-event-lock-missing",
+        ),
+        (
+            "tree-event-lock-missing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is the lock of the event the row names",
+            "mutation-verdict:construction:tree-event-lock-names-the-row",
+        ),
+        (
+            "tree-event-lock-names-the-row",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude takes the lock a statement names wherever in the batch the statement stands",
+            "mutation-verdict:construction:batch-holds-the-lock-its-statement-names",
+        ),
+        (
+            "batch-holds-the-lock-its-statement-names",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude holds one lock, which a second statement may name again",
+            "mutation-verdict:construction:batch-holds-one-lock",
+        ),
+        (
+            "batch-holds-one-lock",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude holds one lock, which a second statement may name again",
+            "mutation-verdict:construction:batch-lock-may-be-named-again",
+        ),
+        (
+            "batch-lock-may-be-named-again",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
 
 MUTATIONS = [
     Mutation(
@@ -17129,7 +17311,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 880:
+        if len(MUTATIONS) != 890:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

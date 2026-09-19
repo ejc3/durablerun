@@ -1056,7 +1056,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
     const launchLost = sqlFragment(guard)
@@ -1181,7 +1180,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
@@ -1476,7 +1474,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
       'cancel',
@@ -1744,7 +1741,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     requireIdentifiersFit({ queue, runId })
     const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'complete',
       completeCas({
@@ -1870,7 +1866,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
     const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'fail',
       queue,
@@ -1908,7 +1903,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'failRollback',
       queue,
@@ -2270,7 +2264,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -2611,7 +2604,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
     b.casTree(
       'materialize',
@@ -2673,7 +2665,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by

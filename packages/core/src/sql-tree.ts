@@ -45,10 +45,11 @@ import {
   WhereNode,
   createQueryId,
 } from 'kysely'
+import type { EventName } from './child-tasks.js'
 import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { SqlStatement } from './primitives.js'
+import type { SqlEventLockCoordinates, SqlStatement } from './primitives.js'
 import { children, someNode } from './tree-walk.js'
 import {
   LIVE_STATES,
@@ -196,7 +197,18 @@ export function requireDefinedBinds(statement: string, binds: unknown, path = 'b
 export interface DefinedStatement {
   readonly name: string
   readonly tree: StatementTree
+  /**
+   * The event this statement is serialized on, or null (DESIGN.md §3.4 rule 2). A
+   * statement that records an event or registers a wait names the event here, from its
+   * own binds, and the batch that admits the statement holds that event's lock. So the
+   * lock is declared where the statement is defined, once for every dialect, and a store
+   * has no line that takes it and none to leave out.
+   */
+  readonly eventLock: SqlEventLockCoordinates | null
 }
+
+/** The event a statement definition names as its lock. The name is one core minted. */
+export type EventLockDeclaration = { readonly queue: string; readonly eventName: EventName }
 
 const definedStatements = new TrustedWeakSet<object>()
 
@@ -207,6 +219,7 @@ const definedStatements = new TrustedWeakSet<object>()
 export function defineStatement<Binds extends Readonly<Record<string, unknown>>>(
   name: string,
   build: (binds: Binds) => { toOperationNode(): StatementTree },
+  eventLock: ((binds: Binds) => EventLockDeclaration) | null = null,
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
     requireDefinedBinds(name, binds)
@@ -220,7 +233,14 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
       placements = outer
     }
     requirePlacedFragments(name, binds, placed)
-    const statement = Object.freeze({ name, tree })
+    // An untyped caller's name that is no `EventName` reaches the batch as a coordinate
+    // that is not a string, which the batch refuses.
+    const named = eventLock?.(binds) ?? null
+    const lock =
+      named === null
+        ? null
+        : Object.freeze({ queue: named.queue, eventName: named.eventName?.value })
+    const statement = Object.freeze({ name, tree, eventLock: lock })
     weakSetAdd(definedStatements, statement)
     return statement
   }
@@ -1370,6 +1390,30 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
     return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
   }
   return undefined
+}
+
+/**
+ * Why a statement is not serialized on the event it writes, or null when it is or when it
+ * writes none (DESIGN.md §3.4 rule 2). An INSERT into `events` records an event, and one
+ * into `waits` registers a wait on one. Either must run under that event's lock, or an
+ * emit and an await can each miss what the other wrote. So the statement's definition
+ * names a lock, and the lock's event is the one the row names. The name is read as the
+ * plain value every shipped statement binds: a name the tree cannot read is refused.
+ */
+export function eventLockProblem(
+  tree: OperationNode,
+  lock: SqlEventLockCoordinates | null,
+): string | null {
+  const written = statementTable(tree)
+  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null
+  const eventName = boundValue(insertedValue(tree, 'event_name'))
+  if (lock === null) {
+    return `inserts into ${written} and its definition names no event lock: a statement that records an event or registers a wait is serialized on that event, so defineStatement takes the lock it names (§3.4 rule 2)`
+  }
+  if (eventName !== lock.eventName) {
+    return `inserts into ${written} under the lock of event '${lock.eventName}', which is not the event_name it writes as a plain value: the lock a statement names is the lock of the event its row names (§3.4 rule 2)`
+  }
+  return null
 }
 
 /**

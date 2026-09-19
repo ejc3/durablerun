@@ -1,11 +1,11 @@
 import { sql } from 'kysely'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  EventName,
   NOW,
   type SqlExecutor,
   aliasedAs,
   treeBuilder as db,
+  defineStatement,
   fenceValue,
   isFencedBatchBindError,
   isTreeBuiltStatement,
@@ -36,6 +36,7 @@ import {
   keyIn,
   loose,
   many,
+  onEvent,
   predicate,
   recorded,
   refuses,
@@ -1101,7 +1102,12 @@ describe('the tree path', () => {
       refuses(
         'mutation-verdict:construction:tree-statement-defined',
         /must come from defineStatement/,
-        () => batch().casTree('win', { name: 'forged', tree: winCas().toOperationNode() }),
+        () =>
+          batch().casTree('win', {
+            name: 'forged',
+            tree: winCas().toOperationNode(),
+            eventLock: null,
+          }),
       )
     })
 
@@ -1237,13 +1243,105 @@ describe('the tree path', () => {
         /followed immediately by a CAS/,
         () =>
           batch()
-            .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
+            .lockClaim({ queue: 'q', claimToken: 'token' })
             .openTailTree(
               'read',
               'a reason',
               statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
             ),
       )
+    })
+  })
+
+  describe('the lock of an event', () => {
+    // Minted with no lock named, which the fixtures' `statement` never does for these rows.
+    const unlocked = (builder: { toOperationNode(): unknown }) =>
+      defineStatement('test', () => builder as never)({})
+    const NO_LOCK = /its definition names no event lock/
+    const ANOTHER_EVENT = /which is not the event_name it writes/
+    const eventUpdate = () =>
+      loose
+        .updateTable('events')
+        .set({ fence_stamp: stampValue, fence_at_ms: nowValue })
+        .where('queue', '=', 'q')
+
+    it('is carried by the statement whose definition names it', () => {
+      expect(
+        onEvent(eventUpdate()).eventLock,
+        'mutation-verdict:construction:statement-carries-the-lock-it-names',
+      ).toEqual({ queue: 'q', eventName: 'e' })
+      expect(unlocked(eventUpdate()).eventLock).toBeNull()
+    })
+
+    it('is asked of an INSERT, and of no other statement', () => {
+      accepts('mutation-verdict:construction:tree-event-lock-inserts-only', () =>
+        batch().casTree('event', unlocked(eventUpdate())),
+      )
+    })
+
+    it('is named by a statement that records an event', () => {
+      expect(() => batch().casTree('event', onEvent(eventInsert()))).not.toThrow()
+      refuses('mutation-verdict:construction:tree-event-lock-events', NO_LOCK, () =>
+        batch().casTree('event', unlocked(eventInsert())),
+      )
+    })
+
+    it('is named by a statement that registers a wait', () => {
+      refuses('mutation-verdict:construction:tree-event-lock-waits', NO_LOCK, () =>
+        batch().casTree('register', unlocked(waitInsert())),
+      )
+    })
+
+    it('says a statement that names no lock names none', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-event-lock-missing',
+        NO_LOCK,
+        /Cannot read properties of null/,
+        () => batch().casTree('event', unlocked(eventInsert())),
+      )
+    })
+
+    it('is the lock of the event the row names', () => {
+      refuses('mutation-verdict:construction:tree-event-lock-names-the-row', ANOTHER_EVENT, () =>
+        batch().casTree('event', onEvent(eventInsert(), 'q', 'another')),
+      )
+    })
+
+    it('refuses a row that names no event as a plain value', () => {
+      const nameless = () =>
+        loose.insertInto('events').values({
+          queue: 'q',
+          payload: 'p',
+          emitted_at_ms: nowValue,
+          fence_stamp: stampValue,
+          fence_at_ms: nowValue,
+        })
+      expect(() => batch().casTree('event', onEvent(nameless()))).toThrow(ANOTHER_EVENT)
+      // A name the tree cannot read is refused too: here it is a column of another row.
+      const copied = () =>
+        loose
+          .insertInto('events')
+          .columns([
+            'queue',
+            'event_name',
+            'payload',
+            'emitted_at_ms',
+            'fence_stamp',
+            'fence_at_ms',
+          ])
+          .expression(
+            loose
+              .selectFrom('waits as w')
+              .select((eb: Loose) => [
+                eb.ref('w.queue').as('queue'),
+                eb.ref('w.event_name').as('event_name'),
+                eb.val('p').as('payload'),
+                aliasedAs(nowValue, 'emitted_at_ms'),
+                aliasedAs(stampValue, 'fence_stamp'),
+                aliasedAs(nowValue, 'fence_at_ms'),
+              ]),
+          )
+      expect(() => batch().casTree('event', onEvent(copied()))).toThrow(ANOTHER_EVENT)
     })
   })
 
