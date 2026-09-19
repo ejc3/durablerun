@@ -13,28 +13,62 @@ const ROOT = join(import.meta.dirname, '../../..')
 const children: ChildProcess[] = []
 
 /**
- * Ports unique to this RUN, not fixed constants.
+ * No port in this file is chosen by the test: every host starts on port 0 and
+ * reports the port the OS gave it.
  *
- * These tests spawn real processes on real ports. When a run fails partway
- * its children can outlive it, and the next run then dies on "address in
- * use" — reported as the host exiting early, which reads exactly like the
- * engine bug the test exists to catch. It cost a real debugging detour
- * chasing a regression that was a leftover process. Deriving the base from
- * the pid means a stranded child never collides with the run that follows.
+ * These tests spawn real processes on real ports, and a port the test picks
+ * can already be taken. A fixed port is held by a child that outlived a run
+ * which failed partway. A port derived from the process id is held by a second
+ * run on the same machine whose id agrees modulo the range. Either way the
+ * host dies on "address in use", which `host` reports as the host exiting
+ * early, and that reads exactly like the engine bug these tests exist to
+ * catch. It cost a real debugging detour chasing a regression that was a
+ * leftover process. A port the OS hands out is free when it is bound, so
+ * neither a stranded child nor a second run can be holding it. The one port
+ * asked for by number is a replacement worker's: it takes over the port the
+ * killed worker reported, because the driver was told that URL.
  */
-const PORT_BASE = 42_000 + (process.pid % 1_000) * 3
+interface Host {
+  child: ChildProcess
+  /** The port the host reported binding; null when it bound none. */
+  port: number | null
+}
 
-function host(script: string, args: string[]): Promise<ChildProcess> {
+/** The one message a host sends its parent: it is serving, on this port. */
+function isReady(message: unknown): message is { ready: true; port: number | null } {
+  if (typeof message !== 'object' || message === null) return false
+  const { ready, port } = message as { ready?: unknown; port?: unknown }
+  return ready === true && (port === null || (typeof port === 'number' && port > 0))
+}
+
+function host(script: string, args: string[]): Promise<Host> {
   const child = spawn('node', ['--import', 'tsx', join(ROOT, script), ...args], {
     cwd: ROOT,
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   })
   children.push(child)
   return new Promise((resolve, reject) => {
-    child.once('message', (m) => m === 'ready' && resolve(child))
+    child.once('message', (message) => {
+      if (isReady(message)) resolve({ child, port: message.port })
+      else reject(new Error(`host sent an unexpected ready message: ${JSON.stringify(message)}`))
+    })
     child.once('exit', (code) => reject(new Error(`host exited early: ${code}`)))
     setTimeout(() => reject(new Error('host start timeout')), 20_000)
   })
+}
+
+/** A worker host. Port 0 lets the OS pick; a replacement names the port it takes over. */
+async function startWorker(db: string, port = 0): Promise<{ child: ChildProcess; port: number }> {
+  const started = await host('packages/driver/bin/worker-host.ts', [db, String(port), SECRET])
+  if (started.port === null) throw new Error('the worker host reported no port')
+  return { child: started.child, port: started.port }
+}
+
+/** A driver host that launches on the worker at `workerPort`. It serves wakes only when given a wake port. */
+function startDriver(db: string, workerPort: number, wakePort?: number): Promise<Host> {
+  const wake = wakePort === undefined ? [] : [String(wakePort)]
+  const workerUrl = `http://127.0.0.1:${workerPort}`
+  return host('packages/driver/bin/driver-host.ts', [db, Q, workerUrl, SECRET, ...wake])
 }
 
 afterAll(() => {
@@ -63,21 +97,29 @@ async function chaosDb(prefix: string, file: string) {
  * chaos: everything the sims proved, replayed with actual process death.
  */
 describe('multi-process chaos (real kills, one database file)', () => {
+  it('a host started on port 0 reports the port it bound', async () => {
+    const { db, raw } = await chaosDb('durablerun-ports-', 'ports.db')
+
+    // The worker answers on the port it reported: it refuses an unsigned launch there.
+    const worker = await startWorker(db)
+    const launch = await fetch(`http://127.0.0.1:${worker.port}/launch`, {
+      method: 'POST',
+      body: '{}',
+    })
+    expect(launch.status).toBe(401)
+
+    // So does a driver host asked to serve wakes on port 0.
+    const driver = await startDriver(db, worker.port, 0)
+    const wake = await fetch(`http://127.0.0.1:${driver.port}/wake`, { method: 'POST' })
+    expect(wake.status).toBe(204)
+    raw.close()
+  }, 60_000)
+
   it('a task survives kill -9 of its worker mid-step and completes on a replacement', async () => {
     const { db, raw, store } = await chaosDb('durablerun-chaos-', 'chaos.db')
 
-    const workerPort = PORT_BASE
-    const worker1 = await host('packages/driver/bin/worker-host.ts', [
-      db,
-      String(workerPort),
-      SECRET,
-    ])
-    await host('packages/driver/bin/driver-host.ts', [
-      db,
-      Q,
-      `http://127.0.0.1:${workerPort}`,
-      SECRET,
-    ])
+    const worker1 = await startWorker(db)
+    await startDriver(db, worker1.port)
 
     // A slow multi-step task: plenty of mid-flight surface to murder.
     const spawned = await store.spawn(Q, 'chaos-steps', JSON.stringify({ steps: 20, stepMs: 150 }))
@@ -86,11 +128,12 @@ describe('multi-process chaos (real kills, one database file)', () => {
       return Number(r?.rows[0]?.n) >= 3
     }, 'first checkpoints committed')
 
-    worker1.kill('SIGKILL') // real process death, mid-step
+    worker1.child.kill('SIGKILL') // real process death, mid-step
 
-    // A replacement worker on the same port; the lease machinery recovers.
+    // A replacement worker on the same port, the one the first worker reported
+    // and the driver was told; the lease machinery recovers.
     await new Promise((r) => setTimeout(r, 300))
-    await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
+    await startWorker(db, worker1.port)
     await until(
       async () => {
         const done = await store.getTaskResult(Q, spawned.taskId)
@@ -122,14 +165,8 @@ describe('multi-process chaos (real kills, one database file)', () => {
   it('a task survives kill -9 of its DRIVER and a sleep across the restart', async () => {
     const { db, raw, store } = await chaosDb('durablerun-chaos2-', 'chaos2.db')
 
-    const workerPort = PORT_BASE + 1
-    await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
-    const driver1 = await host('packages/driver/bin/driver-host.ts', [
-      db,
-      Q,
-      `http://127.0.0.1:${workerPort}`,
-      SECRET,
-    ])
+    const worker = await startWorker(db)
+    const driver1 = await startDriver(db, worker.port)
 
     // A task that checkpoints, sleeps 4s durably, then finishes.
     const spawned = await store.spawn(Q, 'napper', JSON.stringify({ seconds: 4 }))
@@ -140,15 +177,10 @@ describe('multi-process chaos (real kills, one database file)', () => {
       return Number(r?.rows[0]?.n) === 1
     }, 'suspended into the durable sleep')
 
-    driver1.kill('SIGKILL') // the scheduler's driver dies while the task sleeps
+    driver1.child.kill('SIGKILL') // the scheduler's driver dies while the task sleeps
 
     await new Promise((r) => setTimeout(r, 500))
-    await host('packages/driver/bin/driver-host.ts', [
-      db,
-      Q,
-      `http://127.0.0.1:${workerPort}`,
-      SECRET,
-    ])
+    await startDriver(db, worker.port)
     // The replacement driver wakes the sleeper and finishes the task; the
     // pre-sleep step replays, never re-executes.
     await until(
@@ -169,14 +201,8 @@ describe('multi-process chaos (real kills, one database file)', () => {
 
   it('the dogfood gate: a recurring job lives on the engine across sleeps', async () => {
     const { db, raw, store } = await chaosDb('durablerun-dogfood-', 'dogfood.db')
-    const workerPort = PORT_BASE + 2
-    await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
-    await host('packages/driver/bin/driver-host.ts', [
-      db,
-      Q,
-      `http://127.0.0.1:${workerPort}`,
-      SECRET,
-    ])
+    const worker = await startWorker(db)
+    await startDriver(db, worker.port)
 
     // Three cycles of work-sleep-work: the continuous-operation shape.
     const spawned = await store.spawn(
