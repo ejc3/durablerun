@@ -6946,6 +6946,41 @@ MUTATION_SPECS.extend(
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
         ),
         (
+            "postgres-lone-statement-is-the-whole-batch",
+            "packages/store-postgres/src/executor.ts",
+            "  if (statement === undefined || prepared.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two statements is sent outside a transaction block, so its reads see two snapshots and a failure in the second write leaves the first committed",
+        ),
+        (
+            "postgres-lone-statement-carries-no-lock",
+            "packages/store-postgres/src/executor.ts",
+            "  if (transactionLock !== undefined) return false\n",
+            "  // MUTATION: a lock coordinate no longer keeps the transaction\n",
+            "a lock that ends with its transaction is taken outside one and released at once, so the statement it guards runs unlocked",
+        ),
+        (
+            "postgres-version-read-keeps-its-transaction",
+            "packages/store-postgres/src/executor.ts",
+            "  if (schemaVersionRead) return false\n",
+            "  // MUTATION: the version read is sent alone, at the session's default level\n",
+            "the version read runs at whatever isolation level the pool's owner set, and under REPEATABLE READ it can see a bootstrap's table and not its row",
+        ),
+        (
+            "postgres-lone-read-begins-with-select",
+            "packages/store-postgres/src/executor.ts",
+            "  return BEGINS_WITH_SELECT.test(statement.sql)\n",
+            "  return true // MUTATION\n",
+            "a write sent as a read runs alone, where the read-only transaction refused it",
+        ),
+        (
+            "postgres-lone-read-names-no-into",
+            "packages/store-postgres/src/executor.ts",
+            "  if (NAMES_INTO.test(statement.sql)) return false\n",
+            "  // MUTATION: a SELECT that names INTO is sent alone\n",
+            "a SELECT that names INTO, sent as a read, creates its table, where the read-only transaction refused it",
+        ),
+        (
             "postgres-event-lock-is-advisory",
             "packages/store-postgres/src/executor.ts",
             "           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text\n",
@@ -7243,8 +7278,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-version-read-is-read-committed",
             "packages/store-mysql/src/executor.ts",
-            "        for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {\n",
-            "        for (const statement of schemaVersionRead ? BEGIN_READ : BEGIN_READ) { // MUTATION\n",
+            "  if (mode === 'read') return BEGINS_WITH_SELECT.test(statement.sql)\n",
+            "  if (mode === 'read') return false // MUTATION\n",
             "a version read racing a bootstrap reads through a snapshot older than the table and MySQL refuses it with error 1412",
         ),
         (
@@ -7316,6 +7351,41 @@ MUTATION_SPECS.extend(
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 1\n",
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 0 // MUTATION\n",
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
+        ),
+        (
+            "mysql-lone-statement-is-the-whole-batch",
+            "packages/store-mysql/src/executor.ts",
+            "  if (statement === undefined || prepared.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two statements is sent with no transaction around it, so its reads see two snapshots and a failure in the second write leaves the first committed",
+        ),
+        (
+            "mysql-lone-statement-carries-no-lock",
+            "packages/store-mysql/src/executor.ts",
+            "  if (lock !== null) return false\n",
+            "  // MUTATION: a lock coordinate no longer keeps the transaction\n",
+            "one statement under a lock coordinate is sent with no transaction, which is not the shape the rule states or the round trips it pins",
+        ),
+        (
+            "mysql-lone-read-begins-with-select",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode === 'read') return BEGINS_WITH_SELECT.test(statement.sql)\n",
+            "  if (mode === 'read') return true // MUTATION\n",
+            "a write sent as a read runs alone under autocommit, where the read-only transaction refused it",
+        ),
+        (
+            "mysql-lone-write-binds-no-trailing-space",
+            "packages/store-mysql/src/executor.ts",
+            "  return !statement.args.some(endsInASpace)\n",
+            "  return true // MUTATION\n",
+            "a single write MySQL cut to fit has committed before the executor reads its warning, so the refusal leaves the cut identifier stored",
+        ),
+        (
+            "mysql-claim-leg-stops-at-the-limit",
+            "packages/store-mysql/src/store.ts",
+            "        ORDER BY r.available_at_ms, r.run_id\n        LIMIT ?\n        FOR UPDATE SKIP LOCKED)`\n",
+            "        AND ? IS NOT NULL\n        ORDER BY r.available_at_ms, r.run_id\n        FOR UPDATE SKIP LOCKED)`\n",
+            "a claim leg reads and locks every due run of its state, so concurrent claimers skip runs this claim never takes",
         ),
     )
 )
@@ -9854,6 +9924,36 @@ VERDICTS = {
         "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
         "mutation-verdict:construction:postgres-version-read-isolation",
     ),
+    "postgres-version-read-keeps-its-transaction": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
+        "mutation-verdict:construction:postgres-version-read-isolation",
+    ),
+    "postgres-lone-statement-is-the-whole-batch": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions uses one repeatable-read, read-only snapshot for a read batch of more than one statement",
+        "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
+    ),
+    "postgres-lone-statement-carries-no-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions acquires a scoped claim advisory lock before protocol SQL without durable garbage",
+        "mutation-verdict:construction:postgres-lone-statement-carries-no-lock",
+    ),
+    "postgres-lone-read-begins-with-select": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a write sent as a read, whether it begins with DELETE or is a SELECT that names INTO",
+        "mutation-verdict:behavior:postgres-lone-read-begins-with-select",
+    ),
+    "postgres-lone-read-names-no-into": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a write sent as a read, whether it begins with DELETE or is a SELECT that names INTO",
+        "mutation-verdict:behavior:postgres-lone-read-names-no-into",
+    ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/schema-gate.test.ts",
@@ -11320,6 +11420,36 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock counts every deadlock victim, the one it runs again and the one it reports",
             "mutation-verdict:behavior:mysql-deadlock-victims-are-counted",
+        ),
+        "mysql-lone-statement-is-the-whole-batch": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions gives a read batch of more than one statement one consistent read-only snapshot",
+            "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
+        ),
+        "mysql-lone-statement-carries-no-lock": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions holds the migration lock from before a migration transaction until after it",
+            "mutation-verdict:construction:mysql-lone-statement-carries-no-lock",
+        ),
+        "mysql-lone-read-begins-with-select": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read",
+            "mutation-verdict:behavior:mysql-lone-read-begins-with-select",
+        ),
+        "mysql-lone-write-binds-no-trailing-space": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server refuses a single write MySQL would cut to fit its column, and writes nothing",
+            "mutation-verdict:behavior:mysql-lone-write-binds-no-trailing-space",
+        ),
+        "mysql-claim-leg-stops-at-the-limit": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks each state in claim order and stops at the limit, locking only the runs it takes, beside a backlog of due runs",
+            "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
         ),
     }
 )
@@ -17129,7 +17259,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 880:
+        if len(MUTATIONS) != 890:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
