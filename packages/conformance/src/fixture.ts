@@ -136,6 +136,14 @@ export interface StoreFixture {
    * actors against one database.
    */
   storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
+  /**
+   * How many times the server has chosen one of this fixture's batches as a deadlock
+   * victim, read from the fixture's own executor. The executor runs a victim again, which
+   * hides a lock-order inversion from every caller, and the server's own count is shared
+   * by every test worker connected to it. A dialect whose executor never meets a deadlock
+   * victim answers zero.
+   */
+  deadlocks(): number
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

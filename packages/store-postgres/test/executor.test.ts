@@ -228,6 +228,48 @@ describe('PgExecutor transactions', () => {
     })
   })
 
+  it('counts every deadlock victim, the one it runs again and the one it reports', async () => {
+    const counted = async (
+      batches: readonly { deadlocks: number; mode?: 'read' | 'write'; code?: string }[],
+    ) => {
+      let failuresLeft = 0
+      let code = '40P01'
+      const client = new FakeClient((text) => {
+        if (text !== 'UPDATE contended' || failuresLeft === 0) return EMPTY_RESULT
+        failuresLeft -= 1
+        throw databaseError(code, 'aborted')
+      })
+      const pg = executor(new FakePool(client))
+      for (const batch of batches) {
+        failuresLeft = batch.deadlocks
+        code = batch.code ?? '40P01'
+        await pg
+          .batch('contended', [{ sql: 'UPDATE contended', args: [] }], batch.mode ?? 'write')
+          .catch(() => undefined)
+      }
+      return pg.deadlocks
+    }
+    expect(
+      {
+        none: await counted([{ deadlocks: 0 }]),
+        runAgain: await counted([{ deadlocks: 2 }]),
+        reported: await counted([{ deadlocks: 99 }]),
+        // A read batch is never run again, and its victim is counted all the same.
+        inAReadBatch: await counted([{ deadlocks: 1, mode: 'read' }]),
+        anotherError: await counted([{ deadlocks: 1, code: '23505' }]),
+        acrossBatches: await counted([{ deadlocks: 2 }, { deadlocks: 0 }, { deadlocks: 1 }]),
+      },
+      'mutation-verdict:behavior:postgres-deadlock-victims-are-counted',
+    ).toEqual({
+      none: 0,
+      runAgain: 2,
+      reported: 3,
+      inAReadBatch: 1,
+      anotherError: 0,
+      acrossBatches: 3,
+    })
+  })
+
   it('refuses a gate that does not name an earlier statement', async () => {
     const client = new FakeClient(() => EMPTY_RESULT)
     const refusals: Record<string, string> = {}

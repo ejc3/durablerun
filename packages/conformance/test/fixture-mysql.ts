@@ -147,6 +147,7 @@ export async function makeMysqlFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
+    deadlocks: () => raw.deadlocks,
     close: opened.close,
   }
 }

@@ -130,6 +130,7 @@ export async function makePostgresFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
+    deadlocks: () => raw.deadlocks,
     close: opened.close,
   }
 }

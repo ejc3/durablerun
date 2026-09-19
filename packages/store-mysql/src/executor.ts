@@ -366,6 +366,11 @@ function errorNumber(error: unknown): number | undefined {
   return typeof errno === 'number' ? errno : undefined
 }
 
+/** One definition of a deadlock victim, for the count and for the decision to run it again. */
+function isDeadlockVictim(error: unknown): boolean {
+  return errorNumber(error) === ER_LOCK_DEADLOCK
+}
+
 function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
@@ -422,11 +427,23 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 export class MysqlExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
   private readonly configured = new WeakSet<object>()
+  private deadlockVictims = 0
 
   private constructor(
     private readonly pool: PoolPort,
     private readonly ownsPool: boolean,
   ) {}
+
+  /**
+   * How many times InnoDB has chosen a batch of this executor as a deadlock victim,
+   * counting a batch that was then run again and one that was reported. Running the victim
+   * again hides a lock-order inversion from every caller, so a test holds this at zero
+   * wherever correct code never deadlocks. The server's own count is shared by every
+   * session of the server and cannot say whose transaction it was.
+   */
+  get deadlocks(): number {
+    return this.deadlockVictims
+  }
 
   static open(config: string | PoolOptions): MysqlExecutor {
     return new MysqlExecutor(createOwnedMysqlPool(config), true)
@@ -577,10 +594,9 @@ export class MysqlExecutor implements SqlExecutor {
           // a read batch takes no row lock, so a deadlock there is not this engine's lock
           // order. The named lock is held across the attempts, because it was taken before
           // the transaction and a rollback does not release it.
+          if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
-            mode === 'write' &&
-            attempt < DEADLOCK_VICTIM_ATTEMPTS &&
-            errorNumber(error) === ER_LOCK_DEADLOCK
+            mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)
           if (!runAgain) throw error
         }
       }

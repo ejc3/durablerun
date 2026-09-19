@@ -281,6 +281,44 @@ describe('MysqlExecutor transactions', () => {
       expect(connection.released).toBe(1)
     })
 
+    it('counts every deadlock victim, the one it runs again and the one it reports', async () => {
+      const READ = 'SELECT a AS value FROM t'
+      const DUPLICATE = Object.assign(new Error('Duplicate entry'), { errno: 1062 })
+      const counted = async (
+        batches: readonly { times: number; mode?: 'read' | 'write'; error?: unknown }[],
+      ) => {
+        const connection = new FakeConnection()
+        const executor = executorOver(connection)
+        for (const batch of batches) {
+          const sql = batch.mode === 'read' ? READ : WRITE
+          connection.failures.set(sql, { error: batch.error ?? DEADLOCK, times: batch.times })
+          await executor
+            .batch('fixture:write', [{ sql, args: [] }], batch.mode ?? 'write')
+            .catch(() => undefined)
+        }
+        return executor.deadlocks
+      }
+      expect(
+        {
+          none: await counted([{ times: 0 }]),
+          runAgain: await counted([{ times: 2 }]),
+          reported: await counted([{ times: 99 }]),
+          // A read batch is never run again, and its victim is counted all the same.
+          inAReadBatch: await counted([{ times: 1, mode: 'read' }]),
+          anotherError: await counted([{ times: 1, error: DUPLICATE }]),
+          acrossBatches: await counted([{ times: 2 }, { times: 0 }, { times: 1 }]),
+        },
+        'mutation-verdict:behavior:mysql-deadlock-victims-are-counted',
+      ).toEqual({
+        none: 0,
+        runAgain: 2,
+        reported: 3,
+        inAReadBatch: 1,
+        anotherError: 0,
+        acrossBatches: 3,
+      })
+    })
+
     it('does not run a read batch again', async () => {
       const connection = new FakeConnection()
       const READ = 'SELECT a AS value FROM t'
