@@ -492,12 +492,13 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         rolledBack = (await store.getTaskResult(Q, forward.taskId))?.rollback
       })
       expect(rolledBack).toEqual({ outcome: 'complete' })
-      for (const [what, rows] of Object.entries({ plainFailure, plainResult, sagaResult })) {
-        expect(
-          rows,
-          `rows ${what} walked beside ${CHECKPOINTS} checkpoints of its own task`,
-        ).toBeLessThan(150)
-      }
+      // Each entry is the rows one batch walked beside the checkpoints of its own task.
+      expect(
+        Object.entries({ plainFailure, plainResult, sagaResult }).filter(
+          ([, rows]) => !(Number(rows) < 150),
+        ),
+        'mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints',
+      ).toEqual([])
     } finally {
       await db.close()
     }

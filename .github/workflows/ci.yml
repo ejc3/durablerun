@@ -310,42 +310,17 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_nested_entry(repaired, candidate, name):
-              # Replace one entry of an `extend` block of the base registry with this tree's
-              # entry of the same name, for a mutation whose target line this tree rewrote.
-              # Its name and its file must stand, so only the find, the replacement and the
-              # description move. A verdict group also lists names after an opening
-              # parenthesis, so an entry is told by the file path on its second line.
-              def span(text):
-                  opener = f'        (\n            "{name}",\n            "packages/'
-                  if text.count(opener) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  start = text.index(opener)
-                  filed = text.index('\n', start + len(opener)) + 1
-                  return start, filed, text.index('        ),\n', start) + len('        ),\n')
-              start, filed, end = span(repaired)
-              new_start, new_filed, new_end = span(candidate)
-              if repaired[start:filed] != candidate[new_start:new_filed]:
-                  raise SystemExit(f'{name}: the bridge may change only find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '9f60ddc67ba6ec9fb277cc221f03bdcd395b7314b948ca222ee67d61432ed5db':
-              # Each executor that runs a deadlock victim again now counts its victims, and
-              # one function says what a victim is, for the count and for the decision to
-              # run the batch again. Three base entries quoted the lines that decided it in
-              # place, which are gone, and are re-aimed at the function on PostgreSQL and at
-              # the decision's one line on MySQL. Each mutant is the one it was. The count
-              # has a mutation in each executor, which the base predates, so their verdict
-              # markers are exempted.
-              repaired = previous
-              for name in (
-                  'postgres-deadlock-victim-runs-again',
-                  'postgres-only-a-deadlock-runs-again',
-                  'mysql-deadlocked-write-batch-runs-again',
-              ):
-                  repaired = reaim_nested_entry(repaired, candidate, name)
-              repaired = exempt(repaired, candidate, (
-                  "mutation-verdict:behavior:postgres-deadlock-victims-are-counted",
-                  "mutation-verdict:behavior:mysql-deadlock-victims-are-counted",
+          if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
+              # The saga reads changed shape. A rollback error is the record the task's last
+              # run wrote, the names under a prefix are a range of the checkpoints key on
+              # libSQL and MySQL, and the attempt records are read only for a failed task
+              # whose saga began. No base entry's text moved. Six mutations hold the new
+              # lines, and their four verdict markers are newer than the base.
+              repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
+                  "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
+                  "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
+                  "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

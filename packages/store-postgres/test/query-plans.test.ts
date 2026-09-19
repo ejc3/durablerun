@@ -154,7 +154,8 @@ it('reaches tasks by an index condition in every shipped task update', async () 
  * index that holds only saga names would make the read one seek, and BUILD.md records it
  * with its measurement and what would call for it. What this holds: the walk is keyed by
  * the task, no name is compared by order, and the attempt records are not read at all
- * for a task whose saga never began, which is every read of a plain task's result.
+ * for a task whose saga never began, which is every read of a plain task's result, nor
+ * for one that something other than a rollback's failure ended.
  */
 it("walks a saga's names among one task's rows of the key, and reads no attempt record when no saga began", async () => {
   const db = await openPostgresTestDb({ idNamespace: 'plan-saga-names' })
@@ -204,6 +205,20 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
       key: `${SAGA_TRIES_PREFIX}a`,
       stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"R"}' }),
     })
+    const cancelled = await started('cancelled-in-the-phase')
+    await store.setCheckpoint(
+      'q',
+      cancelled.taskId,
+      cancelled.runId,
+      cancelled.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    expect(await store.fail('q', cancelled.runId, cancelled.claimToken, '{}', null)).toEqual({
+      rollingBack: true,
+    })
+    expect(await store.cancelTask('q', cancelled.taskId)).toBe(true)
     const resultReadOf = async (taskId: string) => {
       const before = seen.length
       const result = await store.getTaskResult('q', taskId)
@@ -214,6 +229,7 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     const reads = {
       completed: await resultReadOf(completed.taskId),
       failed: await resultReadOf(failed.taskId),
+      cancelled: await resultReadOf(cancelled.taskId),
       saga: await resultReadOf(saga.taskId),
     }
     expect(reads.saga.result?.rollback).toEqual({ outcome: 'failed', errorJson: '{"name":"R"}' })
@@ -289,7 +305,10 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
         throw new Error(`the result read of ${which} plans no attempt record read`)
       attemptRecordsRead[which] = !scan.includes('never executed')
     }
-    expect(attemptRecordsRead).toEqual({ completed: false, failed: false, saga: true })
+    expect(
+      attemptRecordsRead,
+      'mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt',
+    ).toEqual({ completed: false, failed: false, cancelled: false, saga: true })
   } finally {
     await client.end()
     await db.close()
