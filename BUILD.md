@@ -2269,6 +2269,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
       sweep does needs the two reads to share a snapshot, because every
       transition it then makes checks its own row again, but it changes a
       batch's shape on all three stores.
+    - Option, not a deferral of this PR: the read brand shows where a statement
+      came from, and not what a store's own fragment calls. Run on a server, a
+      read whose fragment called `nextval` was sent alone and advanced the
+      sequence, where the same text sent as a read was refused. Core reads a
+      fragment for clocks and comments only. No read of the stores calls a
+      function that writes. The trigger is the first store read that calls a
+      function outside core's grammar list.
+    - Option, not a deferral of this PR: a shared conformance case that a write
+      sent as a read is refused on every dialect. Server cases hold it on MySQL
+      and on PostgreSQL, where the exit test asks for it.
+    - Option, not a deferral of this PR: the PostgreSQL executor could check a
+      pool's default isolation level once for each client. DESIGN.md states
+      what a read sent alone asks of it, and nothing refuses a pool set to
+      SERIALIZABLE.
   - Deferred from PR4.3: `migrate()` reads the version before each of the four
     empty versions and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
