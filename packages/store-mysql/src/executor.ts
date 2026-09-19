@@ -576,6 +576,9 @@ export class MysqlExecutor implements SqlExecutor {
           transactionStarted = false
           return results
         } catch (error) {
+          // Counted before the rollback: a victim whose rollback then fails is reported
+          // from inside that block, and it is a victim all the same.
+          if (isDeadlockVictim(error)) this.deadlockVictims += 1
           if (transactionStarted) {
             try {
               await connection.query('ROLLBACK')
@@ -594,7 +597,6 @@ export class MysqlExecutor implements SqlExecutor {
           // a read batch takes no row lock, so a deadlock there is not this engine's lock
           // order. The named lock is held across the attempts, because it was taken before
           // the transaction and a rollback does not release it.
-          if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
             mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)
           if (!runAgain) throw error
