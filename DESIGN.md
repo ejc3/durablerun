@@ -2185,7 +2185,7 @@ Dialect implementations:
 | Concern | Turso/libSQL | MySQL 8 | Postgres |
 |---|---|---|---|
 | claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; the shared claim `UPDATE`, its candidates a derived table of one `FOR UPDATE SKIP LOCKED` leg per state; no RETURNING, so the receipt is the batch's own read by token | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
-| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
+| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | a transaction at READ COMMITTED for every batch of more than one statement or under a lock, and a batch of one statement alone under autocommit (the 20s PlanetScale cap is ample for a claim of a few statements) | the same split: a transaction for more than one statement or under a lock, and one statement alone |
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
@@ -2378,6 +2378,32 @@ realized in the store's compiler, executor, fragments, or schema:
   325 lines sagas added to the PostgreSQL store are in this one verbatim, and
   so are 64 of the 67 lines of saga fragments. That one operator is why the
   saga fragments stay in the stores and are not hoisted into core.
+
+**PostgreSQL sends a batch of one statement alone too**, outside a transaction
+block, where the server runs it in a transaction of its own: one query where
+`BEGIN`, the statement, and `COMMIT` were three. One statement reads through
+one snapshot, its subqueries included, at any isolation level, measured the
+way MySQL's was. The read-only guard stays for every read the executor cannot
+prove writes nothing. A read is sent alone only when it begins with SELECT
+and does not name INTO: `SELECT ... INTO` creates a table, a statement that
+changes rows from inside a query must begin with WITH, and this schema
+installs no function for a query to call. Anything else sent as a read keeps
+the read-only transaction, and a server test holds that a DELETE and a SELECT
+that names INTO are both still refused. The transaction also refused a locking
+read, as MySQL's did, and no read of the store takes a lock. The
+schema-version read keeps its transaction, because alone it would run at the
+session's default level, which belongs to whoever owns the pool, and rule 9
+needs READ COMMITTED. A lock coordinate keeps the transaction, because both
+kinds of lock end with it. A TEXT column cuts nothing to fit, so a single
+write has no condition here. Counted the same way, and pinned by the store's
+`round-trips.test.ts`: the next-wake read, the task result, and
+`expire-lease-now` each went from three queries to one, and a refused
+heartbeat from six to four. A held heartbeat stays at four, because it is two
+statements. Measured against main as MySQL was: the task result went from 695
+to 521 microseconds a call, `expire-lease-now` from 472 to 325, a refused
+heartbeat from 1113 to 981, and next-wake from 1252 to 1139, where the
+statement itself is most of the call. A held heartbeat and an idle driver tick
+did not move.
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
 `events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot

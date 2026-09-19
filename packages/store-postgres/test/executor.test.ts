@@ -124,18 +124,62 @@ describe('PgExecutor transactions', () => {
     expect(client.releases).toEqual([undefined])
   })
 
-  it('uses one repeatable-read, read-only snapshot for a read batch', async () => {
+  it('uses one repeatable-read, read-only snapshot for a read batch of more than one statement', async () => {
     const client = new FakeClient(() => EMPTY_RESULT)
     const pool = new FakePool(client)
 
-    await executor(pool).batch('read-snapshot', [{ sql: 'SELECT 1', args: [] }], 'read')
+    await executor(pool).batch(
+      'read-snapshot',
+      [
+        { sql: 'SELECT 1', args: [] },
+        { sql: 'SELECT 2', args: [] },
+      ],
+      'read',
+    )
 
-    expect(client.calls.map(({ text }) => text)).toEqual([
+    expect(
+      client.calls.map(({ text }) => text),
+      'mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch',
+    ).toEqual([
       'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
       'SELECT 1',
+      'SELECT 2',
       'COMMIT',
     ])
     expect(pool.connectCalls).toBe(1)
+  })
+
+  it('sends a batch of one statement alone, outside a transaction block', async () => {
+    const sentBy = async (sql: string, args: unknown[], mode?: 'read') => {
+      const client = new FakeClient(() => EMPTY_RESULT)
+      await executor(new FakePool(client)).batch('alone', [{ sql, args: args as never[] }], mode)
+      return { texts: client.calls.map(({ text }) => text), releases: client.releases }
+    }
+    expect({
+      read: await sentBy('SELECT 1', [], 'read'),
+      write: await sentBy('UPDATE t SET v = ?', ['x']),
+    }).toEqual({
+      read: { texts: ['SELECT 1'], releases: [undefined] },
+      write: { texts: ['UPDATE t SET v = $1'], releases: [undefined] },
+    })
+  })
+
+  it('keeps the read-only transaction for a read it cannot prove is a SELECT that writes nothing', async () => {
+    // The server refuses a write inside it. A statement that begins with SELECT and names
+    // INTO creates a table, and one that begins with WITH can change rows.
+    for (const sql of [
+      'DELETE FROM meta',
+      'WITH gone AS (DELETE FROM meta RETURNING key) SELECT key FROM gone',
+      'SELECT value INTO copied FROM meta',
+    ]) {
+      const client = new FakeClient(() => EMPTY_RESULT)
+      await executor(new FakePool(client)).batch('unproven', [{ sql, args: [] }], 'read')
+      expect(client.calls.map(({ text }) => text)).toEqual([
+        'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+        sql,
+        'COMMIT',
+      ])
+    }
   })
 
   it('reads the schema version under READ COMMITTED, whose snapshot follows the name lookup', async () => {
@@ -205,14 +249,17 @@ describe('PgExecutor transactions', () => {
         return result([], [], 1)
       })
       const outcome = await executor(new FakePool(client))
-        .batch('contended', [{ sql: 'UPDATE contended', args: [] }])
+        .batch('contended', [
+          { sql: 'SELECT 1', args: [] },
+          { sql: 'UPDATE contended', args: [] },
+        ])
         .then(
-          (results) => results.map((entry) => entry.rowsAffected),
+          (results) => results.map((entry) => entry.rowsAffected).slice(1),
           (error: unknown) => (error instanceof Error ? error.name : String(error)),
         )
       return { outcome, texts: client.calls.map(({ text }) => text) }
     }
-    const once = ['BEGIN', 'UPDATE contended', 'ROLLBACK']
+    const once = ['BEGIN', 'SELECT 1', 'UPDATE contended', 'ROLLBACK']
     expect(
       {
         victimOnce: await run(1),
@@ -221,7 +268,10 @@ describe('PgExecutor transactions', () => {
       },
       'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
     ).toEqual({
-      victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
+      victimOnce: {
+        outcome: [1],
+        texts: [...once, 'BEGIN', 'SELECT 1', 'UPDATE contended', 'COMMIT'],
+      },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
       // Only a deadlock is run again. Any other failure is reported the first time.
       anotherError: { outcome: 'StoreUnavailableError', texts: once },
@@ -278,6 +328,28 @@ describe('PgExecutor transactions', () => {
       anotherError: 0,
       acrossBatches: 3,
       rollbackFails: 1,
+    })
+  })
+
+  it('runs a statement sent alone again after a deadlock, with nothing to roll back', async () => {
+    let attempts = 0
+    const client = new FakeClient((text) => {
+      if (text !== 'UPDATE contended') return EMPTY_RESULT
+      attempts += 1
+      if (attempts === 1) throw databaseError('40P01', 'aborted')
+      return result([], [], 1)
+    })
+    const results = await executor(new FakePool(client)).batch('contended', [
+      { sql: 'UPDATE contended', args: [] },
+    ])
+    expect({
+      rowsAffected: results.map((entry) => entry.rowsAffected),
+      texts: client.calls.map(({ text }) => text),
+      releases: client.releases,
+    }).toEqual({
+      rowsAffected: [1],
+      texts: ['UPDATE contended', 'UPDATE contended'],
+      releases: [undefined],
     })
   })
 
@@ -390,7 +462,11 @@ describe('PgExecutor transactions', () => {
       },
     )
 
-    expect(client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim())).toEqual([
+    // One statement under a lock coordinate keeps its transaction: the lock ends with it.
+    expect(
+      client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      'mutation-verdict:construction:postgres-lone-statement-carries-no-lock',
+    ).toEqual([
       'BEGIN',
       "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text )::text, 0 ))",
       'SELECT value FROM protocol_state',
@@ -409,7 +485,10 @@ describe('PgExecutor transactions', () => {
     const pool = new FakePool(client)
 
     await expect(
-      executor(pool).batch('failed-write', [{ sql: 'UPDATE t SET v = 1', args: [] }]),
+      executor(pool).batch('failed-write', [
+        { sql: 'SELECT 1', args: [] },
+        { sql: 'UPDATE t SET v = 1', args: [] },
+      ]),
     ).rejects.toMatchObject({
       name: 'StoreUnavailableError',
       message: expect.stringContaining('SQLSTATE 40001'),
@@ -417,9 +496,26 @@ describe('PgExecutor transactions', () => {
     })
     expect(client.calls.map(({ text }) => text)).toEqual([
       'BEGIN',
+      'SELECT 1',
       'UPDATE t SET v = 1',
       'ROLLBACK',
     ])
+    expect(client.releases).toEqual([undefined])
+  })
+
+  it('sends nothing after a statement sent alone that failed, and releases its client', async () => {
+    // PostgreSQL ran the statement in a transaction of its own and aborted it, so the
+    // client holds no open transaction to roll back.
+    const failure = databaseError('40001', 'serialization failure')
+    const client = new FakeClient(() => {
+      throw failure
+    })
+    await expect(
+      executor(new FakePool(client)).batch('failed-write', [
+        { sql: 'UPDATE t SET v = 1', args: [] },
+      ]),
+    ).rejects.toMatchObject({ name: 'StoreUnavailableError', cause: failure })
+    expect(client.calls.map(({ text }) => text)).toEqual(['UPDATE t SET v = 1'])
     expect(client.releases).toEqual([undefined])
   })
 
@@ -434,6 +530,7 @@ describe('PgExecutor transactions', () => {
 
     await expect(
       executor(new FakePool(client)).batch('failed-rollback', [
+        { sql: 'SELECT 1', args: [] },
         { sql: 'UPDATE t SET v = 1', args: [] },
       ]),
     ).rejects.toBeInstanceOf(StoreUnavailableError)

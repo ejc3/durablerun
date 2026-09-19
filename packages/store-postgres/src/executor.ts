@@ -219,6 +219,40 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
 const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
 
+const BEGINS_WITH_SELECT = /^\s*SELECT\b/i
+const NAMES_INTO = /\bINTO\b/i
+
+/**
+ * Whether a batch is sent as its one statement alone, outside a transaction block, where
+ * PostgreSQL runs it in a transaction of its own. It is as atomic as the batch was, in
+ * one round trip where the transaction cost three. What the transaction gave a batch of
+ * one statement still holds:
+ * - A read batch's snapshot. One statement reads through one snapshot, its subqueries
+ *   included, at any isolation level.
+ * - A read batch's READ ONLY, under which the server refuses a write. A statement that
+ *   begins with SELECT writes nothing unless it names INTO, which creates a table: one
+ *   that changes rows from inside a query must begin with WITH, and this schema installs
+ *   no function for a query to call. Any other statement sent as a read keeps the
+ *   read-only transaction.
+ * - The schema-version read's READ COMMITTED. Alone it would run at the session's default
+ *   level, which belongs to whoever owns the pool, so it keeps its transaction.
+ * A lock coordinate keeps the transaction too, because both kinds of lock end with it.
+ */
+function sentAlone(
+  prepared: readonly PreparedStatement[],
+  mode: SqlBatchMode,
+  transactionLock: SqlTransactionLock | undefined,
+  schemaVersionRead: boolean,
+): boolean {
+  const [statement] = prepared
+  if (statement === undefined || prepared.length !== 1) return false
+  if (transactionLock !== undefined) return false
+  if (schemaVersionRead) return false
+  if (mode !== 'read') return true
+  if (NAMES_INTO.test(statement.sql)) return false
+  return BEGINS_WITH_SELECT.test(statement.sql)
+}
+
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -280,10 +314,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over node-postgres. Every batch owns one checked-out client and
- * one transaction, so statements are atomic, ordered, and observe earlier
- * statements from the same batch. Read batches use a repeatable-read,
- * read-only snapshot; write batches use PostgreSQL's read-committed default.
+ * SqlExecutor over node-postgres. Every batch owns one checked-out client. A batch of
+ * more than one statement owns one transaction, so its statements are atomic, ordered,
+ * and observe earlier statements from the same batch: a read batch in a repeatable-read,
+ * read-only snapshot, a write batch at PostgreSQL's read-committed default. A batch of
+ * one statement is sent alone, because one statement is atomic and reads one snapshot by
+ * itself (`sentAlone`).
  */
 export class PgExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
@@ -323,6 +359,7 @@ export class PgExecutor implements SqlExecutor {
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    const alone = sentAlone(prepared, mode, transactionLock, schemaVersionRead)
 
     let client: PoolClient
     try {
@@ -347,10 +384,12 @@ export class PgExecutor implements SqlExecutor {
         let transactionStarted = false
         let activeStatementIndex: number | null = null
         try {
-          await client.query(
-            mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
-          )
-          transactionStarted = true
+          if (!alone) {
+            await client.query(
+              mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
+            )
+            transactionStarted = true
+          }
 
           if (transactionLock !== undefined) {
             await acquireTransactionLock(client, transactionLock)
@@ -373,7 +412,7 @@ export class PgExecutor implements SqlExecutor {
             activeStatementIndex = null
             results.push(normalizeResult(result))
           }
-          await client.query('COMMIT')
+          if (transactionStarted) await client.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {
@@ -388,7 +427,8 @@ export class PgExecutor implements SqlExecutor {
                   : new Error('PostgreSQL rollback failed', { cause: rollbackError })
             }
           }
-          // PostgreSQL ends a deadlock by aborting one transaction. That batch committed
+          // PostgreSQL ends a deadlock by aborting one transaction, which for a statement
+          // sent alone is the statement. That batch committed
           // nothing, so running it again is a first delivery, and the other transaction
           // has its locks by now. Reported as an outage, a finished run would be left for
           // the sweep to charge an infrastructure retry. Only a write batch is run again:
