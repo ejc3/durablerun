@@ -45,13 +45,13 @@ async function rowsOf(raw: SqlExecutor, sql: string, args: (string | number)[] =
 
 const startMarker = (step: string) => `${SAGA_STARTED_PREFIX}${step}`
 const rollbackOf = (step: string) => `${SAGA_ROLLBACK_PREFIX}${step}`
-const triesOf = (step: string, tries: number) => ({
+export const triesOf = (step: string, tries: number) => ({
   key: `${SAGA_TRIES_PREFIX}${step}`,
   stateJson: encodeRollbackTry({ tries, errorJson: ROLLBACK_BOOM }),
 })
 
 /** A registered step starts: its marker commits, carrying its index, before its body runs. */
-function startStep(f: StoreFixture, run: ClaimedRun, step: string, index: number) {
+export function startStep(f: StoreFixture, run: ClaimedRun, step: string, index: number) {
   return checkpointOwned(f.store, Q, run, startMarker(step), String(index), 60)
 }
 
@@ -89,7 +89,7 @@ async function doneEvents(f: StoreFixture): Promise<number> {
  * A task whose steps `steps` started and finished, in that order, and whose terminal
  * failure was then decided: it is rolling back, and the returned run is its first pass.
  */
-async function rollingBack(f: StoreFixture, steps: readonly string[] = ['a']) {
+export async function rollingBack(f: StoreFixture, steps: readonly string[] = ['a']) {
   const spawned = await f.store.spawn(Q, 'saga', '{}')
   const run = await claimActivated(f.store, Q, 'w-forward')
   for (const [index, step] of steps.entries()) {

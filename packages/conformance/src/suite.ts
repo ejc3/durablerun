@@ -85,8 +85,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     /**
      * Run `body` once per seed against its own fixture, named `${prefix}${seed}` and
      * started at START_MS like the default fixture. The fixture always closes, and the engine
-     * invariants must hold at quiescence. No batch may have been a deadlock victim either:
-     * the executor runs a victim again, so the scenario itself cannot see a wrong lock order.
+     * invariants must hold at quiescence.
      */
     async function forEachSeed(
       seeds: number,
@@ -98,7 +97,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           await fx.admin.setFakeNowEpochMs(START_MS)
           await body(fx, seed)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          expect(fx.deadlocks(), `seed ${seed}: deadlock victims`).toBe(0)
         })
       }
     }

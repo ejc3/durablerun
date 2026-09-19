@@ -1,17 +1,15 @@
 import {
   type ClaimedRun,
-  SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type StoreAdmin,
   StoreUnavailableError,
-  encodeRollbackTry,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixture, StoreFixtureFactory, StoreFixtureOptions } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 import { sagaViolations } from './saga-rows.js'
+import { rollingBack, startStep, triesOf } from './sagas.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -30,6 +28,20 @@ const FAILURE = '{"name":"Boom"}'
 /** How many copies of one call run at once. */
 const COPIES = 4
 const EVERY_COPY = Array.from({ length: COPIES }, (_, copy) => copy)
+
+/**
+ * How many times an executor runs one batch before it reports a deadlock (DESIGN.md §3.2).
+ * It is written here and not imported, so the suite holds the contract and not whatever a
+ * constant happens to say.
+ */
+const ATTEMPTS = 3
+
+/**
+ * The most deadlock victims an excused contest may count. A copy that met no outage was a
+ * victim on fewer than all of its attempts, and whatever runs afterwards runs alone. A
+ * count past this is not the excused defect, and fails the contest.
+ */
+const EXCUSED_VICTIMS = COPIES * (ATTEMPTS - 1)
 
 /**
  * Brings a fresh fixture to a state in which one call of the port is legal, the same way
@@ -62,25 +74,21 @@ async function claimedRun(f: StoreFixture): Promise<ClaimedRun> {
   return claimOne(f.store, Q, 'w-job')
 }
 
+// The saga states are arranged by the saga surface's own helpers, in the queue both files
+// use, so that a copy kept here cannot drift from what that surface arranges.
+
 /** A run whose registered step `a` started and finished, so a failure for good owes a rollback. */
 async function runWithAStartedStep(f: StoreFixture): Promise<ClaimedRun> {
   const run = await startedRun(f, 'saga')
-  await checkpointOwned(f.store, Q, run, `${SAGA_STARTED_PREFIX}a`, '1', 60)
+  await startStep(f, run, 'a', 1)
   await checkpointOwned(f.store, Q, run, 'a', '"a-result"', 60)
   return run
 }
 
 /** The first rollback pass of a task that is rolling back, claimed and started. */
-async function rollbackPass(f: StoreFixture): Promise<ClaimedRun> {
-  const forward = await runWithAStartedStep(f)
-  await f.store.fail(Q, forward.runId, forward.claimToken, FAILURE, null)
-  return claimActivated(f.store, Q, 'w-pass')
-}
+const rollbackPass = async (f: StoreFixture): Promise<ClaimedRun> => (await rollingBack(f)).pass
 
-const FAILED_ROLLBACK = {
-  key: `${SAGA_TRIES_PREFIX}a`,
-  stateJson: encodeRollbackTry({ tries: 1, errorJson: FAILURE }),
-}
+const FAILED_ROLLBACK = triesOf('a', 1)
 
 /** A parent that is running, and a child in its queue that has not ended. */
 async function parentAndLiveChild(f: StoreFixture) {
@@ -344,12 +352,25 @@ export type SelfRaceName =
   | ContestNames<'', typeof STORE_RACES>
   | ContestNames<'admin ', typeof ADMIN_RACES>
 
+/**
+ * A method whose entry holds no state compiles and races nothing, so a table that has one
+ * is refused here, where the contests are generated.
+ */
+type EveryMethodHasAState<Table> = {
+  [Method in keyof Table]: keyof Table[Method] extends never ? never : Table[Method]
+}
+const withAStateEach = <Table extends EveryMethodHasAState<Table>>(table: Table): Table => table
+
 const RACES: readonly (readonly [string, Race])[] = [
-  ...Object.entries<Readonly<Record<string, Arrange>>>(STORE_RACES).flatMap(([method, states]) =>
-    Object.entries(states).map(([state, arrange]) => [`${method} ${state}`, { arrange }] as const),
+  ...Object.entries<Readonly<Record<string, Arrange>>>(withAStateEach(STORE_RACES)).flatMap(
+    ([method, states]) =>
+      Object.entries(states).map(
+        ([state, arrange]) => [`${method} ${state}`, { arrange }] as const,
+      ),
   ),
-  ...Object.entries<Readonly<Record<string, Race>>>(ADMIN_RACES).flatMap(([method, states]) =>
-    Object.entries(states).map(([state, race]) => [`admin ${method} ${state}`, race] as const),
+  ...Object.entries<Readonly<Record<string, Race>>>(withAStateEach(ADMIN_RACES)).flatMap(
+    ([method, states]) =>
+      Object.entries(states).map(([state, race]) => [`admin ${method} ${state}`, race] as const),
   ),
 ]
 
@@ -373,11 +394,16 @@ function settle(call: Promise<unknown>): Promise<Settled> {
   )
 }
 
-/** A call that did nothing says its state was not one in which the call is legal. */
+/**
+ * An answer that says nothing was done. Nine calls of the ports answer nothing when they
+ * succeed, so an answer alone cannot say a call worked: `contest` reads what the store
+ * holds as well.
+ */
 function didNothing(settled: Settled): boolean {
   if (settled.kind !== 'answered') return true
   const { value } = settled
   return (
+    value === undefined ||
     value === null ||
     value === false ||
     (Array.isArray(value) && value.length === 0) ||
@@ -386,7 +412,10 @@ function didNothing(settled: Settled): boolean {
   )
 }
 
-/** The tables every dialect has. PostgreSQL's `event_locks` rows are locks and not protocol state. */
+/**
+ * The tables every dialect has. PostgreSQL's `event_locks` rows are locks and not protocol
+ * state, and the two values of `meta` are read through the admin, in `written`.
+ */
 const TABLES = ['tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers'] as const
 
 /** Every row of every table of the shared schema, each as one line of text. */
@@ -412,6 +441,28 @@ async function rowsOf(f: StoreFixture): Promise<Record<string, string[]>> {
   )
 }
 
+/** What a call of either port can write: the six tables, the schema version, and the engine's clock. */
+interface Written {
+  readonly rows: Readonly<Record<string, readonly string[]>>
+  readonly schemaVersion: number
+  readonly clock: number | null
+}
+
+/**
+ * A database nobody has migrated has no tables to read and no clock to fix, and the real
+ * clock would differ between the two orders, so there the clock is left out.
+ */
+async function written(
+  f: StoreFixture,
+  has: { readonly tables: boolean; readonly fixedClock: boolean },
+): Promise<Written> {
+  return {
+    rows: has.tables ? await rowsOf(f) : {},
+    schemaVersion: await f.admin.schemaVersion(),
+    clock: has.fixedClock ? await f.admin.nowEpochMs() : null,
+  }
+}
+
 const DRAWN = /-(id|token)-(\d+)/g
 type Drawn = Record<'id' | 'token', number>
 
@@ -429,7 +480,9 @@ function drawnIn(text: string): Drawn {
  * What one serial order and one race may differ in, set aside. Which copy wins is not
  * decided, and the copies differ only in the ids and tokens each drew from the fixture's
  * id source and in the name a copy calls itself. An id the arranged state already held
- * stays as it is, so the rows still say which task and which run they are.
+ * stays as it is, so the rows still say which task and which run they are. A link between
+ * two rows the contest itself wrote is set aside with their ids, so this comparison cannot
+ * see it. The invariant checkers read the rows as they are, and hold those links.
  */
 function settingAside(drawnBefore: Drawn): (text: string) => string {
   return (text) =>
@@ -444,13 +497,18 @@ interface Contest {
   /** Every answer of every copy, a list answer taken item by item, in order. */
   readonly answers: readonly string[]
   readonly schemaVersion: number
+  /** The engine's clock, where the contest fixed it: null on a database nobody had migrated. */
+  readonly clock: number | null
   readonly rows: Readonly<Record<string, readonly string[]>>
   readonly violations: readonly string[]
   readonly outages: readonly string[]
   readonly deadlocks: number
   /** The dialect's fixture names this contest as one in which its server may pick a victim. */
   readonly deadlocksExcused: boolean
-  /** No copy did anything, so the arranged state was not one in which the call is legal. */
+  /**
+   * No copy answered with anything and nothing the store holds changed, so the arranged
+   * state was not one in which the call is legal.
+   */
   readonly idle: boolean
 }
 
@@ -470,22 +528,24 @@ async function contest(
       const prepared = await race.arrange(f)
       const { call, afterwards } =
         typeof prepared === 'function' ? { call: prepared, afterwards: undefined } : prepared
-      // Open a connection for every copy first. A handshake inside the contest would
-      // put the copies one after another and hide what the contest is for.
-      await warmConnections(f.raw, 'self-race', COPIES)
-      const drawnBefore = drawnIn(migrated ? JSON.stringify(await rowsOf(f)) : '')
+      // Open a connection for every copy before a race. A handshake inside the race would
+      // put the copies one after another and hide what the contest is for. The serial order
+      // needs one connection, which its first call opens.
+      if (order === 'at once') await warmConnections(f.raw, 'self-race', COPIES)
+      const before = await written(f, { tables: migrated, fixedClock: migrated })
+      const drawnBefore = drawnIn(JSON.stringify(before.rows))
       const deadlocksBefore = f.deadlocks()
 
-      const settled: Settled[] = []
+      const copies: Settled[] = []
       if (order === 'at once') {
-        settled.push(...(await Promise.all(EVERY_COPY.map((copy) => settle(call(copy))))))
+        copies.push(...(await Promise.all(EVERY_COPY.map((copy) => settle(call(copy))))))
       } else {
-        for (const copy of EVERY_COPY) settled.push(await settle(call(copy)))
+        for (const copy of EVERY_COPY) copies.push(await settle(call(copy)))
       }
-      if (afterwards !== undefined) settled.push(await settle(afterwards()))
+      const settled = afterwards === undefined ? copies : [...copies, await settle(afterwards())]
 
       const setAside = settingAside(drawnBefore)
-      const rows = await rowsOf(f)
+      const after = await written(f, { tables: true, fixedClock: migrated })
       return {
         answers: settled
           .flatMap((one) =>
@@ -497,9 +557,10 @@ async function contest(
           )
           .map(setAside)
           .sort(),
-        schemaVersion: await f.admin.schemaVersion(),
+        schemaVersion: after.schemaVersion,
+        clock: after.clock,
         rows: Object.fromEntries(
-          Object.entries(rows).map(([table, lines]) => [table, lines.map(setAside).sort()]),
+          Object.entries(after.rows).map(([table, lines]) => [table, lines.map(setAside).sort()]),
         ),
         violations: [
           ...(await engineInvariantViolations(f.raw)),
@@ -509,7 +570,7 @@ async function contest(
         outages: settled.flatMap((one) => (one.kind === 'outage' ? [one.why] : [])),
         deadlocks: f.deadlocks() - deadlocksBefore,
         deadlocksExcused: name in f.selfRaceDeadlocksExcused,
-        idle: settled.every(didNothing),
+        idle: copies.every(didNothing) && JSON.stringify(before) === JSON.stringify(after),
       }
     },
     race.fixture,
@@ -524,16 +585,20 @@ async function contest(
  * from the ports, so the next call arrives with its own.
  *
  * Each contest runs twice from the same arranged state, the copies one at a time and then
- * all at once, and holds four things. The copies answered what a serial order answers:
- * one winner where the contract has one, the same answer where a call is idempotent. The
- * rows they left are the rows a serial order leaves. No invariant is violated. And no
+ * all at once, and holds four things. The race answered what this build's own serial order
+ * answered: one winner where that order has one, the same answer from every copy where it
+ * has that. The rows it left are the rows that order left. No invariant is violated. And no
  * copy met an outage, which from a contest is a lock-order or serialization error the
  * executor should have absorbed. Every copy is the same call but for the name it goes by,
  * so every serial order is the same order, and running one is enough to know them all.
  *
+ * That serial order is the only oracle. The contract is not consulted, so an answer that is
+ * wrong in both orders passes here, and the scheduler suite's own cases hold the answers.
+ *
  * The executor absorbs a deadlock by running the victim again, which would hide a wrong
  * lock order from all four. So its count of victims is held at zero as well, except where
- * a dialect's fixture names a contest and says why (`selfRaceDeadlocksExcused`).
+ * a dialect's fixture names a contest and says why (`selfRaceDeadlocksExcused`), and there
+ * it is held to `EXCUSED_VICTIMS`.
  *
  * Contests between different calls are the fuzz's and the fault matrix's.
  */
@@ -546,14 +611,13 @@ export function selfConcurrencyConformance(
       it(`${name}: ${COPIES} copies at once answer and leave what one at a time does`, async () => {
         const serial = await contest(makeFixture, name, race, 'one at a time')
         const raced = await contest(makeFixture, name, race, 'at once')
-        const clean = { violations: [], outages: [], idle: false }
-        expect({ serial, raced }).toEqual({
-          serial: { ...serial, ...clean, deadlocks: 0 },
-          raced: {
-            ...serial,
-            ...clean,
-            deadlocks: raced.deadlocksExcused ? raced.deadlocks : 0,
-          },
+        // What both orders must equal: this build's own serial order, and clean.
+        const held = { ...serial, violations: [], outages: [], idle: false, deadlocks: 0 }
+        // An excused contest may count victims, up to the bound, and nothing else of it is excused.
+        const withinTheExcuse = raced.deadlocksExcused && raced.deadlocks <= EXCUSED_VICTIMS
+        expect({ serial, raced: withinTheExcuse ? { ...raced, deadlocks: 0 } : raced }).toEqual({
+          serial: held,
+          raced: held,
         })
       })
     }
