@@ -52,6 +52,8 @@ export interface FuzzStats {
   rollbackFailures: number
   /** Tasks that ended from inside the phase by a pass's own write. */
   sagasEnded: number
+  /** Results read at the end of a walk that named the rollback whose failure ended the task. */
+  haltsNamed: number
 }
 
 /**
@@ -103,6 +105,7 @@ async function runWalk(
     rollbacks: 0,
     rollbackFailures: 0,
     sagasEnded: 0,
+    haltsNamed: 0,
   }
   /** What the walk knows of each task's saga: its steps in start order, and what ran. */
   const sagas = new Map<
@@ -111,6 +114,8 @@ async function runWalk(
   >()
   /** Tasks the walk saw enter the phase. One may since have ended by a cancel or a sweep. */
   const rolling = new Set<string>()
+  /** The failure of the rollback that ended a task, by task: the one its result must name. */
+  const haltedBy = new Map<string, string>()
   const sagaOf = (taskId: string) => {
     const known = sagas.get(taskId)
     if (known) return known
@@ -172,6 +177,8 @@ async function runWalk(
     if (step !== undefined && kind < 0.8) {
       const tries = (saga.tries.get(step) ?? 0) + 1
       const halts = kind >= 0.7
+      // Each attempt's failure is its own, so a result that names another attempt's is seen.
+      const errorJson = JSON.stringify({ name: 'FuzzRollbackBoom', step, tries })
       const failed = await countIfHeld('rollbackFailures', () =>
         f.store.failRollback(
           Q,
@@ -181,7 +188,7 @@ async function runWalk(
           halts ? null : { delaySeconds: rng.int(5) + frac() },
           {
             key: `${SAGA_TRIES_PREFIX}${step}`,
-            stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"FuzzRollbackBoom"}' }),
+            stateJson: encodeRollbackTry({ tries, errorJson }),
           },
         ),
       )
@@ -189,6 +196,7 @@ async function runWalk(
       if (failed && halts) {
         stats.sagasEnded++
         rolling.delete(run.taskId)
+        haltedBy.set(run.taskId, errorJson)
       }
       return
     }
@@ -509,6 +517,19 @@ async function runWalk(
   const violations = await violationsNow()
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
+  }
+  // FailedOutcomeHonest, for the error beside the outcome: a result names a rollback error
+  // exactly when a rollback's failure ended the task, and the error is that rollback's. An
+  // attempt that failed with budget left, in a saga that something else then halted, is
+  // not it, and no row invariant can say so, because the error is derived when it is read.
+  for (const taskId of sagas.keys()) {
+    const named = (await f.store.getTaskResult(Q, taskId))?.rollback?.errorJson
+    if (named !== haltedBy.get(taskId)) {
+      throw new Error(
+        `fuzz seed ${seed} final: task ${taskId} names the rollback error ${named}, and the rollback that ended it failed with ${haltedBy.get(taskId)}`,
+      )
+    }
+    if (named !== undefined) stats.haltsNamed++
   }
   // Progress floor: safety-only fuzz cannot see total loss of progress (a
   // fence regression making every transition a fenced no-op stays

@@ -140,6 +140,7 @@ function runFuzzBatch(shard: number, of: number, batch: number): void {
         rollbacks: 0,
         rollbackFailures: 0,
         sagasEnded: 0,
+        haltsNamed: 0,
       }
       let walks = 0
       for (const seed of seeds) {
