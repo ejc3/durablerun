@@ -455,11 +455,13 @@ describe('the tree rules', () => {
     const runs = () => loose.selectFrom('runs as r').select('r.run_id')
     const problem = (read: Builder, reading = true) =>
       statementGrammarProblem(read.toOperationNode(), reading)
+    // Matched as text: a matcher that wants a string refuses null before it prints the
+    // marker, and null is what a mutant that admits the read answers.
     const BOUND = /^a state column compared with a bound value/
 
     it('is refused when it is bound', () => {
       expect(
-        problem(runs().where('r.state', '=', 'running')),
+        String(problem(runs().where('r.state', '=', 'running'))),
         'mutation-verdict:construction:tree-read-state-literal',
       ).toMatch(BOUND)
       // A transition finds its row by key, so it may bind the state it compares.
@@ -507,11 +509,13 @@ describe('the tree rules', () => {
 
     it('holds a checkpoint status to a literal as well', () => {
       expect(
-        problem(
-          loose
-            .selectFrom('checkpoints as c')
-            .select('c.state')
-            .where('c.status', '=', 'committed'),
+        String(
+          problem(
+            loose
+              .selectFrom('checkpoints as c')
+              .select('c.state')
+              .where('c.status', '=', 'committed'),
+          ),
         ),
         'mutation-verdict:construction:tree-read-status-is-a-state',
       ).toMatch(BOUND)
