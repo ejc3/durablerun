@@ -4016,6 +4016,56 @@ ENV_BAD_INVOCATIONS = [
     ),
 ]
 
+# The fixtures above are small files, and a lint can lose text in a way only a real store
+# file shows: one narrowing read a file that builds a FencedBatch only inside its raw batch
+# calls, and every fixture of the day passed. So the two text lints are also held on the
+# store sources themselves. Each file a lint reads gets one line planted at its end, a
+# constant such as a raw batch could send, and each file that types a fragment gets a
+# comparison planted in its first one. The clean files pass in the real gate, so a refusal
+# here is the planted text.
+REAL_STORE_SOURCES = sorted(
+    path
+    for path in (SCRIPTS.parent / "packages").glob("store-*/src/**/*.ts")
+    if path.name not in {"fragments.ts", "schema.ts", "time.ts"}
+)
+if len(REAL_STORE_SOURCES) < 9:
+    raise SystemExit("lint-selftest: found too few real store sources to plant text in")
+PLANTED = (
+    (
+        "clock-lint.py",
+        "UPDATE runs SET claim_expires_at_ms = unixepoch() * 1000",
+        "r.claim_expires_at_ms < unixepoch() * 1000 AND ",
+        "raw wall-clock function in store SQL",
+    ),
+    (
+        "fragment-lint.py",
+        "UPDATE runs SET x = 1 WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.cancel_at_ms <= 5)",
+        "t.cancel_at_ms < 5 AND ",
+        "cancellation-deadline comparison outside fragments.ts",
+    ),
+)
+for real in REAL_STORE_SOURCES:
+    rel = real.relative_to(SCRIPTS.parent).as_posix()
+    text = real.read_text()
+    for lint, statement, comparison, marker in PLANTED:
+        BAD_CASES.append(
+            (
+                lint,
+                {rel: text + f"\nconst PLANTED_TEXT = `{statement}`\n"},
+                marker,
+                f"text at the end of the real {rel} is read",
+            )
+        )
+        if "sqlFragment(`" in text:
+            BAD_CASES.append(
+                (
+                    lint,
+                    {rel: text.replace("sqlFragment(`", "sqlFragment(`" + comparison, 1)},
+                    marker,
+                    f"text typed into a fragment of the real {rel} is read",
+                )
+            )
+
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
 # case above while being useless — but the real repo already covers that
 # direction, because `pnpm verify` runs every checker over it and the build is
