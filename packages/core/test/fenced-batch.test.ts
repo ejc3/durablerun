@@ -259,7 +259,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
         b.derived('mirror', {
           relation: 'runs-to-tasks',
           fence: 'win',
-          set: { state: `'pending'`, '[fence_stamp]': `'forged'` } as never,
+          set: { failure_reason: `'x'`, '[fence_stamp]': `'forged'` } as never,
           rows: 'one',
         }),
     )

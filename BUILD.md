@@ -1704,7 +1704,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (`taskStateValue`), the copy of a run's state is a subquery built from nodes
   (`stampedRunState`), and a fragment in a task's state is refused. On that, a
   batch that writes a terminal `tasks.state` and records no completion event
-  under that statement's stamp is refused when it runs. The child await's
+  under that statement's stamp is refused when it runs. Five registered
+  mutants each deleted one terminal path's completion event, which that rule
+  now refuses before the conformance case they are held by can see it, so
+  each records another task's event instead, which the rule does not read.
+  The child await's
   rounds, its refusal, its decoder, its two reads, and the batch that records
   an unrecorded ending are core's (`awaitTaskDone`, `endingTask`), and a
   dialect supplies facts. On the prevention ladder the first is rung 1 for a
