@@ -510,13 +510,6 @@ async function runWalk(
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
   }
-  // Inert today: the walk is one caller and runs on libSQL, which never picks a deadlock
-  // victim, so this cannot fail. It costs one call, and it becomes real the day the walk
-  // gains a second caller or a server to run on, where the executor's retry of a victim
-  // would otherwise hide a wrong lock order.
-  if (f.deadlocks() !== 0) {
-    throw new Error(`fuzz seed ${seed}: ${f.deadlocks()} batches were deadlock victims`)
-  }
   // Progress floor: safety-only fuzz cannot see total loss of progress (a
   // fence regression making every transition a fenced no-op stays
   // invariant-clean). Long walks must accomplish SOMETHING; the shard runner

@@ -1509,8 +1509,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     cases, so that a new lock-order inversion fails a test and is not hidden by
     the victim's retry. Each executor counts the victims it meets and a fixture
     reads the count, because the database's counter is shared by parallel test
-    workers. The PR4.4 entry says where it is held, and that the fuzz's hold is
-    inert until the fuzz has concurrent callers or a server dialect.
+    workers. The PR4.4 entry says where it is held. The fuzz is not claimed:
+    its walk is one caller on libSQL, so a hold there could not fail.
   - Smaller, from the same review: the run-to-task memo does not forget a run
     its terminal batch has ended, `EventName` does not carry the task id or a
     display form, port refusals have no one typed class mapped once at the hosted
@@ -2086,8 +2086,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wrote the rows it wrote, violated no invariant, and met no outage. A claim
     may come back short of what is due, so the claimers' contest holds that no
     run is claimed twice and that one more claimer can take what the others
-    did not, and not how the runs were split. Test time on a shared machine:
-    1.9 s on libSQL, 6.4 to 7.9 s on PostgreSQL, 5.6 to 6.7 s on MySQL.
+    did not, and not how the runs were split. The property held is each call
+    beside ITSELF. Pairs of different calls, which is what both PostgreSQL
+    lock-order inversions were, stay with `postgres-lock-order.test.ts`, the
+    fuzz and the fault matrix. On libSQL two calls interleave only between
+    batches: in 24 of the 37 contests every copy sends one batch and no race
+    is possible there, in 10 the only second batch is a loser's read of why it
+    was refused, and in three a writer sends several (`sweep`, `awaitTaskDone`
+    of a child that has not ended, `migrate`). Test time on a shared machine,
+    three runs each: 1.8 s on libSQL, 6.6 s on PostgreSQL, 6.0 s on MySQL,
+    about half of it the two fixtures each contest migrates. At twice that on
+    the slowest CI runner it adds about 17 s to `verify`, and the PR3.13
+    entry's rule still holds for its 90 minute limit: three times 1,784 s is
+    5,352 s. It adds about 12 s to `conformance-mysql`, whose limit is 30
+    minutes. Reading the five results after a race at once was measured and
+    not taken: 6.8 to 7.2 s on PostgreSQL against 6.6, and no change on MySQL.
     It fails when PR4.3's heartbeat fix is reverted: with the scanning
     `DELETE` back, "driverHeartbeat of distinct drivers of one queue" was red
     in 10 runs of 10 on MySQL, with 3 to 6 victims a run and an outage
@@ -2105,16 +2118,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     surface cannot.
   - PR4.4c, DONE, with the surface. Each executor that runs a deadlock victim
     again counts the victims it meets, a fixture reads the count, and it is
-    held at zero where real callers race: the surface, the six cases of the
+    held at zero where real callers race, on PostgreSQL and on MySQL alike
+    apart from the one MySQL contest below: the surface, the six cases of the
     shared suite that race real callers, every seeded scenario of the
     scheduler suite, and the PostgreSQL lock-order test, which had read the
     database's own counter, shared by every test worker. Measured first: no
     fixture of the whole conformance suite met a victim on either server, in
     one run of 4311 fixtures on each, and none did in 20 runs of the six cases
-    on each. The fuzz walk holds the count too, inertly: it is one caller on
-    libSQL, and its hold becomes real when the walk gains a second caller or a
-    server dialect. Two mutations hold the two counts, and three older ones
-    were re-aimed at the one function that now says what a victim is: 875.
+    on each. The fuzz is not claimed: its walk is one caller on libSQL, so a
+    hold there could not fail. Two mutations hold the two counts, and three
+    older ones were re-aimed at the one function that now says what a victim
+    is: 875.
   - Deferred to PR4.4e, found by PR4.4c's surface before any review: concurrent
     claims deadlock on MySQL while `runs` holds five rows or fewer. Measured on
     MySQL 8.4: up to five rows the claim's `UPDATE runs ... WHERE run_id IN

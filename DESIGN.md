@@ -899,11 +899,12 @@ One invocation executes one claimed run to its next suspension point:
     every seeded scenario of the scheduler suite, and the PostgreSQL lock-order
     test. Measured before it was held: no fixture of the whole conformance
     suite met a victim on PostgreSQL or on MySQL, in one run of 4311 fixtures
-    on each, and none did in 20 runs of the six cases on each. The fuzz walk
-    holds the count too, and there the hold is inert: the walk is one caller
-    and runs on libSQL. It becomes real when the walk gains a second caller or
-    a server dialect. On MySQL one contest of the surface is excused, by name
-    and with its reason, in that dialect's fixture (§3.4, MySQL).
+    on each, and none did in 20 runs of the six cases on each. It is held on
+    PostgreSQL and on MySQL alike, because both executors run a victim again.
+    The fuzz is not among these: its walk is one caller and runs on libSQL, so
+    a hold there could not fail and is not claimed. On MySQL one contest of the
+    surface is excused, by name and with its reason, in that dialect's fixture
+    (§3.4, MySQL).
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the
@@ -1921,6 +1922,24 @@ not depend on careful reading:
   race takes a lock held inside one server, which
   `postgres-bootstrap-window.test.ts` does for PostgreSQL and a shared surface
   cannot. A race cannot own a mutation's verdict, so the surface owns none.
+  The property held is each call beside ITSELF. The wider one, that a call is
+  safe beside its neighbours, is not held here. Both lock-order inversions
+  found on PostgreSQL were pairs of different calls, a cancel beside a child's
+  `complete` and a cancel beside a worker write that ends nothing, and
+  `postgres-lock-order.test.ts` holds those two by holding the window open
+  inside the server, under a registered mutation. Other pairs of different
+  calls stay with the fuzz and the fault matrix. On libSQL two calls interleave
+  only between batches, because one connection runs a batch to its end.
+  Measured there: in 24 of the 37 contests every copy sends one batch, so on
+  libSQL those fail on a wrong answer or a violated invariant and never on a
+  race. In 10 the only second batch is a loser's read of why it was refused.
+  In three a writer sends several batches, and a race can change the outcome:
+  `sweep`, `awaitTaskDone` of a child that has not ended, and `migrate`. The
+  surface costs 1.8 s of test time on libSQL, 6.6 s on PostgreSQL and 6.0 s on
+  MySQL on a shared machine, about half of it the two fixtures each contest
+  migrates. At twice that on the slowest CI runner it adds about 17 s to
+  `verify`, whose 90 minute limit stays at least three times its slowest
+  recorded run: three times 1,784 s is 5,352 s.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
   one dialect-neutral read batch whose result cardinality is exact and every
