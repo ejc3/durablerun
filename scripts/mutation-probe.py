@@ -2333,6 +2333,27 @@ MUTATION_SPECS = [
         "a reason may stand beside a read that owes none, where it outlives the read it excused",
     ),
     (
+        "tree-prepared-read-shape-is-fixed",
+        "packages/core/src/fenced-batch.ts",
+        "  if (!fixed) {\n",
+        "  if (false) {\n",
+        "a prepared read may bake a value into its SQL, and every later call sends the first call's value",
+    ),
+    (
+        "tree-prepared-read-bind-kind",
+        "packages/core/src/fenced-batch.ts",
+        "    if (kindOf(value) !== shape.kinds[slot.bind]) {\n",
+        "    if (false) {\n",
+        "a prepared read sends an undefined or mistyped bind, which the builder refuses of every other statement",
+    ),
+    (
+        "tree-prepared-read-clock-counted",
+        "packages/core/src/fenced-batch.ts",
+        "    this.countClockRead(at, name, drift, shape.readsClock)\n",
+        "    this.countClockRead(at, name, '', false)\n",
+        "a prepared read of the clock is never counted, so a second one gives no reason",
+    ),
+    (
         "tree-read-recorded",
         "packages/core/src/fenced-batch.ts",
         "    if (reading) this.reads.push(name)\n",
@@ -2819,13 +2840,8 @@ MUTATION_SPECS = [
     (
         "checkpoint-read-requires-owner-attempt-relation",
         "packages/store-libsql/src/store.ts",
-        "        ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')),\n",
-        "        ownerMatches: sqlFragment(\n"
-        "          checkpointOwnerMatches('c', 'owner').replace(\n"
-        "            'AND owner.attempt = c.owner_attempt',\n"
-        "            'AND 1 = 1',\n"
-        "          ),\n"
-        "        ),\n",
+        "    checkpointsRead({ ...binds, ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')) }),\n",
+        "    checkpointsRead({ ...binds, ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner').replace('AND owner.attempt = c.owner_attempt', 'AND 1 = 1')) }),\n",
         "checkpoint reads surface a forged owner ordinal",
     ),
     (
@@ -4273,7 +4289,7 @@ MUTATION_SPECS = [
     (
         "heartbeat-names-cancellation",
         "packages/store-libsql/src/store.ts",
-        "    if (!row) return refusedLease(() => this.refusalState(runId))\n",
+        "    if (!row) return refusedLease(this.refusalState(runId))\n",
         "    if (!row) return LOST_LEASE\n",
         "a refused heartbeat on a cancelled task reports a lost lease",
     ),
@@ -8690,6 +8706,24 @@ VERDICTS = {
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
         "the tree path a batch of reads refuses a reason on a read that owes none",
         "mutation-verdict:construction:tree-clock-reason-needs-a-clock-read",
+    ),
+    "tree-prepared-read-shape-is-fixed": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times refuses a statement whose shape depends on a value it is sent",
+        "mutation-verdict:construction:tree-prepared-read-shape-is-fixed",
+    ),
+    "tree-prepared-read-bind-kind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times holds every call to the type a bind was prepared with",
+        "mutation-verdict:construction:tree-prepared-read-bind-kind",
+    ),
+    "tree-prepared-read-clock-counted": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times counts its reads of the clock as any read",
+        "mutation-verdict:construction:tree-prepared-read-clock-counted",
     ),
     "tree-read-recorded": ExpectedVerdict(
         "construction",
@@ -16701,7 +16735,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 857:
+        if len(MUTATIONS) != 860:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

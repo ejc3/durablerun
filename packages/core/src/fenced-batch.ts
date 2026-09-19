@@ -95,6 +95,9 @@ import { readingOnce } from './tree-walk.js'
 const {
   Set: TrustedSet,
   TypeError: TrustedTypeError,
+  WeakMap: TrustedWeakMap,
+  WeakMapGet: weakMapGet,
+  WeakMapSet: weakMapSet,
   WeakSet: TrustedWeakSet,
   WeakSetAdd: weakSetAdd,
   WeakSetHas: weakSetHas,
@@ -683,6 +686,32 @@ export class FencedBatch {
     return this.addTree('read', name, statement, null, drift)
   }
 
+  /**
+   * `readTree` for a read a store sends again and again. The read is built, checked and
+   * compiled once for this batch's dialect and clock, from stand-in values, and every call
+   * after that sends the same SQL with its own values, in a statement object of its own.
+   * What depends on the batch is still asked on every call: that it holds reads alone, and
+   * the rule about its reads of the clock.
+   */
+  readPrepared<B extends ReadBinds>(
+    name: string,
+    read: PreparedRead<B>,
+    binds: B,
+    drift = '',
+  ): this {
+    const at = this.admitBeside('tail', name, true)
+    const shape = readShape(read, this.tree, this.now, binds, (standIns) => {
+      const once = new FencedBatch(this.label, this.seed, { now: this.now, tree: this.tree })
+      return once.readTree(name, read.build(standIns)).statements[0]?.compiled
+    })
+    this.countClockRead(at, name, drift, shape.readsClock)
+    const compiled = { sql: shape.sql, args: shapeArgs(at, shape, binds) }
+    weakSetAdd(treeBuilt, compiled)
+    this.statements.push({ name, kind: 'tail', fence: null, atMost: null, compiled })
+    this.reads.push(name)
+    return this
+  }
+
   /** The batch-shape rules every statement passes. Returns the error prefix. */
   private admit(kind: Kind, name: string): string {
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -716,6 +745,17 @@ export class FencedBatch {
    * for the batch clock's exact text and for clock spellings, as `scripts/clock-lint.py`
    * scans store sources.
    */
+  /** `admit`, and the rule that a batch holds reads or a transition, never both. */
+  private admitBeside(kind: Kind, name: string, reading: boolean): string {
+    const at = this.admit(kind, name)
+    if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {
+      throw new Error(
+        `${at}: a batch holds reads or a transition, never both, because a read beside a write must be a tail that a fence gates`,
+      )
+    }
+    return at
+  }
+
   /**
    * Hold a read to the one rule about a batch's reads of the clock, and count it. A reason
    * is owed by a second read of the clock and by no other read: given anywhere else, it
@@ -757,12 +797,7 @@ export class FencedBatch {
     const reading = asked === 'read'
     const open = asked === 'openTail' || reading
     const kind: Kind = open ? 'tail' : asked
-    const at = this.admit(kind, name)
-    if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {
-      throw new Error(
-        `${at}: a batch holds reads or a transition, never both, because a read beside a write must be a tail that a fence gates`,
-      )
-    }
+    const at = this.admitBeside(kind, name, reading)
     if (!isDefinedStatement(statement)) {
       throw new Error(`${at} must come from defineStatement, which refuses undefined binds`)
     }
@@ -1055,6 +1090,120 @@ export class FencedBatch {
     })
     return { won, count, results }
   }
+}
+
+/** The values a prepared read is sent with. Each reaches the statement as an argument and as nothing else. */
+export type ReadBinds = Readonly<Record<string, string | number>>
+
+type ReadArg = SqlStatement['args'][number]
+
+/** What a prepared read compiled to: its SQL, and for each argument the bind it carries or the constant the statement holds. */
+interface ReadShape {
+  readonly sql: string
+  readonly slots: readonly ({ readonly bind: string } | { readonly constant: ReadArg })[]
+  readonly kinds: Readonly<Record<string, string>>
+  readonly readsClock: boolean
+}
+
+/**
+ * A read made by `prepareRead`. It keeps what it compiled to, for each dialect and clock.
+ * A read is first prepared wherever it is first sent, which can be inside a task that has
+ * replaced the global `Map`, so the record is core's captured WeakMap and a plain list.
+ */
+export interface PreparedRead<B extends ReadBinds> {
+  readonly build: (binds: B) => DefinedStatement
+  readonly shapes: WeakMap<
+    TreeDialect,
+    readonly { readonly now: string; readonly shape: ReadShape }[]
+  >
+}
+
+/**
+ * A read for `FencedBatch.readPrepared`. `build` is given stand-in values, never a caller's,
+ * so it may only pass them on to the statement: a statement whose shape depends on a value
+ * is refused when it is first prepared.
+ */
+export function prepareRead<B extends ReadBinds>(
+  build: (binds: B) => DefinedStatement,
+): PreparedRead<B> {
+  return Object.freeze({ build, shapes: new TrustedWeakMap() })
+}
+
+/** A value's type, by name, so a call's bind can be compared with the type its read was prepared with. */
+const kindOf = (value: unknown): string => typeof value
+
+/** A value no caller sends, distinct for each bind and each round, of the bind's own type. */
+const standIn = (round: number, key: string, value: unknown, index: number): string | number =>
+  typeof value === 'number'
+    ? Number.MIN_SAFE_INTEGER + round * 4096 + index
+    : `\u00a7${round}:${key}\u00a7`
+
+/**
+ * What a prepared read compiles to, from its first use with a dialect and a clock. It is
+ * admitted twice, with two sets of stand-ins. An argument that is a stand-in both times is
+ * that bind's slot, one that is the same value both times is the statement's own constant,
+ * and anything else means the statement depends on the values it was given.
+ */
+function readShape<B extends ReadBinds>(
+  read: PreparedRead<B>,
+  tree: TreeDialect,
+  now: string,
+  binds: B,
+  admit: (standIns: B) => SqlStatement | undefined,
+): ReadShape {
+  const kept = weakMapGet(read.shapes, tree) ?? []
+  for (let index = 0; index < kept.length; index++) {
+    if (kept[index]?.now === now) return (kept[index] as { shape: ReadShape }).shape
+  }
+  const keys = Object.keys(binds)
+  const kinds = Object.fromEntries(keys.map((key) => [key, kindOf(binds[key])]))
+  const [first, second] = [1, 2].map((round) => {
+    const values = Object.fromEntries(
+      keys.map((key, index) => [key, standIn(round, key, binds[key], index)]),
+    )
+    return { values, compiled: admit(values as B) }
+  })
+  const before = first?.compiled?.args ?? []
+  const after = second?.compiled?.args ?? []
+  const slots = before.map((arg, index) => {
+    const bind = keys.find(
+      (key) => first?.values[key] === arg && second?.values[key] === after[index],
+    )
+    return bind !== undefined ? { bind } : arg === after[index] ? { constant: arg } : undefined
+  })
+  const sql = first?.compiled?.sql
+  const fixed =
+    sql !== undefined &&
+    sql === second?.compiled?.sql &&
+    before.length === after.length &&
+    slots.every((slot) => slot !== undefined)
+  if (!fixed) {
+    throw new Error(
+      'a prepared read must compile to one statement whatever values it is sent with: its build may only pass its binds on to the statement as arguments',
+    )
+  }
+  const shape: ReadShape = {
+    sql,
+    slots: slots.filter((slot) => slot !== undefined),
+    kinds,
+    readsClock: sql.includes(now),
+  }
+  weakMapSet(read.shapes, tree, kept.concat({ now, shape }))
+  return shape
+}
+
+/** A call's own arguments for a prepared read, each held to the type the read was prepared with. */
+function shapeArgs(at: string, shape: ReadShape, binds: ReadBinds): ReadArg[] {
+  return shape.slots.map((slot) => {
+    if ('constant' in slot) return slot.constant
+    const value = binds[slot.bind]
+    if (kindOf(value) !== shape.kinds[slot.bind]) {
+      throw bindCompilationError(
+        `${at} bind '${slot.bind}' is ${kindOf(value)}: a prepared read is sent the ${shape.kinds[slot.bind]} it was prepared with`,
+      )
+    }
+    return value as string | number
+  })
 }
 
 // An immutable instance still inherits its executor method. Seal that shared

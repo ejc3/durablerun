@@ -87,6 +87,7 @@ const INTERNAL = [
   'cancelTransition',
   'refusal',
   'refusalState',
+  'rows',
   'endingTask',
   'taskDone',
   'wakeWaiters',

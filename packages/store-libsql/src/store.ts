@@ -70,6 +70,7 @@ import {
   nextWakeRead,
   normalizeRetryStrategy,
   parseTaskValueJson,
+  prepareRead,
   rawSql,
   refusalStateRead,
   refusedLease,
@@ -441,6 +442,52 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
     AND (t.state NOT IN ${LIVE}
       OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
 )`
+
+/**
+ * The reads this store sends outside a transition, each prepared once: built, checked and
+ * compiled on first use, and sent with a call's own values after that. next-wake and the
+ * sweep's two scans run on every driver tick.
+ */
+const REFUSAL_STATE = prepareRead((binds: { runId: string }) => refusalStateRead(binds))
+const RUN_TASK = prepareRead((binds: { queue: string; runId: string }) => runTaskRead(binds))
+const TASK_DONE_STATE = prepareRead((binds: { taskId: string }) => taskDoneStateRead(binds))
+const TASK_RESULT = prepareRead((binds: { queue: string; taskId: string }) =>
+  taskResultRead({
+    ...binds,
+    rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
+    rollbackError: sqlFragment(rollbackError('tasks')),
+  }),
+)
+const CLAIMED_TASK_NAME = prepareRead(
+  (binds: { queue: string; runId: string; claimToken: string; claimGen: number }) =>
+    claimedTaskNameRead({ ...binds, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }),
+)
+const CHECKPOINTS = prepareRead(
+  (binds: { queue: string; taskId: string; visibleThrough: number }) =>
+    checkpointsRead({ ...binds, ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')) }),
+)
+const SWEEP_DUE_CANCELS = prepareRead((binds: { queue: string; limit: number }) =>
+  sweepDueCancelsRead({
+    limit: binds.limit,
+    due: sqlFragment(SWEEP_CANCELS_DUE, [binds.queue]),
+    liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
+  }),
+)
+const SWEEP_EXPIRED_CLAIMS = prepareRead((binds: { queue: string; limit: number }) =>
+  sweepExpiredClaimsRead({
+    limit: binds.limit,
+    taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+    expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),
+  }),
+)
+const NEXT_WAKE = prepareRead((binds: { queue: string }) =>
+  nextWakeRead({
+    pendingRuns: sqlFragment(NEXT_WAKE_PENDING, [binds.queue]),
+    sleepingRuns: sqlFragment(NEXT_WAKE_SLEEPING, [binds.queue]),
+    runningRuns: sqlFragment(NEXT_WAKE_RUNNING, [binds.queue]),
+    cancellableTasks: sqlFragment(NEXT_WAKE_CANCELLABLE, [binds.queue]),
+  }),
+)
 
 /**
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
@@ -888,7 +935,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       },
     ])
     const row = extended?.rows[0]
-    if (!row) return refusedLease(() => this.refusalState(runId))
+    if (!row) return refusedLease(this.refusalState(runId))
     return {
       held: true,
       remainingMs: requireDerivedInteger(
@@ -913,26 +960,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (budget === 0) return []
     const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
     const scan = new FencedBatch('sweep:scan', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    scan.readTree(
-      'cancels',
-      sweepDueCancelsRead({
-        limit: effectiveBudget,
-        due: sqlFragment(SWEEP_CANCELS_DUE, [queue]),
-        liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
-      }),
-    )
-    scan.readTree(
+    scan.readPrepared('cancels', SWEEP_DUE_CANCELS, { queue, limit: effectiveBudget })
+    scan.readPrepared(
       'expired',
-      sweepExpiredClaimsRead({
-        limit: effectiveBudget,
-        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
-        expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
-      }),
+      SWEEP_EXPIRED_CLAIMS,
+      { queue, limit: effectiveBudget },
       SWEEP_SCAN_DRIFT,
     )
-    const { results: scanned } = await scan.run(this.db)
-    const cancels = scanned.cancels
-    const expired = scanned.expired
+    const { cancels, expired } = (await scan.run(this.db)).results
 
     type Item =
       | { kind: 'cancel'; taskId: string; runId: string | null }
@@ -1461,15 +1496,24 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * write.
    */
   private refusal(operation: string, runId: string): ReturnType<typeof refusedWriteError> {
-    return refusedWriteError(operation, runId, () => this.refusalState(runId))
+    return refusedWriteError(operation, runId, this.refusalState(runId))
   }
 
-  /** A refused run's state, read only after its fence refused a write or a heartbeat. */
-  private async refusalState(runId: string): Promise<unknown> {
+  /** The rows of a batch's one read, or of the read it names. */
+  private async rows(b: FencedBatch, name: string): Promise<SqlRow[]> {
+    return (await b.run(this.db)).results[name]?.rows ?? []
+  }
+
+  /**
+   * A refused run's state, read only after its fence refused a write or a heartbeat. The
+   * batch is built here and the read is what is returned, because whoever asks reads a
+   * failed read as a lost lease: a statement the builder refuses must be thrown as itself,
+   * before that catch, and never reported as a lease the worker lost.
+   */
+  private refusalState(runId: string): () => Promise<unknown> {
     const b = new FencedBatch('refusal-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree('state', refusalStateRead({ runId }))
-    const { results } = await b.run(this.db)
-    return results.state?.rows[0]?.state
+    b.readPrepared('state', REFUSAL_STATE, { runId })
+    return async () => (await this.rows(b, 'state'))[0]?.state
   }
 
   async claimedTaskName(
@@ -1483,18 +1527,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // here. The name is immutable, so an unfenced read is safe; the claim
     // conditions only make a stale or already-activated launch read nothing.
     const b = new FencedBatch('claimed-task-name', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree(
-      'name',
-      claimedTaskNameRead({
-        queue,
-        runId,
-        claimToken,
-        claimGen: validClaimGen,
-        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const name = results.name?.rows[0]?.task_name
+    b.readPrepared('name', CLAIMED_TASK_NAME, {
+      queue,
+      runId,
+      claimToken,
+      claimGen: validClaimGen,
+    })
+    const rows = await this.rows(b, 'name')
+    const name = rows[0]?.task_name
     return typeof name === 'string' ? name : null
   }
 
@@ -2045,17 +2085,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
     const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
     const b = new FencedBatch('get-checkpoints', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree(
-      'checkpoints',
-      checkpointsRead({
-        queue,
-        taskId,
-        visibleThrough,
-        ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    return (results.checkpoints?.rows ?? []).map((row) => ({
+    b.readPrepared('checkpoints', CHECKPOINTS, { queue, taskId, visibleThrough })
+    const rows = await this.rows(b, 'checkpoints')
+    return rows.map((row) => ({
       checkpointName: String(row.checkpoint_name),
       stateJson: String(row.state),
       ownerRunId: String(row.owner_run_id),
@@ -2146,17 +2178,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
     const b = new FencedBatch('task-result', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree(
-      'result',
-      taskResultRead({
-        queue,
-        taskId,
-        rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
-        rollbackError: sqlFragment(rollbackError('tasks')),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const row = results.result?.rows[0]
+    b.readPrepared('result', TASK_RESULT, { queue, taskId })
+    const rows = await this.rows(b, 'result')
+    const row = rows[0]
     if (row === undefined) return null
     const result = decodeTaskResult(taskId, row)
     const rollback = decodeRollbackOutcome(taskId, row)
@@ -2165,17 +2189,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
     const b = new FencedBatch('next-wake', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree(
-      'wake',
-      nextWakeRead({
-        pendingRuns: sqlFragment(NEXT_WAKE_PENDING, [queue]),
-        sleepingRuns: sqlFragment(NEXT_WAKE_SLEEPING, [queue]),
-        runningRuns: sqlFragment(NEXT_WAKE_RUNNING, [queue]),
-        cancellableTasks: sqlFragment(NEXT_WAKE_CANCELLABLE, [queue]),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const value = results.wake?.rows[0]?.wake_ms
+    b.readPrepared('wake', NEXT_WAKE, { queue })
+    const rows = await this.rows(b, 'wake')
+    const value = rows[0]?.wake_ms
     return value === null || value === undefined
       ? null
       : requireDerivedInteger('nextWakeAtEpochMs.wake_ms', value, DERIVED_INTEGER_BOUNDS.epoch_ms)
@@ -2248,9 +2264,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const remembered = this.runTasks.recall(runId)
     if (remembered !== undefined) return remembered
     const b = new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree('task', runTaskRead({ queue, runId }))
-    const { results } = await b.run(this.db)
-    const taskId = results.task?.rows[0]?.task_id
+    b.readPrepared('task', RUN_TASK, { queue, runId })
+    const rows = await this.rows(b, 'task')
+    const taskId = rows[0]?.task_id
     if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
     return taskId
   }
@@ -2510,9 +2526,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     stamp: string | null
   } | null> {
     const b = new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readTree('task', taskDoneStateRead({ taskId }))
-    const { results } = await b.run(this.db)
-    const row = results.task?.rows[0]
+    b.readPrepared('task', TASK_DONE_STATE, { taskId })
+    const rows = await this.rows(b, 'task')
+    const row = rows[0]
     if (row === undefined) return null
     return {
       queue: String(row.queue),
