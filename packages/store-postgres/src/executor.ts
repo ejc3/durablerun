@@ -428,13 +428,13 @@ export class PgExecutor implements SqlExecutor {
             }
           }
           // PostgreSQL ends a deadlock by aborting one transaction, which for a statement
-          // sent alone is the statement. That batch committed
-          // nothing, so running it again is a first delivery, and the other transaction
-          // has its locks by now. Reported as an outage, a finished run would be left for
-          // the sweep to charge an infrastructure retry. Only a write batch is run again:
-          // a read batch takes no row lock, so a deadlock there is not this engine's lock
-          // order. It is run again at once, because PostgreSQL chose the victim only
-          // after `deadlock_timeout`, and a store source has no timer to wait on.
+          // sent alone is the statement. That batch committed nothing, so running it again
+          // is a first delivery, and the other transaction has its locks by now. Reported
+          // as an outage, a finished run would be left for the sweep to charge an
+          // infrastructure retry. Only a write batch is run again: a read batch takes no
+          // row lock, so a deadlock there is not this engine's lock order. It is run again
+          // at once, because PostgreSQL chose the victim only after `deadlock_timeout`, and
+          // a store source has no timer to wait on.
           if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
             mode !== 'read' &&

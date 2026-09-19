@@ -7,19 +7,16 @@ import {
 import { Pool } from 'pg'
 import { expect, it } from 'vitest'
 import { PgExecutor, PostgresSchedulerStore, PostgresStoreAdmin } from '../src/index.js'
-import { openPostgresTestDb, postgresTestIdSource } from '../src/testing.js'
+import { openPostgresTestDb } from '../src/testing.js'
 
 /**
  * Every query a store call sends is a round trip, with BEGIN, the event lock, and COMMIT
  * among them, and the link to PostgreSQL is the slow part of every batch. A statement
  * whose gate wrote no row is never sent (`SqlStatement.skipUnlessWrote`), so the count
- * depends on which arms of a batch fire, and it is pinned here for each arm a saga adds.
- *
- * What a saga costs a task that has none: one query on every failure. The rollback pass
- * is gated on the failure alone, so it is sent, and matches nothing. The store decides
- * whether a rollback is owed from its own rows, and a caller's hint that none is would
- * be a second account of those rows, which a worker of an older build could not give.
+ * depends on which arms of a batch fire, and it is pinned here for each arm a saga adds,
+ * and for each shape of batch the executor sends.
  */
+
 interface Counted {
   readonly db: PgExecutor
   readonly admin: PostgresStoreAdmin
@@ -33,11 +30,12 @@ async function counted(name: string, body: (counted: Counted) => Promise<void>):
   const url = process.env.DURABLERUN_POSTGRES_URL
   if (!url)
     throw new Error('DURABLERUN_POSTGRES_URL is required, as it is for the conformance suite')
-  const schema = `durablerun_round_trips_${name}_${process.pid}`
-  const control = new Pool({ connectionString: url })
-  await control.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`)
-  await control.query(`CREATE SCHEMA ${schema}`)
-  const pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` })
+  // The fixture owns the schema: it creates and migrates it, sets the clock, and drops it.
+  const fixture = await openPostgresTestDb({
+    idNamespace: `round-trips-${name}`,
+    nowMs: 1_000_000,
+  })
+  const pool = new Pool({ connectionString: url, options: `-c search_path=${fixture.schemaName}` })
   let sent = 0
   const counted = new WeakSet<object>()
   const counting = {
@@ -58,9 +56,7 @@ async function counted(name: string, body: (counted: Counted) => Promise<void>):
   try {
     const db = PgExecutor.fromPool(counting as unknown as Pool)
     const admin = new PostgresStoreAdmin(db)
-    await admin.migrate()
-    await admin.setFakeNowEpochMs(1_000_000)
-    const store = new PostgresSchedulerStore(db, postgresTestIdSource(`round-trips-${name}`))
+    const store = new PostgresSchedulerStore(db, fixture.ids)
     const measure = async (op: () => Promise<unknown>) => {
       const before = sent
       await op()
@@ -69,11 +65,16 @@ async function counted(name: string, body: (counted: Counted) => Promise<void>):
     await body({ db, admin, store, measure })
   } finally {
     await pool.end().catch(() => undefined)
-    await control.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
-    await control.end().catch(() => undefined)
+    await fixture.close()
   }
 }
 
+/**
+ * What a saga costs a task that has none: one query on every failure. The rollback pass
+ * is gated on the failure alone, so it is sent, and matches nothing. The store decides
+ * whether a rollback is owed from its own rows, and a caller's hint that none is would
+ * be a second account of those rows, which a worker of an older build could not give.
+ */
 it('sends a pinned number of queries for each batch a saga touches, and for a heartbeat', async () => {
   await counted('sagas', async ({ store, measure }) => {
     const Q = 'q'

@@ -1,4 +1,4 @@
-import type { SqlExecutor, SqlStatement } from '@durablerun/core'
+import type { SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
 import { MysqlSchedulerStore } from '../src/store.js'
@@ -20,6 +20,12 @@ const READ_COUNTERS = {
 
 type TestDb = Awaited<ReturnType<typeof openMysqlTestDb>>
 
+/** Rows a statement read by walking an index or a table. A key lookup is not a walk. */
+const walkedRows = (counters: SqlResult | undefined): number =>
+  (counters?.rows ?? [])
+    .filter((row) => row.Variable_name !== 'Handler_read_key')
+    .reduce((sum, row) => sum + Number(row.Value), 0)
+
 /** Rows the statement read by walking an index or a table, and what it returned. */
 async function measured(db: TestDb, sql: string, args: SqlStatement['args']) {
   const [before, result, after] = await db.raw.batch(
@@ -27,11 +33,7 @@ async function measured(db: TestDb, sql: string, args: SqlStatement['args']) {
     [READ_COUNTERS, { sql, args: [...args] }, READ_COUNTERS],
     'read',
   )
-  const walked = (rows: typeof before) =>
-    (rows?.rows ?? [])
-      .filter((row) => row.Variable_name !== 'Handler_read_key')
-      .reduce((sum, row) => sum + Number(row.Value), 0)
-  return { rows: result?.rows ?? [], walked: walked(after) - walked(before) }
+  return { rows: result?.rows ?? [], walked: walkedRows(after) - walkedRows(before) }
 }
 
 /**
@@ -172,11 +174,7 @@ describe('the wake a terminal batch owes the parent of its task, on MySQL', () =
               : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
           )
           const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked = total(all[all.length - 1]) - total(all[0])
+          walked = walkedRows(all[all.length - 1]) - walkedRows(all[0])
           return all.slice(1, -1)
         },
       }
@@ -280,17 +278,17 @@ describe("the claim's candidate legs on MySQL", () => {
               ? statement
               : { ...statement, skipUnlessWrote: moved(statement.skipUnlessWrote) },
           )
-          const all = await db.raw.batch(
+          const [before, claimed, after, locks, ...followOns] = await db.raw.batch(
             label,
             [READ_COUNTERS, first, READ_COUNTERS, RECORD_LOCKS, ...shifted],
             control,
           )
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          legs = { walked: total(all[2]) - total(all[0]), locksHeld: Number(all[3]?.rows[0]?.held) }
-          return [all[1], ...all.slice(4)].filter((result) => result !== undefined)
+          if (claimed === undefined) throw new Error('the claim batch answered with no result')
+          legs = {
+            walked: walkedRows(after) - walkedRows(before),
+            locksHeld: Number(locks?.rows[0]?.held),
+          }
+          return [claimed, ...followOns]
         },
       }
       const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'seed', '{}')
@@ -359,11 +357,7 @@ describe('the hot path beside a history of tasks, on MySQL', () => {
               : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
           )
           const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked.set(label, total(all[all.length - 1]) - total(all[0]))
+          walked.set(label, walkedRows(all[all.length - 1]) - walkedRows(all[0]))
           return all.slice(1, -1)
         },
       }
@@ -416,11 +410,7 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
               : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
           )
           const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
-          const total = (result: (typeof all)[number] | undefined) =>
-            (result?.rows ?? [])
-              .filter((row) => row.Variable_name !== 'Handler_read_key')
-              .reduce((sum, row) => sum + Number(row.Value), 0)
-          walked.set(label, total(all[all.length - 1]) - total(all[0]))
+          walked.set(label, walkedRows(all[all.length - 1]) - walkedRows(all[0]))
           return all.slice(1, -1)
         },
       }

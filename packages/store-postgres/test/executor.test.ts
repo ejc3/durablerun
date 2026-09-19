@@ -150,9 +150,9 @@ describe('PgExecutor transactions', () => {
   })
 
   it('sends a batch of one statement alone, outside a transaction block', async () => {
-    const sentBy = async (sql: string, args: unknown[], mode?: 'read') => {
+    const sentBy = async (sql: string, args: string[], mode?: 'read') => {
       const client = new FakeClient(() => EMPTY_RESULT)
-      await executor(new FakePool(client)).batch('alone', [{ sql, args: args as never[] }], mode)
+      await executor(new FakePool(client)).batch('alone', [{ sql, args }], mode)
       return { texts: client.calls.map(({ text }) => text), releases: client.releases }
     }
     expect({

@@ -309,6 +309,17 @@ describe('MysqlExecutor transactions', () => {
       expect(connection.released).toBe(1)
     })
 
+    it('runs a statement sent alone again after a deadlock, with nothing to roll back', async () => {
+      const connection = new FakeConnection()
+      connection.failures.set(WRITE, { error: DEADLOCK, times: 1 })
+      const results = await executorOver(connection).batch('fixture:write', [
+        { sql: WRITE, args: [] },
+      ])
+      expect(results).toHaveLength(1)
+      expect(shape(connection)).toEqual([WRITE, WRITE])
+      expect(connection.released).toBe(1)
+    })
+
     it('reports the store unavailable after three deadlocks, and returns the connection', async () => {
       const connection = new FakeConnection()
       connection.failures.set(WRITE, { error: DEADLOCK, times: 3 })
