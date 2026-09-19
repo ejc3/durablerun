@@ -83,6 +83,22 @@ export async function claimActivated(
   return activated
 }
 
+/**
+ * Open `count` connections before a measured race. A handshake inside the race puts the
+ * racers one after another, and a wrong lock order then passes because nothing overlapped.
+ */
+export async function warmConnections(
+  raw: SqlExecutor,
+  label: string,
+  count: number,
+): Promise<void> {
+  await Promise.all(
+    Array.from({ length: count }, (_, index) =>
+      raw.batch(`${label}:warm-${index}`, [{ sql: 'SELECT 1 AS ready', args: [] }], 'read'),
+    ),
+  )
+}
+
 /** The task, run, and claim token that every owner-bound call passes together. */
 type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
 

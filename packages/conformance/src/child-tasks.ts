@@ -29,6 +29,7 @@ import {
   claimOne,
   readOne,
   refusalName,
+  warmConnections,
   withFixture,
 } from './scenario.js'
 
@@ -940,15 +941,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           }
           const advanceMs = Math.max(...races.map(({ ready }) => ready.advanceMs))
           if (advanceMs > 0) await fx.admin.setFakeNowEpochMs(START_MS + advanceMs)
-          await Promise.all(
-            Array.from({ length: RACES }, (_, index) =>
-              fx.raw.batch(
-                `native-child:warm-${index}`,
-                [{ sql: 'SELECT 1 AS ready', args: [] }],
-                'read',
-              ),
-            ),
-          )
+          await warmConnections(fx.raw, 'native-child', RACES)
           const outcomes = await Promise.all(
             races.map(async ({ queue, parent, ready }) => {
               const [awaited] = await Promise.all([

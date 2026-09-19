@@ -19,6 +19,7 @@ import {
   claimActivated,
   claimOne,
   describeFailure,
+  warmConnections,
   withFixture,
 } from './scenario.js'
 
@@ -93,9 +94,7 @@ async function parentAndLiveChild(f: StoreFixture) {
  * itself. The type makes a port method with no entry here a compile error, so a new
  * method cannot arrive without its contest.
  */
-const STORE_RACES: {
-  readonly [Method in keyof SchedulerStore]: Readonly<Record<string, Arrange>>
-} = {
+const STORE_RACES = {
   spawn: {
     'under one idempotency key': async (f) => () =>
       f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'once' }),
@@ -315,12 +314,10 @@ const STORE_RACES: {
       return () => f.store.retryTask(Q, run.taskId)
     },
   },
-}
+} satisfies { readonly [Method in keyof SchedulerStore]: Readonly<Record<string, Arrange>> }
 
 /** The same for the admin port, whose `migrate` every process of a deploy calls at once. */
-const ADMIN_RACES: {
-  readonly [Method in keyof StoreAdmin]: Readonly<Record<string, Race>>
-} = {
+const ADMIN_RACES = {
   migrate: {
     'of a database nobody has migrated': {
       fixture: { migrate: false },
@@ -336,13 +333,22 @@ const ADMIN_RACES: {
   nowEpochMs: {
     'under a fixed clock': { arrange: async (f) => () => f.admin.nowEpochMs() },
   },
-}
+} satisfies { readonly [Method in keyof StoreAdmin]: Readonly<Record<string, Race>> }
+
+type ContestNames<Prefix extends string, Table> = {
+  [Method in keyof Table & string]: `${Prefix}${Method} ${keyof Table[Method] & string}`
+}[keyof Table & string]
+
+/** The name of every contest. A fixture's `selfRaceDeadlocksExcused` can name no other. */
+export type SelfRaceName =
+  | ContestNames<'', typeof STORE_RACES>
+  | ContestNames<'admin ', typeof ADMIN_RACES>
 
 const RACES: readonly (readonly [string, Race])[] = [
-  ...Object.entries(STORE_RACES).flatMap(([method, states]) =>
+  ...Object.entries<Readonly<Record<string, Arrange>>>(STORE_RACES).flatMap(([method, states]) =>
     Object.entries(states).map(([state, arrange]) => [`${method} ${state}`, { arrange }] as const),
   ),
-  ...Object.entries(ADMIN_RACES).flatMap(([method, states]) =>
+  ...Object.entries<Readonly<Record<string, Race>>>(ADMIN_RACES).flatMap(([method, states]) =>
     Object.entries(states).map(([state, race]) => [`admin ${method} ${state}`, race] as const),
   ),
 ]
@@ -383,7 +389,7 @@ function didNothing(settled: Settled): boolean {
 /** The tables every dialect has. PostgreSQL's `event_locks` rows are locks and not protocol state. */
 const TABLES = ['tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers'] as const
 
-/** Every row of every table of the shared schema, each as one line of text, in order. */
+/** Every row of every table of the shared schema, each as one line of text. */
 async function rowsOf(f: StoreFixture): Promise<Record<string, string[]>> {
   const results = await f.raw.batch(
     'self-race:rows',
@@ -393,17 +399,15 @@ async function rowsOf(f: StoreFixture): Promise<Record<string, string[]>> {
   return Object.fromEntries(
     TABLES.map((table, index) => [
       table,
-      (results[index]?.rows ?? [])
-        .map((row) =>
-          JSON.stringify(row, (_, value: unknown) =>
-            typeof value === 'bigint'
-              ? String(value)
-              : value instanceof Uint8Array
-                ? [...value]
-                : value,
-          ),
-        )
-        .sort(),
+      (results[index]?.rows ?? []).map((row) =>
+        JSON.stringify(row, (_, value: unknown) =>
+          typeof value === 'bigint'
+            ? String(value)
+            : value instanceof Uint8Array
+              ? [...value]
+              : value,
+        ),
+      ),
     ]),
   )
 }
@@ -468,12 +472,8 @@ async function contest(
         typeof prepared === 'function' ? { call: prepared, afterwards: undefined } : prepared
       // Open a connection for every copy first. A handshake inside the contest would
       // put the copies one after another and hide what the contest is for.
-      await Promise.all(
-        EVERY_COPY.map((copy) =>
-          f.raw.batch(`self-race:warm-${copy}`, [{ sql: 'SELECT 1 AS ready', args: [] }], 'read'),
-        ),
-      )
-      const drawnBefore = migrated ? drawnIn(JSON.stringify(await rowsOf(f))) : { id: 0, token: 0 }
+      await warmConnections(f.raw, 'self-race', COPIES)
+      const drawnBefore = drawnIn(migrated ? JSON.stringify(await rowsOf(f)) : '')
       const deadlocksBefore = f.deadlocks()
 
       const settled: Settled[] = []
@@ -557,18 +557,5 @@ export function selfConcurrencyConformance(
         })
       })
     }
-
-    it('excuses deadlock victims only in contests that exist', () =>
-      withFixture(
-        makeFixture,
-        'self-race excused',
-        async (f) => {
-          const contests = new Set(RACES.map(([name]) => name))
-          expect(
-            Object.keys(f.selfRaceDeadlocksExcused).filter((name) => !contests.has(name)),
-          ).toEqual([])
-        },
-        { migrate: false },
-      ))
   })
 }

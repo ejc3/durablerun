@@ -32,6 +32,7 @@ import {
   claimOne,
   readOne,
   refusalName,
+  warmConnections,
   withFixture,
 } from './scenario.js'
 
@@ -3711,15 +3712,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // Establish concurrent backend connections before the measured
         // requests. SimWorld schedules whole batches, so it cannot prove the
         // transaction prelude that serializes two real PostgreSQL clients.
-        await Promise.all(
-          Array.from({ length: 12 }, (_, index) =>
-            f.raw.batch(
-              `native-event:warm-${index}`,
-              [{ sql: 'SELECT 1 AS ready', args: [] }],
-              'read',
-            ),
-          ),
-        )
+        await warmConnections(f.raw, 'native-event', 12)
 
         const observations = await Promise.all(
           races.map(async ({ queue, run }) => {
@@ -4103,15 +4096,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // Establish the backend's concurrent connections before the measured
         // requests. Otherwise connection handshakes can accidentally
         // serialize a broken claim implementation and make the race vanish.
-        await Promise.all(
-          Array.from({ length: 16 }, (_, index) =>
-            f.raw.batch(
-              `native-same-token:warm-${index}`,
-              [{ sql: 'SELECT 1 AS ready', args: [] }],
-              'read',
-            ),
-          ),
-        )
+        await warmConnections(f.raw, 'native-same-token', 16)
 
         const receipts = await Promise.all(
           Array.from({ length: 16 }, () =>
