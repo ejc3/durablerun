@@ -31,4 +31,13 @@ describe('a prepared read checks its first call as it checks every call', () => 
     await expect(other.getTaskResult('q', 't1')).resolves.toBeNull()
     expect(sent.at(-1)?.args).toEqual(['t1', 'q'])
   })
+
+  it('throws a refusal-state read the builder refuses as itself, never as a lost lease', async () => {
+    // The batch is built before the read is handed to the caller that reads a failed read
+    // as a lost lease. A heartbeat that matched no row asks for that read.
+    const store = new LibsqlSchedulerStore(executor, testIdSource('first-call-c'))
+    await expect(store.heartbeat('q', undefined as never, 'token', 30)).rejects.toThrow(
+      /bind 'runId' is undefined/,
+    )
+  })
 })

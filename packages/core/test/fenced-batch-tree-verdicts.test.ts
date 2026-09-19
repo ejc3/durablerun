@@ -1367,10 +1367,10 @@ describe('the tree path', () => {
     })
 
     describe('prepared once and sent many times', () => {
-      const STATE = prepareRead((binds: { runId: string }) =>
+      const STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
         statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
       )
-      const DUE = prepareRead(() => due())
+      const DUE = prepareRead({}, () => due())
 
       it('builds twice, from stand-ins, and never again', async () => {
         const build = vi.fn((binds: { runId: string; attempt: number }) =>
@@ -1383,7 +1383,7 @@ describe('the tree path', () => {
               .where('queue', '=', 'q'),
           ),
         )
-        const read = prepareRead(build)
+        const read = prepareRead({ runId: 'string', attempt: 'number' }, build)
         const sent = []
         for (const runId of ['r1', 'r2', 'r3']) {
           const { captured, executor } = capturingExecutor(0)
@@ -1405,7 +1405,7 @@ describe('the tree path', () => {
       it('is first prepared inside a task that has replaced Map and WeakMap', () => {
         // A read is prepared wherever it is first sent. The SDK runs a task's handler in
         // this realm, so that first send can happen while the globals are the task's.
-        const fresh = prepareRead((binds: { runId: string }) =>
+        const fresh = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
           statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
         )
         class Poisoned {
@@ -1436,7 +1436,7 @@ describe('the tree path', () => {
       })
 
       it('refuses a statement whose shape depends on a value it is sent', () => {
-        const inlined = prepareRead((binds: { attempt: number }) =>
+        const inlined = prepareRead({ attempt: 'number' }, (binds: { attempt: number }) =>
           statement(
             db
               .selectFrom('runs')
@@ -1458,6 +1458,52 @@ describe('the tree path', () => {
           /bind 'runId' is undefined/,
           () => batch().readPrepared('state', STATE, { runId: undefined as never }),
         )
+      })
+
+      it('checks the first call as it checks every call, and keeps nothing of one it refused', async () => {
+        const fresh = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+          statement(db.selectFrom('runs').select('state').where('run_id', '=', binds.runId)),
+        )
+        refuses(
+          'mutation-verdict:construction:tree-prepared-read-first-call-checked',
+          /bind 'runId' is undefined/,
+          () => batch().readPrepared('state', fresh, { runId: undefined as never }),
+        )
+        const { captured, executor } = capturingExecutor(0)
+        await batch().readPrepared('state', fresh, { runId: 'r1' }).run(executor)
+        expect(captured.map((sent) => sent.args)).toEqual([['r1']])
+      })
+
+      it('counts no clock read for a prepared read it refused', () => {
+        const spelled = prepareRead({}, () =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('run_id')
+              .where(predicate(`claim_expires_at_ms <= ${NOW} AND heartbeat_at_ms <= unixepoch()`)),
+          ),
+        )
+        const b = batch()
+        expect(() => b.readPrepared('spelled', spelled, {})).toThrow(/spells out a database clock/)
+        expect(() => b.readPrepared('due', DUE, {})).not.toThrow()
+      })
+
+      it('refuses arithmetic on a bind, and a statement that holds its own stamp', () => {
+        const SHAPE = /must compile to one statement whatever values it is sent with/
+        const sum = prepareRead({ a: 'number', c: 'number' }, (binds: { a: number; c: number }) =>
+          statement(
+            db
+              .selectFrom('runs')
+              .select('state')
+              .where('attempt', '=', binds.a + 1)
+              .where('claim_gen', '=', binds.c),
+          ),
+        )
+        expect(() => batch().readPrepared('state', sum, { a: 10, c: 99 })).toThrow(SHAPE)
+        const stamped = prepareRead({}, () =>
+          statement(loose.selectFrom('runs').select('state').where('fence_stamp', '=', stampValue)),
+        )
+        expect(() => batch().readPrepared('state', stamped, {})).toThrow(SHAPE)
       })
 
       it('counts its reads of the clock as any read', () => {

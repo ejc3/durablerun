@@ -535,39 +535,54 @@ function requireSagaStepFits(what: string, name: unknown): void {
  * compiled on first use, and sent with a call's own values after that. next-wake and the
  * sweep's two scans run on every driver tick.
  */
-const REFUSAL_STATE = prepareRead((binds: { runId: string }) => refusalStateRead(binds))
-const RUN_TASK = prepareRead((binds: { queue: string; runId: string }) => runTaskRead(binds))
-const TASK_DONE_STATE = prepareRead((binds: { taskId: string }) => taskDoneStateRead(binds))
-const TASK_RESULT = prepareRead((binds: { queue: string; taskId: string }) =>
-  taskResultRead({
-    ...binds,
-    rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
-    rollbackError: sqlFragment(rollbackError('tasks')),
-  }),
+const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+  refusalStateRead(binds),
+)
+const RUN_TASK = prepareRead(
+  { queue: 'string', runId: 'string' },
+  (binds: { queue: string; runId: string }) => runTaskRead(binds),
+)
+const TASK_DONE_STATE = prepareRead({ taskId: 'string' }, (binds: { taskId: string }) =>
+  taskDoneStateRead(binds),
+)
+const TASK_RESULT = prepareRead(
+  { queue: 'string', taskId: 'string' },
+  (binds: { queue: string; taskId: string }) =>
+    taskResultRead({
+      ...binds,
+      rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
+      rollbackError: sqlFragment(rollbackError('tasks')),
+    }),
 )
 const CLAIMED_TASK_NAME = prepareRead(
+  { queue: 'string', runId: 'string', claimToken: 'string', claimGen: 'number' },
   (binds: { queue: string; runId: string; claimToken: string; claimGen: number }) =>
     claimedTaskNameRead({ ...binds, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }),
 )
 const CHECKPOINTS = prepareRead(
+  { queue: 'string', taskId: 'string', visibleThrough: 'number' },
   (binds: { queue: string; taskId: string; visibleThrough: number }) =>
     checkpointsRead({ ...binds, ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')) }),
 )
-const SWEEP_DUE_CANCELS = prepareRead((binds: { queue: string; limit: number }) =>
-  sweepDueCancelsRead({
-    limit: binds.limit,
-    due: sqlFragment(SWEEP_CANCELS_DUE, [binds.queue]),
-    liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
-  }),
+const SWEEP_DUE_CANCELS = prepareRead(
+  { queue: 'string', limit: 'number' },
+  (binds: { queue: string; limit: number }) =>
+    sweepDueCancelsRead({
+      limit: binds.limit,
+      due: sqlFragment(SWEEP_CANCELS_DUE, [binds.queue]),
+      liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
+    }),
 )
-const SWEEP_EXPIRED_CLAIMS = prepareRead((binds: { queue: string; limit: number }) =>
-  sweepExpiredClaimsRead({
-    limit: binds.limit,
-    taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
-    expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),
-  }),
+const SWEEP_EXPIRED_CLAIMS = prepareRead(
+  { queue: 'string', limit: 'number' },
+  (binds: { queue: string; limit: number }) =>
+    sweepExpiredClaimsRead({
+      limit: binds.limit,
+      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),
+    }),
 )
-const NEXT_WAKE = prepareRead((binds: { queue: string }) =>
+const NEXT_WAKE = prepareRead({ queue: 'string' }, (binds: { queue: string }) =>
   nextWakeRead({ legs: NEXT_WAKE_LEGS.map((leg) => sqlFragment(leg, [binds.queue])) }),
 )
 
@@ -1654,9 +1669,12 @@ export class MysqlSchedulerStore implements SchedulerStore {
     return refusedWriteError(operation, runId, this.refusalState(runId))
   }
 
-  /** The rows of a batch's one read, or of the read it names. */
+  /** The rows of the read a batch holds under a name. A name it does not hold is refused, never read as no row. */
   private async rows(b: FencedBatch, name: string): Promise<SqlRow[]> {
-    return (await b.run(this.db)).results[name]?.rows ?? []
+    const result = (await b.run(this.db)).results[name]
+    if (result === undefined)
+      throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
+    return result.rows
   }
 
   /**

@@ -52,6 +52,14 @@ describe('the states a read compares', () => {
     ).rejects.toThrow(/returned 0 results for 1 statements/)
   })
 
+  it('a read answered with no rows array throws, as a read that got no answer does', async () => {
+    const read = statement(loose.selectFrom('runs').select('run_id').where('run_id', '=', 'r1'))
+    const executor = { batch: async () => [{ rowsAffected: 0 }] } as never
+    await expect(batch().readTree('read', read).run(executor)).rejects.toThrow(
+      /answered read 'read' with no rows/,
+    )
+  })
+
   it('a batch of reads refuses a state compared with a bound value', () => {
     const bound = statement(
       loose.selectFrom('runs').select('run_id').where('state', '=', 'running'),

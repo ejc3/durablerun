@@ -2342,7 +2342,7 @@ MUTATION_SPECS = [
     (
         "tree-prepared-read-bind-kind",
         "packages/core/src/fenced-batch.ts",
-        "    if (kindOf(value) !== shape.kinds[slot.bind]) {\n",
+        "    if (kindOf(value) !== kinds[key]) {\n",
         "    if (false) {\n",
         "a prepared read sends an undefined or mistyped bind, which the builder refuses of every other statement",
     ),
@@ -2352,6 +2352,13 @@ MUTATION_SPECS = [
         "    this.countClockRead(at, name, drift, shape.readsClock)\n",
         "    this.countClockRead(at, name, '', false)\n",
         "a prepared read of the clock is never counted, so a second one gives no reason",
+    ),
+    (
+        "tree-prepared-read-first-call-checked",
+        "packages/core/src/fenced-batch.ts",
+        "    const values = checkedBinds(at, read, binds)\n",
+        "    const values = binds\n",
+        "a call's values reach a prepared read unchecked, so a malformed first call is sent as it is",
     ),
     (
         "tree-read-recorded",
@@ -8724,6 +8731,12 @@ VERDICTS = {
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
         "the tree path a batch of reads prepared once and sent many times counts its reads of the clock as any read",
         "mutation-verdict:construction:tree-prepared-read-clock-counted",
+    ),
+    "tree-prepared-read-first-call-checked": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times checks the first call as it checks every call, and keeps nothing of one it refused",
+        "mutation-verdict:construction:tree-prepared-read-first-call-checked",
     ),
     "tree-read-recorded": ExpectedVerdict(
         "construction",
@@ -16735,7 +16748,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 860:
+        if len(MUTATIONS) != 861:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
