@@ -443,6 +443,12 @@ One invocation executes one claimed run to its next suspension point:
   infrastructure cap.
 - Loads visible checkpoints (`c_` rows for the task, committed, owner attempt ≤
   current) into memory — Absurd's TaskContext preload, one SELECT.
+  `getCheckpoints` returns them in byte order of the checkpoint name, on every
+  dialect: `B-step`, then `_init`, then `a-step`. A name compares as the bytes
+  of its UTF-8 text, which is code point order, and never under the collation
+  a database was created with. The SDK reads the list into a map and depends
+  on no order. The order is still the port's contract, because a worker in
+  another language reads the same list.
 - Runs the registered task handler with `ctx`: `step(name, fn)` (memoize→execute→
   `set_checkpoint` upsert which also extends the lease), `sleepFor/sleepUntil`
   (throw Suspend CARRYING the sleep marker; the runtime lands marker + park in

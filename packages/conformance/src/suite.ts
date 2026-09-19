@@ -3139,10 +3139,36 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimActivated(f.store, Q, 'w1')
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await checkpointOwned(f.store, Q, run, 'b-step', '{"b":1}', 90)
-        await checkpointOwned(f.store, Q, run, 'a-step', '{"a":1}', 90)
+        // The list is in byte order of the name on every dialect. These names separate
+        // that order from a linguistic one, which puts a lowercase letter before its
+        // capital and weighs `_` and `-` its own way, and they are written in neither.
+        const inByteOrder = [
+          'B-step',
+          'Zeta',
+          '_init',
+          'a-step',
+          'b-step',
+          'step-1',
+          'step_1',
+          'zeta',
+        ]
+        for (const name of [
+          'step_1',
+          'b-step',
+          'Zeta',
+          'a-step',
+          '_init',
+          'zeta',
+          'B-step',
+          'step-1',
+        ]) {
+          await checkpointOwned(f.store, Q, run, name, JSON.stringify({ name }), 90)
+        }
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, run.attempt)
-        expect(checkpoints.map((c) => c.checkpointName)).toEqual(['a-step', 'b-step'])
+        expect(checkpoints.map((c) => c.checkpointName)).toEqual(inByteOrder)
+        expect(checkpoints.map((c) => c.stateJson)).toEqual(
+          inByteOrder.map((name) => JSON.stringify({ name })),
+        )
         expect(checkpoints[0]).toMatchObject({ ownerRunId: run.runId, ownerAttempt: 1 })
         const lease = await readOne(
           f.raw,
