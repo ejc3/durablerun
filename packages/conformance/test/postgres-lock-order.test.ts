@@ -9,18 +9,11 @@ import { makePostgresFixture } from './fixture-postgres.js'
  * parked run lock the run's row and then its task's row. A cancellation updates the
  * task first. A trigger that sleeps after the parent's task row is updated holds that
  * window open, so the interleaving that production reaches by chance happens here
- * every time, and the database's own deadlock counter says whether it did.
+ * every time, and the executor's count of deadlock victims says whether it did. The
+ * executor runs a victim again, so both calls are accepted either way. The database's own
+ * counter is no use here: it also counts the deadlocks of every other test worker.
  */
 let f: StoreFixture
-
-async function deadlocks(): Promise<number> {
-  const row = await readOne(
-    f.raw,
-    'SELECT deadlocks AS n FROM pg_stat_database WHERE datname = current_database()',
-    [],
-  )
-  return Number(row?.n)
-}
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -54,7 +47,6 @@ it('a child ending does not deadlock against a cancel of its parked parent', asy
   const child = await f.store.spawn('q', 'child', '{}')
   const childRun = await claimActivated(f.store, 'q', 'w-child')
   await awaitTaskOwned(f.store, 'q', parent, 's', child.taskId, null)
-  const before = await deadlocks()
   const cancelling = refusalName(f.store.cancelTask('q', parentTask.taskId))
   await pause(150)
   const completing = refusalName(f.store.complete('q', childRun.runId, childRun.claimToken, '{}'))
@@ -66,7 +58,7 @@ it('a child ending does not deadlock against a cancel of its parked parent', asy
       complete: await completing,
       parent: await task(parentTask.taskId),
       child: await task(child.taskId),
-      deadlocks: (await deadlocks()) - before,
+      deadlocks: f.deadlocks(),
     },
     'mutation-verdict:behavior:cancel-locks-runs-before-the-task',
   ).toEqual({
@@ -84,7 +76,6 @@ it('a child ending does not deadlock against a cancel of its parked parent', asy
 it('a worker write that ends nothing does not deadlock against a cancel of its task', async () => {
   const parentTask = await f.store.spawn('q', 'parent', '{}')
   const run = await claimActivated(f.store, 'q', 'w-parent')
-  const before = await deadlocks()
   const cancelling = refusalName(f.store.cancelTask('q', parentTask.taskId))
   await pause(150)
   const rescheduling = refusalName(
@@ -93,6 +84,6 @@ it('a worker write that ends nothing does not deadlock against a cancel of its t
   expect({
     cancel: await cancelling,
     reschedule: await rescheduling,
-    deadlocks: (await deadlocks()) - before,
+    deadlocks: f.deadlocks(),
   }).toEqual({ cancel: 'accepted', reschedule: 'RunCancelledError', deadlocks: 0 })
 }, 60_000)

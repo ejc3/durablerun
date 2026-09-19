@@ -181,6 +181,7 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
           ),
         ).toEqual([])
         expect(await fixture.admin.schemaVersion()).toBeGreaterThan(0)
+        expect(fixture.deadlocks(), 'no migrator was a deadlock victim').toBe(0)
       } finally {
         await fixture.close()
       }

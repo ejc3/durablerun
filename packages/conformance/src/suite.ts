@@ -84,7 +84,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     /**
      * Run `body` once per seed against its own fixture, named `${prefix}${seed}` and
      * started at START_MS like the default fixture. The fixture always closes, and the engine
-     * invariants must hold at quiescence.
+     * invariants must hold at quiescence. No batch may have been a deadlock victim either:
+     * the executor runs a victim again, so the scenario itself cannot see a wrong lock order.
      */
     async function forEachSeed(
       seeds: number,
@@ -96,6 +97,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           await fx.admin.setFakeNowEpochMs(START_MS)
           await body(fx, seed)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          expect(fx.deadlocks(), `seed ${seed}: deadlock victims`).toBe(0)
         })
       }
     }
@@ -3748,6 +3750,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
         const waits = await readOne(f.raw, `SELECT COUNT(*) AS count FROM waits`, [])
         expect(Number(waits?.count), 'no registration is stranded').toBe(0)
+        expect(f.deadlocks(), 'no batch was a deadlock victim').toBe(0)
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
@@ -3832,6 +3835,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           'read',
         )
         expect(Number(registry?.rows[0]?.n)).toBe(fleet.length)
+        // All eight can land while beats deadlock, because the executor runs a victim again.
+        expect(f.deadlocks(), 'no beat was a deadlock victim').toBe(0)
       })
     })
 
@@ -4133,6 +4138,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toBe(true)
         expect(new Set(runIds).size, 'every retry returns the original selection').toBe(1)
         expect(Number(durable?.rows[0]?.count), 'one durable selection for one token').toBe(1)
+        expect(f.deadlocks(), 'no claim was a deadlock victim').toBe(0)
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 

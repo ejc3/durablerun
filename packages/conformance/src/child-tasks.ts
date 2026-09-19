@@ -974,8 +974,16 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
               ...(await engineInvariantViolations(fx.raw)),
               ...(await childTaskViolations(fx.raw)),
             ],
+            // The executor runs a deadlock victim again, so every wakeup can be delivered
+            // while the await and the batch take their locks in opposite orders.
+            deadlocks: fx.deadlocks(),
           }
-          expected[batch.label] = { delivered: RACES, strandedWaits: 0, violations: [] }
+          expected[batch.label] = {
+            delivered: RACES,
+            strandedWaits: 0,
+            violations: [],
+            deadlocks: 0,
+          }
         })
       }
       // A smoke of real concurrency on every dialect. Whether an unlocked batch loses a
