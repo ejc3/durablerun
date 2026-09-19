@@ -14673,7 +14673,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
         ),
         "const open = asked === 'openTail' || reading": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 245 at the fewest"
+            "fails closed: with the open-tail test gone 7 of the 538 core tests fail, and the read half of the line has its own mutation"
         ),
         "const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]": (
             "a guard, and no shape tells it from the code: no table answers to null"
@@ -14691,7 +14691,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
         ),
         "if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {": (
-            "fails closed: with `!isCas` gone every compare-and-set that reads the clock is refused, and 226 of the 472 core tests fail"
+            "fails closed: with `!isCas` gone every compare-and-set that reads the clock is refused, and 250 of the 538 core tests fail"
         ),
         "if (!isCas) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 49 at the fewest"

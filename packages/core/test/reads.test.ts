@@ -43,6 +43,15 @@ describe('the states a read compares', () => {
     expect(sql).toContain(`"c"."status" = 'committed'`)
   })
 
+  it('a read that got no answer throws, and is never taken for no row', async () => {
+    const read = statement(loose.selectFrom('runs').select('run_id').where('run_id', '=', 'r1'))
+    await expect(
+      batch()
+        .readTree('read', read)
+        .run({ batch: async () => [] }),
+    ).rejects.toThrow(/returned 0 results for 1 statements/)
+  })
+
   it('a batch of reads refuses a state compared with a bound value', () => {
     const bound = statement(
       loose.selectFrom('runs').select('run_id').where('state', '=', 'running'),

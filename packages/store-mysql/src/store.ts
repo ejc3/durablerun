@@ -396,7 +396,7 @@ const wakeLeg = (
   bounds: PersistedIntegerBoundsExceptClaimGeneration,
 ): string => {
   const instant = persistedColumn(bounds, 'w')
-  return `SELECT ${instant} AS v FROM ${table} w FORCE INDEX (${index})
+  return `SELECT ${instant} FROM ${table} w FORCE INDEX (${index})
     WHERE w.queue = ? AND w.state = '${state}'
       AND ${storedIntegerWithin(bounds, 'w')}
     ORDER BY ${instant} LIMIT 1`

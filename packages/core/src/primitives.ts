@@ -119,6 +119,10 @@ export function sqlTransactionLock(
 }
 
 export interface SqlExecutor {
+  /**
+   * Run the statements as one batch and answer with one result for each, in order.
+   * `FencedBatch.run` refuses any other count, for a batch of reads as for a transition.
+   */
   batch(
     label: string,
     statements: readonly SqlStatement[],

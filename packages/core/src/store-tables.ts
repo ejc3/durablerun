@@ -21,7 +21,8 @@ const nullableInteger = { kind: 'integer', nullable: true } as const
  * outcome lint still confines reading an outcome to the stores and `decodeTaskResult`,
  * and allows this descriptor and the shared statements to name the column.
  * `completed_payload` is here because `complete`'s task mirror assigns it.
- * `checkpoints.status` stays out, because every checkpoint write leaves it to its default.
+ * `checkpoints.status` is here because `get-checkpoints` compares it. Every checkpoint
+ * write leaves it to its default.
  */
 export const STORE_TABLE_COLUMNS = {
   runs: {

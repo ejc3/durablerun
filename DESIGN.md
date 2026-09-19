@@ -1193,27 +1193,42 @@ are load-bearing):
      compare-and-set, stamps nothing, and runs in read mode whatever its
      caller asks. A batch holds reads or a transition and never both, because
      a read beside a write must be a tail that a fence gates. Every other tree
-     rule still reads a read. A read may hold the clock. Two statements of one
-     batch see different clocks on a real backend, so a batch's second read of
-     the clock must give `readTree` a reason why a disagreement between the
-     two is harmless. The sweep's two discovery reads give one: every item
-     they find is checked again under its own fence. That reason replaces the
-     entry `scripts/batch-lint.py` kept for the sweep among the batches that
-     may read the clock twice, and the read labels left that lint's tables,
-     which describe only the batches still sent as text. Every batch of reads
-     shares one seed, `READS_SEED`: it writes no stamp, and drawing an id
-     would shift the ids a seeded test predicts. The grammar lists UNION ALL
-     for a batch of reads alone, and `next-wake` uses it to keep each wake
-     source on its own index. A condition on a state or a stored instant stays
-     a store fragment, so a partial index still sees the literal it was
-     declared with. A state a shared read compares from nodes is written
-     inline, and a batch of reads refuses a state or status column compared
-     with a bound value, whose placeholder no partial index can match. MySQL builds its own `next-wake`, because it does not
-     answer MIN from an index: each leg is a store fragment holding a scalar
-     subquery and its index hint, so the grammar lists no hint, as for the
-     claim. The query-plan suites pin these reads by recording the statements
-     a real sweep and a real `next-wake` send.
-   - Only a compare-and-set may hold the clock token. A clock called as a
+     rule still reads a read, and its reads of the clock are under the clock
+     rule below. A store sends each read through `readPrepared`: the read is
+     built, checked and compiled once for a dialect and a clock, from stand-in
+     values, and every call after that sends the same SQL with its own values
+     in a statement object of its own. A statement whose shape depends on a
+     value it is sent is refused when it is first prepared. What depends on the
+     batch is asked on every call: that it holds reads alone, and the clock
+     rule. `next-wake` and the sweep's two scans run on every driver tick, so
+     a read costs a few microseconds to send, as its text did. The read labels
+     left `scripts/batch-lint.py`'s tables, which describe only the batches
+     still sent as text. Every batch of reads shares one seed, `READS_SEED`: it
+     writes no stamp, and drawing an id would shift the ids a seeded test
+     predicts. The grammar lists UNION ALL for a batch of reads alone, and
+     `next-wake` uses it to keep each wake source on its own index. A condition
+     on a state or a stored instant stays a store fragment, so a partial index
+     still sees the literal it was declared with. A state a shared read
+     compares from nodes is written inline (`literalValue`), and a batch of
+     reads refuses a state or status column compared with a bound value, whose
+     placeholder no partial index can match. MySQL builds its own `next-wake`,
+     because it does not answer MIN from an index: each leg is a store fragment
+     holding a scalar subquery and its index hint, so the grammar lists no
+     hint, as for the claim. The libSQL and MySQL query-plan suites pin these
+     reads by recording the statements a real sweep and a real `next-wake`
+     send. PostgreSQL's plan suite pins none of them. An executor answers a
+     batch with one result for each statement it was sent, and `run` refuses
+     any other count for a batch of reads as for a transition, so a read that
+     got no answer throws and is never taken for no row.
+   - One rule says who may hold the clock token. In a transition, only a
+     compare-and-set may. In a batch of reads any read may, and because two
+     statements of one batch see different clocks on a real backend, a second
+     read of the clock owes `readTree` or `readPrepared` a reason why a
+     disagreement between the two is harmless. No other read may give one,
+     because a reason would outlive the read it excused, and a read is counted
+     only after every other rule has admitted it. The sweep's two discovery
+     reads give the one reason in use, `SWEEP_SCAN_DRIFT`: every item they find
+     is checked again under its own fence. A clock called as a
      function node is outside the grammar whatever it is named, because the
      grammar lists the functions a statement may call and lists no clock. Raw
      fragment text is the one thing a tree cannot read, so it is scanned for

@@ -90,6 +90,11 @@ describe('a read is built once and sent many times', () => {
         .join('\n')
       expect(text.match(/\.readTree\(/g) ?? [], `${store} builds a read on every call`).toEqual([])
       expect(text.match(/\.readPrepared\(/g)?.length ?? 0, store).toBeGreaterThanOrEqual(9)
+      // A read prepared inside a method would be prepared again on every call.
+      expect(
+        text.match(/prepareRead\(/g)?.length,
+        `${store} prepares a read outside module scope`,
+      ).toBe(text.match(/^const [A-Z_]+ = prepareRead\(/gm)?.length)
     }
   })
 })

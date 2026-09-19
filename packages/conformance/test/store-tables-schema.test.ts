@@ -4,9 +4,6 @@ import type { PersistedNumericTable } from '../src/index.js'
 import { withFixture } from '../src/scenario.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
 
-/** Catalog columns the statement builder leaves out on purpose: no tree statement names them yet. None today. */
-const OMITTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {}
-
 function columnKind(nativeType: string): string {
   const type = nativeType.toLowerCase()
   if (type.includes('int')) return 'integer'
@@ -36,13 +33,6 @@ describe('statement builder tables', () => {
           }
         }
       })
-      for (const table of tables) {
-        const columns = observed[table] ?? {}
-        for (const omitted of OMITTED_COLUMNS[table] ?? []) {
-          expect(Object.keys(columns)).toContain(omitted)
-          delete columns[omitted]
-        }
-      }
       expect(observed).toEqual(STORE_TABLE_COLUMNS)
     })
   }

@@ -83,13 +83,6 @@ TOKEN_FENCED = {
     "migrate:bootstrap": "migration sentinel fence (schema.ts)",
 }
 
-# Batches allowed to read the clock in more than one statement. Every entry is
-# a standing bug of class A unless the reason says why the drift is harmless,
-# so this stays as close to empty as the engine allows.
-# It is empty. The sweep's two discovery reads were its one entry, and they now give their
-# reason to `readTree`, where the batch itself refuses a second clock read without one.
-MULTI_CLOCK: dict[str, str] = {}
-
 # Call sites whose label is legitimately computed. Each names the file and the
 # prefix it produces, so the label still has to be classified above; only the
 # "must be a literal" rule is waived.
@@ -321,14 +314,13 @@ for path in source_paths:
                 f"{rel}: '{label}' is declared a READ but is not run in 'read' "
                 f"mode — it can write, and nothing fences it."
             )
-        if statements > 1 and clocks > 1 and label not in MULTI_CLOCK:
+        if statements > 1 and clocks > 1:
             violations.append(
                 f"{rel}: '{label}' reads the clock in {clocks} places across "
                 f"{statements} statements. Two statements of one batch see "
                 f"DIFFERENT clocks on a real backend, so any pair of values "
                 f"that must agree eventually will not. Derive the later ones "
-                f"from what the first statement wrote, or declare the batch in "
-                f"MULTI_CLOCK in scripts/batch-lint.py with a reason."
+                f"from what the first statement wrote."
             )
 
 for v in violations:
