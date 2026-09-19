@@ -5,7 +5,7 @@ import type {
   SqlRow,
   SqlStatement,
 } from '@durablerun/core'
-import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import type { StoreFixture, StoreFixtureFactory, StoreFixtureOptions } from './fixture.js'
 
 /** Run one raw statement in read mode and return its first row. */
 export async function readOne(
@@ -40,8 +40,9 @@ export async function withFixture<T>(
   makeFixture: StoreFixtureFactory,
   name: number | string,
   body: (fixture: StoreFixture) => Promise<T>,
+  options?: StoreFixtureOptions,
 ): Promise<T> {
-  const fixture = await makeFixture(name)
+  const fixture = await makeFixture(name, options)
   let result: T
   try {
     result = await body(fixture)

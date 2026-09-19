@@ -148,6 +148,19 @@ export async function makeMysqlFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
     deadlocks: () => raw.deadlocks,
+    selfRaceDeadlocksExcused: {
+      // Measured on MySQL 8.4. While `runs` holds five rows or fewer, the optimizer runs
+      // the claim's UPDATE as a scan of `runs`, and that one statement holds a lock on every
+      // row of the table, where from six rows up it reaches the claimed rows through the
+      // primary key and locks only those. A claimer already holds the run its locking
+      // read chose, so two claimers each wait for the other's row and InnoDB rolls one
+      // back. With four claimers over four due runs, 17 of 20 runs met victims, three each
+      // time, and the executor ran every one of them again. No run is claimed twice or
+      // lost. A table that small is a database's first five runs, and every table of this
+      // suite. BUILD.md defers the fix to PR4.4e, which deletes this entry.
+      'claim by distinct claimers, and one more for what they left':
+        'a claim locks every row of a runs table of five rows or fewer',
+    },
     close: opened.close,
   }
 }

@@ -31,6 +31,7 @@ import {
 } from './poison-matrix.js'
 import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
+import { selfConcurrencyConformance } from './self-concurrency.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
 import { timestampBoundaryConformance } from './time-boundaries.js'
 
@@ -1253,4 +1254,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'sagas', run: sagaConformance },
   { id: 'identifier-bound', run: identifierBoundConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
+  { id: 'self-concurrency', run: selfConcurrencyConformance },
 ] as const)

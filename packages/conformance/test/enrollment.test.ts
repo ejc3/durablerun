@@ -18,6 +18,7 @@ const EXPECTED_SURFACE_IDS = [
   'sagas',
   'identifier-bound',
   'schema-admin',
+  'self-concurrency',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 

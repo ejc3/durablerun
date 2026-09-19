@@ -144,6 +144,14 @@ export interface StoreFixture {
    * victim answers zero.
    */
   deadlocks(): number
+  /**
+   * The contests of the self-concurrency surface in which this dialect's server may pick a
+   * deadlock victim today, by name, each with what was measured and why. An entry excuses
+   * that one count and nothing else: the contest still holds its answers, its rows, and
+   * the invariants, and every other contest holds the count at zero. An entry records a
+   * defect that is deferred, never a convenience, and it goes when the defect does.
+   */
+  selfRaceDeadlocksExcused: Readonly<Record<string, string>>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }
