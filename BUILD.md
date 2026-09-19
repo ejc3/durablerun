@@ -127,6 +127,14 @@ a last docs PR gives a live owner to every open bullet that is left.
     ancestor of the head, is the same commit as its pair, or, for a red, is
     not an ancestor of its green. A postmortem that cites the copy of a commit
     from before a rebase is refused.
+11. The chaos process test (`packages/driver/test/chaos-process.test.ts`)
+    picks no port. Each host it spawns starts on port 0 and reports the port it
+    bound in its ready message, so a host's first bind cannot meet a port that
+    a child stranded by a failed run, or a second run on the same machine,
+    already holds. A replacement worker is the one host started on a port by
+    number: it takes over the port the killed worker reported. This is met. A
+    case in that file, committed failing, starts both hosts on port 0 and
+    reaches each on the port it reported.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
