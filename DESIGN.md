@@ -1675,6 +1675,114 @@ are load-bearing):
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
+10. **A durable identifier holds 255 characters, on every dialect.** The
+   identifiers are a queue, a task id, a run id, a driver id, an idempotency
+   key, an event name, a step name, and a checkpoint name. A character is a
+   Unicode code point, which is how MySQL counts a `VARCHAR`. It is not a
+   UTF-16 unit and not a byte: 255 characters outside the basic plane are 510
+   units and 1020 bytes, and they fit. The width is MySQL's, which cannot index
+   unbounded text and indexes nothing wider. The engine behaves identically on
+   every dialect, so the narrowest dialect sets the width for all of them, and
+   core holds it once (`IDENTIFIER_CHARACTERS`, `requireIdentifiersFit`). Every
+   entry of the port holds every identifier it is passed to the width first,
+   before any statement is sent, and refuses a longer one with
+   `InvalidDurableStringError`, whatever the excess is, trailing spaces
+   included. A driver holds its queue and its id the same way when it is
+   constructed, because a refused tick reads as an outage and a refused
+   registry beat is swallowed. A task name, a claim token, and a payload are
+   not identifiers: nothing indexes them, and the port does not bound their
+   length. A child's task name is still bounded through `ctx.spawn`, which
+   stores the spawn under a key built from the name (below).
+
+   The width also holds the names the engine derives from an identifier, which
+   are longer than it. Each is refused at the call that passes the identifier,
+   and the refusal names what the caller passed and never the derived name.
+   - An awaited child task id holds 244 characters at the port, because its
+     completion event name, `$task-done:` and the id, must fit.
+   - A child spawn's replay key is held as the child key that is stored:
+     `$spawn:`, the length of the parent task id, the id, the replay key, and
+     two colons. Under a 36-character parent id that leaves 208 characters.
+     The parent's task id is held through that key, and the parent's queue and
+     run id are held on their own.
+   - A registered saga step's key holds 239 characters (§3.10). A step's
+     checkpoints are named by a prefix and its key, and the longest prefix is
+     `$rollback-tries:`, 16 characters. The key is held where the step starts:
+     a start marker, `$started:` and the key, is refused past 239 at the
+     entries that carry a checkpoint name. `$started:` is the shortest of the
+     saga names, so a key held only to the width there, 240 to 246 characters,
+     would start, and the batch that fails its rollback could never store the
+     attempt record. A step's other saga names are held to the plain width,
+     like any checkpoint name. A step that started under this rule has room
+     for them, and one that started before it must still be able to record
+     that its rollback ran (below).
+
+   The SDK stores a task's names under keys of its own, and holds each key
+   where it builds it, to the same constant. A repeated step name is
+   `name#<count>`, an await is `$await:` and the event name, a child await is
+   `$await-task:` and the child's id, a spawn is `$spawn:` and the child's task
+   name, and a step that registers a rollback has the 239 of its saga key. So
+   through the SDK an awaited event name holds 248 characters. An awaited
+   child id holds 243, one fewer than at the port, because the SDK's prefix is
+   one longer. A child task name holds 201 on the first spawn from a call site
+   under a 36-character parent id, which is what the stored child key leaves
+   its replay key. An emitted event name has no key and is held as it is. A
+   key past its room fails the task for good, with a `FatalTaskError` that
+   names what the task passed, before the step's body runs and before any
+   store call, and it is never retried. A child task name is the one
+   exception to where and how. The SDK holds only its own key, `$spawn:` and
+   the name, and the longer child key is built and held by the store. So a
+   name past its 201 is refused by `spawn`, in a message that names
+   `childOf.replayKey`, and `ctx.spawn` turns that refusal into the same
+   permanent failure on the first pass. The store's own refusal would be
+   retried: the SDK reads it as an ordinary failure, so every earlier side
+   effect would run again on each attempt until the budget was gone.
+
+   The rule is held on the way in, and nothing rewrites a row. A row written
+   before the rule can hold a longer name only on libSQL or PostgreSQL, since
+   MySQL never could. What is already stored still works where the engine
+   hands it back, and is refused where a caller must pass it in again.
+   - A key that is already stored as a memo replays, because nothing is
+     written under it again. The SDK looks the memo up before it holds a key,
+     so a task in flight under a longer step name finishes. A read returns a
+     longer checkpoint name, and the port's `complete` still ends the task.
+   - A step that started and never persisted is stored too, as its start
+     marker, but its body runs again and its result must then be written under
+     the same key. It is excused the 239 of a saga key, which its stored
+     marker already passed, so under a stored key of 240 to 255 characters it
+     runs again and completes. It is still held to the width: under a longer
+     key the task fails for good before the body runs again, because the
+     write that would follow can never succeed. The pass that follows still
+     runs the rollback the first body is owed, once, and cannot record it.
+   - A saga in flight under a step key of 240 to 245 characters still rolls
+     back, records that each rollback ran, and ends with the failure that
+     began it. It cannot record a rollback that fails, because the attempt
+     record, `$rollback-tries:` and the key, is past the width: such a saga
+     ends failed in one pass, with a failed rollback outcome and the store's
+     refusal in place of its cause. Under a key of 246 even a rollback that
+     succeeds cannot be recorded, because `$rollback:` and the key are 256
+     characters: the rollback runs once, its record is refused, and the saga
+     ends the same way.
+   - An await parked under a key past the width, which takes an event name
+     past 248, cannot record its wake, so its task fails for good when it
+     wakes.
+   - A longer idempotency key is no longer deduplicated, a longer checkpoint
+     name cannot be written again, and a wait on a longer event name can no
+     longer be woken by an emit.
+   - A task in a longer queue is out of the port's reach, because claim,
+     sweep, read, and cancel all refuse its queue, until its rows are renamed
+     in SQL. Nothing detects such rows: no invariant and no admin check reads
+     the length of a name.
+
+   Three things hold this. The `identifier-bound` conformance surface runs on
+   every dialect: a table typed by the port, so a method without an entry does
+   not compile, with a call for each place an identifier enters each method,
+   refused before anything is sent; the code point count; each derived name at
+   its last fitting length and one past it; and the longest names that fit,
+   stored and read back exactly as they were passed.
+   `packages/sdk/test/identifier-width.test.ts` runs on libSQL and PostgreSQL:
+   each SDK key one past its room fails its task on the first pass, and the
+   task and the saga in flight finish. Two cases in `legacy-rows.test.ts` hold
+   the readable row and the unreachable queue at the port.
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
@@ -2022,30 +2130,15 @@ realized in the store's compiler, executor, fragments, or schema:
   version table is a foreign database on the first read, as on every dialect.
 - **The schema.** An indexed string is `VARCHAR(255)` under
   `utf8mb4_0900_bin`, which is case, accent, and trailing-space exact. MySQL
-  cannot index unbounded text, so an identifier longer than 255 characters is
-  refused as an invalid durable string, where the other dialects hold it. The
-  store refuses it at every entry, before any statement is sent and whatever
-  the excess is, because MySQL refuses only some: excess that is trailing
-  spaces is cut with note 1265 in every `sql_mode`, and the cut value is a
-  different identifier. The executor also refuses any write that raised that
-  note, and its transaction rolls back. The bound also reaches the two names
-  the engine derives from an identifier, which are longer than it. A child
-  task id longer than 244 characters is refused, because its completion event
-  name, `$task-done:` and the id, must fit 255. A `ctx.spawn` replay key is
-  bounded by 255 less the rest of the stored child key, which is `$spawn:`,
-  the length of the parent task id, the id itself, and two colons: 208
-  characters under a 36-character parent id. The other dialects hold both.
-  Each refusal names what the caller passed, the child task id or the replay
-  key, and never the derived name. A registered saga step's key is bounded the
-  same way (§3.10). A step's checkpoints are named by a prefix and its key, and
-  the longest prefix is `$rollback-tries:`, 16 characters, so a key longer than
-  239 characters is refused on MySQL at the three entries that carry a saga
-  name: `setCheckpoint`, `suspendRun`, and `failRollback`. Every saga name is
-  held to that key and not only the one being written, because a step
-  registers under its shortest name, `$started:`. A key of 240 to 246
-  characters would start there, and the batch that fails its rollback could
-  never store the attempt record, so the saga could not count a failed
-  rollback. The other dialects hold any key.
+  cannot index unbounded text, and that is where the width of a durable
+  identifier comes from (rule 10). Core holds the width for every dialect, and
+  this store imports it for its columns and keeps no check of its own. What
+  stays here guards the column and not the contract: MySQL refuses most excess
+  with error 1406, which the executor reports as an invalid durable string and
+  not as an outage, and it cuts excess that is only trailing spaces with note
+  1265 in every `sql_mode`, where the cut value is a different identifier. The
+  executor refuses any write that raised that note, and its transaction rolls
+  back.
   Payloads, the claim token, and the statement stamp are `LONGTEXT`. There is
   no partial index: a unique index already holds NULL keys apart, and the hot
   indexes lead with the state after the queue, `tasks_cancel` included, because

@@ -6,6 +6,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  IDENTIFIER_CHARACTERS,
   InvalidDurableStringError,
   type LeaseEnd,
   MAX_COUNT,
@@ -14,6 +15,7 @@ import {
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
+  SAGA_STEP_KEY_CHARACTERS,
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SpawnOptions,
@@ -27,6 +29,7 @@ import {
   decodeRollbackTry,
   decodeTaskOutcome,
   encodeRollbackTry,
+  fitsCharacters,
   normalizeRetryStrategy,
   parseTaskValueJson,
   serializeTaskValue,
@@ -68,6 +71,23 @@ class EngineKey {
   static awaitTask(taskId: UserName): EngineKey {
     return new EngineKey(`$await-task:${taskId.value}`)
   }
+}
+
+/**
+ * Refuse, for good, a name whose durable key would pass the room it has. A durable
+ * identifier holds 255 characters (DESIGN.md §3.4 rule 10), and a task's names are stored
+ * under keys that are longer than they are: `name#2`, `$await:` and an event name. The
+ * store refuses such a key the same way on every pass, so an error that came back from
+ * it would be retried, and everything the task did before the call would run again, until
+ * the budget was gone. `what` is what the task passed, because the task never sees the key.
+ */
+function requireRoom(what: string, key: string, room: number): void {
+  if (fitsCharacters(key, room)) return
+  throw new FatalTaskError(
+    room === IDENTIFIER_CHARACTERS
+      ? `${what} is too long: it would be stored under a key longer than the ${IDENTIFIER_CHARACTERS} characters a durable identifier holds`
+      : `${what} is too long for a step that registers a rollback: its key would be longer than ${room} characters, which is what leaves room for the saga's own names in the ${IDENTIFIER_CHARACTERS} a durable identifier holds`,
+  )
 }
 
 /** What a rollback handler is handed (DESIGN.md §3.10). */
@@ -373,11 +393,30 @@ export class ReplayContext implements TaskContext {
    * matches by call ORDER within a name, which is stable as long as the
    * task's step sequence is deterministic (the contract user code signs).
    */
-  private storageName(name: UserName | EngineKey): string {
+  private storageName(
+    name: UserName | EngineKey,
+    what: string,
+    room: number = IDENTIFIER_CHARACTERS,
+  ): string {
     const raw = name.value
     const use = (taskMapGet(this.nameUses, raw) ?? 0) + 1
     taskMapSet(this.nameUses, raw, use)
-    return use === 1 ? raw : `${raw}#${use}`
+    const key = use === 1 ? raw : `${raw}#${use}`
+    // The width is held on the way in. A memoized key was admitted by whatever build
+    // stored it, and nothing is written under it again, so it replays: refusing it would
+    // fail a task in flight for good where it used to finish.
+    if (taskMapHas(this.seen, key)) return key
+    // A step that started and never persisted is stored too, as its start marker, but its
+    // body runs again and its result must then be written under the same key. It is
+    // excused the saga room, which its stored marker already passed, and is still held to
+    // the width: past it the write can never succeed, so running the body first would
+    // only repeat its side effect on every remaining attempt. Once the task is rolling
+    // back no body runs, and the key is only what the step's rollback registers under,
+    // so nothing is held there and the rollback the first body is owed still runs.
+    const started = taskMapHas(this.startIndexes, key)
+    if (started && this.#sagaCauseJson !== undefined) return key
+    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)
+    return key
   }
 
   /**
@@ -410,7 +449,12 @@ export class ReplayContext implements TaskContext {
     this.enterDurableOp(`ctx.step('${name}')`)
     // A registration that cannot be kept is refused here, for good, before the body runs.
     const registration = this.rollbackRegistration(name, opts)
-    const key = this.storageName(parsed)
+    // A step that registers a rollback also stores saga names built from its key.
+    const key = this.storageName(
+      parsed,
+      'step name',
+      registration === undefined ? IDENTIFIER_CHARACTERS : SAGA_STEP_KEY_CHARACTERS,
+    )
     // A memoized step re-registers its closure with what it returned, on every pass.
     if (registration !== undefined && taskMapHas(this.seen, key)) {
       this.register(key, name, registration, taskMapGet(this.seen, key))
@@ -683,6 +727,8 @@ export class ReplayContext implements TaskContext {
     // name could never be awaited, so emitting one is a permanent bug,
     // not a payload nobody can receive.
     const parsed = UserName.parse('event name', name)
+    // An emit stores the name itself and has no memo, so it is always on the way in.
+    requireRoom('event name', parsed.value, IDENTIFIER_CHARACTERS)
     // The payload is a user VALUE, and values cross the boundary here.
     const payload = userJsonValue('event payload', payloadJson)
     // A zombie whose lease was lost must not win a first-write event and
@@ -708,7 +754,7 @@ export class ReplayContext implements TaskContext {
     if (timeoutSeconds !== undefined) {
       userDurationToMs('awaitEvent timeoutSeconds', timeoutSeconds, { positive: true })
     }
-    const key = this.storageName(EngineKey.awaitEvent(parsed))
+    const key = this.storageName(EngineKey.awaitEvent(parsed), 'event name')
     const timedOut: TimedOut = () => new EventTimeoutError(name)
     const settled = await this.settledAwait(timedOut, key)
     if (settled !== undefined) return settled
@@ -736,7 +782,7 @@ export class ReplayContext implements TaskContext {
   async spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
     const parsed = UserName.parse('task name', taskName)
     this.enterDurableOp(`ctx.spawn('${taskName}')`)
-    const key = this.storageName(EngineKey.spawn(parsed))
+    const key = this.storageName(EngineKey.spawn(parsed), 'task name')
     if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))
     this.refuseForwardProgress()
     const paramsJson = serializeTaskValue('child task params', params)
@@ -784,7 +830,7 @@ export class ReplayContext implements TaskContext {
     if (timeout !== undefined) {
       userDurationToMs('awaitTask timeoutSeconds', timeout, { positive: true })
     }
-    const key = this.storageName(EngineKey.awaitTask(taskId))
+    const key = this.storageName(EngineKey.awaitTask(taskId), 'child task id')
     // The task sees the task it awaited, never the engine's name for the event.
     const timedOut: TimedOut = () => new TaskTimeoutError(taskId.value)
     try {
@@ -890,7 +936,7 @@ export class ReplayContext implements TaskContext {
    * sleep is over. No clock is consulted anywhere.
    */
   private async suspendPoint(kind: EngineKey, wake: WakeSpec): Promise<void> {
-    const key = this.storageName(kind)
+    const key = this.storageName(kind, 'sleep')
     if (taskMapHas(this.seen, key)) return // the wake already happened: continue
     this.refuseForwardProgress()
     this.#controls.sleep(wake, {

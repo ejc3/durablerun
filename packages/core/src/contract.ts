@@ -224,3 +224,13 @@ export const PRESERVED_FENCE_INSTANTS = {
  * that indexes the constant by table names its key with this.
  */
 export type PreservedFenceTable = keyof typeof PRESERVED_FENCE_INSTANTS
+
+/**
+ * The characters a durable identifier holds, counted in Unicode code points. It bounds a
+ * queue, a task, run or driver id, an idempotency key, an event, step or checkpoint
+ * name, and every name the engine derives from one of them. MySQL cannot index unbounded
+ * text and this is the widest string it indexes under utf8mb4, so the narrowest dialect
+ * sets the width for all of them, and the same name is refused everywhere
+ * (DESIGN.md §3.4).
+ */
+export const IDENTIFIER_CHARACTERS = 255

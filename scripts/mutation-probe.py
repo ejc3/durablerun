@@ -7265,13 +7265,6 @@ MUTATION_SPECS.extend(
             "an application's own pool connects with FOUND_ROWS, and a compare-and-set that lost reads as one that won",
         ),
         (
-            "mysql-identifier-past-the-width-refused-in-the-store",
-            "packages/store-mysql/src/store.ts",
-            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > IDENTIFIER_CHARACTERS\n",
-            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > Number.MAX_SAFE_INTEGER // MUTATION\n",
-            "a name with trailing spaces past the indexed width reaches MySQL, which cuts it to a different name",
-        ),
-        (
             "mysql-write-cut-to-fit-is-refused",
             "packages/store-mysql/src/executor.ts",
             "  if (cut !== undefined) {\n",
@@ -7298,13 +7291,6 @@ MUTATION_SPECS.extend(
             "            mode === 'write' &&\n",
             "            mode === 'read' && // MUTATION\n",
             "a write batch InnoDB rolled back as a deadlock victim is reported as an outage, and a finished run is left for the sweep to charge an infrastructure retry",
-        ),
-        (
-            "mysql-saga-step-key-bound",
-            "packages/store-mysql/src/store.ts",
-            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > SAGA_STEP_KEY_CHARACTERS) {\n",
-            "  if (key.length > SAGA_STEP_KEY_CHARACTERS && [...key].length > Number.MAX_SAFE_INTEGER) { // MUTATION\n",
-            "a step whose key fits only its shortest saga name starts on MySQL, and the batch that fails its rollback can never store the attempt record",
         ),
     )
 )
@@ -11268,12 +11254,6 @@ VERDICTS.update(
             "MysqlExecutor transactions refuses a pool that connects with FOUND_ROWS, or whose flags it cannot read",
             "mutation-verdict:construction:mysql-foreign-pool-found-rows-refused",
         ),
-        "mysql-identifier-past-the-width-refused-in-the-store": ExpectedVerdict(
-            "construction",
-            "packages/store-mysql/test/identifier-bound.test.ts",
-            "refuses an identifier past 255 characters at every entry, before anything is sent",
-            "mutation-verdict:construction:mysql-identifier-past-the-width-refused-in-the-store",
-        ),
         "mysql-write-cut-to-fit-is-refused": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/real-server.test.ts",
@@ -11297,12 +11277,6 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock runs a write batch again after a deadlock, under the named lock it already holds",
             "mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again",
-        ),
-        "mysql-saga-step-key-bound": ExpectedVerdict(
-            "construction",
-            "packages/store-mysql/test/identifier-bound.test.ts",
-            "holds a saga step key to the width less the longest saga prefix, at every entry that carries one",
-            "mutation-verdict:construction:mysql-saga-step-key-bound",
         ),
     }
 )
@@ -12868,6 +12842,197 @@ for _verdict, _names in (
 ):
     for _name in _names:
         VERDICTS[_name] = _verdict
+
+# The width of a durable identifier (DESIGN.md S3.4 rule 10). Core holds it for every
+# dialect, so each mutation breaks core and its verdict is the shared conformance surface.
+MUTATION_SPECS.extend(
+    (
+        (
+            "identifier-past-the-width-refused",
+            "packages/core/src/validate.ts",
+            "    if (typeof value === 'string' && !fitsCharacters(value, IDENTIFIER_CHARACTERS)) {\n",
+            "    if (typeof value === 'string' && !fitsCharacters(value, Number.MAX_SAFE_INTEGER)) { // MUTATION\n",
+            "a name past 255 characters is stored by two dialects and refused or cut to a different name by the third",
+        ),
+        (
+            "identifier-width-counts-code-points",
+            "packages/core/src/validate.ts",
+            "    characters--\n",
+            "    // MUTATION: a surrogate pair counts as two characters\n",
+            "the width is counted in UTF-16 units, so a name of 128 to 255 characters outside the basic plane, which every dialect can store, is refused",
+        ),
+        (
+            "saga-step-key-held-to-the-longest-prefix",
+            "packages/core/src/sagas.ts",
+            "  if (!fitsCharacters(name, SAGA_STARTED_PREFIX.length + SAGA_STEP_KEY_CHARACTERS)) {\n",
+            "  if (!fitsCharacters(name, IDENTIFIER_CHARACTERS)) { // MUTATION\n",
+            "a step whose key fits only its shortest saga name starts, and the batch that fails its rollback can never store the attempt record",
+        ),
+        (
+            "awaited-child-event-name-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childTaskId, as the name of its completion event,': name,\n",
+            "      // MUTATION: only the id is held\n",
+            "a child id of 245 to 255 characters is awaited under a completion event name no dialect may hold",
+        ),
+        (
+            "stored-child-key-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.replayKey, as the stored child key, which also holds the parent task id,': childKey,\n",
+            "      // MUTATION: the stored key is not held\n",
+            "a replay key that fits on its own is stored inside a child key past the width, which one dialect cannot index",
+        ),
+        (
+            "parent-queue-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.parentQueue': childOf.parentQueue,\n",
+            "      // MUTATION: the parent's queue is not held\n",
+            "a child spawn is accepted with a parent queue past the width, so an identifier is refused at every entry of the port but this one",
+        ),
+        (
+            "parent-run-id-held-to-the-width",
+            "packages/core/src/child-tasks.ts",
+            "      'childOf.runId': childOf.runId,\n",
+            "      // MUTATION: the parent's run id is not held\n",
+            "a child spawn is accepted with a parent run id past the width, so an identifier is refused at every entry of the port but this one",
+        ),
+        (
+            "sdk-durable-key-held-before-the-body-runs",
+            "packages/sdk/src/context.ts",
+            "    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "    requireRoom(what, key, started ? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER) // MUTATION: no key is held\n",
+            "a name that fits is stored under a key that does not, every store refuses it on every pass, and the step's body runs again on each retry until the budget is gone",
+        ),
+        (
+            "sdk-key-already-stored-is-not-held",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return key\n",
+            "    // MUTATION: a memoized key is held like any other\n",
+            "a task in flight whose step name was stored before the rule fails for good where it used to finish",
+        ),
+        (
+            "sdk-emitted-event-name-held",
+            "packages/sdk/src/context.ts",
+            "    requireRoom('event name', parsed.value, IDENTIFIER_CHARACTERS)\n",
+            "    // MUTATION: an emitted name is not held\n",
+            "an emit of a name past the width is refused by the store on every pass, and the task is retried until its budget is gone",
+        ),
+        (
+            "sdk-started-key-held-to-the-width",
+            "packages/sdk/src/context.ts",
+            "    if (started && this.#sagaCauseJson !== undefined) return key\n",
+            "    if (started) return key // MUTATION\n",
+            "a step that started under an older build and never persisted, under a stored key past the width, runs its body again on every remaining attempt before a write that can never succeed",
+        ),
+        (
+            "driver-identifiers-held-at-construction",
+            "packages/driver/src/loop.ts",
+            "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
+            "    // MUTATION: not held at construction\n",
+            "a driver configured with a queue or an id past the width runs forever and does nothing: every tick reads as an outage and every registry beat is swallowed",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses an identifier past 255 characters at every entry of the port, before anything is sent",
+            "mutation-verdict:behavior:identifier-past-the-width-refused-at-every-entry",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "identifier-past-the-width-refused",
+            "parent-queue-held-to-the-width",
+            "parent-run-id-held-to-the-width",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] counts characters as code points, so 200 characters outside the basic plane fit at every entry",
+            "mutation-verdict:behavior:identifier-width-counts-code-points",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "identifier-width-counts-code-points",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] holds the names the engine derives from an identifier to the same width, and names what the caller passed",
+            "mutation-verdict:behavior:derived-names-held-to-the-identifier-width",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "saga-step-key-held-to-the-longest-prefix",
+            "awaited-child-event-name-held-to-the-width",
+            "stored-child-key-held-to-the-width",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] fails a task for good on its first pass when a repeated step name leaves its second key past the width, and never runs the second body",
+            "mutation-verdict:behavior:sdk-holds-the-durable-key-before-the-body-runs",
+        ),
+        (
+            "sdk-durable-key-held-before-the-body-runs",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] still finishes a task in flight whose step name was stored before the rule and is longer than the width",
+            "mutation-verdict:behavior:sdk-replays-a-key-already-stored",
+        ),
+        (
+            "sdk-key-already-stored-is-not-held",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] fails a task for good on its first pass when it emits an event name past the width",
+            "mutation-verdict:behavior:sdk-holds-an-emitted-event-name",
+        ),
+        (
+            "sdk-emitted-event-name-held",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/identifier-width.test.ts",
+            "the width of a durable identifier, through the SDK [libsql] does not run the body again when a step that started before the rule and never persisted has a stored key past the width, and still completes one whose stored key fits",
+            "mutation-verdict:behavior:sdk-started-key-held-to-the-width",
+        ),
+        (
+            "sdk-started-key-held-to-the-width",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/driver/test/loop.test.ts",
+            "DriverLoop review regressions degenerate knobs are refused at construction",
+            "mutation-verdict:construction:driver-holds-its-identifiers-at-construction",
+        ),
+        (
+            "driver-identifiers-held-at-construction",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
@@ -14460,6 +14625,18 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "saga-halt-says-where-the-replay-ended": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-durable-key-held-before-the-body-runs": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-key-already-stored-is-not-held": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-emitted-event-name-held": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "sdk-started-key-held-to-the-width": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "legacy-wait-step-backfill": (
@@ -16748,7 +16925,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 861:
+        if len(MUTATIONS) != 871:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

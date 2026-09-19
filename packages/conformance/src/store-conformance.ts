@@ -9,6 +9,7 @@ import {
   runFaultMatrixCase,
 } from './fault-matrix.js'
 import type { StoreFixtureFactory } from './fixture.js'
+import { identifierBoundConformance } from './identifier-bound.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
 import {
   POISON_AGGREGATE_WITNESSES,
@@ -1250,5 +1251,6 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'wake-witness', run: wakeWitnessConformance },
   { id: 'child-tasks', run: childTaskConformance },
   { id: 'sagas', run: sagaConformance },
+  { id: 'identifier-bound', run: identifierBoundConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

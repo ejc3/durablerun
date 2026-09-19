@@ -1,13 +1,16 @@
+import { IDENTIFIER_CHARACTERS } from './contract.js'
+import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlRow } from './primitives.js'
 import type { SqlFragment } from './sql-tree.js'
 import type { RollbackOutcome } from './types.js'
-import { parseTaskValueJson, serializeTaskValue } from './validate.js'
+import { fitsCharacters, parseTaskValueJson, serializeTaskValue } from './validate.js'
 
 const {
   NumberIsSafeInteger: isSafeInteger,
   RangeError: TrustedRangeError,
   StringFrom: stringFrom,
+  StringStartsWith: startsWith,
 } = TASK_INTRINSICS
 
 /*
@@ -37,6 +40,36 @@ export const SAGA_PHASE_CHECKPOINT = '$rolling-back'
 export const SAGA_STARTED_PREFIX = '$started:'
 export const SAGA_ROLLBACK_PREFIX = '$rollback:'
 export const SAGA_TRIES_PREFIX = '$rollback-tries:'
+
+/**
+ * The characters a registered step's key may have: the width of an identifier less the
+ * longest name a saga builds from it, `$rollback-tries:` and the key, which leaves 239.
+ */
+export const SAGA_STEP_KEY_CHARACTERS =
+  IDENTIFIER_CHARACTERS -
+  Math.max(SAGA_STARTED_PREFIX.length, SAGA_ROLLBACK_PREFIX.length, SAGA_TRIES_PREFIX.length)
+
+/**
+ * Refuse to start a step whose key leaves no room for its other saga names. A step's way
+ * in is its start marker, `$started:` and the key, which is the shortest of its saga
+ * names. Held only to the width, a key of 240 to 246 characters would start, and the
+ * batch that fails its rollback could never store the attempt record under
+ * `$rollback-tries:` and the same key. So the start marker is held to the key the longest
+ * name allows, at each entry that carries a checkpoint name, and the refusal names what
+ * the caller passed. A step's other saga names are not held to the key: a step that
+ * started under this rule has room for them, and one that started before it, on a
+ * dialect that stored a longer key, must still be able to record that its rollback ran.
+ * Those names are held to the plain width, like any checkpoint name.
+ */
+export function requireSagaStepFits(what: string, name: unknown): void {
+  if (typeof name !== 'string' || !startsWith(name, SAGA_STARTED_PREFIX)) return
+  // The prefix is ASCII, so the key fits when the whole name fits the key and its prefix.
+  if (!fitsCharacters(name, SAGA_STARTED_PREFIX.length + SAGA_STEP_KEY_CHARACTERS)) {
+    throw new InvalidDurableStringError(
+      `${what} starts a saga step whose key is longer than ${SAGA_STEP_KEY_CHARACTERS} characters: a durable identifier holds ${IDENTIFIER_CHARACTERS}, and '${SAGA_TRIES_PREFIX}' and the key must fit`,
+    )
+  }
+}
 
 /** One failed attempt of a rollback, as `$rollback-tries:<step>` holds it. */
 export interface RollbackTry {

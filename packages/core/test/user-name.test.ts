@@ -56,4 +56,10 @@ describe('UserName.parse rejects non-round-tripping names', () => {
     expect(UserName.parse('event name', 'näme').value).toBe('näme')
     expect(UserName.parse('event name', '📦').value).toBe('📦')
   })
+
+  it('does not hold a name to the width of a durable identifier, because a name already stored has to replay', () => {
+    // The SDK holds the key a name is stored under, where it builds it and after the memo
+    // lookup. A parse that refused by length would fail a task in flight for good.
+    expect(UserName.parse('step name', 'x'.repeat(300)).value).toHaveLength(300)
+  })
 })

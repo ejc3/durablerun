@@ -1554,6 +1554,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
+  - Deferred from `postmortems/pr4.5-identifier-width-review.md`: a name-length
+    axis for the replay-equivalence harness. It draws every name from a list of
+    six, the longest six characters, so no generated program builds a key near
+    the 255 character width of a durable identifier, and a refusal the store
+    gives by a name's length is met by no generated SDK program. The axis is,
+    for every keyed call the harness generates, a name at its room, one under,
+    and one past.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
@@ -1865,12 +1872,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `DURABLERUN_CONFORMANCE_DIALECTS` narrows a run to the servers it has,
   failing on an unknown or empty list, which
   `packages/conformance/bin/dialect-conformance.sh` checks again from the
-  reporter's record. Open: (1) MySQL bounds an indexed
-  identifier at 255 characters and the other dialects do not, so the same long
-  queue or event name is accepted there and refused here as an invalid durable
-  string. Making the engine identical means a length rule in core's
-  `requireDurableString`, which changes the other dialects' contract and is
-  the maintainer's call. (2) The stored-JSON guards cannot refuse a repeated
+  reporter's record. Open: (1) Closed by PR4.5. MySQL bounded an indexed
+  identifier at 255 characters and the other dialects did not, so the same long
+  queue or event name was accepted there and refused here. The width is now a
+  rule of core that every dialect holds. (2) The stored-JSON guards cannot refuse a repeated
   key on MySQL. The guard and the decoder read the same member, so nothing is
   decoded that was not checked. (3) A claim leg can lock up to the limit in
   runs the merged order leaves out, which other claimers skip until that claim
@@ -1887,9 +1892,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   The review
   of this PR found eleven defects, eight of them in behaviour and one of them
   introduced by a fix, recorded in
-  `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an
-  identifier past 255 characters itself, whatever the excess is, because MySQL
-  cuts trailing spaces past the width where it refuses any other excess.
+  `postmortems/pr4.3-store-mysql-review.md`. Since it, an identifier past 255
+  characters is refused before any statement is sent, whatever the excess is,
+  because MySQL cuts trailing spaces past the width where it refuses any other
+  excess. PR4.5 moved that refusal into core.
   - **Discharged from PR3.12:** MySQL commits each DDL statement on its own,
     so a `meta` table without its version row would be an ordinary state
     during every cold start, and isolation alone cannot hide it. The adapter
@@ -1930,6 +1936,55 @@ these three things; nothing else in the system does I/O, time, or randomness.
     found a transition no concurrent case reached, and each added a case for
     that one transition, so the class is expected again until the surface is
     generated.
+
+- **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
+  item of PR4.3: the engine behaves identically on every dialect, so the 255
+  character width that only MySQL enforced is a rule of core (DESIGN.md §3.4
+  rule 10). `IDENTIFIER_CHARACTERS` and `requireIdentifiersFit` live in core,
+  counted in Unicode code points. Every entry of all three stores calls it
+  first, the stored child key is held inside `spawnIdempotencyKey`, an awaited
+  child id through `EventName.awaitedTaskDone`, and a saga step key, where the
+  step starts, through core's `requireSagaStepFits`. The MySQL store's own
+  `requireIndexable`, `requireSagaStepFits`, and width constant are deleted,
+  and its schema imports the width. The executor's refusal of error 1406 and
+  of a cut write stays, because it guards the column. The SDK holds each key
+  it builds (`name#<count>`, `$await:`, `$await-task:`, `$spawn:`, and a
+  registered step's saga key) where it builds it and after the memo lookup, so
+  a key past its room fails the task for good before the body runs, and a key
+  that is already stored still replays. A driver holds its queue and its id
+  when it is constructed. The MySQL-only unit test became the shared
+  `identifier-bound` conformance surface, which libSQL and PostgreSQL failed
+  before the fix. Rows written before the rule are left alone, and what that
+  means, including what still breaks, is in rule 10.
+  - The review found one root with three faces, recorded in
+    `postmortems/pr4.5-identifier-width-review.md`. The first version held the
+    width in the SDK's name parser, which runs ahead of the memo lookup, so a
+    task in flight under a stored longer name failed for good. It left the
+    SDK's derived keys to the store's refusal, which the SDK retries, so a
+    step body could run on every attempt. And the store held every saga name
+    to the step key, so a saga in flight under a longer key could not record
+    that its rollback ran and lost its cause. One narrow re-review of the fold
+    found a ninth defect, which the fold had made: a step that had started and
+    never persisted was excused the width along with a memo, so under a longer
+    stored key its body ran again on every remaining attempt.
+  - The conformance fixture for MySQL hashed the seed into its id namespace and
+    the other two spelled it out in hexadecimal. The hashing cannot go. Measured:
+    spelled out, 12 of the 50 poison target cases mint ids of 258 to 276
+    characters and 19 leave no room for a completion event name, while the
+    longest fault matrix id is 201. Those ids are minted inside the store for a
+    successor run and stored, and no case passes one back: across the 50 cases
+    on libSQL the rule refused nothing, and the longest string through the port
+    was 12 characters. A poison case also throws unless its label crossed the
+    executor and changed durable state, so a refusal at the entry could not pass
+    for containment. The three fixtures now share one namespace
+    (`fixture-id-namespace.ts`): spelled out when the ids leave 64 characters of
+    room in the width, hashed when they would not, so no fixture mints an id the
+    contract says cannot exist.
+  - An option, not built: a check that finds rows whose names pass the width,
+    a stranded queue above all. The invariant library derives and pins its
+    inventory of conditions, so a width probe there is a new family of
+    conditions with its own enrollment, and no database anyone has observed
+    holds such a row.
 
 ## Phase 5 — operations + sharding
 

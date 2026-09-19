@@ -2,6 +2,7 @@ import { LibsqlExecutor, LibsqlSchedulerStore, MIGRATIONS } from '@durablerun/st
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
+import { refusalName } from '../src/scenario.js'
 
 /**
  * Rows an OLDER SCHEMA VERSION wrote.
@@ -298,5 +299,107 @@ describe('ambiguous legacy wait registrations', () => {
     )
     expect(Number(waits?.rows[0]?.n)).toBe(1)
     await f.close()
+  })
+})
+
+/**
+ * Names an older build stored before an identifier had a width.
+ *
+ * The width is held on the way in, at every entry of the port, so nothing rewrites a row
+ * that already holds a longer name. Only libSQL and PostgreSQL can hold one: MySQL never
+ * could. What that means differs by where the name is passed again. A name the engine
+ * only hands back stays readable and its task finishes. A name a caller must pass to
+ * reach the row, a queue above all, is refused like any other, so the row is out of the
+ * port's reach until it is renamed in SQL. DESIGN.md states both, and this holds both.
+ */
+describe('names stored before an identifier had a width', () => {
+  const LONG = 300
+
+  it('hands a longer stored name back, and the task still finishes', async () => {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'key' })
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('expected a claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await f.store.setCheckpoint(Q, spawned.taskId, run.runId, run.claimToken, 'step', '1', 60)
+      const longKey = 'i'.repeat(LONG)
+      const longStep = 'p'.repeat(LONG)
+      await f.raw.batch('legacy-long-names', [
+        {
+          sql: 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?',
+          args: [longKey, spawned.taskId],
+        },
+        {
+          sql: 'UPDATE checkpoints SET checkpoint_name = ? WHERE task_id = ?',
+          args: [longStep, spawned.taskId],
+        },
+      ])
+
+      const read = await f.store.getCheckpoints(Q, spawned.taskId, run.attempt)
+      const respawn = await refusalName(f.store.spawn(Q, 'job', '{}', { idempotencyKey: longKey }))
+      const rewrite = await refusalName(
+        f.store.setCheckpoint(Q, spawned.taskId, run.runId, run.claimToken, longStep, '2', 60),
+      )
+      await f.store.complete(Q, run.runId, run.claimToken, '"done"')
+      expect({
+        read: read.map((checkpoint) => [checkpoint.checkpointName, checkpoint.stateJson]),
+        respawn,
+        rewrite,
+        result: await f.store.getTaskResult(Q, spawned.taskId),
+        violations: await engineInvariantViolations(f.raw),
+      }).toEqual({
+        read: [[longStep, '1']],
+        // The key is no longer deduplicated, because it can no longer be passed.
+        respawn: 'InvalidDurableStringError',
+        rewrite: 'InvalidDurableStringError',
+        result: { state: 'completed', completedPayloadJson: '"done"' },
+        violations: [],
+      })
+    } finally {
+      await f.close()
+    }
+  })
+
+  it('cannot reach a task in a longer stored queue, and leaves its rows as they were', async () => {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const longQueue = 'q'.repeat(LONG)
+      await f.raw.batch('legacy-long-queue', [
+        { sql: 'UPDATE tasks SET queue = ? WHERE task_id = ?', args: [longQueue, spawned.taskId] },
+        { sql: 'UPDATE runs SET queue = ? WHERE task_id = ?', args: [longQueue, spawned.taskId] },
+      ])
+      const reached = {
+        claim: await refusalName(f.store.claim(longQueue, 'w1', { leaseSeconds: 60, limit: 1 })),
+        sweep: await refusalName(f.store.sweep(longQueue, 10)),
+        getTaskResult: await refusalName(f.store.getTaskResult(longQueue, spawned.taskId)),
+        cancelTask: await refusalName(f.store.cancelTask(longQueue, spawned.taskId)),
+      }
+      const [rows] = await f.raw.batch(
+        'legacy-long-queue-read',
+        [
+          {
+            sql: 'SELECT state, length(queue) AS width FROM tasks WHERE task_id = ?',
+            args: [spawned.taskId],
+          },
+        ],
+        'read',
+      )
+      expect({
+        reached,
+        row: rows?.rows.map((row) => [String(row.state), Number(row.width)]),
+      }).toEqual({
+        reached: {
+          claim: 'InvalidDurableStringError',
+          sweep: 'InvalidDurableStringError',
+          getTaskResult: 'InvalidDurableStringError',
+          cancelTask: 'InvalidDurableStringError',
+        },
+        row: [['pending', LONG]],
+      })
+    } finally {
+      await f.close()
+    }
   })
 })
