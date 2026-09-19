@@ -93,10 +93,11 @@ a last docs PR gives a live owner to every open bullet that is left.
    generated from `SchedulerStore` and `StoreAdmin` and green on all three
    dialects, which was red in 10 runs of 10 on MySQL with the heartbeat's fix
    reverted and saw PR #50's defect in none of 800 rounds with that fix
-   reverted. Each server executor's count is held at zero in the surface, the
-   six real-concurrency cases, the seeded scenarios, and the lock-order test,
-   the surface costs 1.8 s on libSQL, 6.6 s on PostgreSQL and 6.0 s on MySQL,
-   and three times `verify`'s slowest run with it is 5,352 of 5,400 seconds.
+   reverted. Each server executor's count is held at zero in the surface, in
+   four real-concurrency cases whose callers overlap on open connections, and
+   in the lock-order test. The surface costs 1.8 s on libSQL, 6.6 s on
+   PostgreSQL and 6.0 s on MySQL, and three times a recorded 1,767 s plus a
+   projected 21 s is 5,364 of `verify`'s 5,400 seconds.
 5. PR4.4b: a migration write carries the migration lock in `SqlBatchControl` as
    a lock coordinate, and the MySQL executor refuses a migration write that
    comes without it, so a new `migrate:` label cannot run DDL unlocked the way
@@ -2085,28 +2086,38 @@ these three things; nothing else in the system does I/O, time, or randomness.
     against copies of itself. PR #50 and PR4.3 had each found a transition no
     concurrent case reached, and each added a case for that one transition.
     The contests come from two tables typed by `SchedulerStore` and
-    `StoreAdmin`, `migrate()` included, so a port method without an entry does
-    not compile: 37 contests. Each arranges a state in which its call is
-    legal, runs four copies one at a time and then four at once, from the same
-    state on two fixtures of one seed with a connection opened for each copy
-    first, and holds that the race answered what the serial order answered,
-    wrote the rows it wrote, violated no invariant, and met no outage. A claim
+    `StoreAdmin`, `migrate()` included, so a port method without an entry, or
+    with an entry that holds no state, does not compile: 37 contests. Each
+    arranges a state in which its call is legal, runs four copies one at a
+    time and then four at once, from the same state on two fixtures of one
+    seed with a connection opened for each copy before the race, and holds
+    that the race answered what this build's own serial order answered, wrote
+    the rows it wrote, violated no invariant, and met no outage. That serial
+    order is the only oracle, so an answer that is wrong in both orders
+    passes. A contest in which no copy answers anything and nothing the store
+    holds changes fails, and that floor reads the six tables, the schema
+    version and the engine's clock, because nine calls answer nothing. A claim
     may come back short of what is due, so the claimers' contest holds that no
     run is claimed twice and that one more claimer can take what the others
     did not, and not how the runs were split. The property held is each call
     beside ITSELF. Pairs of different calls, which is what both PostgreSQL
     lock-order inversions were, stay with `postgres-lock-order.test.ts`, the
     fuzz and the fault matrix. On libSQL two calls interleave only between
-    batches: in 24 of the 37 contests every copy sends one batch and no race
-    is possible there, in 10 the only second batch is a loser's read of why it
+    batches: in 24 of the 37 contests every copy sends one batch, so no race
+    is possible there and those can fail only on an invariant, an outage or
+    the idle floor, in 10 the only second batch is a loser's read of why it
     was refused, and in three a writer sends several (`sweep`, `awaitTaskDone`
     of a child that has not ended, `migrate`). Test time on a shared machine,
     three runs each: 1.8 s on libSQL, 6.6 s on PostgreSQL, 6.0 s on MySQL,
-    about half of it the two fixtures each contest migrates. At twice that on
-    the slowest CI runner it adds about 17 s to `verify`, and the PR3.13
-    entry's rule still holds for its 90 minute limit: three times 1,784 s is
-    5,352 s. It adds about 12 s to `conformance-mysql`, whose limit is 30
-    minutes. Reading the five results after a race at once was measured and
+    about half of it the two fixtures each contest migrates. At a load average
+    of 45 to 58, four runs each: 1.8, 8.5 and 7.1 s, the same before and after
+    the review's fold, in pairs run one after the other. CI's `verify` took
+    1,482 s and `conformance-mysql` 619 s on this work's first head, with the
+    surface in both. For the PR3.13 entry's rule on `verify`'s 90 minute limit
+    the figure is a recorded 1,767 s plus a projected 21 s, twice the larger
+    local figure of the libSQL and PostgreSQL legs: three times 1,788 s is
+    5,364 s of 5,400. `conformance-mysql`'s limit is 30 minutes. Reading the
+    five results after a race at once was measured and
     not taken: 6.8 to 7.2 s on PostgreSQL against 6.6, and no change on MySQL.
     It fails when PR4.3's heartbeat fix is reverted: with the scanning
     `DELETE` back, "driverHeartbeat of distinct drivers of one queue" was red
@@ -2125,17 +2136,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
     surface cannot.
   - PR4.4c, DONE, with the surface. Each executor that runs a deadlock victim
     again counts the victims it meets, a fixture reads the count, and it is
-    held at zero where real callers race, on PostgreSQL and on MySQL alike
-    apart from the one MySQL contest below: the surface, the six cases of the
-    shared suite that race real callers, every seeded scenario of the
-    scheduler suite, and the PostgreSQL lock-order test, which had read the
-    database's own counter, shared by every test worker. Measured first: no
-    fixture of the whole conformance suite met a victim on either server, in
-    one run of 4311 fixtures on each, and none did in 20 runs of the six cases
-    on each. The fuzz is not claimed: its walk is one caller on libSQL, so a
-    hold there could not fail. Two mutations hold the two counts, and three
+    held at zero where a hold can fail, on PostgreSQL and on MySQL alike apart
+    from the one MySQL contest below: the surface, four cases of the shared
+    suite whose callers overlap on open connections (an await beside its
+    emit, the beats of distinct drivers, one claim token sent sixteen times,
+    a child's await beside every terminal batch), and the PostgreSQL
+    lock-order test, which had read the database's own counter, shared by
+    every test worker. It is not held where it could not fail: the seeded
+    scenarios run through the simulator one batch at a time, the native claim
+    case and the eight-migrator case open their connections inside their race,
+    and the fuzz walk is one caller on libSQL. Measured first: no fixture of
+    the whole conformance suite met a victim on either server, in one run of
+    4311 fixtures on each, and none did in 20 runs of six real-concurrency
+    cases on each. Two mutations hold the two counts, and three
     older ones were re-aimed at the one function that now says what a victim
     is: 875.
+  - An option, not built: hold each contest's winners against the contract.
+    The surface's one oracle is this build's own serial order, so an answer
+    that is wrong in both orders passes. The red is ready: with libSQL's
+    `cancelTask` made to answer true every time, "cancelTask of a task with a
+    running run" stays green, where the contract has one true and three false.
+    It would give each of the 37 entries an expectation written by hand, which
+    the scheduler suite's own cases hold today one call at a time.
   - Deferred to PR4.4e, found by PR4.4c's surface before any review: concurrent
     claims deadlock on MySQL while `runs` holds five rows or fewer. Measured on
     MySQL 8.4: up to five rows the claim's `UPDATE runs ... WHERE run_id IN
@@ -2147,7 +2169,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the run its locking leg chose, so two claimers wait on each other, which
     InnoDB's deadlock report shows. With four claimers at limit 1 over four
     due runs, 20 runs of 20 came back short, one run claimed of four, and 17
-    of the 20 met victims, three each. PostgreSQL and libSQL were clean in 20
+    of the 20 met victims: one run met one, two met two, and fourteen met
+    three. In 300 more rounds, run by a review, 61 met none, 36 one, 30 two
+    and 173 three, none met more, and none met an outage. PostgreSQL and
+    libSQL were clean in 20
     of 20, and so was every other MySQL contest. The older native claim case
     never met it: it has eight rows, and it opens its connections inside the
     race, which puts the claims one after another. No run is claimed twice or
@@ -2157,9 +2182,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     candidate subquery, which core's rule against a comment in a SQL fragment
     refuses today. PR4.4e fixes the class, every keyed `UPDATE` or `DELETE`
     whose keys come from a subquery over a small table, with a deterministic
-    lock-count test, and deletes the one entry of `selfRaceDeadlocksExcused`
-    in the MySQL fixture, which until then excuses that contest's victim count
-    and nothing else. One probe of different calls, and of one call on
+    lock-count test, and deletes the entry of `selfRaceDeadlocksExcused` in
+    the MySQL fixture, that member of `StoreFixture`, and the special case
+    that reads it in the surface's final expectation. Until then the entry
+    excuses that contest's victim count, up to eight, which is four copies
+    times the two attempts a copy can lose without an outage, and nothing
+    else. If `conformance-mysql` ever fails on that contest with `outages`
+    that is not empty, a claimer was the victim on all three of its attempts,
+    and that is this defect. One probe of different calls, and of one call on
     different targets, over tables of two or three rows met no victim on
     either server, in 13 pairs of 10 rounds each.
 
