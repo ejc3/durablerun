@@ -75,7 +75,12 @@ a last docs PR gives a live owner to every open bullet that is left.
    the server still refuses a write sent as a read. The counts are pinned
    against a real server on both dialects. The claim's
    `FORCE INDEX (runs_poll)` legs have a plan test, with rows in the table,
-   that fails when the hint is removed from a leg.
+   that fails when the hint is removed from a leg. This is met. PR4.4a sends
+   such a batch alone in both server executors, `round-trips.test.ts` in
+   each store pins the counts against a server, and a server case on each
+   dialect holds the refusal. The plan case over a small backlog in
+   `store-mysql/test/query-plans.test.ts` fails with the hint removed, which
+   a registered mutation keeps checking.
 3. PR3.3b: the lines that take the event lock leave the dialect stores. Core
    takes it, refuses a batch that adds a completion event without it where that
    batch is built, and decides once whether a batch that ends no task needs it.
