@@ -25,6 +25,14 @@ export const SCHEMA_VERSION_READ_SQL =
 // volatile default, TRUNCATE) as empty to a snapshot older than the rewrite. Creating an
 // empty table and adding a nullable column are safe. The meta table is the one created
 // with a required row, which is why its version read is READ COMMITTED (executor.ts).
+//
+// A version that does long work on more than one table takes every lock it needs in its
+// first statement. `migrate()` runs a version as one transaction. A version that takes a
+// table's lock only after its work on the tables before it deadlocks with a live
+// transaction that holds the later table while it waits for an earlier one, and once that
+// work outlasts the deadlock timeout the migration is the transaction PostgreSQL aborts,
+// with its work done. With the locks first it can only be aborted before it has done
+// anything, and the executor runs it again.
 export const MIGRATIONS: readonly PostgresMigration[] = [
   {
     version: 1,
@@ -195,13 +203,8 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     // compares bytes. The stored bytes do not change, so no table is rewritten, which the
     // rule above forbids: PostgreSQL rebuilds each index that holds a changed column and
     // nothing else, and the collation test holds both. The first statement takes every
-    // lock the rest need before any index is built. Without it the version takes each
-    // table's lock only after it has rebuilt the tables before it, and a live transaction
-    // that holds a later table while it waits for an earlier one deadlocks with a
-    // migration that has indexes built. Once a table's rebuild outlasts the deadlock
-    // timeout, the migration is the transaction PostgreSQL aborts, and it lost every
-    // attempt that way. With the locks first it can only be aborted before it has built
-    // anything, and the executor runs it again.
+    // lock, by the rule above. Measured under live traffic with four million rows a
+    // table, this version without it lost all three of the executor's attempts, every time.
     version: 7,
     statements: [
       `LOCK TABLE meta, tasks, runs, checkpoints, events, waits, event_locks, drivers
