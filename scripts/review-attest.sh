@@ -464,19 +464,27 @@ check_postmortem_tables() {
 # `commit -1 ID SECTION` is a backticked id of 7 to 40 hex digits anywhere in
 # the document. The rest comes from where the template puts commits: the lines
 # of its Evidence section that carry a `<hash>` slot, the red tests' first and
-# the fixes' second. A postmortem's bullet belongs with a template line when it
-# begins with the same word, so "- Fixes, one commit for each finding:" is a
-# fixes line, a second round gets a line of its own, and a template that
-# renames a line renames what is asked for. No label is spelled in this script.
-# A bullet runs until the next one, and its wrapped lines are joined first.
-# `label N WORD LABEL` is the template's Nth such line, `line N` a bullet that
-# belongs with it, and `commit N ID WORD` an id on one, after the word WORD.
+# the fixes' second. A label is the first word of such a line, whole or cut
+# short to three letters or more, so "Fix" is the fixes' label as "Fixes" is,
+# and a template that renames a line renames what is asked for. No label is
+# spelled in this script. A bullet that begins with a label is an evidence
+# line, so "- Fixes, one commit for each finding:" is one. Inside an evidence
+# line a label is such a word at the start of a clause, with a colon after it
+# before the sentence ends or with no letter between it and the id, and an id
+# takes the role of the nearest label before it: a red test and its fix may
+# share a line, "Red test: commit R ... Fix: commit F". In the middle of a
+# clause the word is prose: "each fix seen passing on the same run:" names no
+# fixes. A bullet runs until the next one, and its wrapped lines
+# are joined first. `label N WORD LABEL` is the template's Nth such line,
+# `line N` a label of it found in the document, and `commit N ID FIRST` an id
+# under one, where FIRST is 1 for the first id after its label.
 #
-# The template line's other slots are read the same way, by the word before
-# each. An id straight after the word before `<buggy commit>`, today "against",
-# is `commit 0 ID WORD`: the code a red test ran against, neither a red test
-# nor a fix. After a red's id, the word before `<test file>`, today "probe",
-# names the test that shows it red: `probe FILE`, and `name TEXT` when another
+# The template line's other slots are read by the word before each. An id that
+# follows the word before `<buggy commit>`, today "against", in the same
+# clause, is `commit 0 ID WORD`: the code a red test ran against, neither a red
+# test nor a fix, whether it reads "against `id`" or "against the reviewed head
+# `id`". After a red's id, the word before `<test file>`, today "probe", names
+# the test that shows it red: `probe FILE`, and `name TEXT` when another
 # backticked text follows at once.
 cited_commits() {
   local content="$1"
@@ -517,8 +525,61 @@ cited_commits() {
       }
     }
 
-    function scan(text, kind,    rest, token, gap, word, named, red_seen) {
+    # Which line of the template a word names, or 0.
+    function label_of(word,    i, lower) {
+      lower = tolower(word)
+      if (length(lower) < 3) {
+        return 0
+      }
+      for (i = 1; i <= count; i++) {
+        if (substr(tolower(words[i]), 1, length(lower)) == lower) {
+          return i
+        }
+      }
+      return 0
+    }
+
+    # The label that the text before an id ends under, or 0. The word starts a
+    # clause, as the labels of the template do, and its colon comes within forty
+    # characters, which the longest label in this repository fits ("Fixes, one
+    # commit for each finding:"), so that a sentence which happens to hold the
+    # word "fix", or to begin with it, is no label.
+    function label_in(gap,    rest, found, i, stop, starts) {
+      rest = gap
+      found = 0
+      starts = 1
+      while (match(rest, /[[:alpha:]]+/)) {
+        starts = starts || substr(rest, 1, RSTART - 1) ~ /[.;:,]/
+        i = starts ? label_of(substr(rest, RSTART, RLENGTH)) : 0
+        rest = substr(rest, RSTART + RLENGTH)
+        starts = 0
+        stop = match(rest, /[.;:]/)
+        if (i && ((stop && stop <= 40 && substr(rest, stop, 1) == ":") || rest !~ /[[:alpha:]]/)) {
+          found = i
+        }
+      }
+      return found
+    }
+
+    # The word the template puts before the code a red test ran against, when
+    # the text before an id holds it with no clause ending after it, or "".
+    function ran_against(gap,    clause, word) {
+      clause = gap
+      sub(/^.*[.;:,]/, "", clause)
+      while (match(clause, /[[:alpha:]]+/)) {
+        word = substr(clause, RSTART, RLENGTH)
+        clause = substr(clause, RSTART + RLENGTH)
+        if (tolower(word) in against) {
+          return word
+        }
+      }
+      return ""
+    }
+
+    function scan(text, kind,    rest, token, gap, word, named, red_seen, role, first, found, ran) {
       rest = text
+      role = kind
+      first = 1
       while (match(rest, /`[^`]+`/)) {
         token = substr(rest, RSTART + 1, RLENGTH - 2)
         gap = substr(rest, 1, RSTART - 1)
@@ -530,32 +591,39 @@ cited_commits() {
           continue
         }
         named = 0
+        if (kind > 0 && (found = label_in(gap))) {
+          if (found != role) {
+            print "line\t" found
+          }
+          role = found
+          first = 1
+        }
         sub(/[[:space:]]+$/, "", gap)
         word = match(gap, /[[:alpha:]]+$/) ? substr(gap, RSTART, RLENGTH) : ""
-        if (kind == 1 && red_seen && probe != "" && tolower(word) == probe) {
+        if (role == 1 && red_seen && probe != "" && tolower(word) == probe) {
           print "probe\t" token
           named = 1
         } else if (token ~ /^[0-9a-f]+$/ && length(token) >= 7 && length(token) <= 40) {
-          if (kind > 0 && (tolower(word) in against)) {
-            print "commit\t0\t" token "\t" word
+          ran = (kind > 0) ? ran_against(gap) : ""
+          if (ran != "") {
+            print "commit\t0\t" token "\t" ran
           } else {
-            print "commit\t" kind "\t" token "\t" (kind > 0 ? word : section)
-            red_seen = red_seen || kind == 1
+            print "commit\t" role "\t" token "\t" (role > 0 ? first : section)
+            first = 0
+            red_seen = red_seen || role == 1
           }
         }
       }
     }
 
-    function emit_bullet(    i, prefix, kind) {
+    function emit_bullet(    kind) {
       if (bullet == "") {
         return
       }
       kind = -1
-      for (i = 1; i <= count; i++) {
-        prefix = "- " words[i]
-        if (substr(bullet, 1, length(prefix)) == prefix && substr(bullet, length(prefix) + 1, 1) !~ /[[:alnum:]]/) {
-          kind = i
-        }
+      if (match(bullet, /^- [[:alpha:]]+/) && substr(bullet, RLENGTH + 1, 1) !~ /[[:digit:]]/) {
+        kind = label_of(substr(bullet, 3, RLENGTH - 2))
+        kind = kind ? kind : -1
       }
       if (kind > 0) {
         print "line\t" kind
@@ -641,9 +709,12 @@ refuse_postmortem() {
   [[ $# -eq 0 ]]
 }
 
-# Refuses a postmortem that cites a commit the head does not descend from. On
-# the template's lines an id must also resolve, none may be both a red test and
-# a fix, and some cited fix must descend from each red test. A postmortem of
+# Refuses a postmortem that cites a commit the head does not descend from.
+# Under a label an id must also resolve, none may be both a red test and a fix,
+# and some cited fix must descend from each red test. A line may name a commit
+# of the other kind, the fix that answers a red or the red a fix turns green,
+# so a commit under both labels counts under the one where it comes first
+# after its label, and its other citation is a reference. A postmortem of
 # several findings cites several of each, so "its fix" is any fix cited: a fix
 # line also names commits older than the reds (the one a defect came in with),
 # and a later round's red comes after the first round's fixes. Anywhere else an
@@ -661,7 +732,7 @@ check_postmortem_commits() {
   local path="$1" content="$2" head="$3"
   local head_id cited record first second third id where red index last_red=""
   local -a labels=() words=() problems=() reds=()
-  local -A lines_on=() commits_on=() red_cited=() fix_cited=() others=()
+  local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=()
 
   head_id=$(git -C "$REPO" rev-parse --verify --quiet "${head}^{commit}" 2>/dev/null) || {
     echo "SEV rule: the commits postmortem $path cites cannot be judged: $head is not a commit in this repository." >&2
@@ -691,7 +762,7 @@ check_postmortem_commits() {
         elif [[ "$first" -eq 0 ]]; then
           where="after \"$third\""
         else
-          where="on its '${labels[first]}' line"
+          where="under '${labels[first]}'"
           commits_on[$first]=1
         fi
         id=$(git -C "$REPO" rev-parse --verify --quiet "${second}^{commit}" 2>/dev/null) || {
@@ -708,18 +779,31 @@ check_postmortem_commits() {
           last_red="$id"
           [[ -n "${red_cited[$id]:-}" ]] || reds+=("$id")
           red_cited[$id]="$second"
+          [[ "$third" != 1 ]] || red_first[$id]=1
         elif [[ "$first" -eq 2 ]]; then
           fix_cited[$id]=1
+          [[ "$third" != 1 ]] || fix_first[$id]=1
         fi
         ;;
     esac
   done <<<"$cited"
 
+  # First under one label and later under the other, a commit is what the first
+  # says. First under both, or under neither, it stays both, and is refused.
+  for id in "${!red_cited[@]}"; do
+    [[ -n "${fix_cited[$id]:-}" ]] || continue
+    if [[ -n "${red_first[$id]:-}" && -z "${fix_first[$id]:-}" ]]; then
+      unset "fix_cited[$id]"
+    elif [[ -z "${red_first[$id]:-}" && -n "${fix_first[$id]:-}" ]]; then
+      unset "red_cited[$id]"
+    fi
+  done
+
   for index in "${!labels[@]}"; do
     if [[ -z "${lines_on[$index]:-}" ]]; then
       problems+=("has no Evidence line that begins '- ${words[index]}', the template's '${labels[index]}' line, so what it cites there cannot be read.")
     elif [[ -z "${commits_on[$index]:-}" ]]; then
-      problems+=("cites no commit on a line that begins '- ${words[index]}'. The template's '${labels[index]}' line carries one.")
+      problems+=("cites no commit under a '- ${words[index]}' label. The template's '${labels[index]}' line carries one.")
     fi
   done
 
@@ -727,22 +811,26 @@ check_postmortem_commits() {
   # id has no place in the history to be before or after anything.
   if [[ ${#problems[@]} -eq 0 ]]; then
     for red in "${reds[@]}"; do
+      [[ -n "${red_cited[$red]:-}" ]] || continue
       if [[ -n "${fix_cited[$red]:-}" ]]; then
-        problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line and on its '${labels[2]}' line: a red test and its fix are two commits.")
+        problems+=("cites \`${red_cited[$red]}\` under '${labels[1]}' and under '${labels[2]}', first after its label each time: a red test and its fix are two commits. A line that only names the other kind's commit names its own first.")
         continue
       fi
       # How much of the red's history is left once every fix's history is taken
       # away: 0 when some fix descends from it. A git that cannot say answers
       # nothing, which is not 0.
       [[ "$(git -C "$REPO" rev-list --count -1 "$red" --not "${!fix_cited[@]}" 2>/dev/null)" == 0 ]] \
-        || problems+=("cites \`${red_cited[$red]}\` on its '${labels[1]}' line, and no commit on its '${labels[2]}' line descends from it: a red test comes before its fix.")
+        || problems+=("cites \`${red_cited[$red]}\` under '${labels[1]}', the nearest label before it, and no commit under '${labels[2]}' descends from it: a red test comes before its fix. If it is a fix, write that label before it.")
     done
   fi
 
   refuse_postmortem "$path" "${problems[@]}" || return 1
-  CITED_REDS=("${reds[@]}")
+  CITED_REDS=()
+  for red in "${reds[@]}"; do
+    [[ -z "${red_cited[$red]:-}" ]] || CITED_REDS+=("$red")
+  done
   CITED_HEAD="$head_id"
-  CITED_SUMMARY="on ${head_id:0:7}: ${#reds[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#reds[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
+  CITED_SUMMARY="on ${head_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
 }
 
 # --- --prove-reds: a cited red test fails where it is cited ------------------

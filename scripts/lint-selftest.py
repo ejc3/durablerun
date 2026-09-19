@@ -4673,6 +4673,47 @@ CITED_COMMIT_CASES = (
         says=": 1 red, 1 fix, 1 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
+        "the word reaches no further than its clause, so a red test named after the next comma "
+        "is still a red test",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test) against the reviewed head `{moved}`.
+  It fails against the tip of main as well, and so does commit `{later_red}`.
+- Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
+""",
+        None,
+        says=": 2 red, 2 fix, 1 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "the word fix in the middle of a clause is no label, whatever colon follows it",
+        """
+- Red tests, each run and seen failing, and each fix seen passing on the same run: commit `{red}`.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        None,
+        says=": 1 red, 1 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "a colon far down a sentence that the word fix begins is no label, so the red test after "
+        "it is still a red test",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test). Fix attempts that went nowhere are
+  in the log of that same run, which shows: `{later_red}` fails too.
+- Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
+""",
+        None,
+        says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
+        "a fix that shares its red test's line is first after its own label, so a later red line "
+        "may name it",
+        """
+- Red test: commit `{red}`, run and seen failing (1 test). Fix: commit `{fix}`.
+- Red test: commit `{later_red}`, written on top of `{fix}`. Fix: commit `{later_fix}`.
+""",
+        None,
+        says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
+    ),
+    CitedCommitsCase(
         "the whole attestation accepts a pull request whose added postmortem cites its branch",
         ONE_RED_AND_ITS_FIX,
         None,
@@ -4685,7 +4726,7 @@ CITED_COMMIT_CASES = (
 - Red tests: commit `0123abc`, run and seen failing (1 test).
 - Fixes: commit `{fix}`; gate after fix: the suite passed.
 """,
-        "on its '- Red tests:' line, which does not resolve to a commit",
+        "under '- Red tests:', which does not resolve to a commit",
     ),
     CitedCommitsCase(
         "a fix on a branch the pull request never merged is refused, and is not called a moved "
@@ -4694,7 +4735,7 @@ CITED_COMMIT_CASES = (
 - Red tests: commit `{red}`, run and seen failing (1 test).
 - Fixes: commit `{side_fix}`; gate after fix: the suite passed.
 """,
-        "on its '- Fixes:' line, which is not an ancestor of the head {later_fix}.\n",
+        "under '- Fixes:', which is not an ancestor of the head {later_fix}.\n",
     ),
     CitedCommitsCase(
         "the copy of a red test that a rebase left behind has the same subject and the same "
@@ -4743,6 +4784,14 @@ CITED_COMMIT_CASES = (
         "a red test and its fix are two commits",
     ),
     CitedCommitsCase(
+        "a fixes line that names nothing but the red test is no fix",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test).
+- Fixes: see `{red}`; gate after fix: the suite passed.
+""",
+        "a red test and its fix are two commits",
+    ),
+    CitedCommitsCase(
         "a red test that no cited fix descends from is refused",
         """
 - Red tests: commit `{later_red}`, run and seen failing (1 test).
@@ -4764,7 +4813,7 @@ CITED_COMMIT_CASES = (
 - Red tests, by commit subject: "Red: the case fails" failed 1 test.
 - Fixes: commit `{fix}`; gate after fix: the suite passed.
 """,
-        "cites no commit on a line that begins '- Red'",
+        "cites no commit under a '- Red' label",
     ),
     CitedCommitsCase(
         "the labels are read from the template, so a template that renames its red line asks "
