@@ -7408,6 +7408,48 @@ MUTATION_SPECS.extend(
             "        FROM runs r\n",
             "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
         ),
+        (
+            "mysql-keyed-write-reads-its-target-last",
+            "packages/store-mysql/src/tree.ts",
+            "const targetLast = (target: string): string => `/*+ JOIN_SUFFIX(\\`${target}\\`) */`\n",
+            "const targetLast = (_target: string): string => ''\n",
+            "the server reads a keyed write's table first over a small table, so a claim locks every run of it and two claimers deadlock",
+        ),
+        (
+            "mysql-keyed-write-names-its-key-index",
+            "packages/store-mysql/src/tree.ts",
+            "    this.append(` force index (${index})`)\n",
+            "    // MUTATION: the written table is reached through no named index\n",
+            "a keyed write's table is read last and may still be scanned, as one update of a one-row table was",
+        ),
+        (
+            "mysql-keyed-write-takes-its-key",
+            "packages/store-mysql/src/tree.ts",
+            "      if (index === null || target === null || table === undefined) {\n",
+            "      if (table !== null) { // MUTATION: a keyed delete is written as any other\n",
+            "a keyed delete is planned by the server alone, which scans a small waits table and locks every wait in it",
+        ),
+        (
+            "mysql-keyed-write-key-stands-anywhere",
+            "packages/store-mysql/src/tree.ts",
+            "    ? [...requiredConditions(node.left), ...requiredConditions(node.right)]\n",
+            "    ? requiredConditions(node.left)\n",
+            "a write whose key is not its first condition, as a wake's is, is not known for a keyed write and is left to the server's own plan",
+        ),
+        (
+            "mysql-keyed-write-key-is-a-subquery",
+            "packages/store-mysql/src/tree.ts",
+            "    const subquery =\n      SelectQueryNode.is(condition.rightOperand) || RawNode.is(condition.rightOperand)\n",
+            "    const subquery = true // MUTATION\n",
+            "a list of values is taken for a key, so a write that filters on a list is refused for naming no index",
+        ),
+        (
+            "mysql-keyed-write-undeclared-key-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (index === undefined) {\n",
+            "  if (index === null) { // MUTATION: a key with no declared index is let through\n",
+            "a write keyed by a column with no declared index compiles, and the server plans it alone",
+        ),
     )
 )
 
@@ -11489,6 +11531,42 @@ VERDICTS.update(
             "packages/store-mysql/test/query-plans.test.ts",
             "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
             "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
+        ),
+        "mysql-keyed-write-reads-its-target-last": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL locks the runs a claim takes and no other run, over two rows, over four, and at a limit of half the table",
+            "mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last",
+        ),
+        "mysql-keyed-write-names-its-key-index": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees reads a keyed update last, through the index of its key",
+            "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
+        ),
+        "mysql-keyed-write-takes-its-key": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL reaches its target through its key in every keyed write a small database sends",
+            "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
+        ),
+        "mysql-keyed-write-key-stands-anywhere": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees finds the key of a write wherever it stands among the conditions",
+            "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
+        ),
+        "mysql-keyed-write-key-is-a-subquery": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes no list of values for a key",
+            "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
+        ),
+        "mysql-keyed-write-undeclared-key-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a write keyed by a column that names no index",
+            "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
         ),
     }
 )
@@ -17298,7 +17376,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 893:
+        if len(MUTATIONS) != 899:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

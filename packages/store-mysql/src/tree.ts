@@ -389,8 +389,8 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         [common, top, output, from, joins, returning, orderBy, limit, explain, node.endModifiers],
       )
       this.append(`update ${targetLast(target)} `)
-      this.visitNode(node.table)
-      this.append(` force index (${index}) set `)
+      this.visitKeyedTarget(node.table, index)
+      this.append(' set ')
       this.compileList(updates ?? [])
       this.visitKeyedWhere(node.where)
     })
@@ -421,8 +421,7 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
       this.append(`delete ${targetLast(target)} `)
       this.visitNode(table)
       this.append(' from ')
-      this.visitNode(table)
-      this.append(` force index (${index})`)
+      this.visitKeyedTarget(table, index)
       this.visitKeyedWhere(node.where)
     })
   }
@@ -441,6 +440,12 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
     ) {
       throw new Error('store-mysql: a keyed write outside the statement grammar')
     }
+  }
+
+  /** The written table, reached through the index of its key. */
+  private visitKeyedTarget(table: OperationNode, index: string): void {
+    this.visitNode(table)
+    this.append(` force index (${index})`)
   }
 
   private visitKeyedWhere(where: OperationNode | undefined): void {

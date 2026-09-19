@@ -308,11 +308,8 @@ describe("the claim's candidate legs on MySQL", () => {
     // under statistics the server had not yet recalculated or under analyzed ones, so the
     // next case holds the hint.
     //
-    // This is the plan where the limit is a small part of the `runs` table. Where it is a
-    // large part, MySQL scans `runs` for the rows the statement updates and locks every
-    // one of them: measured with a limit of one at five rows and fewer, and with a limit
-    // of half the table at 20, 120, and 400 rows, where a quarter of the table was still
-    // read by key. This case does not pin that plan.
+    // The statement that owns the legs reads the rows it updates by key, whatever the size
+    // of the table and of the limit, which the keyed-write cases below hold.
     const db = await openMysqlTestDb({ idNamespace: 'plan-claim-legs', nowMs: 1_000_000 })
     try {
       const LIMIT = 2
@@ -365,9 +362,6 @@ describe("the claim's candidate legs on MySQL", () => {
     // and 400 once the limit reached five and ten. It was not the plan at eight runs, under
     // statistics the server had not yet recalculated, or where half the table belonged to
     // another queue, which is why the case beside a backlog cannot hold the hint.
-    //
-    // The limit is a small part of the table here too, so the statement reads the rows it
-    // updates by key, and this case does not pin the scan a large limit brings either.
     const db = await openMysqlTestDb({ idNamespace: 'plan-claim-legs-small', nowMs: 1_000_000 })
     try {
       const LIMIT = 2
