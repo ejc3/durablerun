@@ -288,6 +288,28 @@ describe('MySQL spelling of the shared statement trees', () => {
     )
   })
 
+  it('refuses a delete whose keys come from the table it writes', () => {
+    // MySQL refuses a subquery that reads the table its statement writes, so the compiler
+    // reads that table through a derived table, and a derived table takes no index hint. The
+    // keys were sent as `(select * from runs) as f force index (runs_stamp)`, which the
+    // server answers with a syntax error when the batch runs.
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('runs')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                eb.selectFrom('runs as f').select('f.run_id').where('f.fence_stamp', '=', 'stamp'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-own-table-refused',
+    ).toThrow('a delete of runs takes its keys from runs, the table it writes')
+  })
+
   it('refuses a delete that no subquery keys', () => {
     // A DELETE reads its subquery's table with shared locks, so the rule for a delete's keys
     // has to reach every delete a tree sends. One keyed in a way the compiler does not
