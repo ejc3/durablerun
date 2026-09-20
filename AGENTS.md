@@ -233,10 +233,14 @@ nothing was found. A nonzero count requires the PR to ADD a postmortem
 (added files; touching or renaming an old one does not count) containing
 every section of the template, placeholders filled, findings table
 non-empty. Every commit that postmortem cites must be on the pull request's
-branch, and the commits on its red and fix evidence lines must resolve, be
-distinct, and be ordered, a red before some fix, because a commit id does not
-survive a rebase and a branch moved after its postmortem was written cites
-commits it no longer holds. The `reviews-abandoned: <non-empty reason>` trailer can excuse incomplete review
+branch, because a commit id does not survive a rebase and a branch moved
+after its postmortem was written cites commits it no longer holds. An id in
+prose that names no commit of the repository is left alone and printed as not
+judged, because a digest is written the same way. The commits under its red
+and fix labels must also resolve, be the pull request's own and not ones main
+already held, be distinct, and be ordered, a red before some fix, because the
+ids of the last postmortem, left in place by a copy, are all of that except
+its own. The `reviews-abandoned: <non-empty reason>` trailer can excuse incomplete review
 artifacts, never this gate. Bugs caught by the author's own machinery
 before review — TLC at spec time, red tests, fuzz — are the system
 working, not SEVs; declaring `review-findings: 0` over a branch with red

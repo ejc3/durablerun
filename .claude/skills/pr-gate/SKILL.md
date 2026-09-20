@@ -333,12 +333,13 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   MECHANIZED: review-attest.sh requires a `review-findings: <count>` line
   in every PR body; a nonzero count requires the PR to ADD a postmortem
   containing every template section, placeholders filled, findings table
-  non-empty, citing only commits on the PR's branch, its red and fix commits
-  real, distinct, and ordered. Run `scripts/review-attest.sh
-  --check-postmortem <path>` before every push of a branch that has a
-  postmortem, because a rebase re-hashes every commit it cites, and add
-  `--prove-reds` to run the probe each red names. The abandonment trailer
-  never skips this gate. Declaring 0
+  non-empty, citing only commits on the PR's branch (an id in prose that
+  names no commit of the repository is printed as not judged), its red and
+  fix commits the PR's own, real, distinct, and ordered. Run
+  `scripts/review-attest.sh --check-postmortem <path>` before every push of
+  a branch that has a postmortem, because a rebase re-hashes every commit it
+  cites, and add `--prove-reds` to run the probe each red names. The
+  abandonment trailer never skips this gate. Declaring 0
   over a branch with red-test commits publicly claims they were
   machinery-caught — the same auditable-if-false class as the attestation
   itself. [CLAUDE.md standing rule]

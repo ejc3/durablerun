@@ -136,10 +136,18 @@ a last docs PR gives a live owner to every open bullet that is left.
     not an ancestor of its green. A postmortem that cites the copy of a commit
     from before a rebase is refused. This is met. PR3.10a made
     `scripts/review-attest.sh` read the commits an added postmortem cites, in
-    `--check-postmortem` and in the whole attestation, and 24 cases in
+    `--check-postmortem` and in the whole attestation. A postmortem of
+    several findings cites several reds and greens and does not say which
+    green answers which red, so the script holds the reading it can: a commit
+    is refused when it comes first under both labels, and a red is refused
+    when no cited fix descends from it. The commits under the red and fix
+    labels are also held to the pull request's own range, from the base it
+    was cut from to its head, so a red and a green left in place from the
+    postmortem that a new one was copied from are refused. 44 cases in
     `scripts/lint-selftest.py` hold each refusal over a git history with a
-    real rebase in it, the copy a rebase leaves behind among them; the
-    postmortems that PR #55 to PR #60 added pass it. It also built the opt-in
+    real rebase in it, the copy a rebase leaves behind and the copied pair
+    among them; the postmortems that PR #55 to PR #60 added pass it. It also
+    built the opt-in
     proof that a red fails: `--prove-reds` runs the probe a red test names, at
     the red commit, where it must fail by name, and at the head, where it
     must pass.
@@ -1446,29 +1454,43 @@ these three things; nothing else in the system does I/O, time, or randomness.
   not survive a rebase. `postmortems/pr3.3-child-tasks-spec-review.md` merged
   citing eleven commits that were never on its branch, each with a twin there
   under the same subject, and nothing read them. `scripts/review-attest.sh`,
-  in `--check-postmortem <path> [<head>]` and in the whole attestation, now
+  in `--check-postmortem <path> [<head> [<base>]]` and in the whole
+  attestation, now
   refuses an ADDED postmortem when a backticked commit id anywhere in it names
   a commit the head does not descend from, reports every such id in one run,
   and names the twin to cite when the branch holds exactly one commit with the
   same subject and the same patch. An id that names no commit of the
-  repository is left alone outside the evidence lines, because a digest is
-  written the same way, and a commit that is rightly elsewhere is written
-  without backticks. On the template's two evidence lines that carry a
-  `<hash>` slot an id must also resolve, none may be both a red test and a
-  fix, and some cited fix must descend from each red test: a postmortem of
-  several findings cites several of each, a fix line also names the commit a
-  defect came in with, and a later round's red follows the first round's
-  fixes, so "its fix" is any fix cited. The lines are found by the first word
-  of the template's own labels, which the script reads and never spells, so
-  `- Fixes, one commit for each finding:` is a fixes line and a template that
-  renames a line renames the demand. An id straight after the word that comes
-  before the template's `<buggy commit>` slot, today "against", is the code a
-  red ran against and is neither, which matters because a fix is often the
-  code a later red ran against. Run as they would have run at their merges,
-  the postmortems added by PR #55, #56, #57, #59 and #60 pass, and PR #58
-  added none. Over all 54 that merges added, 15 pass, the one with stale ids
-  is refused for each of them, and the rest predate the template's labels;
-  postmortems already on main are not judged again.
+  repository is left alone outside the labels, because a digest is written
+  the same way, and is printed as not judged, because the copy of a commit
+  from before a rebase reads the same in a clone that never held it. A commit
+  that is rightly elsewhere is written without backticks. Under the labels of
+  the template's two evidence lines that carry a `<hash>` slot an id must
+  also resolve, be the pull request's own and not a commit its base already
+  holds, not come first under both labels, and, if a red test, have some
+  cited fix that descends from it. The range is there because the usual way
+  to write a postmortem is to copy the last one, whose red and fix are real,
+  distinct, ordered ancestors of the head. "Its fix" is any fix cited,
+  because a postmortem of several findings cites several of each, a fix line
+  also names the commit a defect came in with, and a later round's red
+  follows the first round's fixes. A label is the first word of one of those
+  two lines, whole or cut short to three letters or more, which the script
+  reads from the template and never spells: at the start of a bullet, or
+  inside one at the start of a clause, before a colon or straight before an
+  id. An id takes the role of the nearest label before it, so a red test and
+  its fix may share a line, as `postmortems/pr3.2a-lifecycle-review.md`
+  writes four of its five rounds, and a line may name a commit of the other
+  kind: a commit under both labels counts where it comes first after its
+  label. An id that follows the word before the template's `<buggy commit>`
+  slot, today "against", in the same clause, is the code a red ran against
+  and is neither, which matters because a fix is often the code a later red
+  ran against. Replayed at their own heads and bases, the postmortems added
+  by PR #55, #56, #57, #59 and #60 pass, and PR #58 added none. Of all 54
+  that merges added, 31 pass and 23 are refused with 66 lines: 36 name a
+  label the document does not have (21 documents, which predate the
+  template's labels), 17 are one document that calls its fixes green, 11 are
+  the stale ids, one document cites no commit under a label, and one names,
+  on its red line and in backticks, the commit of main it was rebased onto.
+  Postmortems already on main are not judged again.
   `--prove-reds` is the other half and is opt-in, because it needs the
   attester's toolchain and servers. A red test names a probe on its line, a
   test file and then a test name, and the script runs it in a scratch
@@ -1489,9 +1511,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   probes: the nine-finding postmortem of PR #60, three reds, 31 seconds, and
   the fourteen-finding one of PR #56, three reds, 40 seconds, at 4 to 8
   seconds a red and the rest at the head. A run that proves no red exits 1,
-  and a red that names no probe is counted on the line that sums up.
-  `lint-selftest.py` holds 24 cases over a git history that git builds with a
-  real rebase in it, through both entry points, and each of 21 deletions of a
+  and a red that names no probe is counted on the line that sums up. A probe
+  that still runs after ten minutes is stopped
+  (`REVIEW_ATTEST_PROBE_SECONDS` raises the limit), and a run removes the
+  scratch copies it made and prunes nothing, because other worktrees of the
+  repository may be away for the moment.
+  `lint-selftest.py` holds 44 cases over a git history that git builds with a
+  real rebase in it, through both entry points, and each of 42 deletions of a
   condition of the new code fails a named case.
 
 - **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
