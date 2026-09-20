@@ -3405,6 +3405,15 @@ export class Store {
         "nightly checkout must disable persisted credentials",
         "a scheduled verification checkout must not retain a write-capable token",
     ),
+    (
+        "clock-lint.py",
+        {
+            **CLEAN_STORE,
+            "packages/core/src/sql-tree.ts": "export const CLOCK_SPELLING = /now/\n",
+        },
+        "cannot read the clock spellings",
+        "a tree whose rules define no list of spellings is refused, because a pattern built from nothing matches nothing",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -4205,6 +4214,18 @@ const pattern = /this\.db\.batch\(/
         "process contracts refer to their executable single definitions",
     ),
     ("clock-lint.py", CLEAN_STORE, "a batch label containing the word 'now'"),
+    (
+        # The false negative, kept on purpose: the lint holds no list of its own, so it is
+        # exactly as strong as the tree's. What holds an entry there is its registered mutation.
+        "clock-lint.py",
+        {
+            **store("const SQL = `SELECT SYSDATE() AS t`\n"),
+            "packages/core/src/sql-tree.ts": (
+                SCRIPTS.parent / "packages/core/src/sql-tree.ts"
+            ).read_text().replace("  'sysdate',\n", ""),
+        },
+        "a name the audited tree's list does not hold is not refused: the list has one definition",
+    ),
     (
         "clock-lint.py",
         store("// derived from the CAS above at ITS single NOW — not a second NOW\n"),
@@ -5241,6 +5262,12 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
+        # clock-lint reads the clock spellings from the tree it audits. A fixture that
+        # brings no list of its own gets the repository's, as batch-lint's gets its list.
+        spellings = root / "packages" / "core" / "src" / "sql-tree.ts"
+        if lint == "clock-lint.py" and not spellings.exists():
+            spellings.parent.mkdir(parents=True, exist_ok=True)
+            spellings.write_text((SCRIPTS.parent / "packages/core/src/sql-tree.ts").read_text())
         listed = root / "scripts" / "text-statements.json"
         if lint == "batch-lint.py" and not listed.exists():
             listed.write_text((SCRIPTS / "text-statements.json").read_text())

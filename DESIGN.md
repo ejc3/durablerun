@@ -1330,14 +1330,21 @@ are load-bearing):
      function node is outside the grammar whatever it is named, because the
      grammar lists the functions a statement may call and lists no clock. Raw
      fragment text is the one thing a tree cannot read, so it is scanned for
-     the batch clock's text and for the clock spellings
-     `scripts/clock-lint.py` lists, which include a date function called with
-     no argument, SQLite's spelling of the current time, and the literal
-     `'now'`, whatever function takes it. The tree's own list adds
+     the batch clock's text and for a list of clock spellings, which include
+     a date function called with no argument, SQLite's spelling of the
+     current time, the literal `'now'`, whatever function takes it, and
+     PostgreSQL's `age`, which measures from the current date when it is
+     given one argument and is refused whatever it is given. The list has one
+     definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
+     `packages/core/src/sql-tree.ts`, where each entry has a registered
+     mutation. `scripts/clock-lint.py` keeps no list: it reads that one from
+     the checkout it stands in, applies it to store sources, and refuses to
+     run when it cannot read the list. One arm is the tree's alone,
      `fake_now_ms`, the column a store's clock reads under test, which a
-     fragment could read with no clock call at all. That scan is a
-     spelling proxy, confined to raw text, and a spelling nobody has listed
-     passes it.
+     fragment could read with no clock call at all. A store's admin
+     statements write that row by name, so the lint refuses a read of it with
+     a pattern of its own. The scan is a spelling proxy, confined to raw
+     text, and a spelling nobody has listed passes both.
    - A statement holds no second definition of eligibility.
      `eligibilityDefinitionProblem` asks the rules `scripts/fragment-lint.py`
      applies to store SQL text of the tree, where a condition built from nodes

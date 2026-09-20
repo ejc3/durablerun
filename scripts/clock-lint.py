@@ -38,42 +38,59 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# SQL is case-insensitive, so this pattern must be. The first version was not,
-# and its alternatives were inconsistently cased on top of that — SQLite
-# builtins lowercase-only, NOW()/CURRENT_TIMESTAMP uppercase-only — so each
-# alternative caught exactly one of the two spellings a developer writes.
-# `UNIXEPOCH()` and `now()` both sailed through, and `now()` is the canonical
-# Postgres spelling, so the lint was blind to the most common clock call in a
-# dialect this engine has promised to support.
+# The spellings have ONE definition: `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in the tree
+# rules, where every entry has a registered mutation. This lint kept a second list by hand,
+# and a name added to one and not the other shipped in whichever scan lacked it. It reads
+# the list from the checkout this script stands in, so the two scans cannot differ. That
+# is the tree it audits wherever the gate runs it: the lint self-test and the base gate both
+# copy the scripts into the tree they audit. It refuses to run on a list it cannot read,
+# because a pattern built from nothing matches nothing.
 #
-# Function names must appear AS CALLS. Matching them as bare words instead
-# turned prose and identifiers into violations — batch labels like
-# `expire-lease-now` and comments reading "not a second NOW" all matched,
-# which is the failure that trains people to weaken a checker until it is
-# quiet. The bare-keyword forms (CURRENT_TIMESTAMP, CURRENT_TIME) take no
-# parentheses in any dialect and so stay word-matched.
-CALLS = (
-    "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
-    "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
-    "|localtime|localtimestamp|current_timestamp|curdate|curtime|unix_timestamp"
-    # PostgreSQL's age() with one argument measures from the current date. It is refused
-    # whatever it is given, as the tree's list refuses it: no store statement calls it.
-    "|age"
-)
-CLOCKS = re.compile(
-    rf"\b(?:{CALLS})\s*\("
-    # Bare keyword forms: legal with no parentheses in at least one dialect,
-    # so the call-shaped pattern above would miss them. MySQL accepts
-    # LOCALTIME and UTC_TIMESTAMP bare; Postgres accepts LOCALTIMESTAMP.
-    r"|\b(?:current_timestamp|current_time|current_date"
-    r"|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b"
-    # SQLite reads a date function with no argument as the current time.
-    r"|\b(?:datetime|date|time)\s*\(\s*\)"
-    # The literal 'now' reads the clock whatever function takes it: SQLite's
-    # timediff('now', …), PostgreSQL's 'now' cast to a timestamp.
-    r"|'\s*now\s*'",
-    re.IGNORECASE,
-)
+# What the list's shape holds, each learned from a lint that was blind without it. SQL is
+# case-insensitive, so the pattern is. Function names must appear AS CALLS: matched as bare
+# words, batch labels like `expire-lease-now` and comments reading "not a second NOW" were
+# violations, which is the failure that trains people to weaken a checker until it is
+# quiet. The bare keywords (CURRENT_TIMESTAMP, LOCALTIME) take no parentheses in some
+# dialect and stay word-matched. SQLite reads a date function with no argument as the
+# current time, and the literal 'now' reads the clock whatever function takes it.
+TREE_RULES = "packages/core/src/sql-tree.ts"
+# The one arm this lint cannot apply. The tree refuses the bare word in a fragment, where
+# nothing may name the test clock's row. A store's admin statements write that row by name,
+# so here FAKE_NOW_READ below refuses a read of it and admits the write.
+TREE_ONLY_ARM = r"\bfake_now_ms\b"
+
+
+def tree_clock_spellings(text: str) -> str:
+    """The tree rule's clock spellings as one pattern, read from the source that defines them."""
+    names = re.search(r"^const CLOCK_FUNCTIONS = \[\n(.*?)^\]\n", text, re.S | re.M)
+    block = re.search(
+        r"^export const CLOCK_SPELLING = new RegExp\(\n  \[\n(.*?)^  \]\.join\('\|'\),\n",
+        text,
+        re.S | re.M,
+    )
+    if names is None or block is None:
+        raise ValueError(f"{TREE_RULES} does not define CLOCK_FUNCTIONS and CLOCK_SPELLING as lists")
+    functions = re.findall(r"^  '([a-z_]+)',$", names.group(1), re.M)
+    if not functions or len(functions) != names.group(1).count("\n"):
+        raise ValueError(f"{TREE_RULES}: a line of CLOCK_FUNCTIONS is not one quoted name")
+    arms = []
+    for line in block.group(1).splitlines():
+        arm = re.fullmatch(r"    String\.raw`(.*)`,", line)
+        if arm is None:
+            raise ValueError(f"{TREE_RULES}: a line of CLOCK_SPELLING is not one String.raw arm")
+        arms.append(arm.group(1).replace("${CLOCK_FUNCTIONS.join('|')}", "|".join(functions)))
+    if arms.count(TREE_ONLY_ARM) != 1:
+        raise ValueError(f"{TREE_RULES}: CLOCK_SPELLING no longer holds the arm {TREE_ONLY_ARM}")
+    return "|".join(arm for arm in arms if arm != TREE_ONLY_ARM)
+
+
+try:
+    CLOCKS = re.compile(
+        tree_clock_spellings((Path(__file__).resolve().parent.parent / TREE_RULES).read_text()),
+        re.IGNORECASE,
+    )
+except (OSError, ValueError, re.error) as error:
+    sys.exit(f"clock-lint.py: cannot read the clock spellings: {error}")
 META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"
 FAKE_NOW = r"'fake_now_ms'"
 FAKE_NOW_PREDICATE = (
