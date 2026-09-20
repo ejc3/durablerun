@@ -47,14 +47,25 @@ done
 
 surface_snapshot="$ROOT/scripts/published-surface-v0.1.0-alpha.1.json"
 node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_snapshot"
-# The check must be able to fail, and for the reason each control names. A control
-# changes one thing in a copy of the snapshot, or of the packed declarations, and leaves the
-# rest, the real withdrawals and changes included, so every other refusal stays quiet. The
-# refusal is read, not only the exit code: a control that is refused for another reason, or
-# for a second one, fails here. A control that needs an entry that holds builds it, a released
-# name that is gone or a change to Checkpoint, so the controls also pass on a snapshot whose
-# tables are empty, as they are just after a release.
+# The check must be able to fail, and for the reason each control names. A control changes one
+# thing in a copy of the snapshot, or of the packed declarations, and leaves the rest, the real
+# withdrawals and changes included, so every other refusal stays quiet. The refusal is read,
+# not only the exit code: a control that is refused for another reason, or for a second one,
+# fails here. A control that needs an entry that holds builds it, so the controls also pass on
+# a snapshot whose tables are empty, as they are just after a release.
+#
+# Eight controls borrow one of three real names, Checkpoint, UserName and systemClock. They
+# start from a base, a copy of the snapshot in which each of the three is declared as it is
+# packed now, which the check prints, and is in neither table. So a real change to one of
+# them, listed as it must be, leaves every control as it was. The base has to pass, or a
+# control would be refused for its sake.
+surface_packed="$PACK_DIR/surface-packed.json"
+surface_base="$PACK_DIR/surface-base.json"
 surface_control="$PACK_DIR/surface-control.json"
+node "$ROOT/scripts/package-surface.mjs" --packed "$PACK_DIR/surface" "$surface_snapshot" > "$surface_packed"
+node -e "const fs=require('node:fs');const [from,packedPath,to]=process.argv.slice(1);const s=JSON.parse(fs.readFileSync(from,'utf8'));const packed=JSON.parse(fs.readFileSync(packedPath,'utf8'))['@durablerun/core']['.'];const core=(table)=>(((s[table]??={})['@durablerun/core']??={})['.']??={});for(const name of ['Checkpoint','UserName','systemClock']){if(!packed[name])throw new Error('package-smoke: '+name+' is not packed, so the controls that borrow it need another name');core('surface')[name]=packed[name];delete core('withdrawn')[name];delete core('changed')[name]}fs.writeFileSync(to,JSON.stringify(s))" \
+  "$surface_snapshot" "$surface_packed" "$surface_base"
+node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_base" > /dev/null
 surface_refusal_holds() {
   # $1 what the control shows, $2 the unpacked packages, $3 the snapshot, then every text
   # the one refusal must hold.
@@ -71,13 +82,14 @@ surface_refusal_holds() {
   done
 }
 surface_refuses() {
-  # $1 what the control shows, $2 the refusal expected, $3 JavaScript that edits the copy of
-  # the snapshot, then any more text the refusal must hold. The JavaScript has the core entry
-  # point's three tables, pin(lines), the sha256 of a shape, and differ(), which says in the
-  # copy that Checkpoint was released with another member and returns the sha256 of the packed
-  # declaration, so an entry that records it is a change that holds.
+  # $1 what the control shows, $2 the refusal expected, $3 JavaScript that edits a copy of the
+  # base, then any more text the refusal must hold. The JavaScript has the core entry point's
+  # three tables, pin(lines), the sha256 of a shape, and differ(), which says in the copy that
+  # Checkpoint was released with another member and returns the sha256 of the packed
+  # declaration, which is the one the base holds, so an entry that records it is a change that
+  # holds.
   node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const core=(table)=>(((s[table]??={})['@durablerun/core']??={})['.']??={});const exported=core('surface'),withdrawn=core('withdrawn'),changed=core('changed');const pin=(lines)=>require('node:crypto').createHash('sha256').update(lines.join('\n')).digest('hex');const differ=()=>{const packed=pin(exported.Checkpoint);exported.Checkpoint[1]=exported.Checkpoint[1].replace(';',' | PackageSurfaceControl;');return packed};$3;fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
-    "$surface_snapshot" "$surface_control"
+    "$surface_base" "$surface_control"
   surface_refusal_holds "$1" "$PACK_DIR/surface" "$surface_control" "$2" "${@:4}"
 }
 surface_loses() {
@@ -88,7 +100,7 @@ surface_loses() {
   cp -R "$PACK_DIR/surface" "$copy"
   node -e "const fs=require('node:fs');const [file,member]=process.argv.slice(1);const before=fs.readFileSync(file,'utf8');if(before.split(member+'\n').length!==2)throw new Error('package-smoke: expected one line '+member.trim()+' in '+file);fs.writeFileSync(file,before.replace(member+'\n',''))" \
     "$copy/$2" "$3"
-  surface_refusal_holds "$1" "$copy" "$surface_snapshot" "${@:4}"
+  surface_refusal_holds "$1" "$copy" "$surface_base" "${@:4}"
 }
 surface_gains() {
   # $1 what the control shows, $2 a declaration file of the packed packages, then the lines a
@@ -104,7 +116,7 @@ surface_gains() {
   cp -R "$PACK_DIR/surface" "$copy"
   node -e "const fs=require('node:fs');const [file,...lines]=process.argv.slice(1);fs.writeFileSync(file,lines.join('\n')+'\n'+fs.readFileSync(file,'utf8'))" \
     "$copy/$file" "${lines[@]}"
-  surface_refusal_holds "$what" "$copy" "$surface_snapshot" "$@"
+  surface_refusal_holds "$what" "$copy" "$surface_base" "$@"
 }
 surface_refuses 'a snapshot naming a never-exported name' \
   'PackageSurfaceControlNeverExported is gone' \
@@ -155,7 +167,7 @@ surface_gains 'a module exported as a namespace' \
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \
   "differ()" \
-  '- checkpointName: string | PackageSurfaceControl;' '+ checkpointName: string;'
+  ' | PackageSurfaceControl;'
 # A change that does not hold: without these the table would excuse a declaration nobody
 # changed, a name the release never had, a name that is gone, a change with nothing said
 # about why, or a second change to a name that is already listed.

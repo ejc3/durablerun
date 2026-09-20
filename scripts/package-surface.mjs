@@ -2,6 +2,7 @@
 // declares one differently without saying so.
 //
 // Usage: node scripts/package-surface.mjs <unpacked-root> <snapshot.json>
+//        node scripts/package-surface.mjs --packed <unpacked-root> <snapshot.json>
 //        node scripts/package-surface.mjs --write <release> <tarball-dir> <snapshot.json>
 // <unpacked-root>/<name>/package is one unpacked @durablerun/<name> tarball.
 //
@@ -36,6 +37,10 @@
 // one the release exported, must not also be withdrawn, and must differ from the release. The
 // recorded sha256 must be the packed shape's, so a second change to a listed name is refused
 // until its entry says what changed again.
+//
+// --packed prints, as JSON, the shape of every packed name as the check reads it against that
+// snapshot. The smoke's controls use it to say, in a copy of the snapshot, how a name they
+// borrow is declared now.
 //
 // --write replaces the snapshot from a directory of release tarballs: it records each
 // tarball's sha256, unpacks it, and prints the shapes. It refuses a directory with no tarball.
@@ -299,13 +304,14 @@ const entriesOf = (table) =>
     ),
   )
 
+// The packed packages, read against a snapshot: the names it lists are the released ones.
+const packedAgainst = (unpackedRoot, snapshot) =>
+  packedSurface(unpackedRoot, (at) => find(snapshot.surface, at) !== undefined)
+
 function check(unpackedRoot, snapshotPath) {
   const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'))
   const { release } = snapshot
-  const { surface: current, namespaces } = packedSurface(
-    unpackedRoot,
-    (at) => find(snapshot.surface, at) !== undefined,
-  )
+  const { surface: current, namespaces } = packedAgainst(unpackedRoot, snapshot)
   const refusals = []
   const blank = (reason) => typeof reason !== 'string' || reason.trim() === ''
   const withdrawn = entriesOf(snapshot.withdrawn)
@@ -423,8 +429,12 @@ function write(release, tarballDir, snapshotPath) {
 
 const args = process.argv.slice(2)
 if (args[0] === '--write' && args.length === 4) write(args[1], args[2], args[3])
-else if (args.length === 2 && args[0] !== '--write') check(args[0], args[1])
+else if (args[0] === '--packed' && args.length === 3)
+  console.log(
+    JSON.stringify(packedAgainst(args[1], JSON.parse(readFileSync(args[2], 'utf8'))).surface),
+  )
+else if (args.length === 2 && !args[0].startsWith('--')) check(args[0], args[1])
 else
   throw new Error(
-    'usage: package-surface <unpacked-root> <snapshot.json> | --write <release> <tarball-dir> <snapshot.json>',
+    'usage: package-surface <unpacked-root> <snapshot.json> | --packed <unpacked-root> <snapshot.json> | --write <release> <tarball-dir> <snapshot.json>',
   )
