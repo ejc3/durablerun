@@ -5012,12 +5012,23 @@ CITED_COMMIT_CASES = (
         "has no Evidence line that begins '- Red'",
     ),
     CitedCommitsCase(
-        "a red line that cites its commit by subject leaves nothing to check, which is refused",
+        "a red line that cites no commit is accepted, as a round with no red test of its own "
+        "writes it, and the line that sums up says no order was checked",
         """
-- Red tests, by commit subject: "Red: the case fails" failed 1 test.
-- Fixes: commit `{fix}`; gate after fix: the suite passed.
+- Red tests: none is committed apart from its fix. Every finding of the review is LOW, and
+  each fold is one commit.
+- Fixes: commit `{fix}` for finding 1; gate after fix: the suite passed.
 """,
-        "cites no commit under a '- Red' label",
+        None,
+        says=": 0 red, 1 fix, 0 other cited; no red test is cited, so no order was checked",
+    ),
+    CitedCommitsCase(
+        "a fixes line that cites its commit by subject leaves nothing to check, which is refused",
+        """
+- Red tests: commit `{red}`, run and seen failing (1 test).
+- Fixes, by commit subject: "Fix: the case passes"; gate after fix: the suite passed.
+""",
+        "cites no commit under a '- Fixes' label",
     ),
     CitedCommitsCase(
         "the labels are read from the template, so a template that renames its red line asks "
