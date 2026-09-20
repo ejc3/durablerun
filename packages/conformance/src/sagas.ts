@@ -22,7 +22,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from './engine-history.js'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
-import { sagaViolations } from './saga-rows.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -1177,7 +1176,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             events: await doneEvents(fx),
             parent: { state: parentRun?.state, payload: parentRun?.event_payload },
             result: await fx.store.getTaskResult(Q, child.taskId),
-            violations: await sagaViolations(fx.raw),
+            violations: await engineHistoryViolations(fx.raw),
           }
           const outcome = ending.outcome
           expected[label] = {
