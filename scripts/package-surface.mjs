@@ -32,11 +32,14 @@
 // must be gone: a withdrawal of a name still exported is refused, so the table
 // cannot become a list of names nobody checks.
 //
-// A declaration changes on purpose through the `changed` table, which gives the reason, what
-// a consumer does about it, and the sha256 of the shape as it is now. A listed name must be
-// one the release exported, must not also be withdrawn, and must differ from the release. The
-// recorded sha256 must be the packed shape's, so a second change to a listed name is refused
-// until its entry says what changed again.
+// A declaration changes on purpose through the `changed` table. An entry has a `reason` and a
+// `declarationSha256`, the sha256 of the shape as it is now. The check requires that the reason
+// is not blank, that the name is one the release exported, is not also withdrawn, and differs
+// from the release, and that the recorded sha256 is the packed shape's, so a second change to
+// a listed name is refused until its entry is edited. What the reason says is a convention
+// that review holds and the check cannot: why the declaration changed, with the pull request,
+// and what a consumer does about it. A refusal names the snapshot file and where in it the
+// entry goes.
 //
 // --packed prints, as JSON, the shape of every packed name as the check reads it against that
 // snapshot. The smoke's controls use it to say, in a copy of the snapshot, how a name they
@@ -48,9 +51,9 @@
 // from the one recorded, a tarball the snapshot does not record, and a directory that lacks a
 // recorded one, and it keeps the two tables; a new release starts with both empty. Every such
 // refusal comes before a tarball is unpacked, and a namespace export is refused after. The
-// repository's formatter lays the file out, in
-// whatever directory the command is given. Compare the recorded sha256 of each tarball with
-// the release receipt before committing a new snapshot.
+// repository's formatter lays the file out, in whatever directory the command is given.
+// Compare the recorded sha256 of each tarball with the release receipt before committing a
+// new snapshot.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -315,6 +318,9 @@ function check(unpackedRoot, snapshotPath) {
   const { surface: current, namespaces } = packedAgainst(unpackedRoot, snapshot)
   const refusals = []
   const blank = (reason) => typeof reason !== 'string' || reason.trim() === ''
+  // Where an entry goes, for an author who has never seen the tables.
+  const where = (table, { packageName, subpath, name }) =>
+    `in ${snapshotPath}, under "${table}" > "${packageName}" > "${subpath}", "${name}"`
   const withdrawn = entriesOf(snapshot.withdrawn)
   for (const listed of withdrawn) {
     const { entry, at } = listed
@@ -339,7 +345,7 @@ function check(unpackedRoot, snapshotPath) {
       refusals.push([`${at} is listed as changed, but it is declared as ${release} declared it`])
     else if (entry?.declarationSha256 !== pinOf(now))
       refusals.push([
-        `${at} is listed as changed, but the sha256 recorded is not the packed declaration's, which is ${pinOf(now)}; against ${release} it differs by:`,
+        `${at} is listed as changed, but the sha256 recorded is not the packed declaration's: ${where('changed', listed)} needs "declarationSha256": "${pinOf(now)}", and a reason that also says what changed this time; against ${release} it differs by:`,
         ...difference(was, now),
       ])
   }
@@ -355,10 +361,12 @@ function check(unpackedRoot, snapshotPath) {
     const now = find(current, exported)
     if (now === undefined) {
       if (find(snapshot.withdrawn, exported) === undefined)
-        refusals.push([`${at} is gone, and the withdrawn table does not list it`])
+        refusals.push([
+          `${at} is gone, and the withdrawn table does not list it: if it left on purpose, ${where('withdrawn', exported)} needs the reason`,
+        ])
     } else if (!same(was, now) && find(snapshot.changed, exported) === undefined)
       refusals.push([
-        `${at} is declared differently, and the changed table does not list it with a reason and "declarationSha256": "${pinOf(now)}"; it differs by:`,
+        `${at} is declared differently, and the changed table does not list it: if it changed on purpose, ${where('changed', exported)} needs { "reason": "why, and what a consumer does about it", "declarationSha256": "${pinOf(now)}" }; it differs by:`,
         ...difference(was, now),
       ])
   }

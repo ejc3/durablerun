@@ -163,11 +163,12 @@ surface_gains 'a module exported as a namespace' \
   "export * as PackageSurfaceControlNamespace from './clock.js';" \
   'export declare const packageSurfaceControlValue: PackageSurfaceControlInner.Clock;' -- \
   'PackageSurfaceControlNamespace exports a whole module as a namespace'
-# The same from the other side: the snapshot says a member was declared another way.
+# The same from the other side: the snapshot says a member was declared another way. The
+# refusal also says where in the snapshot the entry goes.
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \
   "differ()" \
-  ' | PackageSurfaceControl;'
+  ' | PackageSurfaceControl;' 'under "changed" > "@durablerun/core" > ".", "Checkpoint" needs'
 # A change that does not hold: without these the table would excuse a declaration nobody
 # changed, a name the release never had, a name that is gone, a change with nothing said
 # about why, or a second change to a name that is already listed.
