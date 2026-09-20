@@ -174,19 +174,30 @@ const refusalOf = (form: CallForm): Outcome =>
     ? { kind: 'resolved', value: ANSWERED_REFUSALS[form.name] }
     : { kind: 'rejected', error: 'LeaseLostError' }
 
-/** The callers that do not hold the claim, for each part of it, given the caller that does. */
+/**
+ * The callers that do not hold the claim, for each part of it, given the caller that does.
+ * They are chosen against what a statement can spell. The statement grammar lists no
+ * function, so a comparison that folds the token's case or reads part of it cannot be
+ * written. An ordering comparison can, and it admits every value on one side of the
+ * claim's, so each part is presented from both sides, as near as a value can stand.
+ */
 const STALE_CALLERS: Record<
   ClaimPart,
   (holder: InvocationTarget) => Record<string, InvocationTarget>
 > = {
   token: (holder) => ({
-    'a token no claim holds': { ...holder, token: 'stale-token-column:never-issued' },
+    'the token of this claim with its last character dropped': {
+      ...holder,
+      token: holder.token.slice(0, -1),
+    },
+    'the token of this claim with a character added': { ...holder, token: `${holder.token}~` },
     // A comparison that asks whether any run is held under the token, and not whether
-    // this run is, refuses the first caller and admits this one.
+    // this run is, refuses the two callers above and admits this one.
     'the token of another live claim': { ...holder, token: POISON_INVOCATION.token },
   }),
   generation: (holder) => ({
     'the generation of the claim before': { ...holder, claimGen: holder.claimGen - 1 },
+    'the generation of a claim not yet made': { ...holder, claimGen: holder.claimGen + 1 },
   }),
 }
 
