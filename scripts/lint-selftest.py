@@ -1382,6 +1382,19 @@ def red_pair_corpus(rule_body: str, synopsis: str) -> dict[str, str]:
     )
 
 
+def tree_rules_without_spelling(name: str) -> str:
+    """The repository's tree rules with one clock function taken off the list.
+
+    It fails when the name is not on the list. A replace that finds nothing returns the
+    text as it was, and the case built from it would pass while showing nothing.
+    """
+    text = (SCRIPTS.parent / "packages/core/src/sql-tree.ts").read_text()
+    entry = f"  '{name}',\n"
+    if text.count(entry) != 1:
+        raise SystemExit(f"lint-selftest: the clock function list does not hold {name!r} exactly once")
+    return text.replace(entry, "")
+
+
 CLEAN_STORE = store(
     """
 export class S {
@@ -4220,9 +4233,7 @@ const pattern = /this\.db\.batch\(/
         "clock-lint.py",
         {
             **store("const SQL = `SELECT SYSDATE() AS t`\n"),
-            "packages/core/src/sql-tree.ts": (
-                SCRIPTS.parent / "packages/core/src/sql-tree.ts"
-            ).read_text().replace("  'sysdate',\n", ""),
+            "packages/core/src/sql-tree.ts": tree_rules_without_spelling("sysdate"),
         },
         "a name the audited tree's list does not hold is not refused: the list has one definition",
     ),
@@ -5262,8 +5273,9 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
-        # clock-lint reads the clock spellings from the tree it audits. A fixture that
-        # brings no list of its own gets the repository's, as batch-lint's gets its list.
+        # clock-lint reads the clock spellings from the checkout its script stands in, and
+        # this copies the script into the fixture. A fixture that brings no list of its own
+        # gets the repository's, as batch-lint's gets its list of text statements.
         spellings = root / "packages" / "core" / "src" / "sql-tree.ts"
         if lint == "clock-lint.py" and not spellings.exists():
             spellings.parent.mkdir(parents=True, exist_ok=True)

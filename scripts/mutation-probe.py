@@ -15768,10 +15768,11 @@ def spelling_entries(line: str) -> list[str]:
     arm of a pattern holds the alternatives of its first group, one or many, once
     anything it interpolates is set aside, and an arm with no group holds itself. A group
     a mutant has left with one alternative is still a group: read as the whole arm, the
-    mutant that dropped one of two spellings would look as if it had dropped both. This reads text,
-    not a pattern: a spelling written some other way, such as several operators inside
-    one character class, is one entry here however many it spells. See the self-test's
-    false negative.
+    mutant that dropped one of two spellings would look as if it had dropped both.
+
+    This reads text, not a pattern: a spelling written some other way, such as several
+    operators inside one character class, is one entry here however many it spells. See
+    the self-test's false negative.
     """
     arm = TREE_SPELLING_ARM.search(line)
     if arm is None:
