@@ -5,6 +5,7 @@ import { requireDurableString, requireIdentifiersFit } from './validate.js'
 const {
   ObjectDefineProperty: defineProperty,
   ObjectFreeze: freeze,
+  ObjectGetPrototypeOf: getPrototypeOf,
   ObjectKeys: objectKeys,
   PromiseReject: rejected,
   ReflectApply: apply,
@@ -255,7 +256,14 @@ export abstract class HeldPort {
           } catch (error) {
             return rejected(error)
           }
-          return apply(entry as (...entryArgs: unknown[]) => unknown, this, args)
+          // The entry is looked up when it is called, on the prototype chain and so past
+          // this property, and never captured: a method patched onto the class after this
+          // store was constructed, as a test double is, is reached, with the check in front.
+          const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)
+          if (typeof called !== 'function') {
+            return rejected(new TrustedTypeError(`the store no longer defines ${method}`))
+          }
+          return apply(called as (...entryArgs: unknown[]) => unknown, this, args)
         },
       })
     }
