@@ -443,6 +443,39 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // Sagas.tla's RollbackRetry spends exactly one attempt of a rollback's budget, and
+    // TriesOnlyGrow never gives one back. So the count is the store's to keep: one more than
+    // the last one stored, whatever a caller of the port makes of it.
+    it("counts a rollback's failed attempts itself, one more than the last one stored", async () => {
+      const { taskId, pass } = await rollingBack(f, ['a'])
+      const stored = async () =>
+        decodeRollbackTry(
+          String(
+            (
+              await rowsOf(
+                f.raw,
+                'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+                [taskId, triesOf('a', 1).key],
+              )
+            )[0]?.state,
+          ),
+        )?.tries
+      // The first failed attempt, handed over as the seventh.
+      await f.store.failRollback(
+        Q,
+        pass.runId,
+        pass.claimToken,
+        CAUSE,
+        { delaySeconds: 0 },
+        triesOf('a', 7),
+      )
+      const first = await stored()
+      const again = await claimActivated(f.store, Q, 'w-pass-2')
+      // The second, handed over as the first again, which would give a spent attempt back.
+      await f.store.failRollback(Q, again.runId, again.claimToken, CAUSE, null, triesOf('a', 1))
+      expect({ first, second: await stored() }).toEqual({ first: 1, second: 2 })
+    })
+
     it('refuses a failed rollback of a task that is not rolling back, and writes nothing', async () => {
       const spawned = await f.store.spawn(Q, 'saga', '{}')
       const run = await claimActivated(f.store, Q, 'w-forward')
