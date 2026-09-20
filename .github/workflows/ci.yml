@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
+          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
               # On MySQL a write keyed by a subquery reads its keys first and its table second,
               # through the index of its key, and a delete reads its keys through the index of
               # their stamp.
