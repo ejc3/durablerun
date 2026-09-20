@@ -306,7 +306,7 @@ describe('PgExecutor transactions', () => {
       victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
       // Only a deadlock is run again. Any other failure is reported the first time.
-      anotherError: { outcome: 'StoreUnavailableError', texts: once },
+      anotherError: { outcome: 'PermanentStoreError', texts: once },
       // A read is run again like a write. It takes table locks, so it can be the victim.
       victimOnceInARead: [1],
     })
@@ -644,6 +644,73 @@ describe('PgExecutor error classification', () => {
     await expect(
       executor(new FakePool(client)).batch('retryable', [{ sql: 'UPDATE t SET v = 1', args: [] }]),
     ).rejects.toMatchObject({ name: 'StoreUnavailableError', cause: retryable })
+  })
+
+  it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage', async () => {
+    const typed = (code: string) => {
+      const client = new FakeClient((text) => {
+        if (text === 'UPDATE t SET v = 1') throw databaseError(code)
+        return EMPTY_RESULT
+      })
+      return executor(new FakePool(client))
+        .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
+        .then(
+          () => 'answered',
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+    }
+    const codes = {
+      uniqueViolation: '23505',
+      notNullViolation: '23502',
+      numericValueOutOfRange: '22003',
+      syntaxError: '42601',
+      insufficientPrivilege: '42501',
+      // Read first, and a type of its own: a migration repairs it.
+      undefinedTable: '42P01',
+      serializationFailure: '40001',
+      deadlockDetected: '40P01',
+      connectionFailure: '08006',
+      tooManyConnections: '53300',
+      adminShutdown: '57P01',
+      ioError: '58030',
+      featureNotSupported: '0A000',
+      internalError: 'XX000',
+    }
+    const observed: Record<string, string> = {}
+    for (const [name, code] of Object.entries(codes)) observed[name] = await typed(code)
+    expect(
+      observed,
+      'mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed',
+    ).toEqual({
+      uniqueViolation: 'PermanentStoreError',
+      notNullViolation: 'PermanentStoreError',
+      numericValueOutOfRange: 'PermanentStoreError',
+      syntaxError: 'PermanentStoreError',
+      insufficientPrivilege: 'PermanentStoreError',
+      undefinedTable: 'SchemaMismatchError',
+      serializationFailure: 'StoreUnavailableError',
+      deadlockDetected: 'StoreUnavailableError',
+      connectionFailure: 'StoreUnavailableError',
+      tooManyConnections: 'StoreUnavailableError',
+      adminShutdown: 'StoreUnavailableError',
+      ioError: 'StoreUnavailableError',
+      featureNotSupported: 'StoreUnavailableError',
+      internalError: 'StoreUnavailableError',
+    })
+    const refusal = await executor(
+      new FakePool(
+        new FakeClient((text) => {
+          if (text === 'UPDATE t SET v = 1') throw databaseError('23505', 'duplicate key')
+          return EMPTY_RESULT
+        }),
+      ),
+    )
+      .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
+      .catch((error: unknown) => error)
+    expect(refusal).toMatchObject({
+      message: 'batch(typed) failed permanently (SQLSTATE 23505): duplicate key',
+      cause: { code: '23505' },
+    })
   })
 
   it('does not reclassify a malformed PostgreSQL result as an outage', async () => {

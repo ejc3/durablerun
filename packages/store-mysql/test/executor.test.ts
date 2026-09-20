@@ -446,3 +446,68 @@ describe('MysqlExecutor transactions', () => {
     expect(connection.sent.some((sql) => sql.includes('GET_LOCK'))).toBe(false)
   })
 })
+
+describe('MysqlExecutor error typing, by the state and the number the server sends', () => {
+  const WRITE = 'UPDATE t SET a = 1'
+  /** The name of what a write batch throws when the server fails its statement this way. */
+  const typed = async (failure: { errno?: number; sqlState?: string; times?: number }) => {
+    const { times = 1, ...fields } = failure
+    const connection = new FakeConnection()
+    connection.failures.set(WRITE, {
+      error: Object.assign(new Error('the server refused'), fields),
+      times,
+    })
+    return executorOver(connection)
+      .batch('fixture:write', [{ sql: WRITE, args: [] }])
+      .then(
+        () => 'answered',
+        (error: unknown) => (error instanceof Error ? error.name : String(error)),
+      )
+  }
+
+  it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage', async () => {
+    const failures = {
+      duplicateEntry: { errno: 1062, sqlState: '23000' },
+      columnCannotBeNull: { errno: 1048, sqlState: '23000' },
+      syntaxError: { errno: 1064, sqlState: '42000' },
+      truncatedValue: { errno: 1292, sqlState: '22007' },
+      valueOutOfRange: { errno: 1264, sqlState: '22003' },
+      // Read first, and types of their own: a name too long, and a schema a migration repairs.
+      dataTooLong: { errno: 1406, sqlState: '22001' },
+      unknownColumn: { errno: 1054, sqlState: '42S22' },
+      lockWaitTimeout: { errno: 1205, sqlState: 'HY000' },
+      // Run again twice, and an outage once it is reported.
+      deadlock: { errno: 1213, sqlState: '40001', times: 3 },
+      serverHasGoneAway: { errno: 2006 },
+      closedPool: {},
+    }
+    const observed: Record<string, string> = {}
+    for (const [name, failure] of Object.entries(failures)) observed[name] = await typed(failure)
+    expect(observed, 'mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed').toEqual({
+      duplicateEntry: 'PermanentStoreError',
+      columnCannotBeNull: 'PermanentStoreError',
+      syntaxError: 'PermanentStoreError',
+      truncatedValue: 'PermanentStoreError',
+      valueOutOfRange: 'PermanentStoreError',
+      dataTooLong: 'InvalidDurableStringError',
+      unknownColumn: 'SchemaMismatchError',
+      lockWaitTimeout: 'StoreUnavailableError',
+      deadlock: 'StoreUnavailableError',
+      serverHasGoneAway: 'StoreUnavailableError',
+      closedPool: 'StoreUnavailableError',
+    })
+  })
+
+  it('types a value of the wrong type for its column permanent by its number, because its state is the general one', async () => {
+    expect(
+      {
+        wrongValueForField: await typed({ errno: 1366, sqlState: 'HY000' }),
+        anotherGeneralError: await typed({ errno: 1105, sqlState: 'HY000' }),
+      },
+      'mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent',
+    ).toEqual({
+      wrongValueForField: 'PermanentStoreError',
+      anotherGeneralError: 'StoreUnavailableError',
+    })
+  })
+})

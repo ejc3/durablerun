@@ -1,3 +1,4 @@
+import { PermanentStoreError, StoreUnavailableError } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor } from '../src/index.js'
 
@@ -58,5 +59,62 @@ describe('value normalization', () => {
     const value = r?.rows[0]?.b
     expect(value).toBeInstanceOf(Uint8Array)
     expect([...(value as Uint8Array)]).toEqual([1, 2, 3, 255])
+  })
+})
+
+describe('error typing, by the result code and never by the message', () => {
+  const kindOf = (error: unknown) =>
+    error instanceof PermanentStoreError
+      ? 'permanent'
+      : error instanceof StoreUnavailableError
+        ? 'outage'
+        : String(error)
+  const thrownBy = (sql: string) =>
+    db.batch('typed', [{ sql, args: [] }]).then(
+      () => 'answered',
+      (error: unknown) => ({
+        kind: kindOf(error),
+        code: ((error as Error).cause as { code?: unknown } | undefined)?.code,
+      }),
+    )
+
+  it('types a broken constraint and a datatype mismatch permanent, and every other code an outage', async () => {
+    await db.batch('setup', [
+      {
+        sql: `CREATE TABLE strict (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, n INTEGER CHECK (n < 10))`,
+        args: [],
+      },
+      { sql: `INSERT INTO strict VALUES (1, 'a', 1)`, args: [] },
+    ])
+    expect(
+      {
+        primaryKey: await thrownBy(`INSERT INTO strict VALUES (1, 'b', 1)`),
+        unique: await thrownBy(`INSERT INTO strict VALUES (2, 'a', 1)`),
+        notNull: await thrownBy(`INSERT INTO strict VALUES (3, NULL, 1)`),
+        check: await thrownBy(`INSERT INTO strict VALUES (4, 'd', 99)`),
+        mismatch: await thrownBy(`INSERT INTO strict VALUES ('not a rowid', 'e', 1)`),
+        // SQLite's generic code. It also names a transaction state error that a new
+        // connection cures, so a syntax error cannot be told from one by its code.
+        syntax: await thrownBy(`SELEC 1`),
+      },
+      'mutation-verdict:behavior:libsql-permanent-result-code-is-typed',
+    ).toEqual({
+      primaryKey: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_PRIMARYKEY' },
+      unique: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_UNIQUE' },
+      notNull: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_NOTNULL' },
+      check: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_CHECK' },
+      mismatch: { kind: 'permanent', code: 'SQLITE_MISMATCH' },
+      syntax: { kind: 'outage', code: 'SQLITE_ERROR' },
+    })
+  })
+
+  it('types a batch on a closed client an outage', async () => {
+    const closed = LibsqlExecutor.open(':memory:')
+    closed.close()
+    const refusal = await closed
+      .batch('typed', [{ sql: `SELECT 1`, args: [] }], 'read')
+      .catch((error: unknown) => error)
+    expect(kindOf(refusal)).toBe('outage')
+    expect(refusal).toMatchObject({ cause: { code: 'CLIENT_CLOSED' } })
   })
 })

@@ -1,5 +1,6 @@
 import {
   InvalidDurableStringError,
+  PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -49,6 +50,30 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
  * budget was gone.
  */
 const ER_DATA_TOO_LONG = 1406
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. MySQL sends the state beside its error number, and these are the
+ * classes the PostgreSQL executor reads, so the two servers type by one rule. A class takes
+ * in every number MySQL files under it, where a list of numbers kept by hand lacked 1064, a
+ * statement the server will never accept, and answered it as an outage.
+ *
+ * The answers above keep a branch by number and are read first, because each has a type of
+ * its own: a missing `meta` on the version read, a value too long for its column, and the
+ * schema mismatch numbers. Every other state stays an outage, which is what every number
+ * was before this list: a deadlock victim (1213, state 40001), which the executor runs again
+ * before it reports one, a lock wait timeout (1205, HY000), and an error with no state at
+ * all, as a lost connection or a closed pool is.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
+
+/**
+ * A value of the wrong type for its column. It is as permanent as the classes above, and
+ * MySQL files it under HY000, its general state, which also holds a lock wait timeout, so
+ * no class can name it.
+ */
+const ER_TRUNCATED_WRONG_VALUE_FOR_FIELD = 1366
 
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
@@ -410,6 +435,12 @@ function errorNumber(error: unknown): number | undefined {
   return typeof errno === 'number' ? errno : undefined
 }
 
+/** The class of the SQLSTATE a server error carries: its first two characters. */
+function sqlStateClass(error: unknown): string | undefined {
+  const state = (error as { sqlState?: unknown } | null)?.sqlState
+  return typeof state === 'string' ? state.slice(0, 2) : undefined
+}
+
 /** One definition of a deadlock victim, for the count and for the decision to run it again. */
 function isDeadlockVictim(error: unknown): boolean {
   return errorNumber(error) === ER_LOCK_DEADLOCK
@@ -445,6 +476,16 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
     if (SCHEMA_MISMATCH_ERRNOS.has(errno)) {
       return new SchemaMismatchError(
         `batch(${label}) hit a schema this build does not expect (MySQL error ${errno}): ${errorDescription(error)}`,
+        { cause: error },
+      )
+    }
+    const stateClass = sqlStateClass(error)
+    if (
+      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
+      errno === ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+    ) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,
         { cause: error },
       )
     }
