@@ -14,6 +14,7 @@ import {
   type StoreFixture,
   type StoreFixtureFactory,
   executeStorageCorruption,
+  nullEventPayload,
 } from './fixture.js'
 import { describeFailure } from './scenario.js'
 
@@ -450,13 +451,7 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       const fixture = await makeFixture('schema-admin-null-payload')
       try {
         await fixture.store.emitEvent('q', 'held', '{"kept":1}')
-        const disposition = await executeStorageCorruption(fixture, {
-          table: 'events',
-          queue: 'q',
-          eventName: 'held',
-          column: 'payload',
-          invalidRepresentation: 'null',
-        })
+        const disposition = await executeStorageCorruption(fixture, nullEventPayload('q', 'held'))
         const [stored] = await fixture.raw.batch(
           'fixture:read',
           [

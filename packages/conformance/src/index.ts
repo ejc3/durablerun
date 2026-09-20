@@ -11,6 +11,7 @@ export {
   corruptionTarget,
   executeStorageCorruption,
   overWidthWrite,
+  nullEventPayload,
   nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from './fixture.js'

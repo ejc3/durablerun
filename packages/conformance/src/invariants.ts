@@ -432,9 +432,8 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     // read as a timeout. Every dialect's schema refuses the write, and this is its twin for
     // a database whose schema was tampered with or never reached that version.
     if (event.payload === null) {
-      const queue = text(event, 'queue')
-      const eventName = text(event, 'event_name')
-      add('event/payload-null', `events/${queue}/${eventName}`, ['events', queue, eventName])
+      const { subject, identity } = rowSubject('events', event)
+      add('event/payload-null', subject, identity)
     }
   }
   const runsByTask = new Map<string, SqlRow[]>()

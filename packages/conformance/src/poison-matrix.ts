@@ -30,6 +30,7 @@ import {
   type StoreFixture,
   type StoreFixtureFactory,
   executeStorageCorruption,
+  nullEventPayload,
 } from './fixture.js'
 import {
   ENGINE_INVARIANT_CONDITIONS,
@@ -703,13 +704,7 @@ const event = (payload: string): SqlStatement =>
  * write, so it goes through the fixture's storage-corruption door, which credits a refusal
  * it saw and injects where a schema would still accept it.
  */
-const NULL_EVENT_PAYLOAD: StorageCorruption = {
-  table: 'events',
-  queue: Q,
-  eventName: EVENT,
-  column: 'payload',
-  invalidRepresentation: 'null',
-}
+const NULL_EVENT_PAYLOAD = nullEventPayload(Q, EVENT)
 
 /**
  * Atomic witnesses, not one happy-path example per checker. OR arms and

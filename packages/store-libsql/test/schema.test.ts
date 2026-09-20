@@ -284,7 +284,7 @@ describe('an event payload is never SQL NULL', () => {
       refusal: 'SQLITE_CONSTRAINT_TRIGGER: NOT NULL constraint failed: events.payload',
       stopped: { version: 9, events: [{ event_name: 'held-null', payload: null }], triggers: [] },
       repaired: {
-        version: 10,
+        version: CURRENT_SCHEMA_VERSION,
         events: [{ event_name: 'held-null', payload: '{"repaired":1}' }],
         triggers: ['events_payload_not_null_insert', 'events_payload_not_null_update'],
       },

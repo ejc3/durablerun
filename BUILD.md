@@ -391,9 +391,8 @@ a last docs PR gives a live owner to every open bullet that is left.
     NULL on PostgreSQL, declares it on MySQL through a form the catalog guards,
     which is the repeatable column change PR4.3's open item (4) asked for, and
     holds it on libSQL with two triggers, because SQLite cannot add NOT NULL to
-    a column that exists and the rebuild that would declare it took 48 and 56
-    seconds on a million events of 1 KB while a fifth to a third of another
-    connection's calls failed. The poison matrix's witnesses of a stored NULL
+    a column that exists and the rebuild that would declare it was measured and
+    refused. The poison matrix's witnesses of a stored NULL
     go through the fixture's storage-corruption door, where every dialect now
     refuses them. Five registered mutations hold the servers' lines, the strict
     `sql_mode` that MySQL's refusal depends on among them, and libSQL's frozen
@@ -958,8 +957,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Measured on a million events under the traffic of a build whose last
     version is 9 (DESIGN.md has the traffic and every run): PostgreSQL 85 to
     129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 to 1.2 s and 2.7
-    s, libSQL 90 and 430 ms with nothing else running, where the rebuild took
-    1.3 s and 48 to 56 s. No call of the older build failed on any dialect.
+    s, libSQL 90 and 430 ms with nothing else running. No call of the older
+    build failed on any dialect.
   - A row that already holds NULL is a foreign writer's or tampering. On each
     dialect a case through the real executor holds that `migrate()` fails by
     the dialect's own refusal, leaves version 9 and leaves the row as it was.
@@ -992,7 +991,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     schema on every dialect. They stay: libSQL's also refuses a payload that is
     not text, a build can meet a database below version 10, and removing them
     would move the corpus on three dialects. Trigger: a stated oldest schema
-    version.
+    version. (3) The poison matrix runs a witness that every dialect's schema
+    refuses once for each of its 21 write labels, and each run opens a fixture,
+    sees the write refused and closes. One cell for such a witness would do,
+    for these two and for the numeric witnesses PostgreSQL and MySQL refuse.
+    It changes the matrix's machinery and its pinned counts. Trigger: the
+    matrix's share of a conformance leg's time becoming a finding.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

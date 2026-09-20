@@ -13,6 +13,7 @@ import {
   nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
+import { firstInCauseChain, isString } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
@@ -23,16 +24,7 @@ const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
   '42846', // cannot_coerce
 ])
 
-function sqlState(error: unknown): string | undefined {
-  let current = error
-  for (let depth = 0; depth < 6; depth++) {
-    if (typeof current !== 'object' || current === null) return undefined
-    const candidate = current as { readonly code?: unknown; readonly cause?: unknown }
-    if (typeof candidate.code === 'string') return candidate.code
-    current = candidate.cause
-  }
-  return undefined
-}
+const sqlState = (error: unknown) => firstInCauseChain(error, 'code', isString)
 
 const NOT_NULL_VIOLATION = '23502'
 

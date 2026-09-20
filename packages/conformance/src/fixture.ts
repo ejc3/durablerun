@@ -125,6 +125,11 @@ export function unboundedOverWidthAttempt(
 
 type NullPayloadCorruption = Extract<StorageCorruption, { invalidRepresentation: 'null' }>
 
+/** SQL NULL over the stored payload of one event, as a kind the storage-corruption door takes. */
+export function nullEventPayload(queue: string, eventName: string): NullPayloadCorruption {
+  return { table: 'events', queue, eventName, column: 'payload', invalidRepresentation: 'null' }
+}
+
 /**
  * SQL NULL written over an event's stored payload, which is the same SQL on every dialect,
  * and the read that proves it landed where a schema accepts it. An await that timed out

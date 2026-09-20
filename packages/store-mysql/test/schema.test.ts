@@ -44,13 +44,10 @@ describe('MySQL schema', () => {
     // A column that becomes NOT NULL has no IF form either and goes through a guarded form
     // of its own, which the real-server test repeats the same way, under version 10's hash.
     // Every other statement creates a table if missing.
-    const guardedIndexes = [
+    const guardedForms = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
       createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
       createIndexIfMissing('runs', 'runs_held', '(queue, claimed_by(255), state)'),
-    ]
-    const guardedForms = [
-      ...guardedIndexes,
       setNotNullWhileNullable(
         'events',
         'payload',
