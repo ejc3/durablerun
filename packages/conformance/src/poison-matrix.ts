@@ -738,12 +738,14 @@ const ADDRESSED_COUNTER_TARGETABILITY = Object.freeze({
 const addressedArmsOf = <Key extends string>(
   table: AddressedTargetability<Key>,
   key: Key,
+  change: (targetability: PoisonTargetability) => PoisonTargetability = (targetability) =>
+    targetability,
 ): Readonly<Record<PoisonAddressedArm, PoisonTargetability>> => ({
-  activate: table.activate[key],
-  'defer-launch': table['defer-launch'][key],
-  'retry-task': table['retry-task'][key],
-  fail: table.fail[key],
-  'fail-rollback': table['fail-rollback'][key],
+  activate: change(table.activate[key]),
+  'defer-launch': change(table['defer-launch'][key]),
+  'retry-task': change(table['retry-task'][key]),
+  fail: change(table.fail[key]),
+  'fail-rollback': change(table['fail-rollback'][key]),
 })
 
 const ALL_TARGET_ARMS = Object.freeze({
@@ -815,7 +817,6 @@ function counterBoundaryTarget(
   side: 'upper' | 'lower',
 ): CounterBoundaryTarget {
   const arms = COUNTER_TARGETABILITY[`${fieldId}/${side}`]
-  const addressed = addressedArmsOf(ADDRESSED_COUNTER_TARGETABILITY, `${fieldId}/${side}`)
   const companions = counterCompanions(fieldId, side)
   const mergeCompanions = (targetability: PoisonTargetability): PoisonTargetability =>
     targetability.kind === 'targetable' && companions !== undefined
@@ -832,11 +833,7 @@ function counterBoundaryTarget(
       claim: mergeCompanions(arms.claim),
       'sweep:lost-launch': mergeCompanions(arms['sweep:lost-launch']),
       'sweep:claim-timeout': mergeCompanions(arms['sweep:claim-timeout']),
-      activate: mergeCompanions(addressed.activate),
-      'defer-launch': mergeCompanions(addressed['defer-launch']),
-      'retry-task': mergeCompanions(addressed['retry-task']),
-      fail: mergeCompanions(addressed.fail),
-      'fail-rollback': mergeCompanions(addressed['fail-rollback']),
+      ...addressedArmsOf(ADDRESSED_COUNTER_TARGETABILITY, `${fieldId}/${side}`, mergeCompanions),
     }),
   })
 }
@@ -1947,7 +1944,10 @@ function endedChild(taskId: string): SqlStatement {
 }
 
 /** The attempt record a `fail-rollback` invocation writes. */
-const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}probe`
+export const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}probe`
+
+/** The marker of the one registered step a seeded saga has started. */
+export const PROBE_STEP_STARTED = `${SAGA_STARTED_PREFIX}probe`
 
 /**
  * The saga checkpoints of a task with one registered step started: that alone while
@@ -1960,7 +1960,7 @@ const sagaCheckpoints = (
   saga: 'step-started' | 'rolling-back',
 ): SqlStatement[] =>
   [
-    [`${SAGA_STARTED_PREFIX}probe`, '1'],
+    [PROBE_STEP_STARTED, '1'],
     ...(saga === 'rolling-back' ? [[SAGA_PHASE_CHECKPOINT, '{"name":"ProbeCause"}']] : []),
   ].map(([name, state]) =>
     sql(
@@ -1979,8 +1979,6 @@ export async function seedHealthyTrigger(
   raw: SqlExecutor,
   label: string,
   target: InvocationTarget = HEALTHY_INVOCATION,
-  /** The poisoned task's saga rows are its target profile's, so none are laid down here. */
-  poisonSeedsItsSaga = false,
 ): Promise<void> {
   // A task of its own needs no rows. A child is spawned by a run that is running under
   // its claim, which is what the default arm seeds.
@@ -2079,13 +2077,12 @@ export async function seedHealthyTrigger(
       ]
       break
     case 'fail-rollback':
-      // A failed rollback is one only while its task is rolling back, so both the
-      // trigger and the poisoned task stand in the phase, with one rollback owed.
+      // A failed rollback is one only while its task is rolling back, so the trigger
+      // stands in the phase, with one rollback owed.
       statements = [
         triggerTask('running'),
         triggerRun({ state: 'running' }),
         ...rollingBack(TRIGGER_TASK, TRIGGER_RUN),
-        ...(poisonSeedsItsSaga ? [] : rollingBack(TASK, RUN)),
       ]
       break
     default:
@@ -3076,7 +3073,8 @@ function declaredTargetErrors(
   const task = rowById(before, 'tasks', TASK)
   const run = rowById(before, 'runs', RUN)
   const healthyRun = rowById(before, 'runs', TRIGGER_RUN)
-  const expectedState = POISON_TARGET_PROFILE_SEEDS[profile].state
+  const seed = POISON_TARGET_PROFILE_SEEDS[profile]
+  const expectedState = seed.state
   const live = isLiveState(expectedState)
   if (task?.state !== expectedState || run?.state !== expectedState) {
     errors.push(`declared ${profile} lifecycle was not applied`)
@@ -3154,7 +3152,7 @@ function declaredTargetErrors(
     errors.push(`declared ${profile} has an unrelated higher owned ordinal`)
   }
 
-  if (profile === 'claim-pending' || profile === 'claim-sleeping') {
+  if (live && seed.claimedBy === null) {
     const available = exactInteger(run?.available_at_ms)
     if (
       run?.claimed_by !== null ||
@@ -3199,7 +3197,7 @@ function declaredTargetErrors(
     return errors
   }
 
-  if (profile === 'retry-task-failed') {
+  if (!live) {
     if (typeof task?.failure_reason !== 'string' || task.completed_payload !== null) {
       errors.push(`declared ${profile} task is not a well-formed failure`)
     }
@@ -3207,35 +3205,37 @@ function declaredTargetErrors(
   }
 
   const expires = exactInteger(run?.claim_expires_at_ms)
-  const { saga, claimExpiresAtMs: seededExpiry } = POISON_TARGET_PROFILE_SEEDS[profile]
-  // A profile seeded under a lease that still runs is a worker's or a launcher's to act
-  // on. A sweep profile's lease is seeded expired, and is checked below.
+  // A claim seeded under a lease that still runs is a worker's or a launcher's to act on.
+  // One seeded expired is a lease sweep's, and is checked last.
+  const seededLive = seed.claimExpiresAtMs !== null && seed.claimExpiresAtMs > NOW
   if (
-    seededExpiry !== null &&
-    seededExpiry > NOW &&
+    seededLive &&
     (run?.claimed_by !== TOKEN || expires === undefined || expires <= BigInt(NOW))
   ) {
     errors.push(`declared ${profile} run is not a live owned claim`)
   }
+  const { saga } = seed
   if (saga !== null) {
     const names = before.checkpoints
       .filter((row) => row.task_id === TASK)
       .map((row) => row.checkpoint_name)
     if (
-      !names.includes(`${SAGA_STARTED_PREFIX}probe`) ||
+      !names.includes(PROBE_STEP_STARTED) ||
       names.includes(SAGA_PHASE_CHECKPOINT) !== (saga === 'rolling-back')
     ) {
       errors.push(`declared ${profile} saga does not stand where the profile says`)
     }
     return errors
   }
-  if (profile === 'activate-unactivated' || profile === 'defer-launch-unactivated') {
-    // The receipt names the poison invocation's generation, and the latch admits it only
-    // while no activation has reached that generation.
+  if (seededLive) {
+    // A live claim no activation has reached is what a claim receipt names. The receipt
+    // names the poison invocation's generation, and the latch admits it only while no
+    // activation has reached that generation.
     if (
-      (targetFieldId !== 'run-claim-gen' && claimGen !== BigInt(POISON_INVOCATION.claimGen)) ||
-      (targetFieldId !== 'run-activated-gen' &&
-        (claimGen === undefined || activatedGen === undefined || activatedGen >= claimGen))
+      seed.activatedGen < seed.claimGen &&
+      ((targetFieldId !== 'run-claim-gen' && claimGen !== BigInt(POISON_INVOCATION.claimGen)) ||
+        (targetFieldId !== 'run-activated-gen' &&
+          (claimGen === undefined || activatedGen === undefined || activatedGen >= claimGen)))
     ) {
       errors.push(`declared ${profile} claim is not the unactivated one its receipt names`)
     }
@@ -3662,13 +3662,18 @@ async function preparePoisonCase(
       }
     }
     if (options.healthyTrigger !== false) {
-      await seedHealthyTrigger(
-        fixture.raw,
-        label,
-        HEALTHY_INVOCATION,
-        options.targetProfile !== undefined &&
-          POISON_TARGET_PROFILE_SEEDS[options.targetProfile].saga !== null,
-      )
+      // The poisoned task's rows are this function's to lay down, saga rows included. A
+      // failed rollback is one only while its task is rolling back, so a poisoned task
+      // whose profile seeds no saga is put in the phase here, as the trigger's seeding
+      // puts the trigger.
+      const profileSaga =
+        options.targetProfile === undefined
+          ? null
+          : POISON_TARGET_PROFILE_SEEDS[options.targetProfile].saga
+      if (label === 'fail-rollback' && profileSaga === null) {
+        await fixture.raw.batch('poison:rolling-back', rollingBack(TASK, RUN), 'write')
+      }
+      await seedHealthyTrigger(fixture.raw, label)
     }
     await options.beforeSnapshot?.(fixture.raw)
 
@@ -3876,11 +3881,18 @@ export function runPoisonTargetCase(
   })
 }
 
+/** A witness that corrupts nothing, so a case prepared over it is its profile and no more. */
+const NOTHING_CORRUPT: PoisonWitness = Object.freeze({
+  id: 'nothing-corrupt',
+  covers: [],
+  statements: [],
+})
+
 /**
- * The control of an addressed profile: the arm's own call on the profile with nothing
- * corrupt. The call must act on the poison target. That is what makes a targeted refusal
- * on the same profile the corruption's, and not a condition of the profile that refuses
- * every caller.
+ * The control of an addressed profile: the arm's own call on a case prepared exactly as
+ * a targeted cell of the profile is, over a witness that corrupts nothing. The call must
+ * act on the poison target. That is what makes a targeted refusal on the same profile the
+ * corruption's, and not a condition of the profile that refuses every caller.
  */
 export async function observeCleanAddressedProfile(
   makeFixture: StoreFixtureFactory,
@@ -3891,16 +3903,10 @@ export async function observeCleanAddressedProfile(
   /** Where the call left the poisoned task: its state, its runs in order, and its checkpoints. */
   effect: { task: string; runs: string[]; checkpoints: string[] }
 }> {
-  const f = await makeFixture(`poison-clean-${profile}`)
+  const { fixture: f } = await preparePoisonCase(makeFixture, arm, NOTHING_CORRUPT, {
+    targetProfile: profile,
+  })
   try {
-    await seedBase(f)
-    await preparePoisonTarget(f.raw, profile, {})
-    await seedHealthyTrigger(
-      f.raw,
-      arm,
-      HEALTHY_INVOCATION,
-      POISON_TARGET_PROFILE_SEEDS[profile].saga !== null,
-    )
     const before = await snapshot(f.raw)
     const [invocation] = await Promise.allSettled([invoke(arm, f.store, POISON_INVOCATION)])
     const after = await snapshot(f.raw)

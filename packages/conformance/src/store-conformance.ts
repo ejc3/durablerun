@@ -1,4 +1,4 @@
-import { SAGA_PHASE_CHECKPOINT, SAGA_STARTED_PREFIX, SAGA_TRIES_PREFIX } from '@durablerun/core'
+import { SAGA_PHASE_CHECKPOINT } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { childTaskConformance } from './child-tasks.js'
@@ -20,10 +20,12 @@ import {
   POISON_WITNESSES,
   POISON_WITNESS_COUNT,
   POISON_WRITE_LABELS,
+  PROBE_STEP_STARTED,
   type PoisonAddressedProfile,
   type PoisonRelationalTargetRecord,
   type PoisonTargetCase,
   type PoisonTargetProfile,
+  ROLLBACK_TRIED,
   duplicatePoisonWitnessIds,
   observeCleanAddressedProfile,
   observePoisonAggregateAmbientCase,
@@ -1286,17 +1288,13 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         'fail-started-step': {
           task: 'pending',
           runs: ['1 failed', '2 pending'],
-          checkpoints: [SAGA_PHASE_CHECKPOINT, `${SAGA_STARTED_PREFIX}probe`],
+          checkpoints: [SAGA_PHASE_CHECKPOINT, PROBE_STEP_STARTED],
         },
         // The failed rollback ended the task, with its attempt recorded.
         'fail-rollback-rolling-back': {
           task: 'failed',
           runs: ['1 failed'],
-          checkpoints: [
-            `${SAGA_TRIES_PREFIX}probe`,
-            SAGA_PHASE_CHECKPOINT,
-            `${SAGA_STARTED_PREFIX}probe`,
-          ],
+          checkpoints: [ROLLBACK_TRIED, SAGA_PHASE_CHECKPOINT, PROBE_STEP_STARTED],
         },
       } as const satisfies Record<
         PoisonAddressedProfile,
@@ -1344,15 +1342,17 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       }
       for (const target of generatedTargets) {
         it(`${target.profile} contains ${target.witness.id}`, async () => {
-          const contained = await runPoisonTargetCase(makeFixture, target).then(
-            ({ label, witness, profile }) => ({ label, witness, profile }),
-            (error: unknown) => ({ refused: String(error) }),
-          )
-          expect(contained, targetVerdicts[target.id]).toEqual({
-            label: target.label,
-            witness: target.witness.id,
-            profile: target.profile,
-          })
+          const { id, label, profile, witness } = target
+          expect(await captureTargetObservations([target]), targetVerdicts[id]).toEqual([
+            {
+              id,
+              label,
+              profile,
+              witness: witness.id,
+              kind: 'resolved',
+              result: { label, profile, witness: witness.id },
+            },
+          ])
         })
       }
     })

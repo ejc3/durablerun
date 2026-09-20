@@ -2,17 +2,22 @@ import {
   INFRA_RETRY_CAP,
   RELAUNCH_CAP,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SchedulerStore,
   type SqlExecutor,
   type SqlRow,
-  encodeRollbackTry,
   parseFenceStamp,
 } from '@durablerun/core'
 import type { StoreFixture } from './fixture.js'
-import { checkpointOwned, claimActivated, claimOne } from './scenario.js'
-import { CORPUS_VARIANT_NAMERS, readCorpus, readCorpusDescriptor } from './sql-corpus.js'
+import { triesOf } from './sagas.js'
+import { checkpointOwned, claimActivated, claimOne, infraRetrySeed } from './scenario.js'
+import {
+  CORPUS_VARIANT_NAMERS,
+  insertsARun,
+  readCorpus,
+  readCorpusDescriptor,
+  signatureOf,
+} from './sql-corpus.js'
 
 /**
  * Generated successor-carry surface.
@@ -36,15 +41,11 @@ export interface RunInsert {
   readonly index: number
 }
 
-const INSERTS_A_RUN = /^insert into ["`]runs["`]/
-
 /** Every statement of `dialect`'s corpus that inserts a run. */
 export function runInsertsOf(dialect: string): RunInsert[] {
   return Object.entries(readCorpus(dialect)).flatMap(([label, variants]) =>
     Object.entries(variants).flatMap(([variant, signature]) =>
-      signature.flatMap(({ sql }, index) =>
-        INSERTS_A_RUN.test(sql) ? [{ label, variant, index }] : [],
-      ),
+      signature.flatMap(({ sql }, index) => (insertsARun(sql) ? [{ label, variant, index }] : [])),
     ),
   )
 }
@@ -111,12 +112,6 @@ type Scenario = (world: CarryWorld) => Promise<void>
 
 const BOOM = '{"name":"Boom"}'
 
-/** The failed rollback's attempt record, the one name `failRollback` may commit. */
-const triedOnce = {
-  key: `${SAGA_TRIES_PREFIX}a`,
-  stateJson: encodeRollbackTry({ tries: 1, errorJson: BOOM }),
-}
-
 /** Spawns a task, claims and activates its run, and parks the carried values on it. */
 async function parkedRun(world: CarryWorld, token: string, maxAttempts?: number) {
   await world.store.spawn(world.queue, 'job', '{}', maxAttempts ? { maxAttempts } : undefined)
@@ -181,7 +176,7 @@ const SCENARIOS: Readonly<Record<string, readonly Scenario[]>> = {
         pass.claimToken,
         BOOM,
         { delaySeconds: 0 },
-        triedOnce,
+        triesOf('a', 1),
       )
     },
   ],
@@ -224,16 +219,7 @@ const SCENARIOS: Readonly<Record<string, readonly Scenario[]>> = {
       const run = await parkedRun(world, 'w-capped')
       await world.raw.batch(
         'carry:infra-cap',
-        [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.runId],
-          },
-        ],
+        infraRetrySeed(run.taskId, run.runId, INFRA_RETRY_CAP),
         'write',
       )
       await world.startStep(run)
@@ -280,17 +266,24 @@ function witnessing(
   const descriptor = readCorpusDescriptor()
   return {
     batch: async (label, statements, control) => {
+      // Every batch is watched, and not only the labels the corpus gives a run insert: a
+      // batch that inserts a run from a statement the corpus does not hold fails below.
       const ofLabel = inserts.filter((insert) => insert.label === label)
-      if (ofLabel.length === 0) return raw.batch(label, statements, control)
       const before = await runIdsOf(raw)
       const results = await raw.batch(label, statements, control)
       const inserted = [...(await runIdsOf(raw))].filter((runId) => !before.has(runId))
       const variants = descriptor[label] ?? []
-      const signature = statements.map(({ sql, args }) => ({ sql, bindArity: args.length }))
       const variant =
-        variants.length === 1 ? variants[0] : CORPUS_VARIANT_NAMERS[label]?.(signature)
+        variants.length === 1
+          ? variants[0]
+          : CORPUS_VARIANT_NAMERS[label]?.(signatureOf(statements))
+      // The statement at a corpus address must itself insert a run, so a batch whose order
+      // moved is never read at another statement's place.
       const fired = ofLabel.filter(
-        (insert) => insert.variant === variant && results[insert.index]?.rowsAffected === 1,
+        (insert) =>
+          insert.variant === variant &&
+          insertsARun(statements[insert.index]?.sql ?? '') &&
+          results[insert.index]?.rowsAffected === 1,
       )
       const [statement, ...others] = fired
       const [runId, ...moreRuns] = inserted

@@ -17,6 +17,13 @@ export type Corpus = Record<string, Record<string, CorpusSignature>>
 /** Names a signature by what it holds, for a label with more than one variant. */
 export type VariantNamers = Readonly<Record<string, (signature: CorpusSignature) => string>>
 
+/** What the corpus keeps of a batch: each statement's SQL and how many binds it takes. */
+export const signatureOf = (statements: readonly SqlStatement[]): CorpusSignature =>
+  statements.map(({ sql, args }) => ({ sql, bindArity: args.length }))
+
+/** The statement inserts a run. Every dialect's compiled insert begins with the verb. */
+export const insertsARun = (sql: string): boolean => /^insert into ["`]runs["`]/.test(sql)
+
 /**
  * A label with more than one variant names each signature by what it holds, never by
  * the order a scenario happened to reach it in.
@@ -28,12 +35,10 @@ export const CORPUS_VARIANT_NAMERS: VariantNamers = {
       : 'spawned',
   // Every failure carries the rollback pass, and only a retrying one a successor run too.
   fail: (signature) =>
-    signature.filter(({ sql }) => /insert into ["`]runs["`]/.test(sql)).length > 1
-      ? 'retrying'
-      : 'final',
+    signature.filter(({ sql }) => insertsARun(sql)).length > 1 ? 'retrying' : 'final',
   // Only a failed rollback with budget left inserts a run, the pass that retries it.
   'fail-rollback': (signature) =>
-    signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
+    signature.some(({ sql }) => insertsARun(sql)) ? 'retrying' : 'final',
   'await-event': (signature) =>
     signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
       ? 'registered-child'
@@ -61,7 +66,7 @@ export function recordingTreeBatches(
   return {
     batch: (label: string, statements: readonly SqlStatement[], control?: SqlBatchControl) => {
       if (statements.some(isTreeBuilt)) {
-        const signature = statements.map(({ sql, args }) => ({ sql, bindArity: args.length }))
+        const signature = signatureOf(statements)
         const seen = recorded.get(label) ?? []
         if (!seen.some((known) => JSON.stringify(known) === JSON.stringify(signature))) {
           seen.push(signature)

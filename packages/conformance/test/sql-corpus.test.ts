@@ -16,9 +16,10 @@ import {
 } from '../src/scenario.js'
 import {
   CORPUS_VARIANT_NAMERS,
-  type CorpusDescriptor,
   type CorpusSignature,
   enrolCorpus,
+  readCorpus,
+  readCorpusDescriptor,
   recordingTreeBatches,
 } from '../src/sql-corpus.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
@@ -34,9 +35,7 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  * to a signature outside the corpus or to more signatures than it declares: a new label or
  * branch must be declared, not discovered.
  */
-const DESCRIPTOR: CorpusDescriptor = JSON.parse(
-  readFileSync(new URL('../corpus/labels.json', import.meta.url), 'utf8'),
-)
+const DESCRIPTOR = readCorpusDescriptor()
 
 describe('generated SQL corpus', () => {
   for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
@@ -285,13 +284,11 @@ describe('corpus enrolment', () => {
 
   it('enrols every label the descriptor names in the corpus of every dialect', () => {
     for (const { dialect } of SELECTED_DIALECT_FIXTURES) {
-      const corpus = JSON.parse(
-        readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'),
-      )
+      const corpus = readCorpus(dialect)
       const enrolled = DESCRIPTOR
       expect(Object.keys(corpus)).toEqual(Object.keys(enrolled))
       for (const [label, variants] of Object.entries(enrolled)) {
-        for (const variant of Object.keys(corpus[label])) expect(variants).toContain(variant)
+        for (const variant of Object.keys(corpus[label] ?? {})) expect(variants).toContain(variant)
       }
     }
   })
