@@ -16313,17 +16313,18 @@ def tree_rule_coverage_problems(
         entries = spelling_entries(line) if number in block_lines else []
         unheld = [entry for entry in entries if entry not in dropped.get(number, ())]
         have = len(touching.get(number, ()))
-        if len(entries) > 1:
-            shortfall = unheld and (
+        shortfall = None
+        if len(entries) > 1 and unheld:
+            shortfall = (
                 f"holds {len(entries)} spellings and no registered mutation drops "
                 f"{', '.join(repr(entry) for entry in unheld)} alone; register one for each entry"
             )
-        else:
-            shortfall = have < wanted[number] and (
+        if len(entries) <= 1 and have < wanted[number]:
+            shortfall = (
                 f"holds {wanted[number]} condition(s) and {have} registered mutation(s) "
                 "touch it; register one for each"
             )
-        if not shortfall:
+        if shortfall is None:
             continue
         short.add(line)
         if line not in listed:

@@ -39,10 +39,12 @@ except ValueError as error:
     sys.exit(str(error))
 
 # The spellings have ONE definition: `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in the tree
-# rules, where every entry has a registered mutation. This lint kept a second list by hand,
-# and a name added to one and not the other shipped in whichever scan lacked it. It reads
-# the list of the tree it audits, so the two scans cannot differ, and it refuses to run on
-# a list it cannot read, because a pattern built from nothing matches nothing.
+# rules, where a registered mutation deletes each entry, six function names aside, which the
+# keyword arm refuses as well and the registry lists with that reason. This lint kept a
+# second list by hand, and a name added to one and not the other shipped in whichever scan
+# lacked it. It reads the list of the tree it audits, so the two scans cannot differ, and it
+# refuses to run on a list it cannot read in full, because a pattern built from nothing, or
+# from an arm it cannot write out, matches nothing.
 #
 # What the list's shape holds, each learned from a lint that was blind without it. SQL is
 # case-insensitive, so the pattern is. Function names must appear AS CALLS: matched as bare
@@ -61,8 +63,12 @@ TREE_RULES = "packages/core/src/sql-tree.ts"
 TREE_ONLY_ARM = r"\bfake_now_ms\b"
 
 
-def list_lines(text: str, opening: str, closing: str, shape: str, what: str) -> list[str]:
-    """What each line of one list holds. A list that is missing, empty, or has a line of another shape is refused."""
+def list_lines(text: str, *, opening: str, closing: str, shape: str, what: str) -> list[str]:
+    """What each line of one list holds.
+
+    A list that is missing, empty, or has a line of another shape is refused. Four strings
+    in a row are easy to swap, so they are passed by name.
+    """
     found = re.search(rf"^{opening}\n(.*?)^{closing}\n", text, re.S | re.M)
     lines = [] if found is None else found.group(1).splitlines()
     held = [re.fullmatch(shape, line) for line in lines]
@@ -75,19 +81,19 @@ def tree_clock_spellings(text: str) -> str:
     """The tree rule's clock spellings as one pattern, read from the source that defines them."""
     functions = list_lines(
         text,
-        r"const CLOCK_FUNCTIONS = \[",
-        r"\]",
-        r"  '([a-z_]+)',",
-        "CLOCK_FUNCTIONS is not a list of one quoted name to a line",
+        opening=r"const CLOCK_FUNCTIONS = \[",
+        closing=r"\]",
+        shape=r"  '([a-z_]+)',",
+        what="CLOCK_FUNCTIONS is not a list of one quoted name to a line",
     )
     arms = [
         arm.replace("${CLOCK_FUNCTIONS.join('|')}", "|".join(functions))
         for arm in list_lines(
             text,
-            r"export const CLOCK_SPELLING = new RegExp\(\n  \[",
-            r"  \]\.join\('\|'\),",
-            r"    String\.raw`(.*)`,",
-            "CLOCK_SPELLING is not a list of one String.raw arm to a line",
+            opening=r"export const CLOCK_SPELLING = new RegExp\(\n  \[",
+            closing=r"  \]\.join\('\|'\),",
+            shape=r"    String\.raw`(.*)`,",
+            what="CLOCK_SPELLING is not a list of one String.raw arm to a line",
         )
     ]
     # Whatever else an arm interpolates is text this lint cannot write out. Left in, Python
