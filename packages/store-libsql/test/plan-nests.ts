@@ -124,12 +124,13 @@ export interface NestReading {
 /**
  * The table a step reads, for the wording of a fault and for nothing else. A plan names a
  * step by the alias its statement gave the table, so the name is looked up in the text:
- * the table that a FROM, a JOIN, an UPDATE or an INTO calls by it. A name the text gives
- * to no table is the table's own.
+ * the table that a FROM, a JOIN or an UPDATE calls by it. An INTO is not read, because a
+ * plan has no step for the table an INSERT writes. A name the text gives to no table is
+ * the table's own.
  */
 function tableCalled(name: string, sql: string): string {
   const called = new RegExp(
-    `\\b(?:from|join|update|into)\\s+"?(\\w+)"?\\s+(?:as\\s+)?"?${name.replace(/\W/g, '\\$&')}"?(?![\\w"])`,
+    `\\b(?:from|join|update)\\s+"?(\\w+)"?\\s+(?:as\\s+)?"?${name.replace(/\W/g, '\\$&')}"?(?![\\w"])`,
     'gi',
   )
   const tables = new Set([...sql.matchAll(called)].map((match) => (match[1] ?? name).toLowerCase()))
@@ -137,7 +138,7 @@ function tableCalled(name: string, sql: string): string {
 }
 
 /** The steps and the nests of one statement's plan, judged. The text only words a fault. */
-export function readNests(rows: readonly PlanRow[], sql = ''): NestReading {
+export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
   const faults: string[] = []

@@ -1158,14 +1158,14 @@ One invocation executes one claimed run to its next suspension point:
     of another must be keyed, and every step it runs once for each row of must
     be keyed or a due range. No table is excused from the first line, so the
     reader keeps no list of tables: every table of the schema is held, and
-    `meta` with them, which 27 of the shipped statements read, each by its key.
+    `meta` with them, which a statement reads for the clock, by its key.
     A step that reads no table is not a walk of one: `json_each` reads a value
     of the row that drives it, and a step that reads the rows of a body is as
     bounded as the steps that made them, each of which is judged where it
     stands. A plan names a step by the alias its statement gave the table, so
     the failure takes the table's name from the statement's own text, what a
-    FROM, a JOIN, an UPDATE or an INTO calls by the step's name. That name words
-    the failure and decides nothing.
+    FROM, a JOIN or an UPDATE calls by the step's name. That name words the
+    failure and decides nothing.
     A due range may drive because the literal sentence, that no step
     reads a table once for each row of another, would refuse the claim's two
     candidate legs and both sweep scans, which read `tasks` by key once for each
@@ -1243,7 +1243,7 @@ One invocation executes one claimed run to its next suspension point:
       through `runs_poll (queue=?)` once two rows of `sqlite_stat1` rate
       `runs_task_attempt` as matching every run and `runs_poll` as selective.
     The list of names is what holds the second and the fifth, and nothing holds
-    the third, the sixth or the seventh. That a LIMIT
+    the rest. That a LIMIT
     stands in the statement's text is checked. That it bounds the range that
     drives is a person's reading, which no plan can check, and another nest
     under a driving line of the same text is not seen. One false positive is by

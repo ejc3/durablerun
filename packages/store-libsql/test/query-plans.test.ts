@@ -923,12 +923,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
    * sees a walk only where it spells the one failure it was written against. Here every
    * statement of every batch is planned, of every kind, and its steps and loop nests are
    * judged by `readNests` in `plan-nests.ts`, whose header says what a walk is, what a nest
-   * is and what the rule is. Two pins that planned every UPDATE and DELETE stood before this
-   * block: the written table had to be reached by a key from a list kept there, and no step
-   * of a write could be pinned by a queue and a state alone. The reader's refusal of a walk
-   * holds both for every statement, so they are gone. "Every" is held by the two checked
-   * inventories of what a store sends: the generated corpus of statement trees, and the list
-   * of the statements that stay text.
+   * is and what the rule is. "Every" is held by the two checked inventories of what a store
+   * sends: the generated corpus of statement trees, and the list of the statements that
+   * stay text.
    */
   const CORPUS: Record<string, Record<string, { sql: string }[]>> = JSON.parse(
     readFileSync(new URL('../../conformance/corpus/libsql.json', import.meta.url), 'utf8'),
@@ -939,16 +936,16 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ).statements,
   )
 
-  /** A text statement no operation of the store sends, with why it has no nest to judge. */
+  /** A text statement no operation of the store sends, with who sends it and what it touches. */
   const NOT_THE_STORES: Readonly<Record<string, string>> = {
     'migrate:bootstrap':
       'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
     'migrate:v*':
       'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
-    'migrate:version': 'the migration runner sends it, and it reads meta alone',
-    'admin:set-fake-now': 'the test clock sends it, and it writes meta alone',
-    'admin:clear-fake-now': 'the test clock sends it, and it writes meta alone',
-    'admin:now': 'the test clock sends it, and it reads meta alone',
+    'migrate:version': 'the migration runner sends it, and it reads meta by its key',
+    'admin:set-fake-now': 'the test clock sends it, and it writes meta by its key',
+    'admin:clear-fake-now': 'the test clock sends it, and it writes meta by its key',
+    'admin:now': 'the test clock sends it, and it reads meta by its key',
   }
 
   /**
@@ -999,11 +996,18 @@ describe('every statement a store ships, by the nests of its plan', () => {
   const nameOf = (st: Shipped) =>
     placeInCorpus.get(keyOf(st.label, st.sql)) ?? `${st.label}#${st.index}`
 
-  /** One statement's plan, read. Every reading in this block is this one, the generated check's too. */
+  /** One statement's plan, read with its text. The generated check reads through this too. */
   const nestsOf = async (st: { sql: string; args: unknown[] }) =>
     readNests(await planTree(st.sql, st.args), st.sql)
   /** The same reading of a statement that nothing runs, so each bind is a placeholder. */
   const read = (sql: string) => nestsOf({ sql, args: (sql.match(/\?/g) ?? []).map(() => 0) })
+  /** A read of a queue's leases in one state, which SQLite plans from the state it is sent with. */
+  const leasesUnder = (state: string) => ({
+    sql: 'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?',
+    args: ['q', state, 0],
+  })
+  /** The words a walk of a table is refused with, after the line of the step that walks. */
+  const walkOf = (table: string) => `is a walk of ${table}: neither keyed nor a due range`
 
   it("sends every statement of the corpus, and every text statement that is the store's", async () => {
     const sent = await shippedStatements()
@@ -1070,12 +1074,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
       JSON.stringify((await planTree(st.sql, st.args)).map((row) => [row.parent, row.detail]))
     // A plan does depend on its binds. SQLite reads a bound value when it plans, and the
     // partial index of the running leases serves only a statement sent with that state.
-    const underState = (state: string) =>
-      planUnder({
-        sql: 'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?',
-        args: ['q', state, 0],
-      })
-    expect(await underState('running')).not.toBe(await underState('pending'))
+    expect(await planUnder(leasesUnder('running'))).not.toBe(
+      await planUnder(leasesUnder('pending')),
+    )
     const kept = await shippedStatements()
     const keptPlans = new Map<string, string>()
     const differing = new Set<string>()
@@ -1089,7 +1090,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect([...differing]).toEqual([])
   })
 
-  it('refuses a walk of a table in any statement, alone or not, and names the table', async () => {
+  it('refuses a walk of a table that stands alone, in any statement, and names the table', async () => {
     // A lone walk drives nothing and nothing drives it, so no nest holds it. One statement
     // of each kind a store ships stands here as one step that walks: a read under the alias
     // a generated statement gives its source, the SELECT of an INSERT, an UPDATE, a DELETE,
@@ -1104,7 +1105,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
     const faults: Record<string, string[]> = {}
     for (const [kind, sql] of Object.entries(alone)) faults[kind] = (await read(sql)).faults
-    const walkOf = (table: string) => `is a walk of ${table}: neither keyed nor a due range`
     const queueByState = 'USING COVERING INDEX runs_poll (queue=? AND state=?)'
     expect(faults).toEqual({
       read: [`SEARCH f ${queueByState} :: ${walkOf('runs')}`],
@@ -1113,15 +1113,15 @@ describe('every statement a store ships, by the nests of its plan', () => {
       delete: [`SCAN waits :: ${walkOf('waits')}`],
       bareAlias: [`SCAN sibling USING COVERING INDEX runs_task_attempt :: ${walkOf('runs')}`],
     })
-    // Not alone: the walk is refused as the walk it is, beside what the nest rule says of
-    // the step that runs once for each of its rows.
-    const driving = await read(
-      `select t.task_name from tasks t
-       where t.task_id in (select f.task_id from runs f where f.queue = ? and f.state = ?)`,
+    // One alias that names two tables words the fault with both, because the name a plan
+    // gives a step does not say which of the two the step reads.
+    const twice = await read(
+      `select x.run_id from runs x
+       where x.queue = ? and exists (select 1 from tasks x where x.state = ?)`,
     )
-    expect([...driving.faults].sort()).toEqual([
-      `SEARCH f USING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`,
-      expect.stringMatching(/^SEARCH t .* :: runs once for each row of a walk: SEARCH f /),
+    expect(twice.faults).toEqual([
+      `SEARCH x USING COVERING INDEX runs_poll (queue=?) :: ${walkOf('runs or tasks')}`,
+      `SCAN x :: ${walkOf('runs or tasks')}`,
     ])
     // What is no walk: one run by its key, and the clock's row of `meta` by its key.
     for (const sql of [
@@ -1133,11 +1133,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
-    const WALK = 'neither keyed nor a due range'
     // A due range that stands alone is no walk, and the list of due ranges names only one
     // that drives another step. Under no LIMIT it reads everything due at once, as an UPDATE
-    // always does, and one of the two pins that stood here refused this one, because a due
-    // range is not the key a write was handed. Pointed the other way it reads the backlog.
+    // always does. Pointed the other way it reads the backlog.
     const everyExpiredLease = await read(
       `update runs set state = 'failed'
        where queue = ? and state = 'running' and claim_expires_at_ms <= ?`,
@@ -1151,11 +1149,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ])
     // A statement is planned under the binds its sends carried, and SQLite plans from bound
     // values. Sent with a state the history never sends it with, this one walks.
-    const leases =
-      'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?'
-    expect((await nestsOf({ sql: leases, args: ['q', 'running', 0] })).faults).toEqual([])
-    expect((await nestsOf({ sql: leases, args: ['q', 'pending', 0] })).faults).toEqual([
-      `SEARCH runs USING INDEX runs_poll (queue=? AND state=?) :: is a walk of runs: ${WALK}`,
+    expect((await nestsOf(leasesUnder('running'))).faults).toEqual([])
+    expect((await nestsOf(leasesUnder('pending'))).faults).toEqual([
+      `SEARCH runs USING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`,
     ])
     // What it refuses though it is sound, because a plan does not say how few rows a walk
     // reads: the drivers of one queue are a handful, and a MIN over an index prefix is one row.
@@ -1164,10 +1160,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `select min(available_at_ms) from runs where queue = ? and state = 'pending'`,
     )
     expect([driversOfAQueue, earliestPending].map((reading) => reading.faults)).toEqual([
-      [`SEARCH drivers USING PRIMARY KEY (queue=?) :: is a walk of drivers: ${WALK}`],
-      [
-        `SEARCH runs USING COVERING INDEX runs_poll (queue=? AND state=?) :: is a walk of runs: ${WALK}`,
-      ],
+      [`SEARCH drivers USING PRIMARY KEY (queue=?) :: ${walkOf('drivers')}`],
+      [`SEARCH runs USING COVERING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`],
     ])
     // Last, because it changes how this database plans. A plan depends on the database's
     // statistics, and the database a statement is planned on here has none. Keyed here, this
@@ -1178,18 +1172,14 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
     expect((await nestsOf(runsOfATask)).faults).toEqual([])
     await raw.execute('ANALYZE sqlite_schema')
-    for (const [index, stat] of [
-      ['runs_task_attempt', '1000000 1000000 1000000'],
-      ['runs_poll', '1000000 2 2 1'],
-    ]) {
-      await raw.execute({
-        sql: `INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('runs', ?, ?)`,
-        args: [index ?? '', stat ?? ''],
-      })
-    }
+    await raw.execute(
+      `INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES
+         ('runs', 'runs_task_attempt', '1000000 1000000 1000000'),
+         ('runs', 'runs_poll', '1000000 2 2 1')`,
+    )
     await raw.execute('ANALYZE sqlite_schema')
     expect((await nestsOf(runsOfATask)).faults).toEqual([
-      `SEARCH runs USING INDEX runs_poll (queue=?) :: is a walk of runs: ${WALK}`,
+      `SEARCH runs USING INDEX runs_poll (queue=?) :: ${walkOf('runs')}`,
     ])
   })
 
@@ -1201,7 +1191,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
        WHERE task_id IN (SELECT f.task_id FROM runs f
                          WHERE f.run_id = ? AND f.queue = tasks.queue)`,
     )
-    // A read whose IN list walks the runs of a queue by state. No pin of writes sees a read.
+    // A read whose IN list walks the runs of a queue by state.
     const listed = await read(
       `select t.task_name from tasks t
        where t.task_id in (select f.task_id from runs f where f.queue = ? and f.state = ?)`,
@@ -1263,7 +1253,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     if (!beat) throw new Error('the history sent no driver heartbeat')
     const beatPlan = await planTree(beat.sql, beat.args)
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
-    expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
+    expect(readNests(beatPlan, beat.sql)).toEqual({ faults: [], dueDrivers: [] })
     // Planned by hand from the trigger's own text, with a bind where it names the new row,
     // that DELETE is a walk, and the reader refuses it.
     const triggers = await raw.execute(`select sql from sqlite_master where type = 'trigger'`)
@@ -1272,7 +1262,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     )
     expect(deletes).toHaveLength(1)
     expect((await read(String(deletes[0]).replace(/NEW\.\w+/g, '?'))).faults).toEqual([
-      'SCAN drivers :: is a walk of drivers: neither keyed nor a due range',
+      `SCAN drivers :: ${walkOf('drivers')}`,
     ])
   })
   it('judges a read of a body as it judges any step, whatever a step is named', async () => {
@@ -1327,7 +1317,10 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
   it('fails closed on a plan line it cannot place or read', () => {
     const faultsOf = (...details: [number, number, string][]) =>
-      readNests(details.map(([id, parent, detail]) => ({ id, parent, detail }))).faults
+      readNests(
+        details.map(([id, parent, detail]) => ({ id, parent, detail })),
+        '',
+      ).faults
     const keyed = 'SEARCH tasks USING PRIMARY KEY (task_id=?)'
     expect({
       aLineItHasNeverSeen: faultsOf([1, 0, 'BLOOM FILTER ON r (task_id=?)']),
@@ -1360,6 +1353,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(plan.map((row) => row.detail)).toContain(
       'SEARCH t USING PRIMARY KEY (task_id=?) LEFT-JOIN',
     )
-    expect(readNests(plan)).toEqual({ faults: [], dueDrivers: [] })
+    expect(readNests(plan, sql)).toEqual({ faults: [], dueDrivers: [] })
   })
 })
