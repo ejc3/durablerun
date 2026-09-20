@@ -280,7 +280,12 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch sees one consistent snapshot and cannot write, unless it is one read sent alone (`sentAlone`). */
+/**
+ * A read batch sees one consistent snapshot, unless it is one read sent alone (`sentAlone`),
+ * and its read-only transaction refuses DML. It does not refuse DDL: a DDL statement commits
+ * by itself, and that commit ends the transaction first. No store sends DDL as a read, and a
+ * `migrate:` batch sent as one is refused before it is sent (`refuseMigrationBatchWithoutItsLock`).
+ */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
@@ -410,18 +415,28 @@ function isSchemaVersionRead(
 }
 
 /**
- * A write whose label begins with `migrate:` is a migration write, and it has to name the
- * migration lock in its control. The label is read here only to REFUSE. The lock a batch
+ * A batch whose label begins with `migrate:` is a migration batch. It is a write that names
+ * the migration lock in its control, or it is the canonical version read, which is known by
+ * its whole text and takes no lock. Anything else under that label is refused: a write that
+ * names no lock, and a batch sent as a read, whose read-only transaction does not stop DDL.
+ * The label is read here only to REFUSE. The lock a batch
  * runs under is the one its control names, and no label chooses one: chosen from a list of
  * labels, a `migrate:` label the list does not know runs its DDL beside another migrator,
  * and MySQL commits each DDL statement on its own, so nothing can undo it.
  */
-function refuseMigrationWriteWithoutItsLock(
+function refuseMigrationBatchWithoutItsLock(
   label: string,
   mode: SqlBatchMode,
   lock: SqlTransactionLock | undefined,
+  schemaVersionRead: boolean,
 ): void {
-  if (mode === 'write' && label.startsWith('migrate:') && lock?.kind !== 'migration') {
+  if (!label.startsWith('migrate:') || schemaVersionRead) return
+  if (mode === 'read') {
+    throw new TypeError(
+      `batch(${label}) is a migration batch sent as a read: a read-only transaction does not stop DDL, and the one read under this label is the canonical version read`,
+    )
+  }
+  if (lock?.kind !== 'migration') {
     throw new TypeError(
       `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
     )
@@ -490,7 +505,7 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
  *
  * A DDL statement commits on its own in MySQL. Only migration batches hold DDL, and they
  * run one at a time under the migration lock, which each names in its control
- * (`refuseMigrationWriteWithoutItsLock`), with every statement safe to repeat. The
+ * (`refuseMigrationBatchWithoutItsLock`), with every statement safe to repeat. The
  * schema-version read takes no lock: the bootstrap is one statement, so there is no
  * state between "no version table" and "a version table with its row" to be kept from.
  */
@@ -561,11 +576,11 @@ export class MysqlExecutor implements SqlExecutor {
     const prepared = prepareStatements(label, statements)
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
-    // Both refusals come before anything is sent, and before an empty batch is answered.
-    refuseMigrationWriteWithoutItsLock(label, mode, transactionLock)
+    const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    // The refusals come before anything is sent, and before an empty batch is answered.
+    refuseMigrationBatchWithoutItsLock(label, mode, transactionLock, schemaVersionRead)
     const lock = transactionLock === undefined ? null : lockCoordinates(transactionLock)
     if (prepared.length === 0) return []
-    const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
     // Decided here, beside the copy and before any wait: what the caller's array holds
     // after a wait is not what was copied. The brand is on the caller's own object.
     const alone = sentAlone(statements, mode, schemaVersionRead)
