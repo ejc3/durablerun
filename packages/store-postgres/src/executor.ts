@@ -1,4 +1,5 @@
 import {
+  PermanentStoreError,
   RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
@@ -41,6 +42,20 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
   '42P01', // undefined_table
   '42P07', // duplicate_table/relation
 ])
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. The same batch fails the same way on every retry. The schema
+ * mismatch states above are read first, because a migration repairs those and they keep
+ * their own type.
+ *
+ * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
+ * serialization failure, and a deadlock victim, which the executor runs again before it
+ * reports one), 53 insufficient resources, 57 operator intervention, 58 system error, and
+ * any class this list does not name.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 type PoolPort = Pick<Pool, 'connect' | 'end'>
 
@@ -383,6 +398,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
     if (error.code !== undefined && SCHEMA_MISMATCH_SQLSTATES.has(error.code)) {
       return new SchemaMismatchError(
         `batch(${label}) hit a schema this build does not expect (SQLSTATE ${error.code}): ${error.message}`,
+        { cause: error },
+      )
+    }
+    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (SQLSTATE ${error.code}): ${error.message}`,
         { cause: error },
       )
     }

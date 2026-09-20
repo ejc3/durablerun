@@ -539,6 +539,70 @@ One invocation executes one claimed run to its next suspension point:
   transition — a lost response may already have committed — so recovery is the
   lease story and the user's retry budget is never touched; only errors from
   user code spend user attempts.
+- **What a store executor throws, and what a pass does with it.** An executor
+  types a driver's failure from its error CODE and never from its message
+  text, into one of four kinds. `SchemaNotInitializedError` and
+  `SchemaMismatchError` say the database is not the one this build expects, and
+  a migration repairs them. `PermanentStoreError` says the store answered and no
+  retry changes the answer: the statement broke a constraint, carried a value
+  its column cannot hold, or is one the server will never accept. Everything
+  else is `StoreUnavailableError`, an outage that waiting can cure, and a code
+  the map does not know stays an outage, which is what every code was before
+  the map. A deadlock victim is none of the four: the two server executors run
+  it again, and a victim they report after three tries is an outage. The maps:
+  libSQL reads the primary SQLite result code, and `SQLITE_CONSTRAINT`, with
+  every extended code, and `SQLITE_MISMATCH` are permanent. PostgreSQL reads the
+  SQLSTATE class after its schema mismatch states, and classes 22 (data
+  exception), 23 (integrity constraint violation) and 42 (syntax error or
+  access rule violation) are permanent. MySQL reads the same three classes from
+  the SQLSTATE the server sends beside its error number, after the numbers that
+  have a type of their own. A class does not say everything on MySQL, in both
+  directions, so two lists of numbers are kept beside the classes. Read BEFORE
+  the class, and outages: 1203, 1226 and 1461, a limit on the server's or an
+  account's connections and on prepared statements, which MySQL files under
+  class 42 beside a syntax error, and which another session's release lifts,
+  so a retry cures them and a hosted route answers them 503. Typed permanent
+  though MySQL files them OUTSIDE the three classes: 1366, a value of the wrong
+  type for its column, 3819, a broken CHECK constraint, and 1364, a row that
+  leaves out a column with no default, all under its general state HY000
+  beside a lock wait timeout, and 1265 as an error, text that is not a number
+  for a numeric column, under 01000, the state of a warning. For that last one
+  the three dialects give three answers: libSQL stores the text, PostgreSQL
+  refuses it with 22P02, which its class makes permanent, and MySQL refuses it
+  with 1265, which only its number makes permanent. So it is held by each
+  server's own case and by no shared one. The two lists are held to the
+  server's own list of error numbers (§3.4). One difference between dialects
+  is deliberate: a syntax error is
+  permanent on the two servers, which give it a code of its own, and an outage
+  on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
+  together with a transaction state error that a new connection cures, and
+  mapping by code cannot tell the two apart. A shared conformance surface holds
+  the kinds a consumer can meet on every dialect (§3.4).
+
+  A worker pass treats a permanent store error EXACTLY as it treats an outage,
+  at its own store calls and at a context store call alike: the pass ends
+  `aborted`, nothing more is written, the task's attempts are untouched, and
+  the lease recovers the run, on the infrastructure budget if the run had been
+  activated. The reason is that naming an error more precisely must not change
+  who pays for it. Before the type existed these failures were outages and were
+  paid from the infrastructure budget. Thrown into task code as an ordinary
+  error, the same failure would be recorded through `fail` as the task's own
+  and paid from the attempts the caller asked for. `SchemaMismatchError` at a
+  context store call IS billed that way in this build, and is left alone here.
+  So a deterministic failure inside an activated run is still retried until the
+  infrastructure budget is gone, and its task still ends
+  `$InfraRetriesExhausted`: the type makes the cause nameable at every catch,
+  and no transition exists yet that ends a run for it. Ending such a run at
+  once, under a terminal reason of its own, needs a new reason and a new
+  transition, which is a spec change first (BUILD.md, PR2.5a). The driver loop,
+  the tick, the launch reconciler, the inline launcher and the HTTP worker
+  treat every throw alike, and none of them changed. The SDK's replay
+  equivalence harness holds "exactly as an outage" at every store call it
+  SAMPLES, which is the odd calls of a program from the third and its last
+  call, and not every call: each sampled call is failed once with an outage and
+  once with a permanent store error, each run is held to the kind it asked for,
+  and the file's last case is a floor that fails unless every store method the
+  sweeps failed at all met both kinds. All twelve do.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -2138,7 +2202,22 @@ are load-bearing):
    through. A failure that moved nothing is rethrown.
    On PostgreSQL a version's batch first takes a lock on `meta` that a second
    migrator waits on, so the loser's error is the sentinel's unique violation
-   and never a deadlock (rule 11).
+   and never a deadlock (rule 11). The loser of the BOOTSTRAP meets the same
+   SQLSTATE, 23505, on another key: the catalog's own index
+   `pg_type_typname_nsp_index`, because two sessions created `meta` together. It
+   is the same class and is absorbed the same way.
+   The loser's error is a constraint violation, so its executor types it
+   `PermanentStoreError` (§3.2), and this is the one place where a legal use of
+   a port meets one. Convergence does not change, because the admin reads the
+   authoritative version and never the error's type. What a caller can see is
+   the other half: a `migrate()` that really failed on a constraint code, with
+   the version still absent or behind, now rejects as permanent where it
+   rejected as an outage. That is right, because the batch fails the same way
+   on every retry, and nothing in the repository branches on it. Outside the
+   stores and core, the only source files that name a store error type are the
+   SDK's `task-control.ts` and the driver's `hosted.ts`, and neither calls
+   `migrate()`. Its callers, the two host programs, the dogfood runtime and the
+   example's scripts, await it and read no error type.
    A migration write names the migration lock in its batch control, as the
    lock kind `migration`, and core exports the one control that carries it
    (`MIGRATION_WRITE`). The lock travels there, where a wrapper that forwards
@@ -2875,6 +2954,50 @@ not depend on careful reading:
   its cap, so the cap's statement alone can lose its generation comparison
   with every case green. The column costs about 0.5 s of test time on libSQL,
   about 1.4 s on PostgreSQL and about 1.3 s on MySQL, on a shared machine.
+- *The executor error surface* (`conformance/src/executor-errors.ts`): what an
+  executor throws, by kind, through each fixture's real executor, with
+  statements all three dialects read alike (§3.2). One refused write for each
+  kind of constraint the `tasks` table declares on every dialect, a primary
+  key, the unique index of an idempotency key, a NOT NULL column and the CHECK
+  on a task's state, is a `PermanentStoreError` and writes nothing. NOT NULL is
+  broken both ways, by a NULL that is written and by a column that is left
+  out. The kinds are generated from one table, because a dialect can file one
+  kind, or one way of breaking it, apart from the rest: MySQL answers a broken
+  CHECK constraint and a column left out under its general state, and an
+  executor case on a fake driver is fed only the codes its author listed. On
+  MySQL that gap is closed at its source: one real-server case reads the
+  server's own list, `performance_schema.events_errors_summary_global_by_error`,
+  which names each of the 1,776 numbers a client can be sent with its
+  SQLSTATE, and asks the executor's classifier about every number whose name
+  says one of two things, 138 and 49 of them at MySQL 8.4.11. A number whose
+  name says a limit must not be typed permanent, whatever class it is filed
+  under, and whether the class or the list kept by hand types it, unless a
+  table says why no retry lifts it. Outside classes 22, 23 and 42, a number
+  whose name says a constraint, a default, a truncation or a bad value must be
+  typed permanent, or match exactly one written reason. A reason that explains
+  nothing fails it too, and so does a server version that adds such a number.
+  Where a reason rests on what the store's schema lacks, a view, an
+  auto-increment or a temporal column, a functional index or a stored program,
+  the same file reads that from a migrated database. A reason about which
+  statements the store sends is held by nothing. Its limits are what a name
+  can say: a number whose name does not say what it means, and a name the two
+  patterns do not match, as 1040, the server's limit on connections, pass it
+  unseen. PostgreSQL has no such catalog, so its map is held by its SQLSTATE
+  classes alone, which the standard defines. A batch sent after the executor
+  closed is a `StoreUnavailableError`.
+  Two write batches that update the same two rows in opposite orders, started
+  together on connections that are already open, are both answered with each
+  update applied once: PostgreSQL and MySQL make one of them a deadlock victim
+  and run it again, and libSQL runs one after the other. The case does not
+  require that a deadlock happened, because libSQL cannot have one and a server
+  need not. Measured over five fresh fixtures on each dialect, PostgreSQL ran a
+  victim again in four, MySQL in five, and libSQL in none, and the case takes
+  about a second on PostgreSQL, which waits its `deadlock_timeout` before it
+  looks for a deadlock. A syntax error is not in the surface,
+  because libSQL types it differently by design. The self-concurrency surface
+  books a permanent store error with the outages, so a port call that breaks a
+  constraint fails its contest in either order, as it did while that error was
+  typed an outage.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.
@@ -3501,6 +3624,18 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
+- **Hosted answers to a store failure**: a route answers a store outage,
+  `StoreUnavailableError`, with 503 `service_unavailable`, because a retry can
+  cure it. It answers a permanent store error, `PermanentStoreError` (§3.2),
+  with 500 `internal_error`, as it answers `SchemaMismatchError`: a 503 would
+  invite a producer to retry a request the store refuses the same way every
+  time. It is never a 400, which is for what the caller sent, and a permanent
+  store error is the store's answer. A limit on connections or on prepared
+  statements is an outage and answers 503, though MySQL files it under a
+  permanent class (§3.2), because there the retry works. Before the executors
+  typed the error, these failures answered 503. No durable state depends on the
+  status, and an at-least-once tick host retries any answer that is not a
+  success. Neither answer carries the error's message.
 - **Driver hosting**: the hosted alpha is fully serverless. Each accepted
   mutation gives the host a best-effort opportunity to run the same bounded
   inline tick, and an independent cron recovers a lost hint. Vercel itself

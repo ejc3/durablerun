@@ -1,4 +1,5 @@
 import {
+  PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -18,6 +19,27 @@ import { SCHEMA_VERSION_READ_SQL } from './schema.js'
  */
 const SCHEMA_FAULT = /no such (?:column|table)|has no column named|duplicate column name/i
 const MISSING_META_TABLE = /no such table:\s*meta$/i
+
+/**
+ * SQLite result codes that say the statement was refused for good, with these values: a
+ * broken constraint, and a value of the wrong type for a column that enforces one. The same
+ * batch fails the same way on every retry.
+ *
+ * SQLITE_ERROR is deliberately absent. SQLite files a syntax error under that generic code,
+ * and files a transaction state error there too, which a new connection cures, and the code
+ * is all this executor may read: it never reads message text to type an error. A code that
+ * is not listed here is an outage.
+ */
+const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
+
+/**
+ * The primary result code a driver error names. An extended code spells its primary code
+ * first (SQLITE_CONSTRAINT_PRIMARYKEY, SQLITE_IOERR_SHORT_READ), and every primary code is
+ * two words.
+ */
+function primaryResultCode(error: LibsqlError): string {
+  return error.code.split('_').slice(0, 2).join('_')
+}
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
@@ -125,6 +147,14 @@ export class LibsqlExecutor implements SqlExecutor {
           `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
           { cause: error },
         )
+      }
+      // The store answered and no retry changes the answer. Typed apart from an outage,
+      // by the driver's code, so a consumer can stop retrying a failure that is
+      // deterministic.
+      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {
+        throw new PermanentStoreError(`batch(${_label}) failed permanently: ${String(error)}`, {
+          cause: error,
+        })
       }
       // Typed so consumers can classify INFRASTRUCTURE failure by type —
       // a store outage must never be mistaken for a user failure.

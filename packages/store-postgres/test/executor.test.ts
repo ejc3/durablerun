@@ -300,14 +300,16 @@ describe('PgExecutor transactions', () => {
       {
         victimOnce: await run(1),
         victimAlways: await run(99),
-        anotherError: await run(1, '23505'),
+        anotherError: await run(1, '40001'),
         victimOnceInARead: (await run(1, '40P01', 'read')).outcome,
       },
       'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
     ).toEqual({
       victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
-      // Only a deadlock is run again. Any other failure is reported the first time.
+      // Only a deadlock is run again. Any other failure is reported the first time: here a
+      // serialization failure, which is an outage under any map of the classes, so this
+      // case does not move with that map.
       anotherError: { outcome: 'StoreUnavailableError', texts: once },
       // A read is run again like a write. It takes table locks, so it can be the victim.
       victimOnceInARead: [1],
@@ -735,6 +737,63 @@ describe('PgExecutor error classification', () => {
     await expect(
       executor(new FakePool(client)).batch('retryable', [{ sql: 'UPDATE t SET v = 1', args: [] }]),
     ).rejects.toMatchObject({ name: 'StoreUnavailableError', cause: retryable })
+  })
+
+  it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage', async () => {
+    const thrownFor = (code: string, message?: string): Promise<Error> => {
+      const client = new FakeClient((text) => {
+        if (text === 'UPDATE t SET v = 1') throw databaseError(code, message)
+        return EMPTY_RESULT
+      })
+      return executor(new FakePool(client))
+        .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
+        .then(
+          () => new Error('answered'),
+          (error: unknown) => error as Error,
+        )
+    }
+    const codes = {
+      uniqueViolation: '23505',
+      notNullViolation: '23502',
+      numericValueOutOfRange: '22003',
+      syntaxError: '42601',
+      insufficientPrivilege: '42501',
+      // Read first, and a type of its own: a migration repairs it.
+      undefinedTable: '42P01',
+      serializationFailure: '40001',
+      deadlockDetected: '40P01',
+      connectionFailure: '08006',
+      tooManyConnections: '53300',
+      adminShutdown: '57P01',
+      ioError: '58030',
+      featureNotSupported: '0A000',
+      internalError: 'XX000',
+    }
+    const observed: Record<string, string> = {}
+    for (const [name, code] of Object.entries(codes)) observed[name] = (await thrownFor(code)).name
+    expect(
+      observed,
+      'mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed',
+    ).toEqual({
+      uniqueViolation: 'PermanentStoreError',
+      notNullViolation: 'PermanentStoreError',
+      numericValueOutOfRange: 'PermanentStoreError',
+      syntaxError: 'PermanentStoreError',
+      insufficientPrivilege: 'PermanentStoreError',
+      undefinedTable: 'SchemaMismatchError',
+      serializationFailure: 'StoreUnavailableError',
+      deadlockDetected: 'StoreUnavailableError',
+      connectionFailure: 'StoreUnavailableError',
+      tooManyConnections: 'StoreUnavailableError',
+      adminShutdown: 'StoreUnavailableError',
+      ioError: 'StoreUnavailableError',
+      featureNotSupported: 'StoreUnavailableError',
+      internalError: 'StoreUnavailableError',
+    })
+    expect(await thrownFor('23505', 'duplicate key')).toMatchObject({
+      message: 'batch(typed) failed permanently (SQLSTATE 23505): duplicate key',
+      cause: { code: '23505' },
+    })
   })
 
   it('does not reclassify a malformed PostgreSQL result as an outage', async () => {

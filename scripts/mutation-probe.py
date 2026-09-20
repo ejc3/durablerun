@@ -16041,6 +16041,278 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# Executor error typing: what each store's executor types permanent, from the driver's
+# code and never from message text, and what a worker pass does with the type.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-permanent-result-code-is-typed",
+            "packages/store-libsql/src/executor.ts",
+            "      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "      if (false && error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "a broken constraint is answered as an outage, which every consumer retries until a run's infrastructure budget is gone",
+        ),
+        (
+            "postgres-permanent-sqlstate-class-is-typed",
+            "packages/store-postgres/src/executor.ts",
+            "    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "    if (false && error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "a constraint violation, a value out of range and a syntax error are answered as outages, which every consumer retries and no retry repairs",
+        ),
+        (
+            "mysql-permanent-sqlstate-class-is-typed",
+            "packages/store-mysql/src/executor.ts",
+            "      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||\n",
+            "      false || // MUTATION: no state is permanent\n",
+            "a duplicate entry, a value out of range and a statement the server will never accept are answered as outages, which every consumer retries",
+        ),
+        (
+            "mysql-wrong-value-for-field-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column\n",
+            "  // MUTATION: a value of the wrong type for its column is an outage\n",
+            "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
+        ),
+        (
+            "contest-books-a-permanent-store-error-as-an-outage",
+            "packages/conformance/src/self-concurrency.ts",
+            "      error instanceof StoreUnavailableError || error instanceof PermanentStoreError\n",
+            "      error instanceof StoreUnavailableError // MUTATION: a permanent store error is a refusal\n",
+            "a port call that breaks a constraint in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
+        ),
+        (
+            "sdk-permanent-store-error-aborts-the-pass",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
+            "    // MUTATION: a permanent store error is no control of the pass\n",
+            "a permanent store error from a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "libsql-permanent-result-code-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/executor.test.ts",
+            "error typing, by the result code and never by the message types a broken constraint and a datatype mismatch permanent, and every other code an outage",
+            "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+        ),
+        "postgres-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage",
+            "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage",
+            "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files outside the three classes by their numbers",
+            "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+        ),
+        "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/self-concurrency-settle.test.ts",
+            "how a contest of the self-concurrency surface books what a copy threw keeps a permanent store error with the outages, which fail a contest in either order",
+            "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
+        ),
+        "sdk-permanent-store-error-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a permanent store error at a context store call aborts the pass and is never billed to the task",
+            "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+        ),
+    }
+)
+
+# MySQL files a broken CHECK constraint under its general state, as it files a value of the
+# wrong type, so both are typed by number, and the case that holds the one holds the other.
+MUTATION_SPECS.append(
+    (
+        "mysql-broken-check-constraint-is-permanent",
+        "packages/store-mysql/src/executor.ts",
+        "  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint\n",
+        "  // MUTATION: a broken CHECK constraint is an outage\n",
+        "a broken CHECK constraint is answered as an outage on MySQL and retried, where libSQL and PostgreSQL answer the same write as permanent",
+    )
+)
+VERDICTS["mysql-broken-check-constraint-is-permanent"] = VERDICTS[
+    "mysql-wrong-value-for-field-is-permanent"
+]
+
+# Each member of a map is a condition of its own. With one member removed, the registered
+# case of its executor fails at the codes that member typed, under the verdict of its rule.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-constraint-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_MISMATCH'])\n",
+            "a broken primary key, unique, not null or check constraint is answered as an outage and retried",
+        ),
+        (
+            "libsql-mismatch-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT'])\n",
+            "a value of the wrong type for a column that enforces one is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-22-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-23-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-42-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-22-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-23-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-42-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+    )
+)
+for _verdict, _names in (
+    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
+    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
+    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# A limit that a retry cures is read before the class MySQL files it under, two more numbers
+# are typed permanent outside the classes, and one real-server case holds both lists to the
+# server's own list of error numbers.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-limit-under-a-permanent-class-is-an-outage",
+            "packages/store-mysql/src/executor.ts",
+            "    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)\n",
+            "    const stateClass = false // MUTATION: a limit is typed by the class MySQL files it under\n",
+            "a limit on connections or on prepared statements, which another session's release lifts, is answered as permanent because MySQL files it under class 42, so a hosted route answers 500 where a 503 invites the retry that works",
+        ),
+        (
+            "mysql-limit-1203-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections\n",
+            "  // MUTATION: error 1203 is typed by its class\n",
+            "MySQL error 1203, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1226-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits\n",
+            "  // MUTATION: error 1226 is typed by its class\n",
+            "MySQL error 1226, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1461-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: error 1461 is typed by its class\n",
+            "MySQL error 1461, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-number-1265-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column\n",
+            "  // MUTATION: error 1265 is an outage\n",
+            "MySQL error 1265, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-number-1364-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: error 1364 is an outage\n",
+            "MySQL error 1364, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-error-list-holds-the-limits-under-a-permanent-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: the prepared statement limit leaves the list the server's own names are held to\n",
+            "a limit leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+        (
+            "mysql-error-list-holds-the-refused-values-outside-the-classes",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: a column left out leaves the list the server's own names are held to\n",
+            "a refused row leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "mysql-limit-under-a-permanent-class-is-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class",
+            "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+        ),
+        "mysql-error-list-holds-the-limits-under-a-permanent-class": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a number permanent, by its class or by hand, only when no retry lifts what its name says",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+        ),
+        "mysql-error-list-holds-the-refused-values-outside-the-classes": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a refused value or row permanent whatever state MySQL files it under, or says why not",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+        ),
+    }
+)
+for _verdict, _names in (
+    (
+        VERDICTS["mysql-limit-under-a-permanent-class-is-an-outage"],
+        ("mysql-limit-1203-is-read-before-its-class", "mysql-limit-1226-is-read-before-its-class", "mysql-limit-1461-is-read-before-its-class",),
+    ),
+    (
+        VERDICTS["mysql-wrong-value-for-field-is-permanent"],
+        ("mysql-number-1265-is-permanent", "mysql-number-1364-is-permanent",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -19937,7 +20209,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1046:
+        if len(MUTATIONS) != 1069:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

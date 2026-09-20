@@ -351,41 +351,25 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'fb6db974e87d8de57c7bdbcf015f900220a57acbe30006ca3689ca1d6337cd93':
-              # The migration lock travels in the batch control, so three base entries follow
-              # their lines. Two bootstrap calls gained the control as a third argument and are
-              # laid out one argument to a line: libSQL's label and MySQL's one-statement list
-              # each stand on a line of their own now, and each entry is the mutant it was.
-              # PostgreSQL's lock on meta left the admin's statement list for the executor, which
-              # sends the same statement in the same place, so the mutant that removed the
-              # statement from the list now removes the executor's send. Thirteen mutations are
-              # newer than the base, which has to exempt their markers.
-              repaired = previous
-              for name in (
-                  'text-statement-list-holds-every-raw-batch',
-                  'postgres-migrator-locks-meta-before-its-sentinel',
-                  'mysql-bootstrap-is-one-statement',
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
-              repaired = exempt(
-                  repaired,
-                  candidate,
-                  (
-                      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
-                      'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
-                      'mutation-verdict:construction:postgres-migration-write-names-its-lock',
-                      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
-                      'mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused',
-                      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
-                      'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat',
-                      'mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved',
-                      'mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress',
-                      'mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before',
-                      'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
-                  ),
-              )
+          if digest == '3f3eab4e27ee25dd6f7f28382bb108406677eb3f119d762fe06495e64c5875f5':
+              # Each store's executor types a permanent SQL error apart from an outage, from
+              # the driver's error code, a worker pass ends on the new type as on an outage,
+              # and a contest of the self-concurrency surface books it with the outages.
+              # On MySQL a limit that a retry cures is read before its class, and one
+              # real-server case holds the executor's lists to the server's own list of numbers.
+              # Each new condition registers a mutation the base predates, so their verdict
+              # markers are exempted. No base entry is re-aimed.
+              repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+                  "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+                  "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+                  "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+                  "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
+                  "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+                  "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
