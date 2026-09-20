@@ -50,7 +50,8 @@ exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
 a last docs PR gives a live owner to every open bullet that is left. Two lines
 are left when the last docs PR merges: line 18, which is held for the
-maintainer's choice, and line 16, whose pull request merges last.
+maintainer's choice, and line 16, which is PR3.5d's and arrives with its pull
+request, #71, the last to merge.
 
 **Exit test:**
 
@@ -811,11 +812,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Carried a deliberate deferral from the PR2.1 review, and built it: a launch
   watchdog. A hanging launcher call stalled its tick then, and the timeout
   seam (an injected clock, since engine code bans ambient timers) belongs to
-  the loop, not to tick(). The loop races every launch against its clock and
-  hands a timeout to the reconciler as a failed launch (`withLaunchTimeout`
-  in `packages/driver/src/loop.ts`), held by the case `a hanging launcher is
-  abandoned by the watchdog and the run recovers` in
-  `packages/driver/test/loop.test.ts`.
+  the loop, not to tick(). By default the loop races every launch against its
+  clock and hands a timeout to the reconciler as a failed launch
+  (`withLaunchTimeout` in `packages/driver/src/loop.ts`), held by the case `a
+  hanging launcher is abandoned by the watchdog and the run recovers` in
+  `packages/driver/test/loop.test.ts`. A launcher that runs the worker inline
+  turns the watchdog off with `launchTimeoutSeconds: null`.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
@@ -1403,7 +1405,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.9 compile the SQL instead of scanning it** (every part is delivered,
   PR3.9a to PR3.9g, and the options below are what the entry still holds).
   Thirteen operations across two dialects, plus about 170 registered mutations
-  whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
+  whose finds quote store SQL, did not fit one reviewable PR. It was planned as
+  five PRs and landed as seven lettered parts, some of them in halves or parts.
   Since PR3.9e part 3b a batch holds tree statements only, and `FencedBatch`
   has no text path. PR3.9e part 3c made a batch read each statement's tree
   once, asked the two text lints' rules of the tree, and enrolled the corpus
@@ -1735,14 +1738,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     from nodes, and the clock rule was already asked of the tree. The two
     lints are not deleted, because
     their subjects are not gone: a store still sends
-    `expire-lease-now`, `driver-heartbeat`, `heartbeat` on libSQL and
-    PostgreSQL, and its admin's statements as text
+    `expire-lease-now`, `driver-heartbeat` and its admin's statements as text
     that no tree holds, and a raw clock call or a second eligibility
-    comparison written there is visible to those scans alone. PR3.9f part 2
-    did not do what this bullet foresaw, that it would build that text as
-    trees and then delete the lints. It built `heartbeat` as trees on every
-    dialect, the maintainer chose to keep the two lints, and the eight
-    statements that stay text are one checked list,
+    comparison written there is visible to those scans alone. When part 3c
+    merged, `heartbeat` on libSQL and PostgreSQL was such text too, and this
+    bullet foresaw that PR3.9f would build all of that text as trees and then
+    delete the lints. PR3.9f part 2 did otherwise. It built `heartbeat` as
+    trees on every dialect, the maintainer chose to keep the two lints, and the
+    eight statements that stay text are one checked list,
     `scripts/text-statements.json`, which
     `packages/conformance/test/text-statements.test.ts` holds every store to.
     The record this entry replaced:
@@ -2336,7 +2339,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A file that is listed as calling the invariant library directly can gain
     a seeded race that calls it alone, and the list does not see it. The
     suite's scenario cases are the listed sites of that kind today. Trigger: a
-    seeded race added to a listed file.
+    pull request that adds a seeded race to a listed file, seen in its diff.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -2591,9 +2594,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Trigger: the first invariant that needs both a phase and a child.
   - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
     and attempt records are found by a test of each name among the task's own
-    checkpoints, because a range of names is not sound under the database's
-    collation (DESIGN.md §3.4). Two partial indexes would make each read one
-    seek: `checkpoints (task_id, checkpoint_name) WHERE
+    checkpoints, because a range of names was not sound under the database's
+    collation when they were built (DESIGN.md §3.4). Two partial indexes would
+    make each read one seek: `checkpoints (task_id, checkpoint_name) WHERE
     substr(checkpoint_name, 1, 9) = '$started:'`, and the same for
     `$rollback-tries:`. Each predicate is the text the fragments already
     spell, so no statement changes and the planner proves it. Measured on
@@ -2604,11 +2607,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
     every dialect, an empty one on libSQL and MySQL. The trigger is a real
     task with thousands of checkpoints, or result reads showing up in a
-    profile. The other way out is the column's collation: once
-    `checkpoint_name` is declared to compare by byte on PostgreSQL, the range
-    is sound there, PostgreSQL can read it as the other two stores do, and the
-    PostgreSQL pin's text check, which reads spellings, is deleted with the
-    walk it guards.
+    profile. The other way out is the column's collation: `checkpoint_name`
+    is declared to compare by byte on PostgreSQL from schema version 7 on, so
+    the range is sound there, PostgreSQL can read it as the other two stores
+    do, and the PostgreSQL pin's text check, which reads spellings, is deleted
+    with the walk it guards.
   - Option, not a deferral of this entry: hold a stored value to JSON on the
     way in, at the port entries that take one: `fail` for a failure reason,
     `failRollback` for the error in its attempt record, and `complete` for a
@@ -2677,10 +2680,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (`firstNamePast`). MySQL keeps its byte comparison: a column compares in
     its own collation, which is binary, so the literals are plain, and a
     binary cast was measured to stop the key from serving the range.
-    PostgreSQL keeps the test of each name, because a name there orders under
-    the database's collation and the range is not sound. DESIGN.md §3.4
-    records that difference with the measured miss, which neither the local
-    server nor CI's can show, because both sort by byte. On PostgreSQL the
+    PostgreSQL keeps the test of each name. When this was built a name there
+    ordered under the database's collation and the range was not sound.
+    DESIGN.md §3.4 records the measured miss, which neither the local server
+    nor CI's could show then, because both sorted by byte. Schema version 7
+    (PR4.6) has since declared the column to compare by byte, so the range is
+    sound there too, and the option under PR3.4 above is the one record of
+    reading it that way. On PostgreSQL the
     attempt record is read only for a failed task whose saga began, which
     spares every other result read the walk. libSQL and MySQL read a range of
     the key and carry no such guard, because there it would change no result
@@ -2846,13 +2852,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     fix as built only hides it, by refusing the program. A measurement shows
     it, and no committed program does. (ii) A sibling flow is refused as if its
     call were nested in a step, because one flag cannot tell the two apart.
-    Three flow programs of the held branch show it, by title: `flows that each
-    await a child and then record it in a step under its own name, and then a
-    sleep`, which fails for good at 3 of 30 fault points on main, `flows that
-    each await an event the program has emitted and then record it in a step,
-    and then a sleep`, which fails with no fault on main, and `flows that each
-    wait on a timer of its own length and then run a step whose body takes
-    time`, which fails at 4 of 5 fault points on main.
+    Three flow programs show it. They are written for the SDK's
+    replay-equivalence test (`packages/sdk/test/replay-equivalence.test.ts`),
+    in commits on top of pull request #75 that are not pushed yet: they turn
+    the held pull request red by design, so they go up with the maintainer's
+    choice. By title: `flows that each await a child and then record it in a
+    step under its own name, and then a sleep`, which fails for good at 3 of 30
+    fault points on main, `flows that each await an event the program has
+    emitted and then record it in a step, and then a sleep`, which fails with
+    no fault on main, and `flows that each wait on a timer of its own length
+    and then run a step whose body takes time`, which fails at 4 of 5 fault
+    points on main.
   - Open question, which the same choice settles: a handler that swallows
     every rejection, with an empty `catch` or with `Promise.allSettled`, can
     observe an injected store outage and complete with it in its result.
