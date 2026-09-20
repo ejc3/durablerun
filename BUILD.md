@@ -149,13 +149,21 @@ a last docs PR gives a live owner to every open bullet that is left.
     block that no store sends, an action that is not in the module's
     next-state relation, an action of that relation the block leaves out, and
     a class that disagrees with Scheduler.tla's ledger each fail
-    `pnpm lint:ledger`. This is met. Twelve cases in
-    `scripts/lint-selftest.py`, committed failing, hold the refusals. Writing
+    `pnpm lint:ledger`. Nothing in a block goes unread: `Next` is read to the
+    end of its definition, and a line that is not an entry may hold no arrow
+    and no class. The main ledger is held one way too: an action it names is
+    a disjunct of Scheduler's `Next`, or the action a side block maps from the
+    same label. This is met. Twenty-seven cases in
+    `scripts/lint-selftest.py`, each committed failing, hold the refusals. Writing
     the two blocks for the reader showed what had gone stale unread:
     ChildTasks.tla's mapped `AwaitMaterialize` from `await-event` where the
     stores send `record-task-done`, left out `fail-rollback` and five of the
     model's fourteen actions, and gave `claim` a class the main ledger does
-    not, and Sagas.tla's left out `Complete`.
+    not, and Sagas.tla's left out `Complete`. The main ledger had mapped `fail`
+    and `fail-rollback` to `FailRun`, which no module defines, with one marker
+    standing for the two actions behind it. Both lines now name
+    `FailRunWithRetry` and `FailRunTerminal`, and a case refuses a stale `fail`
+    on each.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1758,11 +1766,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
     name. It was weighed when the script began to read the blocks. The
     registry already takes the SQL of both models apart one condition at a
     time, each mutation naming the case that must fail, which a comment token
-    does not do. And several actions refuse nothing that a stale or repeated
-    caller could try, a hit, the claim of a woken run, a cancellation under
-    the rule the maintainer chose, so their markers would need a wider
-    meaning or new cases on three dialects. Trigger: a guard of a side model
-    is found with no case and no registered mutation behind it.
+    does not do. And an action can refuse nothing that a stale or repeated
+    caller could try, as a cancellation does under the rule the maintainer
+    chose, so its marker would need a wider meaning or a new case on three
+    dialects. Trigger: a guard of a side model is found with no case and no
+    registered mutation behind it.
+  - Options for the ledger script, not built, each with its trigger:
+    - Hold the main ledger to Scheduler's `Next` the other way. `Next` has 24
+      disjuncts and the main ledger names 19 of them. It names neither sweep
+      cap arm, `SweepRelaunchExhausted` and `SweepInfraExhausted`, which both
+      side blocks map from the caps of `sweep:lost-launch` and
+      `sweep:claim-timeout`, and `Drop`, `WorkerCrash`, and `TimeAdvance`
+      would need exclusion lines. Trigger: an action joins Scheduler's `Next`
+      with no ledger line, or a defect is found at a sweep cap that a twin
+      asked of the main ledger would have met.
+    - Hold the main block to the rule that every quoted token is a label. It
+      quotes `duplicate` once and `running` three times, so four comment
+      lines would be reworded. Trigger: a label deleted from the stores is
+      found still quoted in the main ledger.
+    - A side block does not notice a label line that is removed while another
+      line still maps the action: without its `fail-rollback` line the block
+      of ChildTasks.tla still passes. Nothing knows which labels ought to map
+      to an action. For `ChildTerminal` the list exists, as
+      `TERMINAL_BATCH_LABELS`. Trigger: a label that ends a task is added to
+      the stores and the block is found without it.
+    - The script passes over a module that no mutant list enrols. The
+      structure check of `scripts/tla.sh` refuses such a module, inside the
+      required `tla` check. Trigger: that check is moved, narrowed, or made
+      to depend on the scope.
   - `failRollback` takes the attempt record's name and count from its caller.
     The name is now checked in SQL. A port that takes the step and derives
     both would make a foreign name unwritable and close the limit above.
