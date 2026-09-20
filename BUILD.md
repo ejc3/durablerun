@@ -2334,9 +2334,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
       what a read sent alone asks of it, and nothing refuses a pool set to
       SERIALIZABLE.
   - Deferred from PR4.3: `migrate()` reads the version before each of the five
-    empty versions (2, 3, 4, 5 and 7) and takes the lock for each. One read and one locked batch
-    would do, which matters most to the conformance suite, which migrates a
-    database for every case.
+    empty versions (2, 3, 4, 5 and 7) and takes the lock for each. One read and
+    one locked batch would do, which matters most to the conformance suite,
+    which migrates a database for every case.
   - Done in PR4.4a: the claim's candidate legs have a measured plan test in
     `store-mysql/test/query-plans.test.ts`, with rows in the table. Beside 800
     due runs, and as many that are not due or belong to another queue, the
@@ -2738,7 +2738,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   in a row is still reported: the driver counts an outage, and the run waits
   out its lease. The version itself lost all three in 1 of 160 migrations in
   this order, which leaves version 6 and can be run again.
-  The registry moves from 880 to 886. The per-fixture cost
+  The registry moves from 893 to 899. The per-fixture cost
   is also why this PR raises the limits of three CI jobs, by the rule and with
   the arithmetic in the PR3.13 entry. An
   operator's own view, materialized view, trigger with a column list or a
