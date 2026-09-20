@@ -175,6 +175,59 @@ surface_refuses 'a second change to a listed name' \
   'Checkpoint is listed as changed, but the sha256 recorded is not the packed declaration' \
   "differ();changed.Checkpoint={reason:'a control',declarationSha256:'0'}"
 
+# --write has refusals of its own, and each comes before a tarball is unpacked, so a stand-in
+# tarball that holds its own name is enough to show one. A refused write leaves the snapshot.
+surface_write_refuses() {
+  # $1 what the control shows, $2 the refusal expected, $3 the tarballs that a snapshot of the
+  # release "control" records, as JSON, then the stand-in tarballs the directory holds.
+  local what="$1" expected="$2" recorded="$3" dir="$PACK_DIR/surface-write" refusal file
+  shift 3
+  rm -rf "$dir"
+  mkdir -p "$dir/tarballs"
+  for file in "$@"; do
+    printf '%s' "$file" > "$dir/tarballs/$file"
+  done
+  printf '{"release":"control","assets":%s,"withdrawn":{},"changed":{},"surface":{}}' "$recorded" \
+    > "$dir/snapshot.json"
+  cp "$dir/snapshot.json" "$dir/snapshot-before.json"
+  if refusal="$(node "$ROOT/scripts/package-surface.mjs" --write control "$dir/tarballs" "$dir/snapshot.json" 2>&1)"; then
+    echo "package-smoke: package-surface --write accepted $what" >&2
+    exit 1
+  fi
+  if [[ "$refusal" != *"package-surface: "*"$expected"* ]]; then
+    echo "package-smoke: package-surface --write refused $what for another reason: $refusal" >&2
+    exit 1
+  fi
+  if ! cmp -s "$dir/snapshot.json" "$dir/snapshot-before.json"; then
+    echo "package-smoke: package-surface --write refused $what and changed the snapshot" >&2
+    exit 1
+  fi
+}
+stand_in_sha256="$(node -e "process.stdout.write(require('node:crypto').createHash('sha256').update('a.tgz').digest('hex'))")"
+surface_write_refuses 'a tarball whose bytes are not the recorded ones' \
+  'a.tgz has sha256' '{"a.tgz":"0"}' a.tgz
+surface_write_refuses 'a tarball the snapshot does not record' \
+  'c.tgz is not a tarball the snapshot of control records' \
+  "{\"a.tgz\":\"$stand_in_sha256\"}" a.tgz c.tgz
+surface_write_refuses 'a directory that lacks a recorded tarball' \
+  'lacks b.tgz, which the snapshot of control records' \
+  "{\"a.tgz\":\"$stand_in_sha256\",\"b.tgz\":\"0\"}" a.tgz
+surface_write_refuses 'a directory with no tarball' \
+  'found no tarball in' '{}'
+# And --write works, from any directory: a snapshot written from the four packed tarballs by a
+# command given elsewhere is laid out as the repository's formatter lays it out, and the packed
+# packages pass the check against it with nothing withdrawn and nothing changed.
+surface_written="$PACK_DIR/surface-written.json"
+(cd "$PACK_DIR" && node "$ROOT/scripts/package-surface.mjs" --write control "$PACK_DIR" "$surface_written")
+if ! (cd "$ROOT" && node_modules/.bin/biome format --stdin-file-path=scripts/published-surface.json < "$surface_written" | cmp -s - "$surface_written"); then
+  echo "package-smoke: package-surface --write, given in another directory, did not lay the snapshot out as the repository's formatter does" >&2
+  exit 1
+fi
+if ! written="$(node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_written" 2>&1)" || [[ "$written" != *", 0 withdrawn, 0 changed)"* ]]; then
+  echo "package-smoke: the packed packages do not pass the snapshot written from their own tarballs: $written" >&2
+  exit 1
+fi
+
 node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 
 cp "$ROOT/scripts/package-smoke-fixture/package.json" "$CONSUMER_DIR/package.json"

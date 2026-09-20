@@ -38,11 +38,13 @@
 // until its entry says what changed again.
 //
 // --write replaces the snapshot from a directory of release tarballs: it records each
-// tarball's sha256, unpacks it, and prints the shapes. Written over a snapshot of the same
-// release, it refuses a tarball whose sha256 differs from the one recorded, and a directory
-// that lacks a recorded tarball, and keeps the two tables; a new release starts with both
-// empty. Compare the recorded sha256 of each tarball with the release receipt before
-// committing a new snapshot.
+// tarball's sha256, unpacks it, and prints the shapes. It refuses a directory with no tarball.
+// Written over a snapshot of the same release, it also refuses a tarball whose sha256 differs
+// from the one recorded, a tarball the snapshot does not record, and a directory that lacks a
+// recorded one, and it keeps the two tables; a new release starts with both empty. Every such
+// refusal comes before a tarball is unpacked. The repository's formatter lays the file out, in
+// whatever directory the command is given. Compare the recorded sha256 of each tarball with
+// the release receipt before committing a new snapshot.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -367,46 +369,51 @@ function check(unpackedRoot, snapshotPath) {
 }
 
 function write(release, tarballDir, snapshotPath) {
+  const refuse = (what) => {
+    throw new Error(`package-surface: ${what}`)
+  }
   const before = existsSync(snapshotPath) ? JSON.parse(readFileSync(snapshotPath, 'utf8')) : {}
-  const same = before.release === release
+  const recorded = before.release === release ? (before.assets ?? {}) : undefined
+  const assets = {}
+  for (const file of readdirSync(tarballDir).sort())
+    if (file.endsWith('.tgz')) assets[file] = sha256(readFileSync(join(tarballDir, file)))
+  if (Object.keys(assets).length === 0) refuse(`found no tarball in ${tarballDir}`)
+  for (const [file, digest] of Object.entries(recorded === undefined ? {} : assets)) {
+    if (recorded[file] === undefined)
+      refuse(`${file} is not a tarball the snapshot of ${release} records`)
+    if (recorded[file] !== digest)
+      refuse(
+        `${file} has sha256 ${digest}, and the snapshot of ${release} records ${recorded[file]}`,
+      )
+  }
+  const absent = Object.keys(recorded ?? {}).filter((file) => !(file in assets))
+  if (absent.length > 0)
+    refuse(`${tarballDir} lacks ${absent.join(', ')}, which the snapshot of ${release} records`)
   const unpacked = mkdtempSync(join(tmpdir(), 'durablerun-published-surface.'))
   try {
-    const assets = {}
-    for (const file of readdirSync(tarballDir).sort()) {
-      if (!file.endsWith('.tgz')) continue
-      assets[file] = sha256(readFileSync(join(tarballDir, file)))
-      if (same && before.assets?.[file] !== assets[file])
-        throw new Error(
-          `package-surface: ${file} has sha256 ${assets[file]}, and the snapshot of ${release} records ${before.assets?.[file]}`,
-        )
+    for (const file of Object.keys(assets)) {
       mkdirSync(join(unpacked, file))
       execFileSync('tar', ['-xzf', join(tarballDir, file), '-C', join(unpacked, file)])
     }
-    if (Object.keys(assets).length === 0)
-      throw new Error(`package-surface: found no tarball in ${tarballDir}`)
-    const absent = Object.keys(same ? (before.assets ?? {}) : {}).filter(
-      (file) => !(file in assets),
-    )
-    if (absent.length > 0)
-      throw new Error(
-        `package-surface: ${tarballDir} lacks ${absent.join(', ')}, which the snapshot of ${release} records`,
-      )
     const { surface, namespaces } = packedSurface(unpacked)
-    if (namespaces.length > 0) throw new Error(`package-surface: ${namespaces[0]} ${NAMESPACE}`)
+    if (namespaces.length > 0) refuse(`${namespaces[0]} ${NAMESPACE}`)
     const snapshot = {
       release,
       source:
         'declarations of the published release assets, read and printed with the TypeScript compiler API by scripts/package-surface.mjs --write',
       assets,
-      withdrawn: same ? (before.withdrawn ?? {}) : {},
-      changed: same ? (before.changed ?? {}) : {},
+      withdrawn: recorded === undefined ? {} : (before.withdrawn ?? {}),
+      changed: recorded === undefined ? {} : (before.changed ?? {}),
       surface,
     }
-    // The repository's formatter decides the layout, so the written file passes its check.
+    // The repository's formatter decides the layout, so the written file passes its check. It
+    // runs in the repository, where its configuration is, and is told a path there, so the
+    // layout does not depend on where the command was given or where the snapshot is written.
+    const repository = fileURLToPath(new URL('..', import.meta.url))
     const formatted = execFileSync(
-      fileURLToPath(new URL('../node_modules/.bin/biome', import.meta.url)),
-      ['format', `--stdin-file-path=${snapshotPath}`],
-      { input: JSON.stringify(snapshot), encoding: 'utf8' },
+      join(repository, 'node_modules/.bin/biome'),
+      ['format', '--stdin-file-path=scripts/published-surface.json'],
+      { cwd: repository, input: JSON.stringify(snapshot), encoding: 'utf8' },
     )
     writeFileSync(snapshotPath, formatted)
   } finally {
