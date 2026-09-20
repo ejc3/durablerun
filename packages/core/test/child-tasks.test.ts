@@ -19,6 +19,13 @@ function refusal(run: () => unknown): string {
 }
 
 describe('the completion event contract', () => {
+  const outcomes: TaskOutcome[] = [
+    { state: 'completed', completedPayloadJson: '{"out":1}' },
+    { state: 'completed', completedPayloadJson: 'null' },
+    { state: 'failed', failureReasonJson: '{"name":"Boom"}' },
+    { state: 'cancelled', failureReasonJson: '{"name":"$Cancelled"}' },
+  ]
+
   it('names a completion event under the reserved prefix', () => {
     expect(taskDoneEventName('t1')).toBe('$task-done:t1')
   })
@@ -51,15 +58,17 @@ describe('the completion event contract', () => {
   })
 
   it('round-trips every outcome through its payload', () => {
-    const outcomes: TaskOutcome[] = [
-      { state: 'completed', completedPayloadJson: '{"out":1}' },
-      { state: 'completed', completedPayloadJson: 'null' },
-      { state: 'failed', failureReasonJson: '{"name":"Boom"}' },
-      { state: 'cancelled', failureReasonJson: '{"name":"$Cancelled"}' },
-    ]
     expect(outcomes.map((outcome) => decodeTaskOutcome('t1', encodeTaskOutcome(outcome)))).toEqual(
       outcomes,
     )
+  })
+
+  // A rolling deploy: a newer build may add a field, and a build that predates it reads the
+  // state and the fields it knows.
+  it('ignores a payload field it does not know, in every outcome', () => {
+    const widened = (outcome: TaskOutcome) =>
+      JSON.stringify({ ...outcome, rollback: { outcome: 'failed' }, later: 1 })
+    expect(outcomes.map((outcome) => decodeTaskOutcome('t1', widened(outcome)))).toEqual(outcomes)
   })
 
   it('refuses a payload that is not JSON', () => {

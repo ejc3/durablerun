@@ -83,6 +83,30 @@ class HostedRequestError extends Error {
 
 class BodyTooLargeError extends Error {}
 
+type StoredKey = 'result' | 'failure' | 'error'
+
+/** A stored value as its text, under a key of its own. Text always serializes. */
+function storedText(key: StoredKey, json: string): Record<string, unknown> {
+  return { [`${key}Text`]: json }
+}
+
+/**
+ * A stored value as an answer shows it: decoded under `key` when it is JSON, and as the
+ * text itself when it is not. The SDK stores JSON, and the store's port takes any text, so
+ * a caller that is not the SDK can store text that is no JSON. No value of a task that
+ * ended ever changes, so a parse that threw here would answer 500 for that task for good,
+ * and the text would be lost to whoever asked. A value that parses can still fail to
+ * serialize, which only the serialization of the answer shows, so the inspect route falls
+ * back to `storedText` where it serializes.
+ */
+function storedValue(key: StoredKey, json: string): Record<string, unknown> {
+  try {
+    return { [key]: parseTaskValueJson(json) }
+  } catch {
+    return storedText(key, json)
+  }
+}
+
 function jsonResponse(
   value: unknown,
   status = 200,
@@ -301,14 +325,33 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         }
         const result = await store.getTaskResult(queue, taskId)
         if (result === null) return errorResponse(404, 'task_not_found')
-        const response: Record<string, unknown> = { taskId, state: result.state }
-        if (result.state === 'completed' && result.completedPayloadJson !== undefined) {
-          response.result = parseTaskValueJson(result.completedPayloadJson)
+        const answer = (shown: typeof storedValue): Response => {
+          const response: Record<string, unknown> = { taskId, state: result.state }
+          if (result.state === 'completed' && result.completedPayloadJson !== undefined) {
+            Object.assign(response, shown('result', result.completedPayloadJson))
+          }
+          if (result.failureReasonJson !== undefined) {
+            Object.assign(response, shown('failure', result.failureReasonJson))
+          }
+          // How the task's saga ended, when one began (DESIGN.md §3.10): the error is the
+          // failure of the rollback that ended the task.
+          if (result.rollback !== undefined) {
+            const { outcome, errorJson } = result.rollback
+            response.rollback = {
+              outcome,
+              ...(errorJson === undefined ? {} : shown('error', errorJson)),
+            }
+          }
+          return jsonResponse(response)
         }
-        if (result.failureReasonJson !== undefined) {
-          response.failure = parseTaskValueJson(result.failureReasonJson)
+        try {
+          return answer(storedValue)
+        } catch {
+          // A value can parse and still not serialize, as JSON nested deeper than the
+          // serializer can walk. The answer with every stored value as its text always
+          // serializes, so no value the port accepted makes this route throw.
+          return answer(storedText)
         }
-        return jsonResponse(response)
       },
     }),
   })

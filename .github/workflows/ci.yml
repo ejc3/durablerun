@@ -326,23 +326,19 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '0eec60003f1e21025c8fd11c489563f42ba61826fb486c7f681c93bff420eb37':
-              # PostgreSQL's schema gained a version that declares the byte collation on
-              # every text column, and a server test reads the catalog to hold it: no text
-              # column or index key keeps its database's collation, and no migration
-              # rewrites a table. A second server test holds that a second migrator waits
-              # for the first and never deadlocks with it, a third that a read batch which
-              # loses a deadlock is run again, and a fourth that a statement which arrives
-              # while a version waits holds no store table. Their mutations are newer than the
-              # base registry, so their verdict markers are exempted there. No base entry
-              # is re-aimed.
+          if digest == '8ff5869b24a87aed0ee73017957fd5d7fe52380d5fd60faa12365d0749627b2f':
+              # The saga reads changed shape. A rollback error is the record the task's last
+              # run wrote, the names under a prefix are a range of the checkpoints key on
+              # libSQL and MySQL, and on PostgreSQL the attempt records are read only for a
+              # failed task whose saga began. No base entry's text moved. Eight mutations
+              # hold the new lines. Seven of them answer to five verdict markers that are
+              # newer than the base, and the eighth joins a marker the base already has.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
-                  "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
-                  "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
-                  "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
-                  "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
-                  "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
+                  "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
+                  "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
+                  "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
+                  "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
+                  "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
