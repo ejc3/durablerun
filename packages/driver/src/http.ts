@@ -107,9 +107,12 @@ function pingDriver(clock: Clock, driverUrl: string): void {
  * What a connection to either local server is allowed: ten seconds to deliver its headers
  * and thirty for its whole request, where the platform allows sixty seconds and five
  * minutes. A launch is a few hundred bytes over loopback and a wake has no body, so a
- * request that takes longer is a client that stalled, and the limit is what ends it. The
- * platform checks its connections every thirty seconds, so a stalled one ends within its
- * limit plus that.
+ * request that takes longer has stalled, and the limit is what ends it. The platform checks
+ * its connections every thirty seconds, so a stalled one ends within its limit plus that.
+ * The stall is usually the client's. It can be this process's own: a request that arrived
+ * whole is answered 408 when the event loop stalls past the limit between the accept and
+ * the first read, where the platform's sixty seconds tolerated a longer stall. That costs
+ * one failed launch, which the lease recovers.
  */
 const HEADERS_TIMEOUT_MS = 10_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -227,6 +230,10 @@ export function createWorkerServer(deps: {
       // counted against a run that ran. The wait ends with the last connection, and at
       // the bound at the latest. A closed server no longer enforces its header and
       // request limits, so nothing else would ever end a client that stalls here.
+      // A connection that never sent a byte is waited for as well, because the platform
+      // counts a connection as active until it has been answered once, so it holds
+      // close() for the whole bound. The pool under fetch leaves such a connection for
+      // about four seconds after an aborted launch.
       const drained = new AbortController()
       void closed.then(() => drained.abort())
       await deps.clock.sleep(CLOSE_DRAIN_MS, drained.signal)

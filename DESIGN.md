@@ -2937,10 +2937,21 @@ stutters.
    the invocation alone still satisfies the port, and a caller may pass no
    options. A launcher never reads the signal as evidence that the run did not
    start, and never as a reason to stop a worker. The worker may hold the
-   launch, the lease stays the only recovery, and a worker that did start
-   revives an advisorily expired lease with its next heartbeat. A driver of a
-   SYNC launcher runs without the launch deadline, so its calls are never
-   aborted.
+   launch, and the lease stays the only recovery. What can start a second body
+   of a run is the timeout, not the abort, and it could before the signal
+   existed. The failed launch expires the lease of a run whose body may still
+   be executing. A heartbeat that comes first revives that lease. Otherwise the
+   next sweep fails the run with `$ClaimTimeout`, and a successor run executes
+   the body again. That is harmless because the successor runs under a claim
+   token of its own, so the first body's late completion carries a stale token
+   and writes nothing. Existing cases hold the pieces: `sync ended:crashed
+   AFTER activation accelerates a $ClaimTimeout successor` in
+   `packages/driver/test/tick.test.ts`, and in the shared conformance suite
+   `rejects stale tokens and stale generations after a re-claim`, `a stale
+   token writes nothing and throws LeaseLostError`, and `expireLeaseNow is
+   advisory: a live heartbeat revives the lease`. No case drives the whole path
+   through the HTTP transport. A driver of a SYNC launcher runs without the
+   launch deadline, so its calls are never aborted.
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
    `{queue, runId, claimToken?, endedAtEpochMs, kind:
@@ -2985,7 +2996,13 @@ and its two loopback servers (the worker's `/launch`, the resident driver's
 - Both servers give a connection ten seconds to deliver its headers and thirty
   for its whole request, where the platform's defaults are sixty seconds and
   five minutes. The platform checks its connections every thirty seconds, so a
-  stalled one ends within its limit plus that.
+  stalled one ends within its limit plus that. The limits bound this process's
+  own stalls as well as a client's: a request that arrived whole is answered
+  408 when the event loop stalls past the limit between accepting the
+  connection and first reading it, where the platform's sixty seconds tolerated
+  a longer stall. With these numbers that takes a stall of more than ten
+  seconds that begins right after an accept. The cost is one failed launch,
+  which the lease recovers.
 - A request that is answered before its body is read, or whose body nobody
   reads, leaves its kept-alive connection usable, because the platform discards
   what is left of a request body once its response has finished. The transport
@@ -2994,15 +3011,21 @@ and its two loopback servers (the worker's `/launch`, the resident driver's
   answered 413 and its connection is torn down, because its client may still be
   sending.
 - The worker server's `close()` stops accepting, which ends the idle kept-alive
-  connections, and then waits for the connections that hold a request. Such a
-  request is read, answered and run, and once `close()` has begun every answer
-  carries `connection: close`, so a connection ends after its answer is written
-  and is never kept alive for a request the server will not take. An ack is
-  therefore never dropped by the shutdown: a dropped ack is a failed launch
-  counted against a run that ran. The wait is bounded by five seconds on the
-  injected clock, because a closed server no longer enforces the limits above.
-  What is left is then force-closed, and `close()` resolves once the passes in
-  flight have finished.
+  connections, and then waits for every connection that is still open. One that
+  holds a request is read, answered and run, and once `close()` has begun every
+  answer carries `connection: close`, so a connection ends after its answer is
+  written and is never kept alive for a request the server will not take. An
+  ack is therefore never dropped by the shutdown: a dropped ack is a failed
+  launch counted against a run that ran. One that never sent a byte is waited
+  for as well, because the platform counts a connection as active until it has
+  been answered once, and it holds `close()` for the whole bound. The
+  connection that the pool under `fetch` opens after an aborted launch is one
+  of these for about four seconds. Measured in review: a silent client held
+  `close()` for 5.0 s, where the old `close()` took no time, and the pool's
+  connection held it for 3.9 s when `close()` came 100 ms after the abort. The
+  wait is bounded by five seconds on the injected clock, because a closed
+  server no longer enforces the limits above. What is left is then
+  force-closed, and `close()` resolves once the passes in flight have finished.
 - The wake server's `close()` ends every connection at once. Nothing there is
   worth a wait: a wake reaches the loop before its answer is written, and the
   answer tells the pinger nothing. Left alone, a client that connected and sent

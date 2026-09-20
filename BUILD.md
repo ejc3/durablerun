@@ -641,6 +641,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   what is left of the body once the response has finished, on every route
   tried, so two cases pin that and no code changed. Twelve mutations hold the
   new lines, and the registry goes from 925 to 937.
+  - Option, not scheduled: end the connections that never sent a byte when the
+    worker server's `close()` begins. Today such a connection holds `close()`
+    for its whole bound of five seconds, measured in the review at 5.0 s for a
+    silent raw client, where the old `close()` took no time, and at 3.9 s for
+    the connection that fetch's pool opens after an aborted launch. Trigger: a
+    host that calls `close()` where those seconds matter, such as a deploy that
+    waits for it. The red is ready-made: a raw client connects and sends
+    nothing, and `close()` has to resolve with the clock where it was.
 
 ## Phase 3 — full Absurd semantics
 
