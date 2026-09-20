@@ -14,7 +14,7 @@ import {
   LibsqlStoreAdmin,
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
-import { type PlanRow, readNests, writtenTable } from './plan-nests.js'
+import { type PlanRow, readNests } from './plan-nests.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -1033,14 +1033,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const excused = new Set<string>()
     const drivenByADueRange: Record<string, string[]> = {}
     const textOf = new Map<string, string>()
-    const writes = { read: 0, unread: [] as string[] }
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
-      // The two lines over a write hold only a statement the reader reads as one.
-      if (/^\s*(?:update|delete)\b/i.test(st.sql)) {
-        if (writtenTable(st.sql) === undefined) writes.unread.push(name)
-        else writes.read += 1
-      }
       const reading = await nestsOf(st)
       if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
       textOf.set(name, st.sql)
@@ -1051,8 +1045,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
     // Compared as text, so a failure prints every fault and not a count of them.
     expect(faults.join('\n'), 'mutation-verdict:behavior:plan-nests').toBe('')
-    // Every UPDATE and DELETE a store ships is read as a write, and there are some.
-    expect({ ...writes, read: writes.read > 0 }).toEqual({ read: true, unread: [] })
     // An excuse that nothing needs any more is removed, not kept.
     expect(Object.keys(EXCUSED_NESTS).filter((name) => !excused.has(name))).toEqual([])
     // Named line for line, in both directions: a due range that drives in a statement nobody
@@ -1167,6 +1159,10 @@ describe('every statement a store ships, by the nests of its plan', () => {
       [
         `${expired} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`,
       ],
+    ])
+    // A write whose table the reader cannot name is refused: SQLite reads a name in brackets.
+    expect((await read('update [runs] set wake_event = null where run_id = ?')).faults).toEqual([
+      'cannot name the table this write writes',
     ])
     // A generated statement quotes its table, and is read the same.
     expect((await read('delete from "waits"')).faults).toEqual([
@@ -1416,7 +1412,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const faultsOf = (...details: [number, number, string][]) =>
       readNests(
         details.map(([id, parent, detail]) => ({ id, parent, detail })),
-        '',
+        // These lines are no statement's plan. The text is a read's, so no line over a write applies.
+        'select 1',
       ).faults
     const keyed = 'SEARCH tasks USING PRIMARY KEY (task_id=?)'
     expect({

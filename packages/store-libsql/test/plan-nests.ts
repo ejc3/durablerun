@@ -32,7 +32,8 @@
  * SQLite's truncate path and plans as no rows at all, so no line above has a step to judge.
  * And that step may not be a due range, because a write carries no LIMIT, so a range over
  * what is due takes all of it at once. An INSERT of values also plans as no rows, which is
- * why the two lines go by the statement's kind.
+ * why the two lines go by the statement's kind. Its first word says the kind, and a
+ * statement whose first word does not, or a write whose table cannot be named, is refused.
  *
  * No table is excused, so there is no list of tables to keep. `meta`, which holds the
  * clock, is read by its key, and `key` stands in the first list. A step that reads no
@@ -106,6 +107,8 @@ const SELECTS =
 const SORTS = /^USE TEMP B-TREE FOR /
 /** The rows of a VALUES, one or several: no table is read, and their count is in the text. */
 const CONSTANT_ROWS = /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS)$/
+/** A statement's first word, which says what kind it is. */
+const KIND = /^\s*(select|insert|replace|update|delete|with)\b/i
 /** An UPDATE or a DELETE, by its first words: the table it writes, and its alias there. */
 const WRITE = /^\s*(?:update|delete\s+from)\s+(?:"?\w+"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
 const EQUALITY = /^([a-z_]+)=\?$/
@@ -151,11 +154,6 @@ function tableCalled(name: string, sql: string): string {
   return tables.size > 0 ? [...tables].join(' or ') : name
 }
 
-/** The table an UPDATE or a DELETE writes, as its text names it. No other statement has one. */
-export function writtenTable(sql: string): string | undefined {
-  return WRITE.exec(sql)?.[1]?.toLowerCase()
-}
-
 /** The steps of a statement's own select: the lines under no subquery, an OR's legs too. */
 function ownSteps(children: readonly Node[]): RegExpExecArray[] {
   return children.flatMap((node) => {
@@ -169,19 +167,24 @@ function ownSteps(children: readonly Node[]): RegExpExecArray[] {
 
 /** What is wrong with how a write reaches the table it writes, which no step or nest shows. */
 function writeFaults(own: readonly Node[], sql: string): string[] {
-  const write = WRITE.exec(sql)
-  if (!write) {
-    // A write under a WITH names its table after bodies this does not read, so it is refused.
-    const hidden = /^\s*with\b/i.test(sql) && /\b(?:update|delete)\b/i.test(sql)
-    return hidden ? ['cannot tell which table a write that begins with WITH writes'] : []
+  // The two lines go by the statement's kind, so a statement whose first word does not say
+  // its kind is refused, as a plan line that cannot be read is.
+  const kind = KIND.exec(sql)?.[1]?.toLowerCase()
+  if (kind === undefined) return ['cannot tell what kind of statement this is from its first word']
+  // A write under a WITH names its table after bodies this does not read.
+  if (kind === 'with' && /\b(?:update|delete)\b/i.test(sql)) {
+    return ['cannot tell which table a write that begins with WITH writes']
   }
+  if (kind !== 'update' && kind !== 'delete') return []
+  const write = WRITE.exec(sql)
+  if (!write) return ['cannot name the table this write writes']
   const [, table = '', alias = table] = write
   const names = [table.toLowerCase(), alias.toLowerCase()]
   const over = ownSteps(own).filter((step) => names.includes((step[2] ?? '').toLowerCase()))
   if (over.length === 0) {
     return [`no step of the plan is over ${table}, the table the statement writes`]
   }
-  const written = `the table the statement writes, and a write carries no LIMIT`
+  const written = 'the table the statement writes, and a write carries no LIMIT'
   return over
     .filter(([, kind, , access = '']) => kind === 'SEARCH' && reachOf(access) === 'due')
     .map(([line]) => `${line} :: is a due range over ${table}, ${written}`)
