@@ -144,6 +144,18 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+12. `scripts/spec-ledger.py` reads the ledger blocks of ChildTasks.tla and
+    Sagas.tla, the side models that `scripts/tla.sh` enrols. A label in either
+    block that no store sends, an action that is not in the module's
+    next-state relation, an action of that relation the block leaves out, and
+    a class that disagrees with Scheduler.tla's ledger each fail
+    `pnpm lint:ledger`. This is met. Twelve cases in
+    `scripts/lint-selftest.py`, committed failing, hold the refusals. Writing
+    the two blocks for the reader showed what had gone stale unread:
+    ChildTasks.tla's mapped `AwaitMaterialize` from `await-event` where the
+    stores send `record-task-done`, left out `fail-rollback` and five of the
+    model's fourteen actions, and gave `claim` a class the main ledger does
+    not, and Sagas.tla's left out `Complete`.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1462,10 +1474,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   implementation then maps every terminal batch onto the model's ChildTerminal, takes the dialect's event
   lock in each of them, reserves the `$task-done:` name at the store's
   `emitEvent` port, and adds `ctx.spawn` and an internal child await to the
-  SDK. Nothing reads the model's ledger block, because `scripts/spec-ledger.py`
-  reads Scheduler.tla only. So the implementation adds one conformance case
-  per terminal batch, six of them, generated from the batch labels: the batch
-  writes the completion event and wakes a registered waiter, on both dialects.
+  SDK. Nothing read the model's ledger block then, because
+  `scripts/spec-ledger.py` read Scheduler.tla only. So the implementation adds
+  one conformance case per terminal batch, six of them, generated from the
+  batch labels: the batch writes the completion event and wakes a registered
+  waiter, on both dialects. The script reads the block now, its labels and its
+  actions and no guard, so those cases still hold the guards.
   Event cleanup, when it is built, must not remove a completion event whose
   task can still be awaited. The spec's review round is
   `postmortems/pr3.3-child-tasks-spec-review.md`.
@@ -1571,9 +1585,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   step's body, enters the phase in the same batch as the terminal decision in
   `fail` and in both sweep caps, admits rollback passes past the user attempt
   budget, and changed `retry-task`'s admission, because reviving a task whose
-  saga ran was unsound. `scripts/spec-ledger.py` reads Scheduler.tla
-  only, so nothing checks this model's ledger block, and the implementation
-  gave every guard an executable twin on every dialect. Beyond the conformance
+  saga ran was unsound. `scripts/spec-ledger.py` read Scheduler.tla only then,
+  so nothing checked this model's ledger block, and the implementation gave
+  every guard an executable twin on every dialect. The script reads the block
+  now, its labels and its actions and no guard. Beyond the conformance
   cases above those are: the start marker commits before the body runs; the
   decision and the phase marker are one batch in `fail` and in both sweep
   caps; no forward step starts or commits in the phase; `retry-task` refuses a
@@ -1734,6 +1749,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
+  - An option, not built: executable-twin markers for the side models.
+    `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
+    that shows a refusal, for every action a `[cas-fenced]` line of the main
+    ledger names. It reads the ledger blocks of ChildTasks.tla and Sagas.tla
+    too, and it could demand `fenceTwin('Sagas.UserTerminal')` of them the
+    same way, the module in the name so that two models may share an action
+    name. It was weighed when the script began to read the blocks. The
+    registry already takes the SQL of both models apart one condition at a
+    time, each mutation naming the case that must fail, which a comment token
+    does not do. And several actions refuse nothing that a stale or repeated
+    caller could try, a hit, the claim of a woken run, a cancellation under
+    the rule the maintainer chose, so their markers would need a wider
+    meaning or new cases on three dialects. Trigger: a guard of a side model
+    is found with no case and no registered mutation behind it.
   - `failRollback` takes the attempt record's name and count from its caller.
     The name is now checked in SQL. A port that takes the step and derives
     both would make a foreign name unwritable and close the limit above.
