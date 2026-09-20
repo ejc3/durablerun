@@ -4279,33 +4279,6 @@ MUTATION_SPECS = [
         "emit launders a stored SQL NULL payload into an emitted timeout wake",
     ),
     (
-        # SQLite cannot add NOT NULL to a column that exists, so two triggers hold the payload,
-        # and they hold it only if no statement gets past both. Each is switched off in turn.
-        "libsql-payload-insert-trigger-refuses-null",
-        "packages/store-libsql/src/schema.ts",
-        "       BEFORE INSERT ON events\n"
-        "       WHEN NEW.payload IS NULL\n",
-        "       BEFORE INSERT ON events\n"
-        "       WHEN NEW.payload IS NULL AND 0\n",
-        "an insert stores SQL NULL as an event's payload on libSQL, which a waiter reads as a timeout",
-    ),
-    (
-        "libsql-payload-update-trigger-refuses-null",
-        "packages/store-libsql/src/schema.ts",
-        "       BEFORE UPDATE OF payload ON events\n"
-        "       WHEN NEW.payload IS NULL\n",
-        "       BEFORE UPDATE OF payload ON events\n"
-        "       WHEN NEW.payload IS NULL AND 0\n",
-        "an update stores SQL NULL over an event's payload on libSQL, which a waiter reads as a timeout",
-    ),
-    (
-        "libsql-version-checks-the-payloads-already-stored",
-        "packages/store-libsql/src/schema.ts",
-        "      'UPDATE events SET payload = payload WHERE payload IS NULL',\n",
-        "      'UPDATE events SET payload = payload WHERE payload IS NULL AND 0',\n",
-        "libSQL reaches version 10 over an event that already holds SQL NULL, and its schema then claims what is false",
-    ),
-    (
         "postgres-payload-is-not-null",
         "packages/store-postgres/src/schema.ts",
         "    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],\n",
@@ -10775,24 +10748,6 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance a stored SQL NULL event payload is never delivered as a timeout",
         "mutation-verdict:behavior:null-event-payload-never-becomes-timeout",
-    ),
-    "libsql-payload-insert-trigger-refuses-null": ExpectedVerdict(
-        "behavior",
-        "packages/store-libsql/test/schema.test.ts",
-        "an event payload is never SQL NULL refuses SQL NULL through every statement that can write the column",
-        "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
-    ),
-    "libsql-payload-update-trigger-refuses-null": ExpectedVerdict(
-        "behavior",
-        "packages/store-libsql/test/schema.test.ts",
-        "an event payload is never SQL NULL refuses SQL NULL through every statement that can write the column",
-        "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
-    ),
-    "libsql-version-checks-the-payloads-already-stored": ExpectedVerdict(
-        "behavior",
-        "packages/store-libsql/test/schema.test.ts",
-        "an event payload is never SQL NULL stops at the version before over a row that holds NULL, and leaves the row as it was",
-        "mutation-verdict:behavior:libsql-version-refuses-a-null-payload-already-stored",
     ),
     "postgres-payload-is-not-null": ExpectedVerdict(
         "behavior",
@@ -19886,7 +19841,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1045:
+        if len(MUTATIONS) != 1042:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

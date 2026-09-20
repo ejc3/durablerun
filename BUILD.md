@@ -395,8 +395,9 @@ a last docs PR gives a live owner to every open bullet that is left.
     seconds on a million events of 1 KB while a fifth to a third of another
     connection's calls failed. The poison matrix's witnesses of a stored NULL
     go through the fixture's storage-corruption door, where every dialect now
-    refuses them. Eight registered mutations hold the new lines, the strict
-    `sql_mode` that MySQL's refusal depends on among them. The entry under
+    refuses them. Five registered mutations hold the servers' lines, the strict
+    `sql_mode` that MySQL's refusal depends on among them, and libSQL's frozen
+    statements are held by its cases and by their hash. The entry under
     PR3.1d has the measurements on a million events under the older build's
     traffic.
 
@@ -976,9 +977,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     run whose stored event holds NULL go through the same door, and every
     dialect refuses them. Its positive control is a libSQL case that drops a
     trigger as tampering would.
-  - Eight registered mutations, 1037 to 1045. No engine statement changed, so
-    no corpus file moved, and nothing here is a new protocol, so no TLA model
-    changed.
+  - Five registered mutations, 1037 to 1042: the column change on each server,
+    MySQL's guarded form, the strict `sql_mode`, and the invariant's condition.
+    libSQL's three statements have none, by the registry's own rule: its
+    self-test refuses a live mutation of libSQL's migration file, which a hash
+    freezes. Three entries were written first, each caught by a filtered run,
+    which is the evidence that libSQL's two cases can fail, and the self-test
+    then refused them. No engine statement changed, so no corpus file moved,
+    and nothing here is a new protocol, so no TLA model changed.
   - Options, not built. (1) libSQL's catalog could declare the column through a
     table rebuild for databases small enough. Trigger: a reader that needs the
     rule from a catalog read of libSQL. (2) The port's own refusals of a stored

@@ -328,13 +328,12 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'a48070b271307b43e31aa59fde6b4cdbdb38385dc6c6cf71bf4d61f9c2c88ca9':
               # An event's payload is NOT NULL in every dialect's schema from version 10. The
-              # mutations that hold it (libSQL's two triggers and its check of the rows already
-              # there, the two servers' column change, MySQL's guarded form and the strict mode
-              # it refuses under, and the invariant library's condition) are newer than the
-              # base, which has to exempt their verdict markers. No base entry is re-aimed.
+              # mutations that hold it (the two servers' column change, MySQL's guarded form
+              # and the strict mode it refuses under, and the invariant library's condition)
+              # are newer than the base, which has to exempt their verdict markers. No base
+              # entry is re-aimed. libSQL's statements are frozen migration history, which the
+              # registry keeps mutations off.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
-                  "mutation-verdict:behavior:libsql-version-refuses-a-null-payload-already-stored",
                   "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
                   "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
                   "mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload",
