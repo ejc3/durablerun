@@ -3865,6 +3865,13 @@ MUTATION_SPECS = [
         "an index key declares a collation of its own, which the column's change to the byte collation does not reach, so the index orders by another rule than its column",
     ),
     (
+        "postgres-version-locks-meta-before-the-store-tables",
+        "packages/store-postgres/src/schema.ts",
+        "      `LOCK TABLE event_locks, events, waits, checkpoints, runs, tasks, drivers, meta\n",
+        "      `LOCK TABLE meta, event_locks, events, waits, checkpoints, runs, tasks, drivers\n",
+        "a statement that arrives while the version waits takes its own table and queues for meta behind the version, which then asks for that table, and PostgreSQL ends the deadlock by aborting one of them",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9918,6 +9925,12 @@ VERDICTS = {
         "packages/store-postgres/test/text-collation.test.ts",
         "PostgreSQL text collation declares the byte collation on every text column and every index key",
         "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
+    ),
+    "postgres-version-locks-meta-before-the-store-tables": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/version-lock-order.test.ts",
+        "a statement that arrives while a version waits for an older transaction waits holding no store table, so it cannot deadlock with the version",
+        "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -17194,7 +17207,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 885:
+        if len(MUTATIONS) != 886:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

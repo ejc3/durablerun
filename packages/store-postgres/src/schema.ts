@@ -33,6 +33,15 @@ export const SCHEMA_VERSION_READ_SQL =
 // work outlasts the deadlock timeout the migration is the transaction PostgreSQL aborts,
 // with its work done. With the locks first it can only be aborted before it has done
 // anything, and the executor runs it again.
+//
+// It takes them in the order the engine's own statements do. A batch that locks an event
+// takes `event_locks` before anything else. A worker's reads name `checkpoints` before
+// `runs` and `runs` before `tasks`. Every statement that reads the clock takes its own
+// table and then `meta`, so `meta` comes last. A statement that arrives while the version
+// waits for older transactions then waits holding nothing, and a waiter that holds nothing
+// cannot deadlock. No one order fits every statement: the sweep's scan and the task result
+// read name `tasks` first, and a write batch of several statements can hold a table the
+// list has passed. Those can still lose a deadlock to a version, or make it lose one.
 export const MIGRATIONS: readonly PostgresMigration[] = [
   {
     version: 1,
@@ -203,11 +212,15 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     // compares bytes. The stored bytes do not change, so no table is rewritten, which the
     // rule above forbids: PostgreSQL rebuilds each index that holds a changed column and
     // nothing else, and the collation test holds both. The first statement takes every
-    // lock, by the rule above. Measured under live traffic with four million rows a
-    // table, this version without it lost all three of the executor's attempts, every time.
+    // lock, by the rule above and in its order. Measured under live traffic with four
+    // million rows a table, this version without that statement lost all three of the
+    // executor's attempts, every time. Measured on an empty schema under writes, reads and
+    // event batches, the same statement with `meta` first lost all three in 11 of 80
+    // migrations while the server counted 568 deadlocks. In this order it lost none of 80,
+    // and the server counted 126.
     version: 7,
     statements: [
-      `LOCK TABLE meta, tasks, runs, checkpoints, events, waits, event_locks, drivers
+      `LOCK TABLE event_locks, events, waits, checkpoints, runs, tasks, drivers, meta
         IN ACCESS EXCLUSIVE MODE`,
       `ALTER TABLE meta
         ALTER COLUMN key TYPE TEXT COLLATE "C",

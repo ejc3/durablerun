@@ -106,7 +106,7 @@ describe('PostgreSQL migrations are append-only', () => {
     4: '69daf94f2004f75f5f8c03f93261fec5a61e7f98a22a07b718bac4163beb8c92',
     5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     6: '885b036a4dd411a373539f7945fa2cfcd57f4dba7e0ac9a3d2d5edba8d969b3e',
-    7: 'e66e05d09b30dbc641b3dfa5d33c136c95a635b5604ec84c617c24fd1772b338',
+    7: 'a9b6b06e608a16b77893027f3b47dc7eb2f20ceaedf5467aa6736cc5973b474e',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

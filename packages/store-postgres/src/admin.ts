@@ -163,7 +163,8 @@ function fencedBatch(migration: PostgresMigration): SqlStatement[] {
     // it the second blocks on the first one's uncommitted sentinel while it holds its own
     // row-exclusive lock on meta, and a version that then locks the table deadlocks with
     // it, which PostgreSQL ends only after its deadlock timeout. A read does not conflict
-    // with this lock, so the clock's row in meta stays readable while a version runs.
+    // with this lock, so it stops no statement's clock read. A version that locks meta
+    // itself, as version 7 does, stops every statement from its own lock until it commits.
     { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },
     // Plain INSERT is the transaction fence. A stale or concurrent re-apply
     // raises unique_violation and rolls back its DDL with it.

@@ -138,7 +138,10 @@ describe('a statement that arrives while a version waits for an older transactio
         await db.close()
       }
     }
-    expect(verdicts).toEqual(
+    expect(
+      verdicts,
+      'mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables',
+    ).toEqual(
       lockingVersions.map(({ version }) => ({
         version,
         arrivals: [

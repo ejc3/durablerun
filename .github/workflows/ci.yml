@@ -330,8 +330,9 @@ jobs:
               # every text column, and a server test reads the catalog to hold it: no text
               # column or index key keeps its database's collation, and no migration
               # rewrites a table. A second server test holds that a second migrator waits
-              # for the first and never deadlocks with it, and a third that a read batch
-              # which loses a deadlock is run again. Their mutations are newer than the
+              # for the first and never deadlocks with it, a third that a read batch which
+              # loses a deadlock is run again, and a fourth that a statement which arrives
+              # while a version waits holds no store table. Their mutations are newer than the
               # base registry, so their verdict markers are exempted there. No base entry
               # is re-aimed.
               repaired = exempt(previous, candidate, (
@@ -340,6 +341,7 @@ jobs:
                   "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
                   "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
                   "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
+                  "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
