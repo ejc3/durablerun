@@ -639,8 +639,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   thirty for its whole request. A request rejected with a body was expected to
   leave its kept-alive connection unusable, and does not: the platform discards
   what is left of the body once the response has finished, on every route
-  tried, so two cases pin that and no code changed. Twelve mutations hold the
-  new lines, and the registry goes from 925 to 937.
+  tried, so two cases pin that and no code changed. Thirteen mutations hold the
+  new lines, and the registry goes from 925 to 938.
   - Option, not scheduled: end the connections that never sent a byte when the
     worker server's `close()` begins. Today such a connection holds `close()`
     for its whole bound of five seconds, measured in the review at 5.0 s for a

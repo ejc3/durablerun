@@ -13362,8 +13362,8 @@ MUTATION_SPECS.extend(
         (
             "transport-launch-call-is-handed-a-signal",
             "packages/driver/src/loop.ts",
-            "        .launch(invocation, { signal: gaveUp.signal })\n",
-            "        .launch(invocation) // MUTATION: no signal is handed over\n",
+            "      const launch = launcher.launch(invocation, { signal }).finally(() => settled.abort())\n",
+            "      const launch = launcher.launch(invocation).finally(() => settled.abort()) // MUTATION: no signal is handed over\n",
             "a launcher is handed nothing to hear the launch deadline through, so no transport can end a launch the driver stopped waiting for",
         ),
         (
@@ -13435,6 +13435,13 @@ MUTATION_SPECS.extend(
             "      void closed.then(() => drained.abort())\n",
             "      // MUTATION: the wait never ends early\n",
             "every close() of the worker server waits out its whole bound of five seconds, even with nothing on the wire",
+        ),
+        (
+            "transport-launch-deadline-wrapper-hands-on-the-callers-signal",
+            "packages/driver/src/loop.ts",
+            "          : AbortSignal.any([gaveUp.signal, options.signal])\n",
+            "          : gaveUp.signal // MUTATION: the caller's signal is dropped\n",
+            "the wrapper that gives a launch its deadline drops the options its own caller passes, so a caller's abort never reaches the transport",
         ),
     )
 )
@@ -13559,6 +13566,17 @@ for _verdict, _names in (
         ),
         (
             "transport-worker-close-ends-with-its-last-connection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/loop.test.ts",
+            "the launch deadline as a wrapper of the port hands a signal of its own caller on to the launcher it wraps, joined with its own",
+            "mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal",
+        ),
+        (
+            "transport-launch-deadline-wrapper-hands-on-the-callers-signal",
         ),
     ),
 ):
@@ -18062,7 +18080,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 937:
+        if len(MUTATIONS) != 938:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

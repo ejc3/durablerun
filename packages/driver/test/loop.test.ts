@@ -1,9 +1,10 @@
-import { InvalidDurableStringError, LaunchOutcome } from '@durablerun/core'
+import { InvalidDurableStringError, type LaunchInvocation, LaunchOutcome } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { DriverLoop } from '../src/index.js'
+import { withLaunchTimeout } from '../src/loop.js'
 import { FakeLauncher, until } from './loop-harness.js'
 
 const Q = 'q'
@@ -43,6 +44,48 @@ function firstCallHangs(letsGo: boolean) {
   })
   return { launcher, signals }
 }
+
+describe('the launch deadline as a wrapper of the port', () => {
+  const invocation: LaunchInvocation = {
+    queue: Q,
+    runId: 'run',
+    attempt: 1,
+    claimToken: 'token',
+    claimGen: 1,
+    deadlineHintEpochMs: 0,
+  }
+
+  it('hands a signal of its own caller on to the launcher it wraps, joined with its own', async () => {
+    const clock = new FakeClock()
+    const first = firstCallHangs(true)
+    const caller = new AbortController()
+    const answer = withLaunchTimeout(first.launcher, clock, 5_000).launch(invocation, {
+      signal: caller.signal,
+    })
+    await until(() => first.signals.length === 1, 'the wrapped launcher called')
+    const beforeTheAbort = first.signals[0]?.aborted
+    caller.abort()
+    // The caller's abort reaches the wrapped launcher with the clock where it was.
+    expect(
+      [beforeTheAbort, first.signals[0]?.aborted],
+      'mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal',
+    ).toEqual([false, true])
+    // The launcher let go and answered. The wrapper hands that answer back and leaves no
+    // sleep on the clock.
+    await answer
+    expect(clock.sleeps).toEqual([])
+    // The deadline still reaches a launcher whose caller's signal never fires.
+    const second = firstCallHangs(true)
+    const late = withLaunchTimeout(second.launcher, clock, 5_000).launch(invocation, {
+      signal: new AbortController().signal,
+    })
+    await until(() => second.signals.length === 1, 'the second wrapped launcher called')
+    clock.advance(5_000)
+    clock.fire()
+    await late
+    expect(second.signals[0]?.aborted).toBe(true)
+  })
+})
 
 describe('DriverLoop', () => {
   it('drains due work, then parks until the next wake', async () => {

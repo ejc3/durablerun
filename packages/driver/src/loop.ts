@@ -321,17 +321,22 @@ export class DriverLoop {
 
 /**
  * Race launch() against the clock. A call that outlives the deadline becomes a failed
- * launch, and the signal the call was handed fires.
+ * launch, and the signal the call was handed fires. The wrapper hands on what its own caller
+ * hands it: the wrapped launcher hears one signal, which fires when the caller's does or when
+ * the deadline passes, whichever comes first. Exported for the case that reads what the
+ * wrapped launcher is handed. The package's entry point does not export it.
  */
-function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number): Launcher {
+export function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number): Launcher {
   return {
-    async launch(invocation) {
+    async launch(invocation, options) {
       const settled = new AbortController()
       const gaveUp = new AbortController()
+      const signal =
+        options?.signal === undefined
+          ? gaveUp.signal
+          : AbortSignal.any([gaveUp.signal, options.signal])
       const timedOut = Symbol('timeout')
-      const launch = launcher
-        .launch(invocation, { signal: gaveUp.signal })
-        .finally(() => settled.abort())
+      const launch = launcher.launch(invocation, { signal }).finally(() => settled.abort())
       const outcome = await Promise.race([
         launch,
         clock.sleep(timeoutMs, settled.signal).then(() => timedOut as unknown),
