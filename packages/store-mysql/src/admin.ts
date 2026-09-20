@@ -134,10 +134,16 @@ export class MysqlStoreAdmin implements StoreAdmin {
 }
 
 /**
- * The batch of what is left of a migration. For each version in turn: its statements, then
- * the version itself, advanced only from the version before it. A migrator that lost the
- * race finds the version already advanced, matches no row, and its repeatable statements
- * changed nothing.
+ * The whole batch of what is left of a migration. `migration` is everything that is pending:
+ * every version after the recorded one, in order, and one version when that is all there
+ * is. For each version in turn the batch holds its statements, and then the version itself,
+ * advanced only from the version before it. A migrator that lost the race finds the version
+ * already advanced, matches no row, and its repeatable statements changed nothing.
+ *
+ * Every statement the batch sends is made here and nowhere else. The batch lint declares one
+ * exception for this batch's statement list, and names it by the text of this call,
+ * `versionBatch(migration)`, so what that text says has to stay true: the plan goes in, and
+ * this one builder, whose statements the schema tests freeze, makes all that comes out.
  */
 function versionBatch(migration: readonly MysqlMigration[]): SqlStatement[] {
   return migration.flatMap(({ version, statements }) => [
