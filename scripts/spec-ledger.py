@@ -7,7 +7,9 @@ declared here and asserted present in the source so they cannot rot.
 Each side model that scripts/tla.sh enrols keeps a ledger block of its own, and
 it is read too: its quoted labels are labels the stores send, its actions are
 the actions of the module's next-state relation, all of them, and a class it
-states is the class the main ledger gives that label.
+states is the class the main ledger gives that label. Every action the main ledger
+names is a disjunct of Scheduler.tla's Next, or the action a side block maps from the
+same label.
 
 `--labels` prints every static label. `--text-labels` prints, for each store, the
 labels of its raw batches, which are the statements it sends as SQL text and not
