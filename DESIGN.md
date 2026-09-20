@@ -2996,7 +2996,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   saga began, which spares every other result read that walk, and the plan pin
   holds the guard. libSQL and MySQL carry no such guard: their read is one
   seek into a range of the key, empty for a task with no attempt record, so a
-  guard would change no result and spare no walk, and nothing could hold it.
+  guard would change no result of a history the store can reach and spare no
+  walk, and nothing could hold it. On rows no history builds the three
+  differ. A task row set to `cancelled` by hand under a running pass, whose
+  rollback then fails for good, names that rollback's error on libSQL and
+  MySQL and none on PostgreSQL. The engine's invariants name those rows while
+  the pass runs, as a terminal task with a live run, and nothing names them
+  after it.
   A plan pin on each dialect holds what that dialect does, over the statements
   the real operations send.
 - **A known limit.** The store records the attempt count the SDK hands it and

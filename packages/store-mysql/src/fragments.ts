@@ -523,9 +523,10 @@ export const rollbackOutcome = (task: string): string =>
  * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
  * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
  * read carries no guard. It is one seek into a range of the key, which is empty for a
- * task with no attempt record, so a guard would change no result and spare no walk, and
- * nothing could hold it. The task-result statement names both values, so neither carries
- * an alias here.
+ * task with no attempt record, so a guard would change no result of a history the store
+ * can reach and spare no walk, and nothing could hold it. PostgreSQL keeps its guard, so
+ * on rows no history builds the dialects can differ (DESIGN.md §3.10). The task-result
+ * statement names both values, so neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
   `SELECT st.state FROM checkpoints st
