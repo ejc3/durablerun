@@ -597,6 +597,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
                 claimToken: childOf.claimToken,
                 taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
                 liveTask: sqlFragment(`t.state IN ${LIVE}`),
+                // A child is forward progress, and the forward phase is frozen once a saga began.
+                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),
               },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS BIGINT) + CAST(? AS BIGINT)`, [

@@ -406,11 +406,14 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const [children] = await rowsOf(f.raw, 'SELECT COUNT(*) AS n FROM tasks WHERE queue = ?', [
         KIDS,
       ])
-      expect({
-        inThePhase,
-        replayFindsTheChild: replayed.taskId === before.taskId && !replayed.created,
-        children: Number(children?.n),
-      }).toEqual({ inThePhase: 'LeaseLostError', replayFindsTheChild: true, children: 1 })
+      expect(
+        {
+          inThePhase,
+          replayFindsTheChild: replayed.taskId === before.taskId && !replayed.created,
+          children: Number(children?.n),
+        },
+        'mutation-verdict:behavior:saga-child-spawn-is-frozen',
+      ).toEqual({ inThePhase: 'LeaseLostError', replayFindsTheChild: true, children: 1 })
     })
 
     // FinishSaga: OutcomeHonest, SagaEndsFailed, and the completion event written once,

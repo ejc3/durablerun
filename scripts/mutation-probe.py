@@ -12468,6 +12468,13 @@ MUTATION_SPECS.extend(
             "a rollback pass parks on an event that may never come",
         ),
         (
+            "saga-child-spawn-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),\n",
+            "                phase: sqlFragment('? IS NOT NULL', [childOf.parentTaskId]),\n",
+            "a rollback pass spawns a child, which runs work the saga is about to compensate",
+        ),
+        (
             "saga-revival-refused-once-a-saga-began",
             "packages/store-libsql/src/store.ts",
             "         AND NOT ${sagaBegan('tasks')}\n",
@@ -12817,6 +12824,18 @@ for _verdict, _names in (
             "saga-rolling-back-task-cannot-complete",
             "saga-forward-checkpoint-refused-in-the-phase",
             "saga-wait-refused-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a child spawn inside the phase, and still finds a child the forward phase spawned",
+            "mutation-verdict:behavior:saga-child-spawn-is-frozen",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
         ),
     ),
     (
@@ -18043,7 +18062,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 939:
+        if len(MUTATIONS) != 940:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

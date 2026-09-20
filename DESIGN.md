@@ -3308,9 +3308,24 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   child-task cases, the PostgreSQL terminal lock case, both matrices, and the
   saga endings case each reach it from the list of terminal labels.
 - **The forward phase is frozen by the store.** Inside the phase it refuses a
-  forward checkpoint, a completion, a suspension, which commits a marker, and
-  a wait registration, which would park the pass on an event that may never
-  come. Two names are the engine's alone in either phase: the phase marker,
+  forward checkpoint, a completion, a suspension, which commits a marker, a
+  wait registration, which would park the pass on an event that may never
+  come, and a child spawn. A child is forward progress, as a step is: it
+  would run work the saga is about to compensate, and the checkpoint that
+  records it for its parent is refused already, so no later pass could find
+  it. The child's insert carries the phase as a required bind beside the
+  parent's live claim, as the checkpoint write, the suspension, the failure
+  and the wait registration carry theirs. So the test is atomic with the
+  insert, and a store does not compile until it has said what the phase asks
+  of a child spawn. A child the forward phase spawned is still found by a
+  replay in either phase, because finding one creates nothing. Neither model
+  holds this guard, and neither has to. `SpawnChild` of ChildTasks.tla asks
+  only for a running parent, so a store that refuses more runs a subset of
+  that model's behaviours and keeps every safety property of it. No liveness
+  property needs a spawn inside the phase, because a pass in the phase cannot
+  await, so it could never read a child's outcome. The `spawn` label maps to
+  the model as it did.
+  Two names are the engine's alone in either phase: the phase marker,
   which only the batch that decides a failure writes, and a rollback's attempt
   record, which only the batch that fails a pass writes. A lease holder's
   plain checkpoint write is refused both, and so is the marker a suspension
