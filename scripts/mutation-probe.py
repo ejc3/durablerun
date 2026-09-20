@@ -13351,6 +13351,8 @@ for _verdict, _names in (
 # generation, or the generation a sweep's scan read, from the statement one call sends, and the
 # case generated for that call owns it. Calls that share a statement share an edit, so an edit
 # appears once for each call it unfences, because each call's own case has to fail.
+# One more removes nothing: it weakens the shared claim predicate to a pattern match, which the
+# statement grammar can spell, and the column's complete case owns it.
 MUTATION_SPECS.extend(
     (
         (
@@ -13502,6 +13504,13 @@ MUTATION_SPECS.extend(
             "      // MUTATION: the claim's generation is not compared\n",
             "a claim-timeout sweep acts on a claim its scan did not read",
         ),
+        (
+            "stale-token-read-as-a-pattern",
+            "packages/core/src/statements/claimed-run.ts",
+            "      .where('claimed_by', '=', binds.claimToken)\n",
+            "      .where('claimed_by', 'like', binds.claimToken) // MUTATION: the caller's token is read as a pattern\n",
+            "a caller whose token is a pattern that matches the claim's completes the run",
+        ),
     )
 )
 for _verdict, _names in (
@@ -13611,6 +13620,7 @@ for _verdict, _names in (
         ),
         (
             "stale-token-complete",
+            "stale-token-read-as-a-pattern",
         ),
     ),
     (
@@ -17668,7 +17678,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 910:
+        if len(MUTATIONS) != 911:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
