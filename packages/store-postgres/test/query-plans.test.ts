@@ -313,7 +313,10 @@ it('reads of runs no more than a claim takes, beside the running runs other work
     }
     // The compare-and-set, the follow-on and the receipt read each scan `runs`.
     expect(scansOfRuns).toBeGreaterThanOrEqual(6)
-    expect(backlogReads).toEqual([])
+    expect(
+      backlogReads,
+      'mutation-verdict:behavior:postgres-claim-followons-name-the-token',
+    ).toEqual([])
   } finally {
     await client.end()
     await db.close()

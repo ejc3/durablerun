@@ -4574,6 +4574,46 @@ MUTATION_SPECS = [
         "  }),\n",
         "generated waits-to-runs updates can cross the immutable queue boundary",
     ),
+    (
+        # Not correctness: the access path of a claim's two follow-ons. The token
+        # narrows nothing, because the compare-and-set writes it with the stamp, so
+        # no behavioural case can see it go. Without it the follow-ons find the runs
+        # the batch took by walking every running run of the queue, and only a plan
+        # of the SHIPPED statements can see that. The mutant keeps the bind, so the
+        # statement still runs.
+        "claim-followons-name-the-token",
+        "packages/store-libsql/src/store.ts",
+        "      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,\n",
+        "      where: `f.queue = ? AND f.state = 'running' AND (f.claimed_by = ? OR 1 = 1)`,\n",
+        "a claim's follow-ons walk every running run of the queue to find the runs the batch took",
+    ),
+    (
+        # The same term on PostgreSQL, held by the rows its scans read and not by an
+        # index's name: with the term gone the planner can still name runs_held and
+        # read every running run of the queue through it.
+        "postgres-claim-followons-name-the-token",
+        "packages/store-postgres/src/store.ts",
+        "      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,\n",
+        "      where: `f.queue = ? AND f.state = 'running' AND (f.claimed_by = ? OR 1 = 1)`,\n",
+        "a claim's follow-ons on PostgreSQL read every running run of the queue to find the runs the batch took",
+    ),
+    (
+        # Not correctness either: the unary plus changes no truth value. Without it
+        # SQLite reaches the receipt's rows through runs_lease, a range over every
+        # unexpired lease of the queue.
+        "claim-receipt-bound-stays-off-the-lease-index",
+        "packages/store-libsql/src/fragments.ts",
+        "  return `(${storedInteger(column)} AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
+        "  return `(${storedInteger(column)} AND ${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
+        "a claim's receipt read walks every unexpired lease of its queue",
+    ),
+    (
+        "claim-receipt-requires-lease-expiry-range",
+        "packages/store-libsql/src/fragments.ts",
+        " AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
+        " AND 1 = 1)`\n",
+        "a same-token receipt returns a run whose stored lease expiry is outside its range",
+    ),
 ]
 
 
@@ -11539,6 +11579,31 @@ VERDICTS.update(
             "packages/sdk/test/run-worker.test.ts",
             "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
             "mutation-verdict:behavior:task-boundary-aggregate",
+        ),
+        "claim-followons-name-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "claim candidate legs reaches every run a claim reads by a key or by the due range, in all four statements",
+            "mutation-verdict:behavior:claim-followons-name-the-token",
+        ),
+        "postgres-claim-followons-name-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/query-plans.test.ts",
+            "reads of runs no more than a claim takes, beside the running runs other workers hold",
+            "mutation-verdict:behavior:postgres-claim-followons-name-the-token",
+        ),
+        "claim-receipt-bound-stays-off-the-lease-index": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "claim candidate legs reaches every run a claim reads by a key or by the due range, in all four statements",
+            "mutation-verdict:behavior:claim-followons-name-the-token",
+        ),
+        "claim-receipt-requires-lease-expiry-range": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] claim same-token receipt holds the lease expiry to its range, at both ends",
+            "mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range",
+            "packages/conformance/src/suite.ts",
         ),
     }
 )
@@ -19075,7 +19140,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 998:
+        if len(MUTATIONS) != 1002:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

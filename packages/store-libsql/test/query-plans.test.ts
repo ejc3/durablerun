@@ -224,7 +224,10 @@ describe('claim candidate legs', () => {
     }
     // Every statement reads `runs`, so none of them passed by having no step to judge.
     expect(stepsOverRuns.filter((count) => count === 0)).toEqual([])
-    expect([...new Set(backlogReads)].sort()).toEqual([])
+    expect(
+      [...new Set(backlogReads)].sort(),
+      'mutation-verdict:behavior:claim-followons-name-the-token',
+    ).toEqual([])
   })
 })
 

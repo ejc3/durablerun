@@ -682,6 +682,37 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('same-token receipt holds the lease expiry to its range, at both ends', async () => {
+        // The receipt's bounds check on the lease expiry is the one term a dialect may
+        // spell differently, to keep its planner from choosing an index by it. Whatever
+        // the spelling, a stored expiry outside the range is refused and both ends of the
+        // range are admitted.
+        const range = PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms
+        await f.store.spawn(Q, 'receipt-expiry-range', '{}')
+        const run = await claimOne(f.store, Q, 'receipt-expiry-range-token')
+        const receiptAt = async (expiry: number) => {
+          await f.raw.batch('set-receipt-expiry', [
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = ? WHERE run_id = ?`,
+              args: [expiry, run.runId],
+            },
+          ])
+          return f.store.claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 }).then(
+            (runs) => runs.map((receipt) => receipt.runId),
+            () => 'rejected' as const,
+          )
+        }
+        expect(
+          {
+            below: await receiptAt(range.min - 1),
+            lowest: await receiptAt(range.min),
+            highest: await receiptAt(range.max),
+            above: await receiptAt(range.max + 1),
+          },
+          'mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range',
+        ).toEqual({ below: [], lowest: [run.runId], highest: [run.runId], above: [] })
+      })
+
       it('same-token receipt refuses corrupt persisted headers', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-receipt-headers', '{}', {
           headers: { trace: 'valid' },
