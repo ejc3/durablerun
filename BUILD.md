@@ -1496,8 +1496,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     of a subquery and the second side of the test are each dropped by one. The
     first side of the test has none of its own: without it seven cases fail.
     Two of main's entries are aimed at lines that were rewritten, each mutant
-    the one it was. The registry holds 1007 mutations: main's 998 and the 9
-    this pull request adds.
+    the one it was. Its one review round is `postmortems/pr3.9g-review.md`:
+    five findings, none in what a store sends. One mechanism was measured and
+    not built. The coverage check counts a mutation for every line its find
+    spans, and the property is the lines it changes: one find of this pull
+    request ran onto a line it left unchanged and met that line's count.
+    Counting by change is an option, not scheduled, because it is not
+    contained: read by import, six lines of main's `sql-tree.ts` pass by span
+    and would be short by change, each needing a mutation or a measured reason.
+    They are the test of `operatorName(node.operator) === 'in'`, `if
+    (BinaryOperationNode.is(conjunct)) {`, `} else if
+    (UnaryOperationNode.is(inner)) {`, `const defined = STATE_SETS.some(`, `if
+    (!BinaryOperationNode.is(node)) return null`, and the closing
+    `].join('|'),` of the clock spellings. The registry holds 1007 mutations:
+    main's 998 and the 9 this pull request adds.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
