@@ -12257,8 +12257,8 @@ MUTATION_SPECS.extend(
         (
             "saga-error-is-the-last-runs-record",
             "packages/store-libsql/src/fragments.ts",
-            "                 AND st.owner_run_id = ${task}.last_attempt_run\n",
-            "                 AND 1 = 1\n",
+            "       AND st.owner_run_id = ${task}.last_attempt_run\n",
+            "       AND 1 = 1\n",
             "a failed attempt that had budget left is read as the rollback that halted the saga",
         ),
         (

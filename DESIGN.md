@@ -2984,10 +2984,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   name orders under the database's collation and that range is not sound
   (§3.4), so there the names are tested one by one among the task's own
   checkpoints: a walk keyed by the task, which grows with what the task has
-  checkpointed. The attempt record is read only for a failed task whose saga
-  began, so the result read of a plain task touches no checkpoint but the
-  phase marker's row, on every dialect. A plan pin on each dialect holds what
-  that dialect does, over the statements the real operations send.
+  checkpointed. There the attempt record is read only for a failed task whose
+  saga began, which spares every other result read that walk, and the plan pin
+  holds the guard. libSQL and MySQL carry no such guard: their read is one
+  seek into a range of the key, empty for a task with no attempt record, so a
+  guard would change no result and spare no walk, and nothing could hold it.
+  A plan pin on each dialect holds what that dialect does, over the statements
+  the real operations send.
 - **A known limit.** The store records the attempt count the SDK hands it and
   does not check it against the last one, and nothing caps how many passes a
   task may take. Rollback budgets are the SDK's to keep.

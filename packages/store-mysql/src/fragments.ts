@@ -522,16 +522,14 @@ export const rollbackOutcome = (task: string): string =>
  * followed it and became the task's last run, so the record of an attempt that ended
  * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
  * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
- * records are read only for a failed task whose saga began. A rollback's failure ends
- * its task as failed, so no other task has a halt to name, and the result read of a
- * plain task touches no attempt record. The task-result statement names both values, so
- * neither carries an alias here.
+ * read carries no guard. It is one seek into a range of the key, which is empty for a
+ * task with no attempt record, so a guard would change no result and spare no walk, and
+ * nothing could hold it. The task-result statement names both values, so neither carries
+ * an alias here.
  */
 export const rollbackError = (task: string): string =>
-  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}
-        THEN (SELECT st.state FROM checkpoints st
-               WHERE st.task_id = ${task}.task_id
-                 AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
-                 AND st.owner_run_id = ${task}.last_attempt_run
-               LIMIT 1)
-   END`
+  `SELECT st.state FROM checkpoints st
+     WHERE st.task_id = ${task}.task_id
+       AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
+       AND st.owner_run_id = ${task}.last_attempt_run
+     LIMIT 1`
