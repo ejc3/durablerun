@@ -3743,14 +3743,14 @@ MUTATION_SPECS = [
     ),
     (
         "test-token-source-monotonic",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (proposed <= tokens) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a duplicate proposed serial",
     ),
     (
         "test-token-source-valid-serial",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (!Number.isSafeInteger(proposed)) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a non-integer or unsafe proposed serial",
