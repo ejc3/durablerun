@@ -6,9 +6,7 @@ import {
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
-  encodeRollbackTry,
   taskDoneEventName,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
@@ -84,6 +82,7 @@ export const MATRIX_READ_LABELS = [
   'claimed-task-name',
   'refusal-state',
   'run-task',
+  'rollback-tries',
   'task-done-state',
   'sweep:scan',
   'get-checkpoints',
@@ -800,8 +799,8 @@ export async function runFaultMatrixCase(
         if (pass?.taskId === sagaTask.taskId) {
           await go(() =>
             store.failRollback(Q, pass.runId, pass.claimToken, cause, null, {
-              key: `${SAGA_TRIES_PREFIX}a`,
-              stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+              stepKey: 'a',
+              errorJson: '{"name":"RollbackBoom"}',
             }),
           )
         }

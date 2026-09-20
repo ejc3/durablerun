@@ -321,6 +321,25 @@ a last docs PR gives a live owner to every open bullet that is left.
     of any one clock keyword, date function, counting operator or deadline test
     from a copy of the registry gives one problem that names it, and five cases
     in the registry self-test hold that.
+20. PR3.4c: `failRollback` takes the step, and the store names the rollback's
+    attempt record and counts the attempt, one past the last one it can read,
+    so a caller of the port chooses neither the name nor the count. The store
+    refuses a child spawn inside the rolling-back phase. Each freeze line of
+    the SDK has a case that fails when the line is deleted, and the pass's
+    budget guard has a case, over a task that has infrastructure retries,
+    that fails when the guard ignores them.
+    This is met. Two saga cases were committed failing on libSQL, PostgreSQL
+    and MySQL: every store recorded the seventh attempt it was handed and
+    then the first again, and created a child for a rollback pass. The port
+    now takes the step, core builds the record for every dialect, and the
+    stores read the last record under the read label `rollback-tries`, so
+    the SQL check of a caller's name went with the name. The child's insert
+    carries the phase as a required bind, and a plan pin on each dialect
+    holds the phase test to a seek of the checkpoints key. With the freeze
+    line of `ctx.spawn` deleted the SDK case fails by name, and under a guard
+    that ignores infrastructure retries the new budget case fails by name
+    while the two older ones pass. Eleven registered mutations hold the new
+    lines, and the one that mutated the SQL name check is retired.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -2245,9 +2264,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     batch writes fits. Two cases in the `sagas` surface hold it: a run at the
     largest user ordinal gets no pass, and a task spawned with the largest
     budget rolls back.
-  - The store records the attempt count the SDK hands it and does not check
-    it against the last one, and nothing caps how many passes a task may
-    take. Rollback budgets are the SDK's to keep.
+  - The store counts a rollback's failed attempts since PR3.4c, and it does
+    not know a rollback's budget: it is told whether another pass follows,
+    so the one cap it holds itself is the run ordinal's bound on a pass.
+    Rollback budgets are the SDK's to keep.
   - A saga with nothing to roll back records nothing, where the model calls
     it complete at entry.
   - The registry bridge arm in `ci.yml` is keyed on main's registry as of
@@ -2270,9 +2290,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
-  - The SDK freezes each durable call with a line of its own, and only the
-    sleep's and the emit's have a test. The store does not freeze a child
-    spawn inside the phase, so that call's freeze is the SDK's alone.
   - An option, not built: executable-twin markers for the side models.
     `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
     that shows a refusal, for every action a `[cas-fenced]` line of the main
@@ -2310,17 +2327,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
       structure check of `scripts/tla.sh` refuses such a module, inside the
       required `tla` check. Trigger: that check is moved, narrowed, or made
       to depend on the scope.
-  - `failRollback` takes the attempt record's name and count from its caller.
-    The name is now checked in SQL. A port that takes the step and derives
-    both would make a foreign name unwritable and close the limit above.
-  - The pass's budget guard is held at the bound by two cases whose tasks
-    have no infrastructure retries, so a guard that ignored them would pass.
   - A parent that awaits a child does not see the child's rollback outcome.
     PR3.4b put the outcome on the hosted inspect route and left this half
     open, because the obstacle is the writer and not the wire: a terminal
     batch binds its completion payload before it runs, and the outcome is a
     fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
     and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: a way for the port to ask an
+    executor for a current read. The store counts a rollback's failed attempts
+    from a record it reads before its batch (PR3.4c), and a worker replays
+    from its memo read, `get-checkpoints`. Both are batches of reads, which
+    the executor contract lets a replica serve, and both need every record
+    that has committed: over a replica that lags, the count is written one
+    short, and a replay does not see a checkpoint that has committed.
+    `SqlBatchMode` has `read` and `write` and nothing between them. No
+    executor in the repository sends a batch of reads anywhere but its one
+    target, so nothing is exposed today. It is the maintainer's design
+    question. Trigger: the first executor that serves a batch of reads from
+    a replica.
+  - Option, not a deferral of this entry: the phase as a required member of
+    the claim guards. Every statement that presents a worker's claim goes
+    through `whereClaimedRun` or `AwaitingClaim`, and a child spawn was the one
+    such statement whose phase nobody had decided (PR3.4c). With `phase` a
+    required member of both, no claim-fenced statement compiles until it says
+    what the phase asks of it. It re-keys the SQL corpus, the finds of the
+    registered mutations on those statements, and the base gate's arm.
+    Trigger: a statement that presents a claim is added, or one is found with
+    no decision about the phase.
+  - Option, not a deferral of this entry: a fuzz stat and a floor for the reach
+    of the count check. Every walk holds the stored count of a rollback's
+    failed attempts to what it saw recorded (PR3.4c), and nothing says that a
+    walk ever saw a second attempt of one step, so the check could pass over
+    walks that never reach one. At the gate's size 29 of the 32 shards reach
+    it and three do not, so a floor for each shard would fail as the halt
+    count's first floor did, and it needs a measured threshold of its own.
+    Trigger: the walk's saga operations change, or the check is found green
+    over a run in which no walk recorded a second attempt.
+  - Option, not a deferral of this entry: a composed model of sagas with child
+    tasks. Sagas.tla has no spawn and ChildTasks.tla has no phase, so the
+    store's refusal of a child spawn inside the phase (PR3.4c) is held by a
+    conformance case and argued in DESIGN.md §3.10: a stronger guard on
+    `SpawnChild` keeps every safety property, and no liveness property needs
+    a spawn inside the phase, because a pass in the phase cannot await.
+    Trigger: the first invariant that needs both a phase and a child.
   - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
     and attempt records are found by a test of each name among the task's own
     checkpoints, because a range of names is not sound under the database's
@@ -2463,6 +2512,91 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and it exempts five verdict markers the base predates. It must be keyed
     again if main's registry changes before this entry merges.
 
+- **PR3.4c the saga port takes the step, and the phase's last two doors**:
+  DONE. Four bullets that the saga review left open under PR3.4
+  (`postmortems/pr3.4-sagas-review.md`). Its own review round is
+  `postmortems/pr3.4c-saga-port-and-freezes-review.md`: three findings, one
+  at a bound no legal history reaches and two in sentences of DESIGN.md.
+  - `failRollback` took a rollback's attempt record from its caller, name and
+    count, and the store checked only the name. A saga case that hands the
+    first failed attempt over as the seventh and the second as the first was
+    committed failing on three dialects: every store recorded 7 and then 1.
+    The port now takes the step and the failure of this attempt. Core builds
+    the record once for every dialect, its name and its state one attempt
+    past the last one stored, and each store reads the last record first,
+    under the read label `rollback-tries`. No record, or one that cannot be
+    read, counts as none, as it does for the SDK. The read is sound because
+    only `fail-rollback` writes an attempt record, it wins only under its
+    caller's live claim, and a live task has one live run. DESIGN.md §3.10
+    states that invariant with the test that holds each leg. One leg had no
+    case for this label, and a new one hands `fail-rollback` a token the
+    claim never had and the same call replayed, and sees each refused with
+    the count as it was. The SQL check of a caller's name, its fragment on
+    three stores, its case, its mutation, and the `fail-rollback` column of
+    the reserved-names table went with the caller's name. An argument of the
+    older shape is refused at the entry by an error that says what the port
+    takes. Every fuzz walk now holds the count it finds stored to the failed
+    attempts it saw recorded. At the fuzz gate's own size, 2,000 seeds of
+    walks of 100 steps, a store that stores every attempt as the first
+    fails 29 of the 32 shards, and every failure printed is that check's.
+    One shard alone did not reach a second failed attempt of one step, so
+    the check leans on the whole gate.
+  - A published port signature changed in one step. Two builds against one
+    database need no staging, because the record keeps its name, its format
+    and its bytes, and a case plants a record as an older build wrote it and
+    sees the count go on from it. One process that mixes package versions is
+    no supported install: the type checker refuses both pairings, released
+    packages pin core exactly, and the SDK tells a store's lost lease by
+    instance. DESIGN.md §3.10 says what such a process does in each
+    direction, and marks what was measured and what was read.
+  - PostgreSQL sends ten queries for a failed rollback where it sent nine.
+    The tenth is the read of the last attempt record, a batch of one read,
+    and the round trip pin says so.
+  - The store refuses a child spawn inside the phase, on three stores, by a
+    case that was committed failing on three dialects. The refusal is the
+    statement's guard: core's spawn statement takes the phase as a required
+    bind beside the parent's live claim, as the four other frozen statements
+    do, so a store does not compile until it says what the phase asks. The
+    tree rules hold no saga rule, and an entry check would cost a read on
+    every child spawn and be atomic with nothing. Neither model changes, and
+    the option above says what would call for a composed one. A plan pin on
+    each dialect holds the phase test to a seek of the checkpoints key, and
+    on MySQL the batch walked 5 rows beside 2,000 checkpoints of the parent.
+    Seeing each pin fail found one that could not: the libSQL pin told a
+    task update that follows a pass by the budget column's name alone, which
+    a spawn's insert also names, and its two uses now share one definition.
+  - Every freeze line of the SDK has a case. One SDK case reaches a step,
+    both sleeps, both awaits and a child spawn for the first time on a
+    rollback pass, and each must throw the phase signal and write nothing.
+    With the line of `ctx.spawn` deleted it fails by name on libSQL and
+    PostgreSQL, where every SDK test passed before. Four registered
+    mutations delete one line each.
+  - The pass's budget guard is held at the bound over tasks that have an
+    infrastructure retry: one user attempt below the bound, which rolls
+    back, and at it, which cannot. Under a guard that reads the run's own
+    ordinal the new case fails by name and the two older ones pass.
+  - The SDK still counts its attempts, and only to decide whether a rollback's
+    budget admits another pass, so the mutation of that count no longer shows
+    in the stored record. It is aimed at the case where a rollback spends its
+    budget, whose rollback now succeeds on a fourth attempt that a budget of
+    two never reaches. The case it left holds the store's count through the
+    SDK, by a second mutation of that count.
+  - The count stops at the largest safe integer. One past it is no count the
+    decoder reads, so the record would read as none and the attempt after it
+    would be stored as the first. Only a record an older build's store wrote
+    can sit at that bound, and the SDK did the same arithmetic before core
+    owned the count. It is never refused there: a failed rollback that could
+    not record its failure would fail again for ever. A core case was
+    committed failing, and one registered mutation removes the bound. A
+    conformance case holds every store to the bound on three dialects, from a
+    record written there with raw SQL, because the scenarios are what a port
+    in another language proves itself against. DESIGN.md §3.10 also says what
+    a direct caller of the port gets over a record the store cannot read, and
+    names a fourth leg of the read's soundness, that the read is current, with
+    what holds it today. An option under PR3.4 records the design question
+    that leaves.
+  - The registry gains eleven mutations and retires one. The base gate's arm
+    retires that entry of the base registry and exempts seven markers.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's

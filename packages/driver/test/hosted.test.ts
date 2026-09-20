@@ -6,9 +6,7 @@ import {
   PortRefusalError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SchedulerStore,
-  encodeRollbackTry,
   parseTaskValueJson,
   systemClock,
 } from '@durablerun/core'
@@ -141,8 +139,8 @@ function haltRollback(
   errorJson: string,
 ) {
   return f.store.failRollback(Q, pass.runId, pass.claimToken, SAGA_CAUSE, null, {
-    key: `${SAGA_TRIES_PREFIX}charge`,
-    stateJson: encodeRollbackTry({ tries: 1, errorJson }),
+    stepKey: 'charge',
+    errorJson,
   })
 }
 

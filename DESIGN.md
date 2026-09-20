@@ -3627,7 +3627,10 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   - `$rollback:<step>` says the rollback of that step ran. It is the
     `rollback:<step>#<count>` step above, under the reserved prefix.
   - `$rollback-tries:<step>` holds a rollback's failed attempts,
-    `{ tries, errorJson }`.
+    `{ tries, errorJson }`. The store names it and counts it: a failed rollback
+    hands over the step and the failure of this attempt, and the store writes
+    one attempt past the last one it can read. The paragraph on the store's
+    count, below, has the two edges of that.
 
   On terminal failure the run enters the rolling-back phase; the task function
   re-runs, memoized steps skip and re-register their closures, and the SDK
@@ -3688,7 +3691,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   | UserTerminal | `fail` with no retry, or with a retry the budget refuses | Places the rollback pass, writes the phase marker, and the task follows the pass. The terminal arm yields to the pass by id, so nothing ends. |
   | InfraCap | the cap arm of `sweep:lost-launch`, and `sweep:claim-timeout` at the infrastructure cap | The same three statements. The sweep reports `rollback-started`. Inside the phase each ends the task as it always did. |
   | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase, and through no other batch: a suspension's marker is held to the same predicate over the name, and a suspension runs only before the phase. Any other checkpoint is admitted only before it. |
-  | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The attempt record lands behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
+  | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The port takes the step and the failure of this attempt. The store first reads the rollback's last attempt record, under the read label `rollback-tries`, and the batch writes the record one attempt on, under the name the store builds from the step, behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
   | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the reason the caller passes, which the SDK makes the failure that began the saga. |
   | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
   | Revive | `retry-task` | Refuses a task whose saga began. |
@@ -3700,27 +3703,46 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   child-task cases, the PostgreSQL terminal lock case, both matrices, and the
   saga endings case each reach it from the list of terminal labels.
 - **The forward phase is frozen by the store.** Inside the phase it refuses a
-  forward checkpoint, a completion, a suspension, which commits a marker, and
-  a wait registration, which would park the pass on an event that may never
-  come. Two names are the engine's alone in either phase: the phase marker,
+  forward checkpoint, a completion, a suspension, which commits a marker, a
+  wait registration, which would park the pass on an event that may never
+  come, and a child spawn. A child is forward progress, as a step is: it
+  would run work the saga is about to compensate, and the checkpoint that
+  records it for its parent is refused already, so no later pass could find
+  it. The child's insert carries the phase as a required bind beside the
+  parent's live claim, as the checkpoint write, the suspension, the failure
+  and the wait registration carry theirs. Those four may answer that the
+  phase asks nothing of them, and a child spawn may not: its bind is a
+  predicate and never open. So the test is atomic with the insert, and a
+  store does not compile until it has said what the phase asks of a child
+  spawn. A child the forward phase spawned is still found by a
+  replay in either phase, because finding one creates nothing. Neither model
+  holds this guard, and neither has to. `SpawnChild` of ChildTasks.tla asks
+  only for a running parent, so a store that refuses more runs a subset of
+  that model's behaviours and keeps every safety property of it. No liveness
+  property needs a spawn inside the phase, because a pass in the phase cannot
+  await, so it could never read a child's outcome. The `spawn` label maps to
+  the model as it did.
+  Two names are the engine's alone in either phase: the phase marker,
   which only the batch that decides a failure writes, and a rollback's attempt
   record, which only the batch that fails a pass writes. A lease holder's
   plain checkpoint write is refused both, and so is the marker a suspension
   commits for its caller. A rollback's name is admitted through a plain
   checkpoint write inside the phase and through nothing else: a suspension,
   which runs only before the phase, refuses it, because a rollback recorded
-  that early leaves its step owed nothing when the failure is decided. The
-  attempt record a failed rollback commits for its caller is refused every
-  other name. Those are the three batches that take a caller's checkpoint
-  name, and one conformance case holds the whole table: each of the three
-  against every reserved name, in both phases, refused or admitted only in
-  its phase. A reserved name is matched byte for byte on every dialect, so a
+  that early leaves its step owed nothing when the failure is decided. A
+  failed rollback commits no name of its caller's: its port takes the step,
+  and the store builds the attempt record's name, so no other name can reach
+  that batch. A plain checkpoint write and a suspension are the two batches
+  that take a caller's checkpoint name, and one conformance case holds the
+  whole table: each of the two against every reserved name, in both phases,
+  refused or admitted only in its phase.
+  A reserved name is matched byte for byte on every dialect, so a
   name in another case, or padded with a space, is a plain name everywhere.
   The MySQL store casts the reserved literal to binary to get that, because a
   bind compared with a literal there takes the connection's collation, which
   folds case and pads spaces. So no caller of the port, a worker in another
-  language included, can forge a saga, replace its cause, or spend a
-  rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
+  language included, can forge a saga, replace its cause, or spend or
+  miscount a rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
   the first durable call with no memo ends a pass's replay. An emit is the one
   durable call with no memo at all, and the store cannot freeze it, because an
@@ -3819,13 +3841,45 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     marker, so no saga knows it started, and it is not rolled back.
   - A task that failed before this build has no saga checkpoints, and nothing
     about it changes.
+  - `failRollback` took the attempt record from its caller before it took the
+    step. Two builds against one database need no staging. The record keeps
+    its name, its format, and its bytes, because both builds write core's one
+    encoding. A worker of an older build counts one past the record it read
+    and its store writes what it is handed, and a newer store counts one past
+    the same record, so passes handled by either build in any order leave
+    the same rows. A conformance case plants a record as an older build
+    wrote it and sees the count go on from it, and holds the stored text byte
+    for byte. The store's count holds only for a pass that a newer build
+    handles, as any guard added to a batch does.
+  - One process that mixes package versions, an older SDK handed a newer
+    store or the reverse, is no supported install, and this change does not
+    make it one. Measured: the type checker refuses both pairings. Read, not
+    run: released packages pin core exactly, so such a process runs two
+    copies of core, and the SDK recognises a store's lost lease by instance,
+    so every lost lease there is already booked as a user failure. Measured,
+    for a caller that ignores the types: a caller of the newer shape against
+    the older store is refused by the statement builder before anything is
+    sent, on all three dialects, and a caller of the older shape against the
+    newer store is refused at the entry, which says what the port takes, on
+    all three. Measured with the older SDK over a store that refuses that
+    way: the worker books the refusal as a user failure, and the `fail` that
+    follows inside the phase halts the saga. The task ends `failed` with the
+    refusal as its reason, the rollback outcome is `failed`, no attempt
+    record is written, and the rollback's own budget is not honoured.
+    Nothing foreign is written, and a rollback that succeeds is untouched,
+    because its write is a plain checkpoint.
 - **What it costs.** On PostgreSQL every failure sends one more query than
   before, nine where it sent eight, because the rollback pass is gated on the
   failure alone and so is sent, matching nothing when no rollback is owed.
-  A completion and a checkpoint send what they did, eight and four. The store
+  A completion and a checkpoint send what they did, eight and four. A failed
+  rollback sends ten, one more than a failure: the store first reads the
+  rollback's last attempt record, a batch of one read. The store
   decides whether a rollback is owed from its own rows. A caller's hint that
   none is would be a second account of those rows, which a worker of an older
   build could not give. A test pins the count for each batch a saga touches.
+  A child spawn tests its parent's phase by one seek of the checkpoints key,
+  the task and the marker's name, and a plan pin on each dialect holds that
+  on the statement the store sends.
   A saga read reaches its checkpoints by their key, the task and the name. One
   name is one row of it. The names under a prefix, which are the start markers
   and the attempt records, are one range of it on libSQL and MySQL, where a
@@ -3847,9 +3901,58 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   after it.
   A plan pin on each dialect holds what that dialect does, over the statements
   the real operations send.
-- **A known limit.** The store records the attempt count the SDK hands it and
-  does not check it against the last one, and nothing caps how many passes a
-  task may take. Rollback budgets are the SDK's to keep.
+- **The store counts a rollback's failed attempts.** `failRollback` takes the
+  step and the failure of this attempt, and core builds the attempt record
+  for every dialect in one place: its name, `$rollback-tries:` and the step,
+  and its state, one attempt past the last one stored. No record, or one that
+  cannot be read, counts as none, which is what the SDK counts when it halts
+  a saga on such a record and its halt is written over it. The count stops at
+  the largest safe integer: one past it is no count the decoder reads, so a
+  record that held it would read as none, and the attempt after it would be
+  stored as the first. Only a record an older build's store wrote can sit at
+  that bound. The failure is recorded all the same, never refused, and a
+  count at the bound still says the budget is spent. So a caller of the
+  port chooses neither the name nor the count. Over a record the store can
+  read, the count goes up by one or stays at the bound, and a spent attempt
+  is never given back, which is the model's TriesOnlyGrow. Over a record the
+  store cannot read, the count starts again at one. Through the SDK that
+  happens only beside a halt, which ends the task. A direct caller of the
+  port that asks for another pass over such a record gets every spent attempt
+  back, as it could at any time before the store counted, when the count was
+  the caller's to choose. The last record is read before the batch, under the
+  read label `rollback-tries`, and the count cannot go stale between that
+  read and a batch that wins. That rests on one invariant with four legs. A
+  test holds each of the first three, and the fourth is a premise about
+  executors that no test holds. Only
+  `fail-rollback` writes an attempt record: the reserved-names table refuses
+  that name at the two batches that take a caller's checkpoint name, in both
+  phases. It wins only under its caller's live claim: the generated
+  stale-token column holds that for every write label that takes a claim
+  token, `fail-rollback` among them, and a saga case hands `fail-rollback` a
+  token the claim never had, and the same call replayed after it won, and
+  sees each refused with the count left as it was. A live task has one live
+  run: the engine's invariants hold that over every conformance case and
+  every fuzz walk. The read is current: it sees every attempt record that has
+  committed. It is a batch of reads, outside the write's transaction, and
+  the executor contract lets a replica serve a batch of reads. An executor
+  that took that at its word could count from a replica that lags, and the
+  store would write N where N + 1 is due. What holds this today is that no
+  executor in the repository sends a batch of reads anywhere but the one
+  target it was opened on, and every fixture's target is a primary. No
+  fixture has a replica, so no test can show it. The exposure is older than
+  this read: a worker's memo read, `get-checkpoints`, is a batch of reads
+  too, and the SDK counted from it before the store counted. The port has no
+  way to ask for a current read, and BUILD.md records that as an option under
+  PR3.4. So between the read and a batch that wins no other batch
+  can have written the record, and a copy or a replay of the same call has
+  read a count that may be stale and loses the compare-and-set. A future
+  label that wrote an attempt record outside the claim of the task's one live
+  run would break this: the read could then go stale, and that label would
+  have to take the count inside its own batch. Every fuzz walk also holds the
+  count it finds stored to the failed attempts it saw recorded. What stays
+  the SDK's to keep is the budget: the store is told whether another pass
+  follows and does not know a rollback's `maxAttempts`, so the one cap it
+  holds itself is the run ordinal's bound on a pass.
 - **Decided by the maintainer.** The model isolates three questions, each as
   one constant, and is checked under both answers. These are the answers the
   implementation is built under:

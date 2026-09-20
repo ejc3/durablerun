@@ -4,6 +4,7 @@ import type {
   CheckpointWrite,
   ClaimedRun,
   FailOutcome,
+  FailedRollback,
   LaunchIdentity,
   LeaseState,
   SpawnOptions,
@@ -148,13 +149,19 @@ export interface SchedulerStore {
 
   /**
    * A rollback of a task that is rolling back failed (DESIGN.md §3.10, specs/Sagas.tla
-   * RollbackRetry and RollbackHalts). `rollbackTry` is that rollback's attempt record,
-   * and it commits with the failure, so a failed attempt is counted or the run did not
-   * fail. With `retry` another pass follows, and the user attempt budget does not cap
-   * it. With none the saga halts, and the task ends `failed` with `failureJson`, which
-   * the caller passes as the failure that began the saga. Refused outside the phase.
-   * It is its own method and batch label ('fail-rollback'), not an option of `fail`,
-   * so nothing that forwards `fail` can drop the record.
+   * RollbackRetry and RollbackHalts). `rollback` is the step and the failure of this
+   * attempt. The store names the rollback's attempt record and counts the attempt: one
+   * past the last record it can read, one when it can read none, and never past the
+   * largest safe integer. A caller chooses neither the name nor the count. An argument of
+   * another shape is refused with a TypeError before anything is read or sent. It stays a
+   * TypeError, because a wrong-shaped argument is a caller's programming error and no
+   * value the port refuses, and no hosted route calls this port.
+   * The record commits with the failure, so a failed attempt is counted or the run did
+   * not fail. With `retry` another pass follows, and the user attempt budget does not
+   * cap it. With none the saga halts, and the task ends `failed` with `failureJson`,
+   * which the caller passes as the failure that began the saga. Refused outside the
+   * phase. It is its own method and batch label ('fail-rollback'), not an option of
+   * `fail`, so nothing that forwards `fail` can drop the record.
    */
   failRollback(
     queue: string,
@@ -162,7 +169,7 @@ export interface SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome>
 
   /** §3.1 steps 0–1: cancellation policies + expired leases, classified by activation state. */

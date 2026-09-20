@@ -12804,11 +12804,67 @@ MUTATION_SPECS.extend(
             "a suspension commits a marker named as the phase marker and forges a saga",
         ),
         (
-            "saga-attempt-record-name-is-checked",
-            "packages/store-libsql/src/store.ts",
-            "         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,\n",
-            "         )${rollback === undefined ? '' : ` AND ? IS NOT NULL`}`,\n",
-            "a failed rollback commits its record over the phase marker and replaces the saga's cause",
+            "saga-store-counts-failed-attempts",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = (last?.tries ?? 0) * 0 + 1\n",
+            "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = last?.tries ?? 1\n",
+            "a rollback's count stops at its first record, so a second failed attempt is stored as the first",
+        ),
+        (
+            "saga-store-count-saturates",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n  if (last !== null && !isSafeInteger(tries)) tries = last.tries\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "from a record at the largest safe integer the count goes one past it, the record reads as none, and the attempt after it is stored as the first",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "packages/core/src/sagas.ts",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`\n",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_ROLLBACK_PREFIX}${stepKey}`\n",
+            "a failed rollback is stored under the name that says the rollback ran, so the step is owed nothing",
+        ),
+        (
+            "saga-failed-rollback-shape-is-checked",
+            "packages/core/src/sagas.ts",
+            "  if (typeof stepKey !== 'string' || typeof errorJson !== 'string') {\n",
+            "  if (false) {\n",
+            "a caller of the older port is not told what the port takes, and its record is read as a step named undefined",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "packages/sdk/src/context.ts",
+            "      this.replayLastCutAt = key\n      this.#controls.rollbackPhase()\n",
+            "      this.replayLastCutAt = key\n",
+            "a step with no memo runs its body inside the rolling-back phase",
+        ),
+        (
+            "saga-sdk-spawn-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n",
+            "a rollback pass asks the store for a child, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-await-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n    this.refuseForwardProgress()\n",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n",
+            "a rollback pass asks the store to register a wait, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-sleep-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n",
+            "a sleep with no memo throws the sleep signal inside the phase, and task code that tells signals apart is misled",
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
@@ -12972,6 +13028,13 @@ MUTATION_SPECS.extend(
             "the relaunch cap enters the phase and ends the task in one batch",
         ),
         (
+            "saga-pass-budget-is-the-user-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "           AND f.attempt < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "the pass is checked against the run's own ordinal, so a task with an infrastructure retry one attempt below the bound never rolls back",
+        ),
+        (
             "saga-pass-needs-room-in-the-budget",
             "packages/store-libsql/src/store.ts",
             "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
@@ -13012,6 +13075,13 @@ MUTATION_SPECS.extend(
             "        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),\n",
             "        phase: sqlFragment('? IS NOT NULL', [taskId]),\n",
             "a rollback pass parks on an event that may never come",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),\n",
+            "                phase: sqlFragment('? IS NOT NULL', [childOf.parentTaskId]),\n",
+            "a rollback pass spawns a child, which runs work the saga is about to compensate",
         ),
         (
             "saga-revival-refused-once-a-saga-began",
@@ -13369,6 +13439,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a child spawn inside the phase, and still finds a child the forward phase spawned",
+            "mutation-verdict:behavior:saga-child-spawn-is-frozen",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] ends failed with the deciding failure and a complete outcome once every rollback ran",
             "mutation-verdict:behavior:saga-finish-is-honest",
             "packages/conformance/src/sagas.ts",
@@ -13436,6 +13518,17 @@ for _verdict, _names in (
             "packages/sdk/test/sagas.test.ts",
             "step rollbacks through the SDK [libsql] counts each failed rollback attempt and retries it under its own budget, past the spent task budget",
             "mutation-verdict:behavior:saga-sdk-attempts-counted",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts the saga when a rollback spends its budget, and the result says what was left",
+            "mutation-verdict:behavior:saga-sdk-budget-is-counted",
         ),
         (
             "saga-failed-attempts-accumulate",
@@ -13625,6 +13718,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] holds the pass to the user ordinal at the bound, for a task that has infrastructure retries",
+            "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-budget-is-the-user-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] rolls back a task spawned with the largest budget a task may have",
             "mutation-verdict:behavior:saga-pass-fits-the-largest-budget",
             "packages/conformance/src/sagas.ts",
@@ -13674,12 +13779,36 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "saga conformance [libsql] refuses a failed rollback whose attempt record carries any other name",
-            "mutation-verdict:behavior:saga-attempt-record-name-is-checked",
+            "saga conformance [libsql] counts a rollback's failed attempts itself, one more than the last one stored",
+            "mutation-verdict:behavior:saga-store-counts-failed-attempts",
             "packages/conformance/src/sagas.ts",
         ),
         (
-            "saga-attempt-record-name-is-checked",
+            "saga-store-counts-failed-attempts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it holds the count at the largest safe integer, and never reads its own record as none",
+            "mutation-verdict:behavior:saga-store-count-saturates",
+        ),
+        (
+            "saga-store-count-saturates",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names a failed rollback's attempt record itself, and refuses the record an older caller hands over",
+            "mutation-verdict:behavior:saga-store-names-the-attempt-record",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "saga-failed-rollback-shape-is-checked",
         ),
     ),
     (
@@ -13691,6 +13820,20 @@ for _verdict, _names in (
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] throws the phase signal from every durable call that has no memo, and writes nothing for it",
+            "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "saga-sdk-spawn-is-frozen",
+            "saga-sdk-await-is-frozen",
+            "saga-sdk-sleep-is-frozen",
         ),
     ),
     (
@@ -16871,6 +17014,21 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-failed-attempts-accumulate": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
+    "saga-store-count-goes-on-from-the-record": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-step-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-spawn-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-await-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-sleep-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
     "saga-fatal-rollback-error-is-permanent": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -19404,7 +19562,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1012:
+        if len(MUTATIONS) != 1022:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -7,7 +7,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory, StoreFixtureOptions } from './fixture.js'
-import { rollingBack, startStep, triesOf } from './sagas.js'
+import { failedRollback, rollingBack, startStep } from './sagas.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -115,7 +115,7 @@ async function runWithAStartedStep(f: StoreFixture): Promise<ClaimedRun> {
 /** The first rollback pass of a task that is rolling back, claimed and started. */
 const rollbackPass = async (f: StoreFixture): Promise<ClaimedRun> => (await rollingBack(f)).pass
 
-const FAILED_ROLLBACK = triesOf('a', 1)
+const FAILED_ROLLBACK = failedRollback('a')
 
 /** A parent that is running, and a child in its queue that has not ended. */
 async function parentAndLiveChild(f: StoreFixture) {

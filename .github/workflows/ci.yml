@@ -313,68 +313,71 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def reaim_entry(repaired, candidate, name):
-              # Replace one entry of the base registry with this tree's entry of the same name, for a
-              # mutation whose target line this tree rewrote. Its name must stand, and so must
-              # whatever comment the entry opens with, so only the file, the find, the replacement and
-              # the description move. The file moves when the text a mutant rewrites moved to another
-              # file, as a store's line does when core takes it over. An entry stands at the top of
-              # the list or inside an extension of it, and its name may also stand in the verdict
-              # group that lists it, so the entry is the one whose next line is its file.
-              def span(text):
-                  found = list(re.finditer(
-                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
-                      text,
-                      re.M,
-                  ))
-                  if len(found) != 1:
+          def exempt(repaired, candidate, markers):
+              # Exempt verdict markers this tree registers and the base registry predates.
+              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(table) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              return repaired.replace(table, table + entries)
+          def retire(repaired, candidate, names, inventory):
+              # Remove each named entry, and its name from the verdict group that lists it, for a
+              # mutation whose code this tree deleted. A group left with no name goes with its
+              # verdict. The entry sits one level inside a block, which is the indentation matched
+              # here. This tree must no longer register the name, and the inventory assertion
+              # drops by the number removed.
+              for name in names:
+                  if f'"{name}"' in candidate:
+                      raise SystemExit(f'{name}: the bridge retires only an entry this tree no longer registers.')
+                  opening = f'        (\n            "{name}",\n            "packages/'
+                  if repaired.count(opening) != 1:
                       raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  entry = found[0]
-                  named = entry.end() - len(entry.group('indent') + '    "packages/')
-                  close = '\n' + entry.group('indent') + '),\n'
-                  return entry.start(), named, text.index(close, named) + len(close)
-              start, named, end = span(repaired)
-              new_start, new_named, new_end = span(candidate)
-              if repaired[start:named] != candidate[new_start:new_named]:
-                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == 'ad98c88952cc01f4d80c3fd383e91ad453a9c22214b4731da36246ddef2fea29':
-              # Four kinds of code that the three store packages each held a copy of now exist once,
-              # and sixteen base entries follow their lines: the test id source into core's testing
-              # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
-              # and the admin's version read, versioned write and post-condition into core's
-              # schema-version.ts. Twelve are the mutants they were. The four that guard a lost
-              # bootstrap now find the one line that decides it for every dialect. In the base two of
-              # them are one defect, never forgive, in two dialects' files, which one line would make
-              # one mutant, so libSQL's now forgives only at exactly the target version. libSQL's
-              # rethrow entry reads an absent version as zero, which keeps its width on a line that
-              # also serves the version writes. All four descriptions now describe a shared line.
-              # A seventeenth entry stays in libSQL's store and changes its replacement only. Its
-              # mutant handed the ambient JSON.stringify a value from core's captured parser, which
-              # that file imported for the decoder that left, and now parses with the ambient
-              # JSON.parse. This tree registers no mutation the base predates, so nothing is
-              # exempted and that helper left the step.
-              repaired = previous
-              for name in (
-                  'test-token-source-monotonic',
-                  'test-token-source-valid-serial',
-                  'persisted-row-rejects-spread-descriptor',
-                  'claim-retry-captured-parser',
-                  'claim-headers-captured-parser',
-                  'retry-persisted-normalization',
-                  'schema-absence-is-typed',
-                  'schema-version-missing-result',
-                  'schema-version-extra-results',
-                  'schema-version-missing-row',
-                  'schema-version-extra-rows',
-                  'libsql-bootstrap-loss-forgiven',
-                  'libsql-bootstrap-failure-rethrown',
-                  'postgres-bootstrap-loss-forgiven',
-                  'mysql-bootstrap-loss-forgiven',
-                  'migration-postcondition-old-version',
-                  'spawn-headers-captured-serializer',
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
+                  start = repaired.index(opening)
+                  closing = '\n        ),\n'
+                  repaired = repaired[:start] + repaired[repaired.index(closing, start) + len(closing):]
+                  listed = f'            "{name}",\n'
+                  if repaired.count(listed) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one verdict group that lists the entry.')
+                  at = repaired.index(listed)
+                  repaired = repaired[:at] + repaired[at + len(listed):]
+                  names_open = at - len('        (\n')
+                  emptied = '        (\n        ),\n    ),\n'
+                  if repaired.startswith(emptied, names_open):
+                      group = repaired.rindex('    (\n        ExpectedVerdict(\n', 0, names_open)
+                      repaired = repaired[:group] + repaired[names_open + len(emptied):]
+                  if f'"{name}"' in repaired:
+                      raise SystemExit(f'{name}: the base registry still names the retired entry.')
+              size = f'        if len(MUTATIONS) != {inventory}:\n'
+              if repaired.count(size) != 1:
+                  raise SystemExit('the bridge requires the base inventory size assertion.')
+              return repaired.replace(size, f'        if len(MUTATIONS) != {inventory - len(names)}:\n')
+          if digest == '404f2a49092d87011af7bd216da83c559f83a14e4db62005e37d2c5a79d20373':
+              # `failRollback` takes the step, and the store names and counts a rollback's
+              # attempt record. The SQL check of a caller's name went with the name, so the one
+              # base entry that mutated that check is retired with its verdict group. No other
+              # base entry's text moved. Eleven mutations hold the new lines, and they answer to
+              # seven verdict markers that are newer than the base. The SDK's count of its own
+              # attempts decides only a rollback's budget now, so this tree lists that base
+              # mutation under the case where a budget is spent, and the base's listing of it
+              # still names a case and a marker this tree has.
+              repaired = retire(previous, candidate, (
+                  'saga-attempt-record-name-is-checked',
+              ), 1012)
+              repaired = exempt(repaired, candidate, (
+                  "mutation-verdict:behavior:saga-child-spawn-is-frozen",
+                  "mutation-verdict:behavior:saga-store-counts-failed-attempts",
+                  "mutation-verdict:behavior:saga-store-names-the-attempt-record",
+                  "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
+                  "mutation-verdict:behavior:saga-sdk-budget-is-counted",
+                  "mutation-verdict:behavior:saga-store-count-saturates",
+                  "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
