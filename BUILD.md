@@ -144,15 +144,19 @@ a last docs PR gives a live owner to every open bullet that is left.
    Both server executors refuse a lock kind they do not implement, red first,
    where each took every kind that is not an event lock for a claim lock.
    PostgreSQL's version batch names the lock in its control, where its admin
-   sent the lock as a statement, and the server is sent the same 132 protocol
-   messages as before, byte for byte. The half applied case passed when it was
+   sent the lock as a statement, and the server is sent the same protocol
+   messages as before, byte for byte, 132 of them at seven versions. The
+   PostgreSQL executor refuses a migration write that names no lock too, its
+   bootstrap excepted, and MySQL's refuses a `migrate:` batch sent as a read,
+   each red first, after the review showed the first was weaker than the
+   statement it replaced and the second was a hole in the refusal. The half applied case passed when it was
    written, so it was a missing test and not a bug. It cuts the batch the real
    admin plans at every statement, from every version a database can be at,
-   58 cuts, by destroying the session that sent them, and it fails once an
-   index is created in a form that is not safe to repeat. A fresh MySQL
-   database costs three version reads and two locked batches whatever the
-   number of versions, where it cost nine and eight, and a current one a
-   single read, where it cost nine. Measured twice over 100 fresh databases a
+   58 cuts at seven versions, by destroying the session that sent them, and it
+   fails once an index is created in a form that is not safe to repeat. A
+   fresh MySQL database costs three version reads and two locked batches
+   whatever the number of versions, where it cost nine and eight at seven
+   versions, and a current one a single read, where it cost nine. Measured twice over 100 fresh databases a
    build, interleaved, 32.7 ms became 30.2 and 33.1 became 31.4, beside
    PostgreSQL unchanged at 37.3 and 36.9, and at 38.5 and 38.9. The registry
    gained eleven mutations.
@@ -2631,13 +2635,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
       and refuse one that runs under no migration lock. That needs a reader of
       MySQL statement text, which is a proxy of its own: a prepared DDL
       statement's text is held in a session variable, where no reader of the
-      batch sees it. The trigger is the first statement that
+      batch sees it. It would also close the path the label cannot see: DDL
+      under a label that does not start with `migrate:`, in either mode. The
+      trigger is the first statement that
       commits by itself sent under a label that does not start with `migrate:`.
     - Option, not a deferral of this PR: libSQL's and PostgreSQL's
       `fencedBatch` are the same function now that PostgreSQL's lock left its
       statement list: the sentinel, the version's statements, and the guarded
       advance. One definition in core would hoist two copies. The trigger is
       the next change to either.
+    - Option, not a deferral of this PR: a stale MySQL plan replays every
+      version that was pending when it read the version, so DESIGN.md forbids
+      a version that undoes or reshapes what an earlier version's repeatable
+      statement would put back. A guard statement for each version that has
+      statements, matched only at the version before it, with the version's
+      statements gated on it, would make a stale batch send nothing and lift
+      the rule. It changes what the runner sends. The trigger is the first
+      version that needs to undo or reshape what an earlier one creates.
+    - Option, not a deferral of this PR: every MySQL batch is labelled with
+      the last version, and an executor's error carries only the label, so a
+      failure in version 1 reads as the last version's batch. Saying which
+      version's statement failed needs the executor to report a statement's
+      index, which changes every batch's messages, or the batch to carry more
+      than it does. The trigger is the first failed migration an operator has
+      to read.
+    - Option, not a deferral of this PR: the rule that an executor refuses a
+      lock kind it does not implement is held by two unit cases and by no
+      conformance case, so a port in another language can pass the suite
+      without it. libSQL ignores every lock by design, so a shared case needs
+      the fixture contract to say whether a dialect implements locks.
+    - Option, not a deferral of this PR: `versionBatch(migration)` keeps the
+      text the batch lint names, so a list is called `migration`. The base
+      gate runs the base's copy of the lint, so an honest rename cannot land
+      in one pull request. It can in two: first a lint that accepts both
+      texts, then the rename. The trigger is the next change to that call.
     - Option, not a deferral of this PR: PostgreSQL's bootstrap names no
       migration lock, because that lock lives on the table the bootstrap
       creates. A lock that lives elsewhere, an advisory lock, would change what

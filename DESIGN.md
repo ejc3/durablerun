@@ -1837,11 +1837,19 @@ are load-bearing):
    a deploy runs that build beside the next one and both migrate: a MySQL case
    takes the lock with the released build's statement, spelled in the test, and
    requires `migrate()` to wait for that name with nothing written, and a
-   fresh `migrate()` and a second one send PostgreSQL the 132 protocol messages
-   the released build sends, byte for byte.
-   The MySQL executor knows a migration write by its label's prefix,
+   fresh `migrate()` and a second one send PostgreSQL the protocol messages the
+   released build sends, byte for byte: 132 of them at seven versions, which is
+   where it was recorded.
+   Both server executors know a migration write by its label's prefix,
    `migrate:`, and that match can only REFUSE: a write under such a label whose
-   control names no migration lock is refused before anything is sent. MySQL
+   control names no migration lock is refused before a connection is taken.
+   PostgreSQL's executor holds that rule with one named exception, its
+   bootstrap, for the reason above. It needs the refusal because a control can
+   be dropped, by a wrapper that rebuilds it from a mode, where the statement
+   the lock used to be could not. MySQL's executor also refuses a `migrate:`
+   batch sent as a read, unless it is the canonical version read, which is
+   known by its whole text: a read-only transaction refuses DML and does not
+   refuse DDL, whose own commit ends that transaction first. MySQL
    commits each DDL statement on its own, so a migration write that ran beside
    another migrator could not be undone, and a lock chosen from a list of
    labels leaves a `migrate:` label the list does not know to run unlocked. The
@@ -2732,17 +2740,33 @@ realized in the store's compiler, executor, fragments, or schema:
   version as ONE batch under one hold of the lock. A fresh database costs three
   version reads and two locked batches whatever the number of versions, and a
   current one a single read, where
-  one batch for each version costs nine and eight at seven versions. Five of
+  one batch for each version costs nine and eight at seven versions, the
+  number every figure here was measured at. Five of
   those versions are empty, and version 6 splits them, so nothing short of one
   batch crosses them together. Measured twice over 100 fresh databases a build,
   interleaved: 32.7 ms became 30.2, and 33.1 became 31.4, beside PostgreSQL,
   which did not change, at 37.3 and 36.9, and at 38.5 and 38.9. The read comes before the lock, so a batch can be planned from a
   version that has since moved: it repeats statements that change nothing, and
-  its advances match no row. What a migrator that died leaves follows from
-  what commits. An advance is ordinary DML inside the batch's transaction. The
+  its advances match no row. That sets a rule for whoever writes a MySQL
+  version. A stale plan replays EVERY version that was pending when it read
+  the version, where a batch for each version replayed only the one in flight,
+  and a build older than the schema can hold such a plan. So no version may
+  undo or reshape what an earlier version's repeatable statement would put
+  back: a version that drops an index an earlier version creates if missing
+  would see an older build's stale batch put the index back, under a recorded
+  version that says it is gone. No version does that today. After a failure
+  that is forgiven the version is read twice in a row, once to forgive and
+  once to plan, which costs a round trip on a path that already failed. What a
+  migrator that died leaves follows from what commits. An advance is ordinary DML inside the batch's transaction. The
   first statement that commits by itself commits what is pending and ends that
   transaction, so an advance sent before it is lost with the session unless
   that statement was reached, and an advance sent after it commits at once.
+  The guarded index form commits only when it really creates its index: over
+  an index that is there it runs a statement that does nothing and commits
+  nothing, so in a batch that recovers from an earlier crash an advance can
+  stay pending past it. That leaves a state the cuts already make from a first
+  crash, which is what the test's rule covers: every plan it cuts starts from
+  a database where what the plan creates is not there yet.
   `store-mysql/test/migration.test.ts` cuts the batch the real admin plans at
   every statement, from every version a database can be at, 58 cuts at seven
   versions, by destroying the session that sent them. It holds the version the
