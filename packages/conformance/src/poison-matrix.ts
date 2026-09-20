@@ -97,11 +97,11 @@ export type PoisonSelectingArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-ti
  * a target with nothing corrupt, so the corruption is what refuses the poison call, and
  * the healthy trigger wins a call of its own.
  */
-export type PoisonAddressedArm = 'activate' | 'defer-launch'
+export type PoisonAddressedArm = 'activate' | 'defer-launch' | 'retry-task'
 export type PoisonTargetArm = PoisonSelectingArm | PoisonAddressedArm
 
 type PoisonTargetProfileSeed<
-  State extends 'pending' | 'sleeping' | 'running',
+  State extends 'pending' | 'sleeping' | 'running' | 'failed',
   ClaimedBy extends string | null,
   ClaimGen extends number,
   ActivatedGen extends number,
@@ -109,9 +109,11 @@ type PoisonTargetProfileSeed<
   ClaimExpiresAtMs extends number | null,
   HeartbeatAtMs extends number | null,
   AvailableAtMs extends number | null,
+  TaskAttempts extends number = 0,
+  FailureReason extends string | null = null,
 > = Readonly<{
   state: State
-  taskAttempts: 0
+  taskAttempts: TaskAttempts
   taskMaxAttempts: 5
   taskInfraRetries: 0
   runAttempt: 1
@@ -123,6 +125,8 @@ type PoisonTargetProfileSeed<
   claimExpiresAtMs: ClaimExpiresAtMs
   heartbeatAtMs: HeartbeatAtMs
   availableAtMs: AvailableAtMs
+  /** The reason a failed task and its run carry, and null on every live profile. */
+  failureReason: FailureReason
 }>
 
 export type PoisonTargetProfileSeedRecord = Readonly<{
@@ -150,6 +154,18 @@ export type PoisonTargetProfileSeedRecord = Readonly<{
   >
   'activate-unactivated': UnactivatedClaimSeed
   'defer-launch-unactivated': UnactivatedClaimSeed
+  'retry-task-failed': PoisonTargetProfileSeed<
+    'failed',
+    null,
+    1,
+    1,
+    null,
+    null,
+    null,
+    null,
+    1,
+    '{"name":"PoisonFailed"}'
+  >
 }>
 
 /**
@@ -183,6 +199,7 @@ const UNACTIVATED_CLAIM_SEED = Object.freeze({
   claimExpiresAtMs: 1_060_000,
   heartbeatAtMs: 1_000_000,
   availableAtMs: null,
+  failureReason: null,
 } as const satisfies UnactivatedClaimSeed)
 
 export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
@@ -200,6 +217,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     claimExpiresAtMs: null,
     heartbeatAtMs: null,
     availableAtMs: 999_998,
+    failureReason: null,
   }),
   'claim-sleeping': Object.freeze({
     state: 'sleeping',
@@ -215,6 +233,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     claimExpiresAtMs: null,
     heartbeatAtMs: null,
     availableAtMs: 999_998,
+    failureReason: null,
   }),
   'sweep-lost-launch': Object.freeze({
     state: 'running',
@@ -230,6 +249,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     claimExpiresAtMs: 999_998,
     heartbeatAtMs: 940_000,
     availableAtMs: null,
+    failureReason: null,
   }),
   'sweep-claim-timeout': Object.freeze({
     state: 'running',
@@ -245,9 +265,27 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     claimExpiresAtMs: 999_998,
     heartbeatAtMs: 940_000,
     availableAtMs: null,
+    failureReason: null,
   }),
   'activate-unactivated': UNACTIVATED_CLAIM_SEED,
   'defer-launch-unactivated': UNACTIVATED_CLAIM_SEED,
+  // A task that failed for good on its first run, with budget left: what `retryTask` revives.
+  'retry-task-failed': Object.freeze({
+    state: 'failed',
+    taskAttempts: 1,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: null,
+    claimGen: 1,
+    activatedGen: 1,
+    runRelaunchCount: 0,
+    leaseMs: null,
+    claimExpiresAtMs: null,
+    heartbeatAtMs: null,
+    availableAtMs: null,
+    failureReason: '{"name":"PoisonFailed"}',
+  }),
 } as const satisfies PoisonTargetProfileSeedRecord)
 
 type CounterSeedOverrides = Readonly<
@@ -267,6 +305,7 @@ export type PoisonUnreachableTargetReason =
   | 'generation-classification-needs-another-invalid-field'
   | 'transition-does-not-read-field'
   | 'receipt-cannot-name-the-generation'
+  | 'profile-has-no-live-run'
 
 export type PoisonTargetability =
   | { readonly kind: 'targetable'; readonly companions?: CounterSeedOverrides }
@@ -587,6 +626,39 @@ const RECEIPT_COUNTER_TARGETABILITY = Object.freeze({
 } as const satisfies Readonly<Record<CounterBoundaryKey, PoisonTargetability>>)
 
 /**
+ * What a revival reads of each counter boundary. It charges the task for its top run, so
+ * it reads the task's three counters and every owned run's ordinal, and no generation or
+ * relaunch counter. A failed task's top run is already charged, which a live task's is
+ * not, so two boundaries no live arm can isolate are isolated here by companions of their
+ * own: a budget of zero beside a charge of zero, and a top ordinal of zero beside no
+ * recorded attempt.
+ */
+const RETRY_TASK_COUNTER_TARGETABILITY = Object.freeze({
+  'task-attempts/upper': COUNTER_RELATION_TARGETABILITY,
+  'task-attempts/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/lower': Object.freeze({
+    kind: 'targetable' as const,
+    companions: Object.freeze({ attempts: 0, infraRetries: 1 }),
+  }),
+  'task-infra-retries/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-infra-retries/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'run-attempt/upper': COUNTER_RELATION_TARGETABILITY,
+  'run-attempt/lower': Object.freeze({
+    kind: 'targetable' as const,
+    companions: Object.freeze({ attempts: 0 }),
+  }),
+  'run-claim-gen/upper': UNREAD_TARGETABILITY,
+  'run-claim-gen/lower': UNREAD_TARGETABILITY,
+  'run-activated-gen/upper': UNREAD_TARGETABILITY,
+  'run-activated-gen/lower': UNREAD_TARGETABILITY,
+  'run-relaunch-count/upper': UNREAD_TARGETABILITY,
+  'run-relaunch-count/lower': UNREAD_TARGETABILITY,
+  'checkpoint-owner-attempt/upper': UNREAD_TARGETABILITY,
+  'checkpoint-owner-attempt/lower': UNREAD_TARGETABILITY,
+} as const satisfies Readonly<Record<CounterBoundaryKey, PoisonTargetability>>)
+
+/**
  * Every counter boundary against every arm that names its target. Activation and the
  * launch deferral apply one admission to the receipt, so they share one classification.
  * The key type asks a new persisted counter, and a new arm, for its answers.
@@ -594,6 +666,7 @@ const RECEIPT_COUNTER_TARGETABILITY = Object.freeze({
 const ADDRESSED_COUNTER_TARGETABILITY = Object.freeze({
   activate: RECEIPT_COUNTER_TARGETABILITY,
   'defer-launch': RECEIPT_COUNTER_TARGETABILITY,
+  'retry-task': RETRY_TASK_COUNTER_TARGETABILITY,
 } as const satisfies AddressedTargetability<CounterBoundaryKey>)
 
 /** One row of an addressed table, as the arms of a target. It is the one place that spells them. */
@@ -603,6 +676,7 @@ const addressedArmsOf = <Key extends string>(
 ): Readonly<Record<PoisonAddressedArm, PoisonTargetability>> => ({
   activate: table.activate[key],
   'defer-launch': table['defer-launch'][key],
+  'retry-task': table['retry-task'][key],
 })
 
 const ALL_TARGET_ARMS = Object.freeze({
@@ -628,9 +702,22 @@ const EVERY_RELATIONAL_TARGET = Object.freeze({
 } as const satisfies Readonly<Record<keyof PoisonRelationalTargetRecord, PoisonTargetability>>)
 
 /** The relational and fractional targets against every arm that names its target. */
+const NO_LIVE_RUN_TARGETABILITY = Object.freeze({
+  kind: 'unreachable' as const,
+  reason: 'profile-has-no-live-run' as const,
+})
+
 const ADDRESSED_RELATIONAL_TARGETS = Object.freeze({
   activate: EVERY_RELATIONAL_TARGET,
   'defer-launch': EVERY_RELATIONAL_TARGET,
+  // Two of these corruptions are relations of a live run to its task, and a failed task has none.
+  'retry-task': Object.freeze({
+    'attempts/at-max-with-live-run': NO_LIVE_RUN_TARGETABILITY,
+    'accounting/below-top-minus-one': TARGETABLE_COUNTER_TARGETABILITY,
+    'accounting/live-run-not-next': NO_LIVE_RUN_TARGETABILITY,
+    'counter-fractional/task-max-attempts': TARGETABLE_COUNTER_TARGETABILITY,
+    'counter-fractional/run-relaunch-count': UNREAD_TARGETABILITY,
+  }),
 } as const satisfies AddressedTargetability<keyof PoisonRelationalTargetRecord>)
 
 function counterCompanions(
@@ -657,7 +744,11 @@ function counterBoundaryTarget(
   const companions = counterCompanions(fieldId, side)
   const mergeCompanions = (targetability: PoisonTargetability): PoisonTargetability =>
     targetability.kind === 'targetable' && companions !== undefined
-      ? Object.freeze({ ...targetability, companions })
+      ? Object.freeze({
+          ...targetability,
+          // An arm's own companions isolate the boundary in its profile, so they win.
+          companions: Object.freeze({ ...companions, ...targetability.companions }),
+        })
       : targetability
   return Object.freeze({
     fieldId,
@@ -668,6 +759,7 @@ function counterBoundaryTarget(
       'sweep:claim-timeout': mergeCompanions(arms['sweep:claim-timeout']),
       activate: mergeCompanions(addressed.activate),
       'defer-launch': mergeCompanions(addressed['defer-launch']),
+      'retry-task': mergeCompanions(addressed['retry-task']),
     }),
   })
 }
@@ -1328,6 +1420,7 @@ const PROFILES_FOR_ARM = Object.freeze({
   'sweep:claim-timeout': ['sweep-claim-timeout'],
   activate: ['activate-unactivated'],
   'defer-launch': ['defer-launch-unactivated'],
+  'retry-task': ['retry-task-failed'],
 } as const satisfies Readonly<Record<PoisonTargetArm, readonly PoisonTargetProfile[]>>)
 
 const POISON_TARGET_ARMS = Object.keys(PROFILES_FOR_ARM) as PoisonTargetArm[]
@@ -1621,15 +1714,22 @@ async function preparePoisonTarget(
     [
       sql(
         `UPDATE tasks
-         SET state = ?, attempts = ?, max_attempts = ?, infra_retries = ?
+         SET state = ?, attempts = ?, max_attempts = ?, infra_retries = ?, failure_reason = ?
          WHERE task_id = ?`,
-        [seed.state, seed.taskAttempts, seed.taskMaxAttempts, seed.taskInfraRetries, TASK],
+        [
+          seed.state,
+          seed.taskAttempts,
+          seed.taskMaxAttempts,
+          seed.taskInfraRetries,
+          seed.failureReason,
+          TASK,
+        ],
       ),
       sql(
         `UPDATE runs
          SET state = ?, attempt = ?, claimed_by = ?, claim_gen = ?, activated_gen = ?,
              relaunch_count = ?, lease_ms = ?, claim_expires_at_ms = ?,
-             heartbeat_at_ms = ?, available_at_ms = ?
+             heartbeat_at_ms = ?, available_at_ms = ?, failure_reason = ?
          WHERE run_id = ?`,
         [
           seed.state,
@@ -1642,6 +1742,7 @@ async function preparePoisonTarget(
           seed.claimExpiresAtMs,
           seed.heartbeatAtMs,
           seed.availableAtMs,
+          seed.failureReason,
           RUN,
         ],
       ),
@@ -2881,6 +2982,7 @@ function declaredTargetErrors(
   const run = rowById(before, 'runs', RUN)
   const healthyRun = rowById(before, 'runs', TRIGGER_RUN)
   const expectedState = POISON_TARGET_PROFILE_SEEDS[profile].state
+  const live = isLiveState(expectedState)
   if (task?.state !== expectedState || run?.state !== expectedState) {
     errors.push(`declared ${profile} lifecycle was not applied`)
   }
@@ -2888,7 +2990,7 @@ function declaredTargetErrors(
     task?.queue !== Q ||
     run?.queue !== Q ||
     run?.task_id !== TASK ||
-    liveRuns(before, TASK).length !== 1
+    liveRuns(before, TASK).length !== (live ? 1 : 0)
   ) {
     errors.push(`declared ${profile} owner closure is not uniquely eligible`)
   }
@@ -2928,14 +3030,20 @@ function declaredTargetErrors(
   const allowsNonExactMaximum = witness.targetNonExactField === 'task-max-attempts'
   const allowsExhaustedBudget = witness.covers.includes('attempts/at-max-with-live-run')
   const allowsAccountingMismatch = witness.covers.includes('accounting/live-run-not-next')
-  if (
-    attempt === undefined ||
-    attempts === undefined ||
-    (maximum === undefined && !allowsNonExactMaximum) ||
-    infra === undefined ||
-    (maximum !== undefined && attempts >= maximum && !allowsExhaustedBudget) ||
-    (attempt !== attempts + infra + 1n && !allowsAccountingMismatch)
-  ) {
+  // A live run is the next ordinal, which no counter has recorded yet, under a task with
+  // budget left. A failed task's top run is charged already, or failed at a cap where no
+  // counter recorded it, and the charge a revival would make is within the budget.
+  const isolated =
+    attempt !== undefined &&
+    attempts !== undefined &&
+    infra !== undefined &&
+    (maximum !== undefined || allowsNonExactMaximum) &&
+    (live
+      ? (maximum === undefined || attempts < maximum || allowsExhaustedBudget) &&
+        (attempt === attempts + infra + 1n || allowsAccountingMismatch)
+      : (maximum === undefined || attempt - infra <= maximum) &&
+        [0n, 1n].includes(attempt - infra - attempts))
+  if (!isolated) {
     errors.push(`declared ${profile} counter companions do not isolate one boundary`)
   }
   if (
@@ -2992,6 +3100,13 @@ function declaredTargetErrors(
         !orderedBefore(available, RUN, healthyAvailable, TRIGGER_RUN))
     ) {
       errors.push(`declared ${profile} poison does not sort before the healthy trigger`)
+    }
+    return errors
+  }
+
+  if (profile === 'retry-task-failed') {
+    if (typeof task?.failure_reason !== 'string' || task.completed_payload !== null) {
+      errors.push(`declared ${profile} task is not a well-formed failure`)
     }
     return errors
   }

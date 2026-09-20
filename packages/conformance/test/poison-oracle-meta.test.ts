@@ -1036,39 +1036,48 @@ describe('poison/invariant mechanism self-tests', () => {
           kind: classification.kind,
         })),
       ),
-    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 5)
+    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 6)
     expect(
       POISON_TARGET_CASES,
       'mutation-verdict:behavior:poison-targetability-inventory',
-    ).toHaveLength(74)
-    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(44)
+    ).toHaveLength(82)
+    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(57)
   })
 
   it('pins every unreachable counter target and its reason', () => {
     expect(POISON_UNREACHABLE_TARGETS.map((target) => `${target.id}=${target.reason}`)).toEqual([
+      'attempts/at-max-with-live-run/retry-task=profile-has-no-live-run',
+      'accounting/live-run-not-next/retry-task=profile-has-no-live-run',
+      'counter-fractional/run-relaunch-count/retry-task=transition-does-not-read-field',
       'counter-bound/task-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/activate=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/defer-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/retry-task=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/activate=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/defer-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/retry-task=counter-relation-needs-another-invalid-field',
       'counter-bound/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound/run-claim-gen/activate=receipt-cannot-name-the-generation',
       'counter-bound/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
+      'counter-bound/run-claim-gen/retry-task=transition-does-not-read-field',
       'counter-bound/run-activated-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/activate=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/defer-launch=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/retry-task=transition-does-not-read-field',
+      'counter-bound/run-relaunch-count/retry-task=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/activate=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/retry-task=transition-does-not-read-field',
       'counter-bound-lower/task-max-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
@@ -1084,12 +1093,16 @@ describe('poison/invariant mechanism self-tests', () => {
       'counter-bound-lower/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/activate=receipt-cannot-name-the-generation',
       'counter-bound-lower/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
+      'counter-bound-lower/run-claim-gen/retry-task=transition-does-not-read-field',
       'counter-bound-lower/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/run-activated-gen/retry-task=transition-does-not-read-field',
+      'counter-bound-lower/run-relaunch-count/retry-task=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/activate=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/retry-task=transition-does-not-read-field',
     ])
   })
 
@@ -1113,6 +1126,7 @@ describe('poison/invariant mechanism self-tests', () => {
         'sweep-claim-timeout',
         'activate-unactivated',
         'defer-launch-unactivated',
+        'retry-task-failed',
       ]),
     )
   })
@@ -1124,9 +1138,16 @@ describe('poison/invariant mechanism self-tests', () => {
     const actual = POISON_TARGET_CASES.filter(({ witness }) =>
       relationalWitnessIds.has(witness.id),
     ).map(({ id }) => id)
-    const expected = witnessIds.flatMap((witnessId) =>
-      profileIds.map((profileId) => `${witnessId}/${profileId}`),
-    )
+    // A failed task has no live run for two of these relations to hold of, and a revival
+    // does not read the relaunch counter.
+    const unreachable = new Set([
+      'attempts/at-max-with-live-run/retry-task-failed',
+      'accounting/live-run-not-next/retry-task-failed',
+      'counter-fractional/run-relaunch-count/retry-task-failed',
+    ])
+    const expected = witnessIds
+      .flatMap((witnessId) => profileIds.map((profileId) => `${witnessId}/${profileId}`))
+      .filter((id) => !unreachable.has(id))
 
     expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
   })
@@ -1307,6 +1328,10 @@ describe('poison/invariant mechanism self-tests', () => {
         profile: 'defer-launch-unactivated',
         targetId: 'counter-bound/task-max-attempts/defer-launch-unactivated',
       },
+      {
+        profile: 'retry-task-failed',
+        targetId: 'counter-bound/task-max-attempts/retry-task-failed',
+      },
     ] as const
     const observations: unknown[] = []
 
@@ -1446,6 +1471,23 @@ describe('poison/invariant mechanism self-tests', () => {
             lease_ms: 60_000,
             claim_expires_at_ms: 1_060_000,
             heartbeat_at_ms: 1_000_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'retry-task-failed',
+        seededState: {
+          task: { state: 'failed' },
+          run: {
+            state: 'failed',
+            claimed_by: null,
+            claim_gen: 1,
+            activated_gen: 1,
+            lease_ms: null,
+            claim_expires_at_ms: null,
+            heartbeat_at_ms: null,
             available_at_ms: null,
           },
         },
