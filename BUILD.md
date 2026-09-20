@@ -2569,7 +2569,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   | MySQL | 6.56, 5.56 | 4.20, 3.26 | 33, 32 (medians) | 4.03, 3.17 |
 
   At 100,000 a claim costs 5.0 ms on libSQL and 7.2 to 7.7 on PostgreSQL, and at
-  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 9, 3 and 3 rows in its
+  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows in its
   four statements at every size. What the index costs the other writes, mean ms
   before and after at 10,000 running runs: activate 2.54 and 2.19, heartbeat
   1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on libSQL;

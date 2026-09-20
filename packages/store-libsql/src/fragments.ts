@@ -175,8 +175,8 @@ export const cancelNotDue = (task: string, at: string): string => {
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
-const storedBoundedInteger = (col: string, min: number, max: number): string =>
-  `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
+const storedBoundedInteger = (col: string, min: number, max: number, compared = col): string =>
+  `(${storedInteger(col)} AND ${compared} BETWEEN ${min} AND ${max})`
 
 const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
   const separator = bounds.field.indexOf('.')
@@ -219,7 +219,7 @@ export const storedIntegerWithinOffIndex = (
   alias?: string,
 ): string => {
   const column = persistedColumn(bounds, alias)
-  return `(${storedInteger(column)} AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`
+  return storedBoundedInteger(column, bounds.min, bounds.max, `+${column}`)
 }
 
 /**

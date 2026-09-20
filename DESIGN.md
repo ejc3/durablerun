@@ -949,7 +949,7 @@ One invocation executes one claimed run to its next suspension point:
     them. By queue and state alone the only index is `runs_poll`, so each of
     those read every running run of the queue, on every tick, the idle ones
     included. Beside 100,000 running runs one claim took 200 ms on libSQL
-    against 5 ms beside eight, and 64 ms on PostgreSQL against 7. On MySQL it
+    against 6 ms beside eight, and 64 ms on PostgreSQL against 7. On MySQL it
     took 33 ms beside 10,000 and 638 ms beside 40,000 under the server's default
     buffer pool, against 4. Schema version 9 is the index `runs_held`, a queue's
     running runs by their token: `(queue, claimed_by)` over the rows whose state

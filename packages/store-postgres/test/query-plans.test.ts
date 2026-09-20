@@ -23,21 +23,35 @@ async function planLines(
   sql: string,
   args?: readonly unknown[],
 ): Promise<string[]> {
+  return planning(client, () => explained(client, sql, args))
+}
+
+/** A transaction that plans with sequential and bitmap scans disabled, and is rolled back. */
+async function planning<T>(client: Client, work: () => Promise<T>): Promise<T> {
   await client.query('BEGIN')
   try {
     await client.query('SET LOCAL enable_seqscan = off')
     await client.query('SET LOCAL enable_bitmapscan = off')
-    const text = compilePostgresPlaceholders(sql).sql
-    const plan =
-      args === undefined
-        ? await client.query(`EXPLAIN (GENERIC_PLAN, COSTS OFF) ${text}`)
-        : await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${text}`, [
-            ...args,
-          ])
-    return plan.rows.map((row) => String(Object.values(row as object)[0]))
+    return await work()
   } finally {
     await client.query('ROLLBACK')
   }
+}
+
+/** One statement's plan lines inside the transaction of `planning`. With `args` it also runs. */
+async function explained(
+  client: Client,
+  sql: string,
+  args?: readonly unknown[],
+): Promise<string[]> {
+  const text = compilePostgresPlaceholders(sql).sql
+  const plan =
+    args === undefined
+      ? await client.query(`EXPLAIN (GENERIC_PLAN, COSTS OFF) ${text}`)
+      : await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${text}`, [
+          ...args,
+        ])
+  return plan.rows.map((row) => String(Object.values(row as object)[0]))
 }
 
 type TestDb = Awaited<ReturnType<typeof openPostgresTestDb>>
@@ -265,7 +279,7 @@ it('reads of runs no more than a claim takes, beside the running runs other work
       if (label === 'claim') claims.push(statement)
     })
     await cloneRunning(client, db.schemaName, await started('held-by-another-worker'), OTHERS)
-    await client.query('ANALYZE')
+    await client.query('ANALYZE runs, tasks')
     // The claim whose statements run again. Its run completes first, so its token holds
     // nothing when those statements claim the next due run under it.
     const mine = await started('claimed-and-completed')
@@ -282,16 +296,9 @@ it('reads of runs no more than a claim takes, beside the running runs other work
 
     const backlogReads: string[] = []
     let scansOfRuns = 0
-    await client.query('BEGIN')
-    try {
-      await client.query('SET LOCAL enable_seqscan = off')
-      await client.query('SET LOCAL enable_bitmapscan = off')
+    await planning(client, async () => {
       for (const statement of shipped) {
-        const plan = await client.query(
-          `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${compilePostgresPlaceholders(statement.sql).sql}`,
-          [...statement.args],
-        )
-        const lines = plan.rows.map((row) => String(Object.values(row as object)[0]))
+        const lines = await explained(client, statement.sql, statement.args)
         lines.forEach((line, at) => {
           if (!/Scan\b.* on runs\b/.test(line)) return
           scansOfRuns += 1
@@ -308,9 +315,7 @@ it('reads of runs no more than a claim takes, beside the running runs other work
             backlogReads.push(`${head(statement.sql)} -> ${line.trim()} read ${read} rows`)
         })
       }
-    } finally {
-      await client.query('ROLLBACK')
-    }
+    })
     // The compare-and-set, the follow-on and the receipt read each scan `runs`.
     expect(scansOfRuns).toBeGreaterThanOrEqual(6)
     expect(

@@ -91,6 +91,19 @@ it('builds the write-plan schema through the production migration contract', asy
   ])
 })
 
+/** The first two words of a statement, which name it among the statements of its label. */
+const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
+
+/** The access a write is allowed to reach each table by: a seek by the key it was handed. */
+const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
+  tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
+  runs: [
+    / USING PRIMARY KEY \(run_id=\?\)$/,
+    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
+  ],
+  waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
+}
+
 describe('claim candidate legs', () => {
   async function shippedClaimStatements(): Promise<{ sql: string; args: unknown[] }[]> {
     const seen: { sql: string; args: unknown[] }[] = []
@@ -168,8 +181,7 @@ describe('claim candidate legs', () => {
    * is listed.
    */
   const CLAIM_REACHES_RUNS_BY: readonly RegExp[] = [
-    / USING PRIMARY KEY \(run_id=\?\)$/,
-    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
+    ...(KEYED.runs ?? []),
     / USING (?:COVERING )?INDEX runs_held \(queue=\? AND claimed_by=\?\)$/,
     / USING INDEX runs_poll \(queue=\? AND state=\? AND available_at_ms>\? AND available_at_ms<\?\)$/,
   ]
@@ -182,19 +194,10 @@ describe('claim candidate legs', () => {
     // ones a real claim sent, planned under ITS binds, because SQLite plans from bound
     // values: `state = ?` reaches a partial index only once it is bound to that index's
     // state.
-    const sent: { sql: string; args: unknown[] }[] = []
-    const recorder: SqlExecutor = {
-      batch: (label, statements, mode) => {
-        if (label === 'claim') {
-          for (const st of statements) sent.push({ sql: st.sql, args: [...st.args] })
-        }
-        return db.batch(label, statements, mode)
-      },
-    }
-    const store = new LibsqlSchedulerStore(recorder, testIdSource('claim-reads-runs'))
-    await store.spawn('q', 'job', '{}')
-    expect(await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })).toHaveLength(1)
-    const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
+    const sent = await shippedBatch('claim', async (store) => {
+      await store.spawn('q', 'job', '{}')
+      expect(await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })).toHaveLength(1)
+    })
     expect(sent.map((st) => head(st.sql))).toEqual([
       'update "runs"',
       'update "tasks"',
@@ -202,7 +205,6 @@ describe('claim candidate legs', () => {
       'select "r"."run_id",',
     ])
     const backlogReads: string[] = []
-    const stepsOverRuns: number[] = []
     for (const st of sent) {
       // The names this statement reads `runs` under: the table's own, and every alias.
       const names = new Set(['runs'])
@@ -215,15 +217,14 @@ describe('claim candidate legs', () => {
         // `json_each` is read under the alias `r` too, as a virtual table.
         .filter((line) => !line.includes('VIRTUAL TABLE'))
         .filter((line) => names.has(/^(?:SEARCH|SCAN) (\S+)/.exec(line)?.[1]?.toLowerCase() ?? ''))
-      stepsOverRuns.push(steps.length)
+      // Every statement reads `runs`, so none of them passes by having no step to judge.
+      expect(steps, head(st.sql)).not.toHaveLength(0)
       for (const step of steps) {
         if (!CLAIM_REACHES_RUNS_BY.some((way) => way.test(step))) {
           backlogReads.push(`${head(st.sql)} -> ${step}`)
         }
       }
     }
-    // Every statement reads `runs`, so none of them passed by having no step to judge.
-    expect(stepsOverRuns.filter((count) => count === 0)).toEqual([])
     expect(
       [...new Set(backlogReads)].sort(),
       'mutation-verdict:behavior:claim-followons-name-the-token',
@@ -866,18 +867,7 @@ describe('every write a store ships, by the table it writes', () => {
     return writes
   }
 
-  /** The access a write is allowed to reach each table by: a seek by the key it was handed. */
-  const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
-    tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
-    runs: [
-      / USING PRIMARY KEY \(run_id=\?\)$/,
-      / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
-    ],
-    waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
-  }
-
-  const named = (st: { label: string; sql: string }) =>
-    `${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`
+  const named = (st: { label: string; sql: string }) => `${st.label}: ${head(st.sql)}`
 
   it('reaches the table it writes by the key it was handed, whatever the plan calls that table', async () => {
     // The property, and not one spelling of its failure: the plan step over the written

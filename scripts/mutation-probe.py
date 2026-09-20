@@ -4603,15 +4603,15 @@ MUTATION_SPECS = [
         # unexpired lease of the queue.
         "claim-receipt-bound-stays-off-the-lease-index",
         "packages/store-libsql/src/fragments.ts",
-        "  return `(${storedInteger(column)} AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
-        "  return `(${storedInteger(column)} AND ${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
+        "bounds.max, `+${column}`)\n",
+        "bounds.max, column)\n",
         "a claim's receipt read walks every unexpired lease of its queue",
     ),
     (
         "claim-receipt-requires-lease-expiry-range",
         "packages/store-libsql/src/fragments.ts",
-        " AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`\n",
-        " AND 1 = 1)`\n",
+        "  return storedBoundedInteger(column, bounds.min, bounds.max, `+${column}`)\n",
+        "  return storedInteger(column)\n",
         "a same-token receipt returns a run whose stored lease expiry is outside its range",
     ),
 ]

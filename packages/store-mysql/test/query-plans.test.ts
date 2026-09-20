@@ -556,7 +556,7 @@ describe('a claim beside the running runs of its queue, on MySQL', () => {
     // what ONE token holds, and by queue and state alone the only index is `runs_poll`, so
     // both walked every running run of the queue, idle ticks included: one claim measured
     // 33 ms beside 10,000 running runs and 638 ms beside 40,000 under the server's default
-    // buffer pool, against 4 ms with `runs_held`. Measured with it: 12, 9, 3 and 3 rows in
+    // buffer pool, against 4 ms with `runs_held`. Measured with it: 12, 7 to 9, 3 and 3 rows in
     // the four statements with a run due, and 5, 0, 0 and 0 with none, at 400 running runs
     // and at 40,000 alike. The task follow-on and the delete of timed-out waits already
     // find their runs by the statement stamp.
@@ -581,16 +581,13 @@ describe('a claim beside the running runs of its queue, on MySQL', () => {
       })
       await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
       await store.spawn(Q, 'due', '{}')
-      let took = -1
       const lease = { leaseSeconds: 60, limit: 1 }
       const due = await walkedByEachStatement(db, 'claim', async (measured) => {
-        took = (await measured.claim(Q, 'claimer', lease)).length
+        expect(await measured.claim(Q, 'claimer', lease)).toHaveLength(1)
       })
-      expect(took).toBe(1)
       const idle = await walkedByEachStatement(db, 'claim', async (measured) => {
-        took = (await measured.claim(Q, 'idle-claimer', lease)).length
+        expect(await measured.claim(Q, 'idle-claimer', lease)).toHaveLength(0)
       })
-      expect(took).toBe(0)
       expect(due).toHaveLength(4)
       expect(idle).toHaveLength(4)
       const walkedTheBacklog = [
