@@ -2585,6 +2585,19 @@ MUTATION_SPECS = [
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
+        # Not correctness either: the access path of a read. Joined to its task
+        # by the queue alone, the sweep's read of expired leases scans tasks once
+        # for each lease it reads, and every pin of a chosen statement still
+        # passes. Only the nests of every shipped statement's plan see it.
+        "expired-claims-read-keys-its-task",
+        "packages/store-libsql/src/store.ts",
+        "      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "      taskOwnsRun: sqlFragment('t.queue = r.queue'),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "every sweep scans tasks once for each expired lease it reads",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
@@ -9158,6 +9171,12 @@ VERDICTS = {
         "packages/store-libsql/test/query-plans.test.ts",
         "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
         "mutation-verdict:behavior:emit-index-driver",
+    ),
+    "expired-claims-read-keys-its-task": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
     ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
@@ -18737,7 +18756,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 972:
+        if len(MUTATIONS) != 973:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

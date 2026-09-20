@@ -326,30 +326,13 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
-              # The stale-token column registers a mutation for each comparison it holds:
-              # the claim token of every call that presents one, the generation of a claim
-              # receipt, and the generation a lease sweep's scan read. The base predates
-              # them all, so their verdict markers are exempted. No base entry is re-aimed,
+          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
+              # The plan check over every statement the libSQL store ships registers one
+              # mutation, a read that joins its task by the queue alone, and the base
+              # predates its verdict marker, which is exempted. No base entry is re-aimed,
               # because this tree changes no line a base mutation quotes.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:stale-token-spawn-of-a-child',
-                  'mutation-verdict:behavior:stale-token-activate',
-                  'mutation-verdict:behavior:stale-token-defer-launch',
-                  'mutation-verdict:behavior:stale-token-heartbeat',
-                  'mutation-verdict:behavior:stale-token-reschedule',
-                  'mutation-verdict:behavior:stale-token-suspend',
-                  'mutation-verdict:behavior:stale-token-await-event',
-                  'mutation-verdict:behavior:stale-token-record-task-done',
-                  'mutation-verdict:behavior:stale-token-complete',
-                  'mutation-verdict:behavior:stale-token-fail',
-                  'mutation-verdict:behavior:stale-token-fail-rollback',
-                  'mutation-verdict:behavior:stale-token-expire-lease-now',
-                  'mutation-verdict:behavior:stale-token-set-checkpoint',
-                  'mutation-verdict:behavior:stale-generation-activate',
-                  'mutation-verdict:behavior:stale-generation-defer-launch',
-                  'mutation-verdict:behavior:stale-scan-sweep-lost-launch',
-                  'mutation-verdict:behavior:stale-scan-sweep-claim-timeout',
+                  'mutation-verdict:behavior:plan-nests',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
