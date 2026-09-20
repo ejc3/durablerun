@@ -1463,6 +1463,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     profile for a failed task, so the `retry-task` cells reach the counter
     guards behind its state condition. The conformance cases pin each guard
     today.
+  - Deferred from `postmortems/pr3.3b-hoists-review.md`: a poison case for the
+    batch that records an unrecorded ending (`record-task-done`), over rows
+    where a run's claim outlives its task or names a task of another queue, so
+    that a dialect's `liveTask` and `taskOwnsRun` facts are held by something.
+    On consistent rows the batch's own claim predicate implies both, so no
+    conformance case tells a wrong fact from a right one, and only the libSQL
+    store's child-await error test holds the stored payload's type.
   - Deferred from PR3.10a: `--check-postmortem` checks a postmortem's tables
     and the commits it cites, and the whole attestation also checks its
     sections, its placeholder lines and its unfilled markers, inline. One
@@ -1721,11 +1728,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   store and rung 2 for a new statement, the second is rung 2, and the third is
   rung 1. Each has its false negative written and run as an accepted exhibit
   in core's tests: a lock that names the event in another queue, a task state
-  copied from a run the batch ended, and a dialect fact that is wrong. What
-  holds those is what held them before: the PostgreSQL and MySQL lock cases,
-  `childTaskViolations`, and the conformance suite on each dialect. The SQL
+  copied from a run the batch ended, and a dialect fact that is wrong. The
+  PostgreSQL and MySQL lock cases hold the first and `childTaskViolations`
+  the second. Nothing new holds the third: on consistent rows the recording
+  batch's own claim predicate implies `liveTask` and `taskOwnsRun`, against
+  corrupt rows nothing at that site holds them, and the stored payload's type
+  is held by the libSQL store's child-await error test alone. Main had the
+  same gap with the facts inline in each store, and the poison case that
+  would close it is recorded under PR3.10. The SQL
   corpus moved in one way: on each dialect 30 of 298 values differ, each only
-  in how a task's state is spelled.
+  in how a task's state is spelled. The SQL a store sends did not change
+  otherwise, and the released types did: `FencedBatch.lockEvent` is gone,
+  `DefinedStatement` gains a required `eventLock`, `DerivedSet` takes no text
+  for a task's state, and a libSQL batch whose statements name two events now
+  throws where it was sent. The published-surface check compares exported
+  names, and no name left, so it sees none of that. A build-time refusal also
+  got narrower: a declared event lock had to be followed at once by a
+  compare-and-set, and an event lock that arrives with its statement is held
+  to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -2173,10 +2193,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **Postgres double-claim**: `casMany` guarantees a win rule, not a
     concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
     conformance scenario before it is DONE.
-  - **Closed lock preludes**: `FencedBatch.lockEvent` and `lockClaim` pass only
-    their typed coordinates to the executor before the fenced SQL. They do not
-    accept SQL or contribute a result slot, so the new dialect can acquire its
-    transaction lock without opening an unfenced-write escape.
+  - **Closed lock preludes**: a batch passes only a lock's typed coordinates
+    to the executor before the fenced SQL, from `lockClaim` or from the event a
+    statement names as its lock where core defines it (`FencedBatch.lockEvent`
+    until PR3.3b). A prelude accepts no SQL and contributes no result slot, so
+    the new dialect can acquire its transaction lock without opening an
+    unfenced-write escape.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.

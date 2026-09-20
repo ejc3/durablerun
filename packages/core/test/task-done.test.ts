@@ -190,7 +190,10 @@ describe("a terminal batch's read of its task", () => {
 
 describe('what core cannot check of a dialect', () => {
   // The exhibit is ACCEPTED and SENT. Core holds the protocol, and a dialect's facts are
-  // text it cannot read: what holds them is the conformance suite on that dialect.
+  // text it cannot read. On rows that are consistent the recording batch's own claim
+  // predicate already implies `liveTask` and `taskOwnsRun`, so no case tells a wrong one
+  // from a right one, and against rows that are not, nothing at this site holds them.
+  // `storedPayloadType` is held by the libSQL store's child-await error test alone.
   it('accepts whatever a dialect calls a live task, so a wrong fact records an outcome under a claim no live task holds', async () => {
     const { dialect, sent } = dialectOf({
       awaits: [null],

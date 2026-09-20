@@ -792,8 +792,14 @@ One invocation executes one claimed run to its next suspension point:
     batch reaches the executor from a store, which is where the label ledger,
     the batch lint, and the fault matrix read them. It supplies its
     `await-event` batch, how it says why a fence refused a write, and three
-    fragments. Core cannot read what a fragment means, so a dialect's facts
-    are held by the conformance suite on that dialect.
+    fragments. Core cannot read what a fragment means, and what holds each
+    fact differs. On consistent rows the recording batch's own claim predicate
+    implies `liveTask` and `taskOwnsRun`, so no conformance case tells a wrong
+    one from a right one, and against rows that are not consistent nothing at
+    that site holds them, as nothing did while each store held them inline. A
+    poison case for the recording batch is open work (BUILD.md, PR3.10). The
+    stored payload's type is held by the libSQL store's child-await error test
+    alone.
     This departs from Absurd, which refuses the same-queue await because its
     await polls and holds a worker slot, so a parent and its child can
     deadlock a small pool. Ours suspends and holds nothing. The model isolates
@@ -1430,8 +1436,14 @@ are load-bearing):
    a terminal batch's completion event, which is a follow-on and brings the
    lock all the same, because the executor takes a batch's lock before its
    first statement wherever the statement stands. A batch holds one lock, and a
-   second statement may name it again. An INSERT into `events` or `waits` whose
-   definition names no lock, or names another event than the row's
+   second statement may name it again. A claim lock is declared before a
+   batch's first statement, and that statement must be the compare-and-set the
+   lock protects. An event lock arrives with the statement that names it, so
+   nothing holds an event-locked batch to open with a compare-and-set, as the
+   declared event lock did. Every shipped one opens with one, and the executor
+   takes the lock before the first statement whatever it is, so a read that
+   stood first would run under the lock. An INSERT into `events` or `waits`
+   whose definition names no lock, or names another event than the row's
    `event_name`, is refused when the batch is built, on every dialect, libSQL
    included. The batch carries only that closed lock coordinate, and never
    caller SQL, to the dialect executor, which acquires it before the first
