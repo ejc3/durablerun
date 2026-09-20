@@ -343,12 +343,17 @@ jobs:
               # and sixteen base entries follow their lines: the test id source into core's testing
               # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
               # and the admin's version read, versioned write and post-condition into core's
-              # schema-version.ts. Each is the mutant it was. The four that guard a lost bootstrap
-              # share the one line that now decides it for every dialect. A seventeenth entry stays in
-              # libSQL's store and changes its replacement only. Its mutant handed the ambient
-              # JSON.stringify a value from core's captured parser, which that file imported for the
-              # decoder that left, and now hands it the caller's headers. This tree registers no
-              # mutation the base predates, so nothing is exempted and that helper left the step.
+              # schema-version.ts. Twelve are the mutants they were. The four that guard a lost
+              # bootstrap now find the one line that decides it for every dialect. In the base two of
+              # them are one defect, never forgive, in two dialects' files, which one line would make
+              # one mutant, so libSQL's now forgives only at exactly the target version. libSQL's
+              # rethrow entry reads an absent version as zero, which keeps its width on a line that
+              # also serves the version writes. All four descriptions now describe a shared line.
+              # A seventeenth entry stays in libSQL's store and changes its replacement only. Its
+              # mutant handed the ambient JSON.stringify a value from core's captured parser, which
+              # that file imported for the decoder that left, and now parses with the ambient
+              # JSON.parse. This tree registers no mutation the base predates, so nothing is
+              # exempted and that helper left the step.
               repaired = previous
               for name in (
                   'test-token-source-monotonic',

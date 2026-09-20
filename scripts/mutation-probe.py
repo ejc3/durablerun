@@ -3805,22 +3805,22 @@ MUTATION_SPECS = [
         "libsql-bootstrap-loss-forgiven",
         "packages/core/src/schema-version.ts",
         "    if (version !== null && version >= minimumVersion) return\n",
-        "    if (false) return\n",
-        "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "    if (version !== null && version === minimumVersion) return\n",
+        "a migrator whose bootstrap lost to a winner that went on past version zero is rejected: the recovery every dialect shares forgives a failed write only at exactly its target version",
     ),
     (
         "libsql-bootstrap-failure-rethrown",
         "packages/core/src/schema-version.ts",
         "    if (version !== null && version >= minimumVersion) return\n",
-        "    if (version === null || version >= minimumVersion) return\n",
-        "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
+        "    if ((version || 0) >= minimumVersion) return\n",
+        "a bootstrap that failed with nothing committed is swallowed and migration runs on: the recovery every dialect shares reads an absent version as zero",
     ),
     (
         "postgres-bootstrap-loss-forgiven",
         "packages/core/src/schema-version.ts",
         "    if (version !== null && version >= minimumVersion) return\n",
         "    if (version !== null && version > minimumVersion) return\n",
-        "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "a migrator whose own bootstrap committed and lost only its answer is rejected: the recovery every dialect shares forgives a failed write only past its target version",
     ),
     (
         "postgres-version-read-isolation",
@@ -3947,7 +3947,11 @@ MUTATION_SPECS = [
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
         "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
-        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
+        "      headersInput === undefined\n"
+        "        ? null\n"
+        "        : JSON.stringify(\n"
+        "            JSON.parse(serializeTaskValue('task headers', headersInput)),\n"
+        "          )",
         "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
@@ -7339,7 +7343,7 @@ MUTATION_SPECS.extend(
             "packages/core/src/schema-version.ts",
             "    if (version !== null && version >= minimumVersion) return\n",
             "    if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
-            "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+            "a migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded: the recovery every dialect shares forgives no failed write",
         ),
         (
             "mysql-only-an-insert-counts-twice",
