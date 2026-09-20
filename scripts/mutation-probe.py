@@ -6689,8 +6689,8 @@ MUTATION_SPECS.extend(
         (
             "spawn-child-key-excludes-a-caller-key",
             "packages/core/src/child-tasks.ts",
-            "    if (callerKey !== undefined) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
-            "    if (callerKey === null) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey !== undefined) {\n      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey === null) {\n      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')\n",
             "a spawn given both keys silently drops the caller's",
         ),
         (
@@ -7032,8 +7032,8 @@ MUTATION_SPECS.extend(
         (
             "event-name-is-a-durable-string",
             "packages/core/src/child-tasks.ts",
-            "    return new EventName(requireDurableString(`${operation} eventName`, raw))\n",
-            "    return new EventName(raw) // MUTATION\n",
+            "    return new EventName(requireDurableString(`${operation} eventName`, raw), null)\n",
+            "    return new EventName(raw, null) // MUTATION\n",
             "an emit or an await with a NUL in its event name is stored as a shorter name on one dialect and reported as an outage on another",
         ),
         (
