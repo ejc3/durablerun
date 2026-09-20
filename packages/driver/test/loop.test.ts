@@ -180,6 +180,94 @@ describe('DriverLoop', () => {
     f.close()
   })
 
+  it('the watchdog aborts the launch it stops waiting for, and reads nothing the launcher answers after that', async () => {
+    const f = await fx('loop-abort')
+    await f.store.spawn(Q, 'job', '{}')
+    const signals: (AbortSignal | undefined)[] = []
+    const launcher = new FakeLauncher((_inv, options) => {
+      signals.push(options?.signal)
+      if (signals.length > 1) return LaunchOutcome.accepted()
+      // A transport that lets go when it is told to, and then says the launch was taken.
+      return new Promise<LaunchOutcome>((resolve) => {
+        options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
+          once: true,
+        })
+      })
+    })
+    const loop = new DriverLoop(
+      { store: f.store, launcher, ids: f.ids, clock: f.clock },
+      { ...OPTS, launchTimeoutSeconds: 5 },
+    )
+    const done = loop.run()
+    await until(() => signals.length === 1, 'first launch waiting')
+    expect(
+      signals[0]?.aborted,
+      'a launch inside its deadline carries a signal that has not fired',
+    ).toBe(false)
+    await f.advance(5_000)
+    await until(() => loop.stats.launchFailed === 1, 'timeout counted')
+    expect(signals[0]?.aborted, 'the launch the watchdog stopped waiting for is aborted').toBe(true)
+    // The answer that came after the abort was not read. It is a failed launch, as a
+    // timeout always was, and the run comes back through the lost-launch path.
+    expect(loop.stats.launched).toBe(0)
+    await f.advance(5_000)
+    await until(() => signals.length === 2, 'relaunch after recovery')
+    expect(signals[1]?.aborted).toBe(false)
+    await loop.stop()
+    await done
+    expect(
+      await (await import('@durablerun/conformance')).engineInvariantViolations(f.raw),
+    ).toEqual([])
+    f.close()
+  })
+
+  it('an aborted launch leaves the rows and the counters that an abandoned one leaves', async () => {
+    // One seed, so both runs mint the same ids. One launcher never hears the abort. The
+    // other lets go when it fires and then says the launch was taken.
+    const outcomeWhen = async (letsGo: boolean) => {
+      const f = await fx('loop-abort-same-outcome')
+      await f.store.spawn(Q, 'job', '{}')
+      let calls = 0
+      const launcher = new FakeLauncher((_inv, options) => {
+        calls++
+        if (calls > 1) return LaunchOutcome.accepted()
+        return new Promise<LaunchOutcome>((resolve) => {
+          if (!letsGo) return
+          options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
+            once: true,
+          })
+        })
+      })
+      const loop = new DriverLoop(
+        { store: f.store, launcher, ids: f.ids, clock: f.clock },
+        { ...OPTS, launchTimeoutSeconds: 5 },
+      )
+      const done = loop.run()
+      await until(() => calls === 1, 'first launch waiting')
+      await f.advance(5_000)
+      await until(() => loop.stats.launchFailed === 1, 'timeout counted')
+      await f.advance(5_000)
+      await until(() => calls === 2, 'relaunch after recovery')
+      await loop.stop()
+      await done
+      const [tasks, runs] = await f.raw.batch('t', [
+        { sql: 'SELECT * FROM tasks ORDER BY task_id', args: [] },
+        { sql: 'SELECT * FROM runs ORDER BY run_id', args: [] },
+      ])
+      f.close()
+      const { lastResult: _newest, ...counters } = loop.stats
+      return {
+        tasks: tasks?.rows.map((row) => ({ ...row })),
+        runs: runs?.rows.map((row) => ({ ...row })),
+        counters,
+      }
+    }
+    const abandoned = await outcomeWhen(false)
+    expect(abandoned.runs?.length).toBe(1)
+    expect(abandoned.counters).toMatchObject({ launchFailed: 1, launched: 1 })
+    expect(await outcomeWhen(true)).toEqual(abandoned)
+  })
+
   it('beats the registry row on its cadence', async () => {
     const f = await fx('loop-registry')
     const loop = new DriverLoop(
