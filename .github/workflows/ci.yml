@@ -338,38 +338,52 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
-              # Four kinds of code that the three store packages each held a copy of now exist once,
-              # and sixteen base entries follow their lines: the test id source into core's testing
-              # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
-              # and the admin's version read, versioned write and post-condition into core's
-              # schema-version.ts. Each is the mutant it was. The four that guard a lost bootstrap
-              # share the one line that now decides it for every dialect. A seventeenth entry stays in
-              # libSQL's store and changes its replacement only. Its mutant handed the ambient
-              # JSON.stringify a value from core's captured parser, which that file imported for the
-              # decoder that left, and now hands it the caller's headers. This tree registers no
-              # mutation the base predates, so nothing is exempted and that helper left the step.
+          def exempt(repaired, candidate, markers):
+              # Exempt verdict markers this tree registers and the base registry predates.
+              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(table) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              return repaired.replace(table, table + entries)
+          if digest == 'af258ef468ece177e4dfd63faa5f4134291d8f6437bcf03b0b9d61dc676f0dd4':
+              # The migration lock travels in the batch control, so three base entries follow
+              # their lines. Two bootstrap calls gained the control as a third argument and are
+              # laid out one argument to a line: libSQL's label and MySQL's one-statement list
+              # each stand on a line of their own now, and each entry is the mutant it was.
+              # PostgreSQL's lock on meta left the admin's statement list for the executor, which
+              # sends the same statement in the same place, so the mutant that removed the
+              # statement from the list now removes the executor's send. Eleven mutations are
+              # newer than the base, which has to exempt their markers.
               repaired = previous
               for name in (
-                  'test-token-source-monotonic',
-                  'test-token-source-valid-serial',
-                  'persisted-row-rejects-spread-descriptor',
-                  'claim-retry-captured-parser',
-                  'claim-headers-captured-parser',
-                  'retry-persisted-normalization',
-                  'schema-absence-is-typed',
-                  'schema-version-missing-result',
-                  'schema-version-extra-results',
-                  'schema-version-missing-row',
-                  'schema-version-extra-rows',
-                  'libsql-bootstrap-loss-forgiven',
-                  'libsql-bootstrap-failure-rethrown',
-                  'postgres-bootstrap-loss-forgiven',
-                  'mysql-bootstrap-loss-forgiven',
-                  'migration-postcondition-old-version',
-                  'spawn-headers-captured-serializer',
+                  'text-statement-list-holds-every-raw-batch',
+                  'postgres-migrator-locks-meta-before-its-sentinel',
+                  'mysql-bootstrap-is-one-statement',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
+              repaired = exempt(
+                  repaired,
+                  candidate,
+                  (
+                      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
+                      'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
+                      'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
+                      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
+                      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
+                      'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
+                      'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat',
+                      'mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved',
+                      'mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress',
+                      'mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before',
+                      'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
+                  ),
+              )
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

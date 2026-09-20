@@ -86,7 +86,10 @@ describe('a migration write', () => {
       },
     }
     await new LibsqlStoreAdmin(recording).migrate()
-    expect(controls).toEqual([
+    expect(
+      controls,
+      'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
+    ).toEqual([
       ['migrate:bootstrap', MIGRATION_WRITE],
       ...MIGRATIONS.map(({ version }) => [`migrate:v${version}`, MIGRATION_WRITE]),
     ])

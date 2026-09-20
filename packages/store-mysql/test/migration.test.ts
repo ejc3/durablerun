@@ -217,7 +217,9 @@ describe('a MySQL migrator that died inside its batch', () => {
     expect(outcomes.length).toBeGreaterThan(
       MIGRATIONS.reduce((count, { statements }) => count + statements.length + 1, 0),
     )
-    expect(outcomes).toEqual(expected)
+    expect(outcomes, 'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat').toEqual(
+      expected,
+    )
   }, 300_000)
 })
 
@@ -248,12 +250,15 @@ describe('a MySQL migrator that planned from a version that has since moved', ()
       }
       await new MysqlStoreAdmin(late).migrate()
       // An advance whose version is already past matches no row. It is not an error.
-      expect({
-        overtaken,
-        advancesMatched,
-        version: await db.admin.schemaVersion(),
-        schema: against(clean, await schemaOf(db)),
-      }).toEqual({
+      expect(
+        {
+          overtaken,
+          advancesMatched,
+          version: await db.admin.schemaVersion(),
+          schema: against(clean, await schemaOf(db)),
+        },
+        'mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before',
+      ).toEqual({
         overtaken: true,
         advancesMatched: MIGRATIONS.map(() => 0),
         version: CURRENT_SCHEMA_VERSION,
@@ -415,7 +420,10 @@ describe('a MySQL migrator beside one of the released build', () => {
         released,
         'SELECT COUNT(*) AS tables FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()',
       )
-      expect({ waiting, settled, tablesWrittenMeanwhile: Number(tables) }).toEqual({
+      expect(
+        { waiting, settled, tablesWrittenMeanwhile: Number(tables) },
+        'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
+      ).toEqual({
         waiting: 1,
         settled: 'still waiting',
         tablesWrittenMeanwhile: 0,

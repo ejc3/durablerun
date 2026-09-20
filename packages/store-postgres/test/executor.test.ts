@@ -521,11 +521,14 @@ describe('PgExecutor transactions', () => {
       )
     const refusal =
       outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
-    expect({
-      refusal,
-      sent: client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
-      connections: pool.connectCalls,
-    }).toEqual({
+    expect(
+      {
+        refusal,
+        sent: client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+        connections: pool.connectCalls,
+      },
+      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
       refusal: expect.stringContaining('a kind of a later build'),
       sent: [],
       connections: 0,

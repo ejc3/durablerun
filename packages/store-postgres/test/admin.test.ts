@@ -61,14 +61,17 @@ describe('PostgresStoreAdmin', () => {
       MIGRATIONS.map(({ version }) => `migrate:v${version}`),
     )
     // The bootstrap names no lock: PostgreSQL's migration lock is a lock on the table that
-    // the bootstrap is what creates.
+    // the bootstrap creates.
     expect(db.calls.find(({ label }) => label === 'migrate:bootstrap')?.control).toBeUndefined()
     for (const [index, call] of migrationCalls.entries()) {
       const migration = MIGRATIONS[index]
       // The control names the lock that makes a second migrator wait, which the executor
       // takes ahead of every statement. Then the sentinel, which comes before every
       // statement of the version, then the version's statements and nothing else.
-      expect(call?.control).toBe(MIGRATION_WRITE)
+      expect(
+        call?.control,
+        'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
+      ).toBe(MIGRATION_WRITE)
       expect(call?.statements).toHaveLength((migration?.statements.length ?? 0) + 2)
       expect(call?.statements[0]?.sql).toBe(
         `INSERT INTO meta (key, value) VALUES ('applied:v${migration?.version}', '1')`,

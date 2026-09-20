@@ -238,7 +238,10 @@ describe('MysqlExecutor transactions', () => {
       )
     const refusal =
       outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
-    expect({ refusal, sent: afterSessionSetup(connection) }).toEqual({
+    expect(
+      { refusal, sent: afterSessionSetup(connection) },
+      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
+    ).toEqual({
       refusal: expect.stringContaining('names no migration lock'),
       sent: [],
     })
@@ -260,7 +263,10 @@ describe('MysqlExecutor transactions', () => {
       )
     const refusal =
       outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
-    expect({ refusal, sent: connection.sent }).toEqual({
+    expect(
+      { refusal, sent: connection.sent },
+      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
       refusal: expect.stringContaining('a kind of a later build'),
       sent: [],
     })

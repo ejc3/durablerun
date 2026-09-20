@@ -79,7 +79,10 @@ describe('MysqlStoreAdmin', () => {
     expect(fresh?.statements).toEqual(batchFrom(0))
     // Every migration write names the migration lock in its control, the bootstrap too: the
     // lock is a name, which can be taken before the version table exists.
-    expect(db.calls.map(({ label, control }) => [label, control])).toEqual([
+    expect(
+      db.calls.map(({ label, control }) => [label, control]),
+      'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
+    ).toEqual([
       ['migrate:version', 'read'],
       ['migrate:bootstrap', MIGRATION_WRITE],
       ['migrate:version', 'read'],
@@ -140,15 +143,18 @@ describe('MysqlStoreAdmin', () => {
         .map(({ statements }) => statements[0]?.args[1])
       return { outcome, recorded: db.version, batchesPlannedFrom }
     }
-    expect({
-      anotherMigratorWasPartOfTheWayThrough: await migrating((db) => {
-        db.version = 3
-        throw lockWait
-      }),
-      nothingMoved: await migrating(() => {
-        throw lockWait
-      }),
-    }).toEqual({
+    expect(
+      {
+        anotherMigratorWasPartOfTheWayThrough: await migrating((db) => {
+          db.version = 3
+          throw lockWait
+        }),
+        nothingMoved: await migrating(() => {
+          throw lockWait
+        }),
+      },
+      'mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved',
+    ).toEqual({
       anotherMigratorWasPartOfTheWayThrough: {
         outcome: 'migrated',
         recorded: CURRENT_SCHEMA_VERSION,
@@ -169,7 +175,10 @@ describe('MysqlStoreAdmin', () => {
       return 'reports success and writes nothing'
     }
     const refusal = await new MysqlStoreAdmin(db).migrate().catch((error: unknown) => error)
-    expect(refusal).toBeInstanceOf(SchemaMismatchError)
+    expect(
+      refusal,
+      'mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress',
+    ).toBeInstanceOf(SchemaMismatchError)
     expect(arrivals).toBe(1)
   })
 
