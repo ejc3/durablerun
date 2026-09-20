@@ -20,7 +20,7 @@ import {
 } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { engineInvariantViolations } from '../src/invariants.js'
+import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 
 const stampBuilder = compileOnlyBuilder<Record<string, Record<string, unknown>>>()
 
@@ -1513,21 +1513,41 @@ describe('fence provenance', () => {
 
   it('an event row that holds SQL NULL is an invariant violation, whoever wrote it', async () => {
     // The schema refuses the write and the port never makes it, so the invariant library's
-    // condition can only be seen firing behind a schema that was tampered with. This is its
-    // positive control: a checker that no test has seen fire checks nothing.
+    // two conditions on a stored NULL can only be seen firing behind a schema that was
+    // tampered with. This is their positive control: a checker that no test has seen fire
+    // checks nothing. One event is an orphan, which only the row's own condition sees. The
+    // other is the event of a woken run that carries a payload, which the older condition
+    // of a wake sees too. They are told apart by condition, because the older one shares
+    // its name with two neighbours, and the next of them fires when it cannot.
     const f = await fixture()
     try {
       await exec(f.raw, 'DROP TRIGGER events_payload_not_null_insert')
+      for (const eventName of ['orphan', 'carried']) {
+        await exec(
+          f.raw,
+          `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+           VALUES (?, ?, NULL, ?)`,
+          [Q, eventName, NOW],
+        )
+      }
+      await insertTask(f.raw, { id: 'T', state: 'pending' })
+      await insertRun(f.raw, { id: 'R', taskId: 'T', state: 'pending', availableAtMs: NOW })
       await exec(
         f.raw,
-        `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-         VALUES (?, 'orphan', NULL, ?)`,
-        [Q, NOW],
+        `UPDATE runs SET wake_event = 'carried', event_payload = '{"carried":1}'
+         WHERE run_id = 'R'`,
       )
+      const fired = (await engineInvariantFindings(f.raw))
+        .map(({ conditionId, subject }) => `${conditionId} ${subject}`)
+        .sort()
       expect(
-        await engineInvariantViolations(f.raw),
+        fired,
         'mutation-verdict:behavior:event-payload-null-is-an-invariant-violation',
-      ).toEqual([`event-payload-null: events/${Q}/orphan`])
+      ).toEqual([
+        `event/payload-null events/${Q}/carried`,
+        `event/payload-null events/${Q}/orphan`,
+        'payload/stored-payload-null R',
+      ])
     } finally {
       await f.close()
     }

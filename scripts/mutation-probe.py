@@ -4319,6 +4319,17 @@ MUTATION_SPECS = [
         "no sim, scenario or fuzz walk reports an event row that holds SQL NULL",
     ),
     (
+        # The older condition of a stored NULL: a woken run carries a payload, and its event's
+        # stored payload is NULL. Every dialect's schema now refuses that state, so the poison
+        # matrix credits its witness as refused and no cell sees the arm fire. The mutant makes
+        # it unreachable, and the next arm then reports a different condition under the same name.
+        "stored-null-payload-under-a-wake-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "      else if (stored.payload === null) add('payload/stored-payload-null', runId)\n",
+        "      else if (stored.payload === undefined) add('payload/stored-payload-null', runId)\n",
+        "no checker reports a woken run that carries the payload of an event whose stored payload is SQL NULL",
+    ),
+    (
         "sdk-owned-retry-attempt",
         "packages/sdk/src/run-worker.ts",
         "    const taskControls = createTaskControlScope()\n"
@@ -10777,6 +10788,12 @@ VERDICTS = {
         "mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode",
     ),
     "event-payload-null-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
+    ),
+    "stored-null-payload-under-a-wake-is-an-invariant-violation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
@@ -19842,7 +19859,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1042:
+        if len(MUTATIONS) != 1043:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
