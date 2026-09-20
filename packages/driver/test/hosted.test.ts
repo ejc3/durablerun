@@ -1,6 +1,7 @@
 import {
   ChildAwaitRefusedError,
   type Clock,
+  IDENTIFIER_CHARACTERS,
   InvalidDurableStringError,
   PortRefusalError,
   SAGA_ROLLBACK_PREFIX,
@@ -11,6 +12,7 @@ import {
   parseTaskValueJson,
   systemClock,
 } from '@durablerun/core'
+import { withStoreOverrides } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -530,12 +532,9 @@ describe('hosted-alpha Web Request router', () => {
     }
     const f = await fixture('hosted-port-refusals', {
       wrapStore: (store) =>
-        new Proxy(store, {
-          get(target, property, receiver) {
-            if (property !== 'getTaskResult') return Reflect.get(target, property, receiver)
-            return async (_queue: string, taskId: string) => {
-              throw thrown[taskId] ?? new Error(`no error is registered for ${taskId}`)
-            }
+        withStoreOverrides(store, {
+          getTaskResult: async (_queue: string, taskId: string) => {
+            throw thrown[taskId] ?? new Error(`no error is registered for ${taskId}`)
           },
         }),
     })
@@ -568,7 +567,10 @@ describe('hosted-alpha Web Request router', () => {
         request(
           '/api/tasks',
           'POST',
-          JSON.stringify({ taskName: 'job', idempotencyKey: 'k'.repeat(256) }),
+          JSON.stringify({
+            taskName: 'job',
+            idempotencyKey: 'k'.repeat(IDENTIFIER_CHARACTERS + 1),
+          }),
         ),
       )
       const tick = await f.router.runTick()

@@ -360,7 +360,6 @@ export const materializeTaskDoneCas = defineStatement(
   'await-event materialize',
   (
     binds: AwaitingClaim & {
-      childTaskId: string
       eventName: EventName
       payloadJson: string
       /** The stamp the child's row carried when its outcome was read, or null. */
@@ -368,6 +367,12 @@ export const materializeTaskDoneCas = defineStatement(
       liveTask: SqlFragment
     },
   ) => {
+    // The child is the one the name carries. A caller's event names no task, and an
+    // insert keyed on a null task id would write nothing and say nothing.
+    const childTaskId = binds.eventName.taskId
+    if (childTaskId === null) {
+      throw new Error('await-event materialize records a completion event, and was given another')
+    }
     const eb = expressionBuilder<{ c: StoreTables['tasks'] }, 'c'>()
     const event = {
       queue: eb.ref('c.queue'),
@@ -384,7 +389,7 @@ export const materializeTaskDoneCas = defineStatement(
         treeBuilder
           .selectFrom('tasks as c')
           .select(selections)
-          .where('c.task_id', '=', binds.childTaskId)
+          .where('c.task_id', '=', childTaskId)
           .where('c.fence_stamp', 'is not distinct from', binds.childStamp)
           .where((where) =>
             where.not(

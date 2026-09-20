@@ -7,8 +7,9 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { TaskContext } from '../src/index.js'
+import { expectCleanRows } from './clean-rows.js'
 import { SAGA_DIALECTS, checkpointNames, drive, runNext } from './saga-harness.js'
-import { Q, expectCleanRows, registry } from './worker-harness.js'
+import { Q, registry } from './worker-harness.js'
 
 const NO_DELAY = { kind: 'fixed', baseSeconds: 0 } as const
 

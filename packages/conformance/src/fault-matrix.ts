@@ -528,15 +528,6 @@ async function assertEdgePostcondition(
 }
 
 /**
- * One matrix cell: run the canonical workload with the given fault armed
- * at the given label, then require (1) engine invariants clean, (2) the
- * claim bound held — no token ever owns more running rows than the limit
- * it asked for, (3) the system still makes progress afterward: a fresh
- * task can be driven to completion. strictSpecs means a workload that
- * fails to FIRE the armed label is itself an error — the workload's
- * coverage of the inventory is machine-checked, not assumed.
- */
-/**
  * What the rows a cell leaves violate: everything `engineHistoryViolations` names, less
  * one excusal. The workload ends one child through a simulated older build, and the
  * model allows what that leaves behind: specs/ChildTasks.tla's LegacyTerminal ends the
@@ -555,6 +546,15 @@ export async function matrixHistoryViolations(
   return (await engineHistoryViolations(raw)).filter((violation) => !excused.has(violation))
 }
 
+/**
+ * One matrix cell: run the canonical workload with the given fault armed
+ * at the given label, then require (1) the rows clean by every checker
+ * (`matrixHistoryViolations`), (2) the claim bound held — no token ever owns more running rows than the limit
+ * it asked for, (3) the system still makes progress afterward: a fresh
+ * task can be driven to completion. strictSpecs means a workload that
+ * fails to FIRE the armed label is itself an error — the workload's
+ * coverage of the inventory is machine-checked, not assumed.
+ */
 export async function runFaultMatrixCase(
   makeFixture: StoreFixtureFactory,
   label: string,

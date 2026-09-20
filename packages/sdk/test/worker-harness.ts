@@ -1,9 +1,6 @@
-import { engineHistoryViolations } from '@durablerun/conformance'
-import type { SqlExecutor } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
-import { expect } from 'vitest'
 import { type TaskHandler, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 export const Q = 'q'
@@ -20,11 +17,6 @@ export async function fx(seed: string) {
     clock.fire()
   }
   return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
-
-/** The rows a test leaves satisfy everything a history that the engine wrote must. */
-export async function expectCleanRows(f: { readonly raw: SqlExecutor }): Promise<void> {
-  expect(await engineHistoryViolations(f.raw)).toEqual([])
 }
 
 export function registry(entries: Record<string, TaskHandler>): TaskRegistry {

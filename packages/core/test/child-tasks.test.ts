@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   EventName,
   RunTaskMemo,
+  materializeTaskDoneCas,
+  sqlFragment,
   type TaskOutcome,
   childSpawnKey,
   decodeTaskOutcome,
@@ -65,6 +67,27 @@ describe('the completion event contract', () => {
       done: { value: '$task-done:t1', taskId: 't1', display: 'task t1' },
       awaited: { value: '$task-done:t1', taskId: 't1', display: 'task t1' },
     })
+  })
+
+  it('records a completion event only: the recording statement refuses a name that carries no task', () => {
+    const binds = {
+      queue: 'q',
+      taskId: 'parent',
+      runId: 'r1',
+      claimToken: 'tok',
+      taskOwnsRun: sqlFragment('t.task_id = r.task_id'),
+      payloadJson: '{"state":"completed","completedPayloadJson":"1"}',
+      childStamp: null,
+      liveTask: sqlFragment("t.state IN ('pending')"),
+    }
+    expect({
+      aCallersEvent: refusal(() =>
+        materializeTaskDoneCas({ ...binds, eventName: EventName.fromPort('emitEvent', 'paid') }),
+      ),
+      aCompletionEvent: refusal(() =>
+        materializeTaskDoneCas({ ...binds, eventName: EventName.taskDone('child') }),
+      ),
+    }).toEqual({ aCallersEvent: 'Error', aCompletionEvent: 'accepted' })
   })
 
   it('refuses an event name that is not a string as invalid input, not as a crash', () => {

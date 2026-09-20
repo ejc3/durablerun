@@ -6,7 +6,8 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type ChildTask, type TaskRegistry, runClaimedRun } from '../src/index.js'
-import { Q, claimAndRun, expectCleanRows, fx, invocationOf, registry } from './worker-harness.js'
+import { expectCleanRows } from './clean-rows.js'
+import { Q, claimAndRun, fx, invocationOf, registry } from './worker-harness.js'
 
 type Fixture = Awaited<ReturnType<typeof fx>>
 

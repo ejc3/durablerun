@@ -221,7 +221,6 @@ async function recordTaskDone(
     'materialize',
     materializeTaskDoneCas({
       ...awaiting,
-      childTaskId,
       eventName: name,
       payloadJson: encodeTaskOutcome(outcome),
       childStamp,
