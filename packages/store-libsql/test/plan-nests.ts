@@ -1,11 +1,11 @@
 /**
  * The loop nests of one statement's plan, read from `EXPLAIN QUERY PLAN`.
  *
- * The property: no step reads a protocol table once for each row of a backlog, and no step
- * reads a backlog once for each row of anything. A statement that breaks it costs what the
- * queue holds, not what the statement was handed: a task update that scans `tasks` and
- * probes its source run once for each task, a wake that walks the pending runs of a queue
- * and reads `tasks` once for each of them.
+ * The property: no step reads a table once for each row of a backlog, and no step reads a
+ * backlog once for each row of anything. A statement that breaks it costs what the queue
+ * holds, not what the statement was handed: a task update that scans `tasks` and probes its
+ * source run once for each task, a wake that walks the pending runs of a queue and reads
+ * `tasks` once for each of them.
  *
  * A plan is a tree. Under one select, the `SCAN` and `SEARCH` lines are its nested loops,
  * outermost first, and a `CORRELATED` subquery runs once for each row of the loops listed
@@ -16,9 +16,10 @@
  * bounded as the loops that made them.
  *
  * A plan carries no row counts, so a step's bound is what its constrained columns mean,
- * which the two lists below declare. The rule is then two lines over every nest:
- * a step that runs once for each row of another must be keyed, and the step it runs once
- * for each row of must be keyed or due.
+ * which the two lists below declare, whatever table or alias the step names. The rule is
+ * then two lines over every nest: a step that runs once for each row of another must be
+ * keyed, and the step it runs once for each row of must be keyed or due. `meta`, which
+ * holds the clock, is read by its key in a subquery of its own, so it joins no nest.
  *
  * A due range is bounded by the statement's LIMIT, which a plan never prints, and a plan
  * prints a range the same way whichever way it points: the leases that have expired and
@@ -31,10 +32,6 @@ export interface PlanRow {
   readonly parent: number
   readonly detail: string
 }
-
-/** The tables the engine's protocol lives in. `meta` holds the clock and the schema version. */
-const PROTOCOL_TABLES = ['tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers']
-const OTHER_TABLES = ['meta']
 
 /**
  * A column that names one entity: a task, a run, an event, an idempotency key, a driver.
@@ -57,10 +54,11 @@ const ENTITY_COLUMNS = [
 const DUE_COLUMNS = ['available_at_ms', 'claim_expires_at_ms', 'cancel_at_ms']
 
 /** `keyed` reads one entity's rows, `due` reads what is due in index order, `walk` a backlog. */
-type Reach = 'keyed' | 'due' | 'walk'
-const REACHES: readonly Reach[] = ['keyed', 'due', 'walk']
+const REACHES = ['keyed', 'due', 'walk'] as const
+type Reach = (typeof REACHES)[number]
+/** The widest reach among loops. No loop at all returns no more than one row. */
 const worst = (loops: readonly Loop[]): Reach =>
-  REACHES[Math.max(0, ...loops.map((loop) => REACHES.indexOf(loop.reach)))] ?? 'walk'
+  REACHES.findLast((reach) => loops.some((loop) => loop.reach === reach)) ?? 'keyed'
 
 /** One loop of a nest: a plan step, with how it bounds its rows. */
 interface Loop {
@@ -81,44 +79,23 @@ const BODY = /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/
 const SELECTS =
   /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY|(?:UNION|INTERSECT|EXCEPT)(?: ALL| USING TEMP B-TREE)?)$/
 const SORTS = /^USE TEMP B-TREE FOR /
-/** A word that may follow a table's name and is not its alias. */
-const NOT_AN_ALIAS =
-  'where set on inner left right cross join order group limit union values select using'
+const EQUALITY = /^([a-z_]+)=\?$/
+const RANGE = /^([a-z_]+)[<>]\?$/
 
-/** Every name the statement's text gives a table: the table's own, and each alias of it. */
-function tablesNamed(sql: string): Map<string, Set<string>> {
-  const named = new Map<string, Set<string>>()
-  // The alias never takes a keyword, so it cannot swallow the `join` that names the next table.
-  const declared = new RegExp(
-    `\\b(?:from|join|update|into)\\s+"?([a-z_]+)"?(?!\\s*\\()(?:\\s+(?:as\\s+)?(?!(?:${NOT_AN_ALIAS.replaceAll(' ', '|')})\\b)"?([a-z_]+)"?)?`,
-    'gi',
-  )
-  for (const [, table, alias] of sql.matchAll(declared)) {
-    if (!table || ![...PROTOCOL_TABLES, ...OTHER_TABLES].includes(table.toLowerCase())) continue
-    for (const name of [table, alias]) {
-      if (!name) continue
-      const tables = named.get(name.toLowerCase()) ?? new Set<string>()
-      named.set(name.toLowerCase(), tables.add(table.toLowerCase()))
-    }
-  }
-  return named
-}
-
-/** How a step's constraint list bounds it: `(queue=? AND state=? AND available_at_ms<?)`. */
+/** How a SEARCH's constraint list bounds it: `(queue=? AND state=? AND available_at_ms<?)`. */
 function reachOf(access: string): Reach {
   if (access.includes('AUTOMATIC')) return 'walk'
   const constraints = /\(([^()]*)\)$/.exec(access)?.[1]?.split(' AND ') ?? []
-  const column = (constraint: string, operator: RegExp) =>
-    new RegExp(`^([a-z_]+)${operator.source}\\?$`).exec(constraint)?.[1] ?? ''
-  if (constraints.some((c) => ENTITY_COLUMNS.includes(column(c, /=/)))) return 'keyed'
-  if (constraints.some((c) => DUE_COLUMNS.includes(column(c, /[<>]/)))) return 'due'
+  const columns = (shape: RegExp) => constraints.map((c) => shape.exec(c)?.[1] ?? '')
+  if (columns(EQUALITY).some((column) => ENTITY_COLUMNS.includes(column))) return 'keyed'
+  if (columns(RANGE).some((column) => DUE_COLUMNS.includes(column))) return 'due'
   return 'walk'
 }
 
 export interface NestReading {
   /**
-   * What is wrong with the nests, as sentences. A line or a name that cannot be read is a
-   * fault too: a plan this does not understand is not a plan it has passed.
+   * What is wrong with the nests, as sentences. A plan line that cannot be read is a fault
+   * too: a plan this does not understand is not a plan it has passed.
    */
   readonly faults: string[]
   /** Each due range that another step runs once for each row of. */
@@ -126,14 +103,37 @@ export interface NestReading {
 }
 
 /** The nests of one statement's plan, judged. */
-export function readNests(sql: string, rows: readonly PlanRow[]): NestReading {
+export function readNests(rows: readonly PlanRow[]): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
   for (const row of rows) nodes.get(row.parent)?.children.push(nodes.get(row.id) as Node)
-  const named = tablesNamed(sql)
   const bodies = new Map<string, Reach>()
   const faults: string[] = []
   const dueDrivers = new Set<string>()
+
+  /** The loop one SCAN or SEARCH line is, judged against the loops that drive it. */
+  function stepLoop(node: Node, step: RegExpExecArray, drivers: readonly Loop[]): Loop {
+    const [, kind, name = '', access = ''] = step
+    if (node.children.length > 0) faults.push(`cannot read what is under: ${node.detail}`)
+    // A table-valued function over one value of the row that drives it, such as `json_each`:
+    // no table is read, and as a driver its rows are bounded by no key.
+    if (access.startsWith('VIRTUAL TABLE')) return { detail: node.detail, reach: 'walk' }
+    // The rows a body made, as bounded as the loops that made them.
+    const made = bodies.get(name)
+    if (made !== undefined) return { detail: node.detail, reach: made }
+    const loop: Loop = { detail: node.detail, reach: kind === 'SCAN' ? 'walk' : reachOf(access) }
+    if (drivers.length > 0 && loop.reach !== 'keyed') {
+      const each = drivers.map((driver) => driver.detail).join(' and of ')
+      faults.push(`${loop.detail} :: is not keyed, and runs once for each row of ${each}`)
+    }
+    for (const driver of drivers) {
+      if (driver.reach === 'due') dueDrivers.add(driver.detail)
+      if (driver.reach === 'walk') {
+        faults.push(`${loop.detail} :: runs once for each row of a walk: ${driver.detail}`)
+      }
+    }
+    return loop
+  }
 
   /** The loops that make the rows of one select, each step judged against what drives it. */
   function loopsOf(children: readonly Node[], outer: readonly Loop[]): Loop[] {
@@ -151,32 +151,7 @@ export function readNests(sql: string, rows: readonly PlanRow[]): NestReading {
       if (node.detail === 'SCAN CONSTANT ROW') {
         loops.push({ detail: node.detail, reach: 'keyed' })
       } else if (step) {
-        const [, , name = '', access = ''] = step
-        const tables = named.get(name.toLowerCase())
-        const made = bodies.get(name)
-        if (node.children.length > 0) faults.push(`cannot read what is under: ${node.detail}`)
-        if (access.startsWith('VIRTUAL TABLE')) {
-          // A table-valued function over one value of the row that drives it, such as
-          // `json_each`: no table is read. As a driver its rows are not bounded by any key.
-          loops.push({ detail: node.detail, reach: 'walk' })
-        } else if (made !== undefined) {
-          loops.push({ detail: node.detail, reach: made })
-        } else if (tables === undefined) {
-          faults.push(`cannot name the table of: ${node.detail}`)
-        } else if (PROTOCOL_TABLES.some((table) => tables.has(table))) {
-          const loop = { detail: node.detail, reach: reachOf(access) }
-          if (drivers.length > 0 && loop.reach !== 'keyed') {
-            const rows = drivers.map((driver) => driver.detail).join(' and of ')
-            faults.push(`${loop.detail} :: is not keyed, and runs once for each row of ${rows}`)
-          }
-          for (const driver of drivers) {
-            if (driver.reach === 'due') dueDrivers.add(driver.detail)
-            if (driver.reach !== 'walk') continue
-            faults.push(`${loop.detail} :: runs once for each row of a walk: ${driver.detail}`)
-          }
-          loops.push(loop)
-        }
-        // What is left is a step over `meta` alone, the clock's one row: no nest's concern.
+        loops.push(stepLoop(node, step, drivers))
       } else if (node.detail === 'MULTI-INDEX OR') {
         // One loop over the rows any of its indexes finds. The legs are alternatives, so
         // none drives another, and the loop is as bounded as its widest leg.

@@ -45,8 +45,17 @@ async function plan(sql: string, args: (string | number)[] = []): Promise<string
  * Nothing failed, because no write had a plan pinned.
  */
 async function writePlan(sql: string, args: (string | number)[] = []): Promise<string> {
-  const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args })
-  return r.rows.map((row) => String(row.detail)).join('\n')
+  return (await planTree(sql, args)).map((row) => row.detail).join('\n')
+}
+
+/** The same plan as the tree it is: each row's id and its parent's, which the flat text drops. */
+async function planTree(sql: string, args: unknown[] = []): Promise<PlanRow[]> {
+  const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
+  return r.rows.map((row) => ({
+    id: Number(row.id),
+    parent: Number(row.parent),
+    detail: String(row.detail),
+  }))
 }
 
 /**
@@ -671,15 +680,19 @@ interface Shipped {
 }
 
 /**
- * Every statement the store sends, recovered from one scripted history of real operations,
- * so nothing planned below is a hand copy of what ships. The history reaches every batch in
- * every variant it compiles to, and what holds it to that is the corpus: a statement of
- * `corpus/libsql.json` that this history never sent fails the last block of this file. It
- * runs once for the file, because a plan needs a statement and not the rows it touched.
+ * Every statement the store sends, once each under the label that carried it, recovered
+ * from one scripted history of real operations, so nothing planned below is a hand copy of
+ * what ships. The history reaches every batch in every variant it compiles to, and what
+ * holds it to that is the corpus: a statement of `corpus/libsql.json` that this history
+ * never sent fails the last block of this file. It runs once for the file, because a plan
+ * needs a statement and one send's binds, not the rows it touched.
  */
-let shipped: Promise<Shipped[]> | undefined
-function shippedStatements(): Promise<Shipped[]> {
-  shipped ??= sendEveryStatement()
+const keyOf = (label: string, sql: string) => `${label}\n${sql}`
+let shipped: Promise<Map<string, Shipped>> | undefined
+function shippedStatements(): Promise<Map<string, Shipped>> {
+  shipped ??= sendEveryStatement().then(
+    (sent) => new Map(sent.map((st) => [keyOf(st.label, st.sql), st])),
+  )
   return shipped
 }
 
@@ -841,7 +854,7 @@ describe('every write a store ships, by the table it writes', () => {
    * UPDATE and DELETE of every label is planned, so a new follow-on is read too.
    */
   const shippedWrites = async () =>
-    (await shippedStatements()).filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
+    [...(await shippedStatements()).values()].filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
 
   /** The access a write is allowed to reach each table by: a seek by the key it was handed. */
   const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
@@ -916,9 +929,10 @@ describe('every statement a store ships, by the nests of its plan', () => {
    * the table each write writes. Neither plans a read or the SELECT of an INSERT, and
    * neither sees a step that runs once for each row of a backlog unless it spells the one
    * failure it was written against. Here every statement of every batch is planned and its
-   * loop nests are judged by `nestFaults`, whose header says what a nest is and what the
-   * rule is. "Every" is held by the two checked inventories of what a store sends: the
-   * generated corpus of statement trees, and the list of the statements that stay text.
+   * loop nests are judged by `readNests` in `plan-nests.ts`, whose header says what a nest
+   * is and what the rule is. "Every" is held by the two checked inventories of what a store
+   * sends: the generated corpus of statement trees, and the list of the statements that
+   * stay text.
    */
   const CORPUS: Record<string, Record<string, { sql: string }[]>> = JSON.parse(
     readFileSync(new URL('../../conformance/corpus/libsql.json', import.meta.url), 'utf8'),
@@ -940,13 +954,16 @@ describe('every statement a store ships, by the nests of its plan', () => {
   }
 
   /**
-   * Statements this block excuses, by name, each with where the open question is recorded.
-   * A claim finds the runs it took by queue and state, so whatever it then reads by key it
-   * reads once for each running run of its queue, as far as a plan can show.
+   * Statements this block excuses, by name, each for the one fault it names and with where
+   * the open question is recorded. A claim finds the runs it took by queue and state, so
+   * whatever it then reads by key it reads once for each running run of its queue, as far
+   * as a plan can show. Any other fault in the same statement still fails.
    */
-  const EXCUSED_NESTS: Readonly<Record<string, string>> = {
-    'claim/claimed#1': 'BUILD.md PR3.14b, the claim finds the runs it took by queue and state',
-    'claim/claimed#2': 'BUILD.md PR3.14b, the claim finds the runs it took by queue and state',
+  const THE_CLAIMS_WALK =
+    / :: runs once for each row of a walk: SEARCH f USING INDEX runs_poll \(queue=\? AND state=\?\)$/
+  const EXCUSED_NESTS: Readonly<Record<string, { fault: RegExp; because: string }>> = {
+    'claim/claimed#1': { fault: THE_CLAIMS_WALK, because: 'BUILD.md PR3.14b, the claim reads' },
+    'claim/claimed#2': { fault: THE_CLAIMS_WALK, because: 'BUILD.md PR3.14b, the claim reads' },
   }
 
   /**
@@ -963,38 +980,28 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'sweep:scan/read#1': 'it takes the leases that have expired, under the LIMIT of a sweep',
   }
 
-  /** The plan as the tree it is: each row's id and its parent's, which the flat text drops. */
-  async function planTree(sql: string, args: unknown[]): Promise<PlanRow[]> {
-    const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
-    return r.rows.map((row) => ({
-      id: Number(row.id),
-      parent: Number(row.parent),
-      detail: String(row.detail),
-    }))
-  }
-
   /** A statement's name: where the corpus holds it, or for text its place in its batch. */
   const placeInCorpus = new Map<string, string>()
   for (const [label, variants] of Object.entries(CORPUS)) {
     for (const [variant, signature] of Object.entries(variants)) {
       for (const [i, st] of signature.entries()) {
-        const key = `${label}\n${st.sql}`
-        if (!placeInCorpus.has(key)) placeInCorpus.set(key, `${label}/${variant}#${i}`)
+        if (!placeInCorpus.has(keyOf(label, st.sql))) {
+          placeInCorpus.set(keyOf(label, st.sql), `${label}/${variant}#${i}`)
+        }
       }
     }
   }
   const nameOf = (st: Shipped) =>
-    placeInCorpus.get(`${st.label}\n${st.sql}`) ?? `${st.label}#${st.index}`
+    placeInCorpus.get(keyOf(st.label, st.sql)) ?? `${st.label}#${st.index}`
 
   it("sends every statement of the corpus, and every text statement that is the store's", async () => {
     const sent = await shippedStatements()
-    const sentAs = new Set(sent.map((st) => `${st.label}\n${st.sql}`))
     // Every statement of every variant, by its text: a label reached through one of its
     // variants would leave the statements of the other unplanned.
-    expect(
-      [...placeInCorpus].filter(([key]) => !sentAs.has(key)).map(([, place]) => place),
-    ).toEqual([])
-    const labels = new Set(sent.map((st) => st.label))
+    expect([...placeInCorpus].filter(([key]) => !sent.has(key)).map(([, place]) => place)).toEqual(
+      [],
+    )
+    const labels = new Set([...sent.values()].map((st) => st.label))
     expect(
       TEXT_STATEMENTS.filter((label) => !labels.has(label) && !(label in NOT_THE_STORES)),
     ).toEqual([])
@@ -1007,17 +1014,17 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('reads no table once for each row of a backlog, but for the claim it names', async () => {
-    const sent = await shippedStatements()
-    const distinct = [...new Map(sent.map((st) => [`${st.label}\n${st.sql}`, st])).values()]
     const faults: string[] = []
     const excused = new Set<string>()
     const drivenByADueRange = new Set<string>()
-    for (const st of distinct) {
-      const reading = readNests(st.sql, await planTree(st.sql, st.args))
-      if (reading.dueDrivers.length > 0) drivenByADueRange.add(nameOf(st))
-      if (reading.faults.length === 0) continue
-      if (nameOf(st) in EXCUSED_NESTS) excused.add(nameOf(st))
-      else faults.push(...reading.faults.map((fault) => `[${nameOf(st)}] ${fault}`))
+    for (const st of (await shippedStatements()).values()) {
+      const name = nameOf(st)
+      const reading = readNests(await planTree(st.sql, st.args))
+      if (reading.dueDrivers.length > 0) drivenByADueRange.add(name)
+      const excuse = EXCUSED_NESTS[name]
+      const unexcused = reading.faults.filter((fault) => !excuse?.fault.test(fault))
+      if (unexcused.length < reading.faults.length) excused.add(name)
+      faults.push(...unexcused.map((fault) => `[${name}] ${fault}`))
     }
     // Compared as text, so a failure prints every fault and not a count of them.
     expect(faults.join('\n'), 'mutation-verdict:behavior:plan-nests').toBe('')
@@ -1031,7 +1038,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
     // No statement here is run, so each bind is a placeholder.
     const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
-    const read = async (sql: string) => readNests(sql, await planTree(sql, placeholders(sql)))
+    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
     const correlated = await read(
@@ -1094,10 +1101,12 @@ describe('every statement a store ships, by the nests of its plan', () => {
     // A statement inside a trigger is never planned. The driver's heartbeat inserts into a
     // view whose trigger deletes the expired rows of `drivers`, by a scan, and its plan does
     // not name the table.
-    const beat = (await shippedStatements()).find((st) => st.label === 'driver-heartbeat')
+    const beat = [...(await shippedStatements()).values()].find(
+      (st) => st.label === 'driver-heartbeat',
+    )
     if (!beat) throw new Error('the history sent no driver heartbeat')
     const beatPlan = await planTree(beat.sql, beat.args)
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
-    expect(readNests(beat.sql, beatPlan)).toEqual({ faults: [], dueDrivers: [] })
+    expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
   })
 })
