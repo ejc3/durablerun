@@ -43,6 +43,45 @@ const bentFixture: StoreFixtureFactory = async (seed, options) => {
   return { ...f, storeOver: (db, buggify) => f.storeOver(recordsAnotherTasksEvent(db), buggify) }
 }
 
+/**
+ * An executor that leaves the completion event out of one task's `complete`, and out of
+ * no other batch. The task is found by its name when the batch arrives.
+ */
+function losesTheEventOfOneComplete(db: SqlExecutor, taskName: string): SqlExecutor {
+  return {
+    batch: async (label, statements, control) => {
+      if (label !== 'complete') return db.batch(label, statements, control)
+      const [named] = await db.batch(
+        't',
+        [{ sql: 'SELECT task_id FROM tasks WHERE task_name = ?', args: [taskName] }],
+        'read',
+      )
+      const event = `${COMPLETION_EVENT}${String(named?.rows[0]?.task_id)}`
+      return db.batch(
+        label,
+        statements.map((statement) =>
+          /^insert into ["`]events["`]/i.test(statement.sql) && statement.args.includes(event)
+            ? { ...statement, sql: 'SELECT 1 WHERE 1 = 0', args: [] }
+            : statement,
+        ),
+        control,
+      )
+    },
+  }
+}
+
+/** A fixture whose every store, the one the probe loop drives included, loses that event. */
+function losingTheEventOf(taskName: string): StoreFixtureFactory {
+  return async (seed, options) => {
+    const f = await makeLibsqlFixture(seed, options)
+    return {
+      ...f,
+      store: f.storeOver(losesTheEventOfOneComplete(f.raw, taskName)),
+      storeOver: (db, buggify) => f.storeOver(losesTheEventOfOneComplete(db, taskName), buggify),
+    }
+  }
+}
+
 /** What a cell left behind, judged when the cell closes its fixture. */
 type Judged = { olderBuildsChild: string; nothingExcused: string[]; childExcused: string[] }
 
@@ -134,5 +173,22 @@ describe('the fault matrix judges the rows a cell leaves by every checker', () =
       namesTheExcusedChild: false,
       othersStillReported: true,
     })
+  })
+
+  // The older build's cancel dies before it runs, so the child it would have ended stays
+  // live, no await of it answers, and the probe loop later ends it with an ordinary
+  // `complete`. That batch owes the child its completion event like any other.
+  it('holds the child to the rule in a cell where the older build never ended it', async () => {
+    const lost = judgedAtClose(losingTheEventOf('ended-child'))
+    const outcome = await cellOutcome(lost.makeFixture, 'cancel-task', 'crash-before')
+    const another = await cellOutcome(losingTheEventOf('child'), 'cancel-task', 'crash-before')
+    expect({
+      theOlderBuildsChild: outcome.includes(missingCompletionEvent(lost.judged().olderBuildsChild))
+        ? 'rejected, naming the child'
+        : outcome,
+      anotherTask: another.includes('terminal-task-without-completion-event')
+        ? 'rejected'
+        : another,
+    }).toEqual({ theOlderBuildsChild: 'rejected, naming the child', anotherTask: 'rejected' })
   })
 })
