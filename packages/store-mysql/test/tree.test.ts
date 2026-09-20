@@ -288,6 +288,33 @@ describe('MySQL spelling of the shared statement trees', () => {
     )
   })
 
+  it('refuses a delete that no subquery keys', () => {
+    // A DELETE reads its subquery's table with shared locks, so the rule for a delete's keys
+    // has to reach every delete a tree sends. One keyed in a way the compiler does not
+    // read, or not keyed at all, is refused, where it used to compile as the server
+    // would plan it.
+    const refused = 'a delete of waits is keyed by no subquery'
+    expect(
+      () => compiled(treeBuilder.deleteFrom('waits').where('status', '=', 'waiting')),
+      'mutation-verdict:construction:mysql-unkeyed-delete-refused',
+    ).toThrow(refused)
+    expect(() =>
+      compiled(
+        treeBuilder
+          .deleteFrom('waits')
+          .where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom('runs as f')
+                .select('f.run_id')
+                .whereRef('f.run_id', '=', 'waits.run_id')
+                .where('f.fence_stamp', '=', 'stamp'),
+            ),
+          ),
+      ),
+    ).toThrow(refused)
+  })
+
   it('refuses a delete whose keys are not fenced on the stamp', () => {
     expect(
       () =>
