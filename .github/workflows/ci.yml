@@ -326,17 +326,13 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '2ebefc182f8944fc304c6366c5f75acec1c24ebe723e92556a06f110749b6b57':
-              # The poison matrix's target profiles for the arms that name their target
-              # register one mutation each, owned by a generated cell of the profile. The
-              # base predates them, so their verdict markers are exempted. No base entry is
-              # re-aimed, because this tree changes no line a base mutation quotes.
+          if digest == 'd7d085bc42e168e15c6203ab9f8e5a12904a114a5a942b0a51baebd89c8c1d0e':
+              # The plan check over every statement the libSQL store ships registers one
+              # mutation, a read that joins its task by the queue alone, and the base
+              # predates its verdict marker, which is exempted. No base entry is re-aimed,
+              # because this tree changes no line a base mutation quotes.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound',
-                  'mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission',
-                  'mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound',
-                  'mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal',
-                  'mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal',
+                  'mutation-verdict:behavior:plan-nests',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
