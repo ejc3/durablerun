@@ -19,6 +19,7 @@ import {
   OUTSIDE_THE_DOMAIN,
   PAST_THE_WIDTH,
   PORT_STRING_PLACES,
+  PORT_STRING_PROBLEMS,
   type PortStringPlace,
 } from './port-strings.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
@@ -72,6 +73,35 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
     message: String(outcome),
     sent: reached.length > 0,
   }
+}
+
+/** Every place the port does not hold as an identifier, written here by hand. */
+const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
+  'spawn(taskName)': 'durable',
+  'spawn(paramsJson)': 'payload',
+  'spawn(childOf.claimToken)': 'durable',
+  'spawn(headers)': 'payload',
+  'claim(claimToken)': 'durable',
+  'activate(claimToken)': 'durable',
+  'claimedTaskName(claimToken)': 'durable',
+  'deferLaunch(claimToken)': 'durable',
+  'heartbeat(claimToken)': 'durable',
+  'reschedule(claimToken)': 'durable',
+  'complete(claimToken)': 'durable',
+  'complete(resultJson)': 'payload',
+  'suspendRun(claimToken)': 'durable',
+  'suspendRun(checkpoint.stateJson)': 'payload',
+  'fail(claimToken)': 'durable',
+  'fail(failureJson)': 'payload',
+  'failRollback(claimToken)': 'durable',
+  'failRollback(failureJson)': 'payload',
+  'failRollback(rollbackTry.stateJson)': 'payload',
+  'expireLeaseNow(claimToken)': 'durable',
+  'setCheckpoint(claimToken)': 'durable',
+  'setCheckpoint(stateJson)': 'payload',
+  'emitEvent(payloadJson)': 'payload',
+  'awaitEvent(claimToken)': 'durable',
+  'awaitTaskDone(claimToken)': 'durable',
 }
 
 export function identifierBoundConformance(
@@ -141,37 +171,20 @@ export function identifierBoundConformance(
           rule,
         ]),
       )
+      // First, that the places could be generated at all: a table that names one string at
+      // two arguments folds two places into one, and the written list would not see it.
       expect(
-        notAnIdentifier,
+        { problems: PORT_STRING_PROBLEMS, notAnIdentifier },
         'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
-      ).toEqual({
-        'spawn(taskName)': 'durable',
-        'spawn(paramsJson)': 'payload',
-        'spawn(childOf.claimToken)': 'durable',
-        'spawn(headers)': 'payload',
-        'claim(claimToken)': 'durable',
-        'activate(claimToken)': 'durable',
-        'claimedTaskName(claimToken)': 'durable',
-        'deferLaunch(claimToken)': 'durable',
-        'heartbeat(claimToken)': 'durable',
-        'reschedule(claimToken)': 'durable',
-        'complete(claimToken)': 'durable',
-        'complete(resultJson)': 'payload',
-        'suspendRun(claimToken)': 'durable',
-        'suspendRun(checkpoint.stateJson)': 'payload',
-        'fail(claimToken)': 'durable',
-        'fail(failureJson)': 'payload',
-        'failRollback(claimToken)': 'durable',
-        'failRollback(failureJson)': 'payload',
-        'failRollback(rollbackTry.stateJson)': 'payload',
-        'expireLeaseNow(claimToken)': 'durable',
-        'setCheckpoint(claimToken)': 'durable',
-        'setCheckpoint(stateJson)': 'payload',
-        'emitEvent(payloadJson)': 'payload',
-        'awaitEvent(claimToken)': 'durable',
-        'awaitTaskDone(claimToken)': 'durable',
-      })
-      expect(PORT_STRING_PLACES).toHaveLength(82)
+      ).toEqual({ problems: [], notAnIdentifier: NOT_AN_IDENTIFIER })
+      // The counts are written here too. The list above is of what is NOT an identifier,
+      // so a held place that vanished would leave it as it is: these move when one does.
+      expect({
+        places: PORT_STRING_PLACES.length,
+        identifiers: IDENTIFIER_PLACES.length,
+        held: HELD_PLACES.length,
+        distinct: new Set(PORT_STRING_PLACES.map(({ place }) => place)).size,
+      }).toEqual({ places: 82, identifiers: 57, held: 73, distinct: 82 })
       // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
       const { store } = storeOverRecorder(f)
       const payloads = PORT_STRING_PLACES.filter(({ rule }) => rule === 'payload')

@@ -108,6 +108,13 @@ const valueAt = (value: unknown, path: Path): unknown =>
     value,
   )
 
+/**
+ * What is wrong with the table, or with the calls here, found while the places were
+ * generated. It is data and not a throw, so that a table that is wrong fails a case by its
+ * name, with its reason, and does not stop the whole suite from loading.
+ */
+const problems: string[] = []
+
 function generatePlaces(): readonly PortStringPlace[] {
   const places: PortStringPlace[] = []
   for (const method of Object.keys(PORT_STRINGS) as PortMethod[]) {
@@ -125,12 +132,21 @@ function generatePlaces(): readonly PortStringPlace[] {
       ),
     )
     if (unnamed.length > 0) {
-      throw new Error(`${method}: the table names no string at ${JSON.stringify(unnamed)}`)
+      problems.push(`${method}: the table names no string at ${JSON.stringify(unnamed)}`)
+    }
+    // A place is known by its method and its name, so a method names each string once. A
+    // table that gave two arguments one name would fold two places into one, and the one
+    // that vanished would be asked nothing: an identifier renamed to a payload's name that
+    // its method already has is exactly that.
+    const twice = named.map(({ name }) => name).filter((name, at, all) => all.indexOf(name) !== at)
+    if (twice.length > 0) {
+      problems.push(`${method}: the table names ${JSON.stringify(twice)} at more than one argument`)
     }
     for (const { name, path } of named) {
       const args = examples.find((example) => valueAt(example, path) !== undefined)
       if (args === undefined) {
-        throw new Error(`${method}(${name}): no example call passes this string`)
+        problems.push(`${method}(${name}): no example call passes this string`)
+        continue
       }
       places.push({
         place: `${method}(${name})`,
@@ -150,6 +166,9 @@ function generatePlaces(): readonly PortStringPlace[] {
 
 /** Every place a string enters the port, in the table's order. */
 export const PORT_STRING_PLACES: readonly PortStringPlace[] = generatePlaces()
+
+/** What generating the places found wrong. The identifier surface holds it empty. */
+export const PORT_STRING_PROBLEMS: readonly string[] = problems
 
 /** The places the port holds to a rule: every place but a payload's. */
 export const HELD_PLACES = PORT_STRING_PLACES.filter(({ rule }) => rule !== 'payload')
