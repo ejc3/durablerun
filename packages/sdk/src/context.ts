@@ -434,12 +434,16 @@ export class ReplayContext implements TaskContext {
    * replaying pass (which skips the memoized step body) never sees, so a
    * later same-named op replays the wrong checkpoint or consumes the wrong
    * wake. Reentrancy-proof by construction, not by remembering to check.
+   *
+   * It refuses the same way a call made beside a step that has not settled, as under
+   * `Promise.all`: on the pass that runs the step, and on a pass that replays it
+   * (`replayingStep`), so that such a group ends the same whichever pass meets it.
    */
   private enterDurableOp(what: string): void {
     this.assertLeaseHeld()
     if (this.inStep || this.replayingStep) {
       throw new FatalTaskError(
-        `${what} called inside a step — durable operations cannot nest inside a step`,
+        `${what} called while a step is pending: a durable call cannot be made inside a step, or beside one that has not settled`,
       )
     }
   }
@@ -519,11 +523,8 @@ export class ReplayContext implements TaskContext {
    */
   private async replayedStepSettles(): Promise<void> {
     this.replayingStep = true
-    try {
-      await null
-    } finally {
-      this.replayingStep = false
-    }
+    await null
+    this.replayingStep = false
   }
 
   /**

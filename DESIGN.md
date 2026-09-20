@@ -589,8 +589,8 @@ One invocation executes one claimed run to its next suspension point:
   schedule. The order the calls are answered in, how often a step's body ran,
   and the order the rows were written are no part of that.
   - A durable call made while a step is pending is refused, and the refusal
-    fails the task for good: a `FatalTaskError` that names the call and says it
-    was made inside a step. A step is pending while its body runs, while a
+    fails the task for good: a `FatalTaskError` that names the call and says a
+    step was pending. A step is pending while its body runs, while a
     registered step writes its start marker, and, on a pass that replays the
     step from its memo, until the replayed step settles one turn of the
     microtask queue after it was called. So a group that starts a step ahead of
