@@ -380,6 +380,19 @@ const injectedFault = (failAtCall: number): Error =>
     ? new PermanentStoreError('injected permanent answer')
     : new StoreUnavailableError('injected outage')
 
+/**
+ * Which kinds of fault each store method has met, over every run of this file. A sweep is
+ * only evidence about a method for the kinds of fault that landed on it, and the last case
+ * of the file holds the sweeps to that: every method they failed met both kinds.
+ */
+const faultsMet = new Map<string, Set<string>>()
+const meetsFault = (method: string, fault: Error): Error => {
+  const kinds = faultsMet.get(method) ?? new Set<string>()
+  kinds.add(fault.name)
+  faultsMet.set(method, kinds)
+  return fault
+}
+
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
   /** Every generated program completes. A name past its room fails its task for good. */
@@ -446,7 +459,7 @@ async function runProgram(
           watch?.trace.push(String(prop))
           if (calls === failAtCall) {
             watch?.trace.push(INJECTED_OUTAGE)
-            return Promise.reject(injectedFault(failAtCall))
+            return Promise.reject(meetsFault(String(prop), injectedFault(failAtCall)))
           }
           if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
           try {
@@ -1021,7 +1034,9 @@ async function runSagaProgram(
         if (typeof value !== 'function' || prop === 'constructor') return value
         return (...args: unknown[]) => {
           calls++
-          if (calls === failAtCall) return Promise.reject(injectedFault(failAtCall))
+          if (calls === failAtCall) {
+            return Promise.reject(meetsFault(String(prop), injectedFault(failAtCall)))
+          }
           return (value as (...a: unknown[]) => unknown).apply(target, args)
         }
       },
@@ -1166,4 +1181,19 @@ describe('saga replay equivalence (generated programs x fault points across the 
       }
     }, 120_000)
   }
+})
+
+describe('the fault sweeps of this file, taken together (a fault that never lands proves nothing)', () => {
+  it('failed every store method they failed at all with an outage and with a permanent answer', () => {
+    // This case reads what the cases above did, so it is the last one, and a run that
+    // filters them out fails it: a floor met by nothing is not met.
+    const lacking = [...faultsMet]
+      .filter(([, kinds]) => kinds.size < 2)
+      .map(([method, kinds]) => `${method} met only ${[...kinds].sort().join(', ')}`)
+      .sort()
+    expect({ methodsFailed: faultsMet.size >= 12, lacking }).toEqual({
+      methodsFailed: true,
+      lacking: [],
+    })
+  })
 })
