@@ -279,7 +279,7 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch of more than one statement sees one consistent snapshot, and cannot write. */
+/** A read batch sees one consistent snapshot and cannot write, unless it is one read sent alone (`sentAlone`). */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
@@ -313,10 +313,11 @@ async function acquireNamedLock(connection: PoolConnection, lock: LockCoordinate
 }
 
 /**
- * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, where
- * any other excess is error 1406. The cut value is a different identifier, so a write that
- * was cut is refused like one that did not fit, and its transaction rolls back. The server
- * reports a warning count with every result, so this costs a round trip only when there
+ * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, and was
+ * measured to cut a trailing tab and a trailing line break the same way under this session's
+ * mode, where any other excess is error 1406. The cut value is a different identifier, so a
+ * write that was cut is refused like one that did not fit, and its transaction rolls back. The
+ * server reports a warning count with every result, so this costs a round trip only when there
  * is something to read.
  */
 async function refuseWriteCutToFit(
@@ -346,6 +347,14 @@ async function refuseWriteCutToFit(
  * statement's text begins shows nothing, because a text that begins with SELECT can still
  * call what writes. A read sent as text therefore keeps the read-only transaction, where
  * the server refuses every write.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, which takes one statement in a text unless the
+ * connection asked for more, and a pool this executor opens never does
+ * (`multipleStatements: false`). A pool handed to `fromPool` that does is outside what was
+ * checked. A fragment that CALLS a function that writes is refused by nothing once the
+ * read goes alone. No read of the stores calls one.
  *
  * What the transaction gave such a read still holds. One statement reads through one view
  * under READ COMMITTED, its subqueries included. The schema-version read has to be such a
@@ -529,6 +538,9 @@ export class MysqlExecutor implements SqlExecutor {
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    // Decided here, beside the copy and before any wait: what the caller's array holds
+    // after a wait is not what was copied. The brand is on the caller's own object.
+    const alone = sentAlone(statements, mode, schemaVersionRead)
     const lock: LockCoordinates | null =
       transactionLock !== undefined
         ? lockCoordinates(transactionLock)
@@ -552,7 +564,6 @@ export class MysqlExecutor implements SqlExecutor {
         await connection.query(SESSION_SETUP)
         this.configured.add(physical)
       }
-      const alone = sentAlone(statements, mode, schemaVersionRead)
       return await this.transact(connection, prepared, mode, lock, alone)
     } catch (error) {
       discard = !(error instanceof MysqlResultContractError) && errorNumber(error) === undefined

@@ -20,6 +20,7 @@ import {
   Pool,
   type PoolClient,
   type PoolConfig,
+  type QueryConfig,
   type QueryResult,
 } from 'pg'
 import { compilePostgresPlaceholders } from './placeholders.js'
@@ -222,6 +223,18 @@ const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
 
 /**
+ * One statement for the extended query protocol: parse, bind, execute and sync, sent in one
+ * flush, so it costs the round trip the simple protocol costs. The server refuses text
+ * that holds more than one statement there. The driver's types do not name the option.
+ */
+function oneStatement(
+  text: string,
+  values: readonly unknown[],
+): QueryConfig & { readonly queryMode: 'extended' } {
+  return { text, values: [...values], queryMode: 'extended' }
+}
+
+/**
  * Whether a batch is sent as its one statement alone, outside a transaction block, where
  * PostgreSQL runs it in a transaction of its own, in one round trip where a read batch's
  * transaction cost three.
@@ -233,6 +246,13 @@ const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED REA
  * sent as text therefore keeps the read-only transaction, where the server refuses every
  * write. The schema-version read is text, so it keeps its transaction and the READ
  * COMMITTED it needs.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, because a read sent alone goes through the extended
+ * protocol (`oneStatement`), which takes one statement. A fragment that CALLS a function
+ * that writes is refused by nothing once the read goes alone. No read of the stores calls
+ * one.
  *
  * What the transaction gave such a read still holds: one statement reads through one
  * snapshot, its subqueries included, at any isolation level. It runs at the session's
@@ -401,10 +421,16 @@ export class PgExecutor implements SqlExecutor {
               continue
             }
             activeStatementIndex = statementIndex
-            const result = await client.query<Record<string, unknown>>(
-              statement.sql,
-              statement.args,
-            )
+            // A read sent alone goes through the extended protocol, which takes one
+            // statement and refuses a second whatever the text holds. The simple protocol,
+            // which the driver uses for a statement with no bind, runs every statement of
+            // its text, and a read core built can hold a store's fragment that core reads
+            // for clocks and comments only.
+            const result = alone
+              ? await client.query<Record<string, unknown>>(
+                  oneStatement(statement.sql, statement.args),
+                )
+              : await client.query<Record<string, unknown>>(statement.sql, statement.args)
             activeStatementIndex = null
             results.push(normalizeResult(result))
           }

@@ -6981,6 +6981,13 @@ MUTATION_SPECS.extend(
             "a read sent as text runs alone, outside the read-only transaction, so a write the text holds is run",
         ),
         (
+            "postgres-lone-read-is-one-statement",
+            "packages/store-postgres/src/executor.ts",
+            "  return { text, values: [...values], queryMode: 'extended' }\n",
+            "  return { text, values: [...values] } as never // MUTATION: the driver chooses the protocol\n",
+            "a read sent alone with no bind goes through the simple protocol, which runs every statement of its text, so a second statement in a store's fragment is run",
+        ),
+        (
             "postgres-event-lock-is-advisory",
             "packages/store-postgres/src/executor.ts",
             "           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text\n",
@@ -7372,6 +7379,13 @@ MUTATION_SPECS.extend(
             "  return schemaVersionRead || isTreeBuiltRead(statement)\n",
             "  return true // MUTATION\n",
             "a write sent as a read in text runs alone under autocommit, where the read-only transaction refused it",
+        ),
+        (
+            "mysql-lone-send-is-decided-with-the-copy",
+            "packages/store-mysql/src/executor.ts",
+            "      return await this.transact(connection, prepared, mode, lock, alone)\n",
+            "      return await this.transact(connection, prepared, mode, lock, sentAlone(statements, mode, schemaVersionRead)) // MUTATION\n",
+            "whether a batch goes alone is asked of the caller's array after the wait for a connection, so a statement swapped in during the wait decides for the statement that was copied",
         ),
         (
             "mysql-session-autocommit-on",
@@ -9949,6 +9963,12 @@ VERDICTS = {
         "refuses a delete sent behind a select in one read, and keeps the row",
         "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
     ),
+    "postgres-lone-read-is-one-statement": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a read that core built whose fragment holds a second statement, and keeps the row",
+        "mutation-verdict:behavior:postgres-lone-read-is-one-statement",
+    ),
     "core-read-brand-is-frozen": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -11445,6 +11465,12 @@ VERDICTS.update(
             "packages/store-mysql/test/real-server.test.ts",
             "MysqlExecutor against a real server runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read",
             "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
+        ),
+        "mysql-lone-send-is-decided-with-the-copy": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions decides whether a batch goes alone when it copies the statements, and not from what the array holds later",
+            "mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy",
         ),
         "mysql-session-autocommit-on": ExpectedVerdict(
             "construction",
@@ -17272,7 +17298,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 891:
+        if len(MUTATIONS) != 893:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -2247,14 +2247,22 @@ realized in the store's compiler, executor, fragments, or schema:
   gave such a read still holds, each part checked against a server:
   - *The executor knows, and does not guess.* Core brands what `readTree` and
     `readPrepared` compile (`isTreeBuiltRead`). Both refuse a root that is not
-    a SELECT, inside a grammar whose functions are a closed list, so such a
-    statement writes nothing. The executor asks that of the statement it
-    receives, and of nothing else, apart from the canonical schema-version
-    read, which it matches by its whole text. How a statement's text begins
-    shows nothing, because a text that begins with SELECT can call what
-    writes. A read sent as text therefore keeps the read-only transaction, so
-    the server still refuses a write sent as a read, which a server test
-    holds.
+    a SELECT, inside a grammar whose functions are a closed list, so through
+    nodes such a statement writes nothing. The executor asks that of the
+    statement it receives, and of nothing else, apart from the canonical
+    schema-version read, which it matches by its whole text. How a statement's
+    text begins shows nothing, because a text that begins with SELECT can call
+    what writes. A read sent as text therefore keeps the read-only
+    transaction, so the server still refuses a write sent as a read, which a
+    server test holds.
+  - *What the brand does not say.* It says where a statement came from, and
+    not what a store's own fragment holds, because core reads a fragment for
+    clocks and comments only. A fragment can hold a second statement. MySQL
+    takes one statement in a text unless a connection asked for more, and a
+    pool the store opens never does. A pool handed to `fromPool` that does is
+    outside what was checked. A fragment can also call a function that
+    writes, and once the read goes alone nothing refuses that. No read of the
+    stores calls one, and BUILD.md records the option.
   - *The snapshot.* Under READ COMMITTED one statement reads through one view,
     its subqueries included: a statement that counts a table, sleeps, and
     counts it again answered with one count while another session committed a
@@ -2389,6 +2397,18 @@ were three. The same parts, in the same order:
   whole, so a read sent as text keeps the read-only transaction. A server
   test holds that a DELETE, a SELECT that names INTO, and a DELETE sent behind
   a SELECT are each refused with nothing changed.
+- *One statement, whatever the text holds.* The brand says nothing of a
+  store's own fragment, and the simple query protocol, which the driver
+  chooses for a statement with no bind, runs every statement of its text. The
+  review of this rule ran a branded read whose fragment held a DELETE: sent
+  alone it ran, where the same text sent as a read was refused. A read sent
+  alone therefore goes through the extended protocol, which takes one
+  statement and refuses a second, and a server test holds that the DELETE is
+  refused and the row kept. It is parse, bind, execute and sync in one flush.
+  Over loopback a statement with no bind cost 61 microseconds that way against
+  57, and the driver already chose that protocol for every statement with a
+  bind, which every read of the stores has, so no pinned count and no timing
+  moved. What nothing refuses is a fragment that calls a function that writes.
 - *The snapshot.* One statement reads through one snapshot, its subqueries
   included, at any isolation level, measured the way MySQL's was. Sent alone
   it runs at the session's default level, which belongs to whoever owns the

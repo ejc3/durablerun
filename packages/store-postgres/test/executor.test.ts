@@ -50,6 +50,8 @@ function databaseError(code: string, message = 'database rejected query'): Datab
 interface QueryCall {
   text: string
   args: unknown[] | undefined
+  /** Set when the statement was sent as a config object that names a protocol. */
+  queryMode?: string
 }
 
 class FakeClient extends EventEmitter {
@@ -65,8 +67,18 @@ class FakeClient extends EventEmitter {
     super()
   }
 
-  async query(text: string, args?: unknown[]): Promise<QueryResult<Record<string, unknown>>> {
-    this.calls.push({ text, args })
+  /** A pg client takes a text with its values, or one config object, as a read sent alone is. */
+  async query(
+    sent: string | { text: string; values?: unknown[]; queryMode?: string },
+    values?: unknown[],
+  ): Promise<QueryResult<Record<string, unknown>>> {
+    const text = typeof sent === 'string' ? sent : sent.text
+    const args = typeof sent === 'string' ? values : sent.values
+    this.calls.push(
+      typeof sent === 'string' || sent.queryMode === undefined
+        ? { text, args }
+        : { text, args, queryMode: sent.queryMode },
+    )
     return this.respond(text, args)
   }
 
@@ -161,6 +173,8 @@ describe('PgExecutor transactions', () => {
     const client = new FakeClient(() => EMPTY_RESULT)
     await readsFromCore('first').run(executor(new FakePool(client)))
     expect(namingReads(client.calls.map(({ text }) => text))).toEqual(['a read core built'])
+    // Through the extended protocol, which takes one statement whatever the text holds.
+    expect(client.calls.map(({ queryMode }) => queryMode)).toEqual(['extended'])
     expect(client.releases).toEqual([undefined])
   })
 

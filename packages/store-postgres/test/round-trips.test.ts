@@ -179,9 +179,9 @@ it('sends a pinned number of queries for each batch a saga touches, and for a he
 }, 120_000)
 
 /**
- * A batch of one statement with no lock coordinate is sent as that statement alone,
- * outside a transaction block, and every other shape keeps its transaction. The
- * schema-version read keeps one as well, for its READ COMMITTED.
+ * One read that core built is sent as that statement alone, outside a transaction block.
+ * Every other shape keeps its transaction, a single write and a read sent as text among
+ * them. The schema-version read is text, and keeps one for its READ COMMITTED.
  */
 it('sends one query for a read that core built, and keeps a transaction for every other shape', async () => {
   await counted('shapes', async ({ db, admin, store, measure }) => {

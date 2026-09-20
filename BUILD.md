@@ -78,7 +78,8 @@ a last docs PR gives a live owner to every open bullet that is left.
    that fails when the hint is removed from a leg. This is met. In both
    server executors PR4.4a sends alone a read that core's read path built,
    and MySQL's schema-version read, which are the statements it knows to be
-   reads. Every write, and every read sent as text, keeps its transaction.
+   reads. Every write, and every other read sent as text, keeps its
+   transaction.
    `round-trips.test.ts` in each store pins the counts against a server, and
    server cases on each dialect hold the refusal and a single write's
    rollback. The plan case over a small backlog in
@@ -2255,14 +2256,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The last two rows did not move. A held heartbeat is two statements. A
     claim with nothing to claim is most of an idle tick, 3.3 ms of MySQL's
     4.7 ms and 6.8 ms of PostgreSQL's 11 ms in a second run of the same kind,
-    and the next-wake read's saving is lost in what the rounds spread. Eleven
-    mutations hold the rule's conditions, the session's autocommit, core's
+    and the next-wake read's saving is lost in what the rounds spread. Thirteen
+    mutations hold the rule's conditions, the one statement a read sent alone
+    may hold, the place where MySQL decides, the session's autocommit, core's
     brand, and the plan tests below, and the mutant of MySQL's schema-version
     read is re-aimed at the rule. The rule first decided from a statement's
     text and binds. The review of this PR reproduced, against main, a write
     that MySQL cut at a trailing tab and committed before it was refused, and
-    a DELETE sent behind a SELECT that ran as a read on PostgreSQL. The
-    postmortem of that review records both.
+    a DELETE sent behind a SELECT that ran as a read on PostgreSQL. A second
+    review, of the fold, ran a read that core built whose fragment held a
+    DELETE, which PostgreSQL ran once the read went alone as plain text, and
+    found that the MySQL executor decided whether a batch goes alone after its
+    wait for a connection. The postmortem of those reviews records all four.
     - Option, not a deferral of this PR: the sweep's discovery scan is a read
       batch of two statements, five round trips on MySQL and four on
       PostgreSQL. As two batches of one statement it would be two. Nothing a
@@ -2270,12 +2275,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
       transition it then makes checks its own row again, but it changes a
       batch's shape on all three stores.
     - Option, not a deferral of this PR: the read brand shows where a statement
-      came from, and not what a store's own fragment calls. Run on a server, a
-      read whose fragment called `nextval` was sent alone and advanced the
-      sequence, where the same text sent as a read was refused. Core reads a
-      fragment for clocks and comments only. No read of the stores calls a
-      function that writes. The trigger is the first store read that calls a
-      function outside core's grammar list.
+      came from, and not what a store's own fragment holds. Core reads a
+      fragment for clocks and comments only. The review of the fold ran a
+      branded read whose fragment held a second statement, a DELETE. Sent
+      alone on PostgreSQL as plain text it ran, where the same text sent as a
+      read was refused, and MySQL refused both. A read sent alone now goes
+      through PostgreSQL's extended protocol, which takes one statement, so
+      both servers refuse it. What remains is a fragment that CALLS a function
+      that writes: run on a server, a read whose fragment called `nextval` was
+      sent alone and advanced the sequence, where the same text sent as a read
+      was refused. No read of the stores calls a function that writes. The
+      trigger is the first store read that calls a function outside core's
+      grammar list. A rule in core's fragment parser that refuses a semicolon
+      outside a literal would refuse the second statement at build time on
+      every dialect. It is recorded and not built: it is a new condition of a
+      tree rule, with its mutation and a bridge line, and both servers already
+      refuse the statement. A MySQL pool handed to `fromPool` with multiple
+      statements switched on is outside what was checked.
     - Option, not a deferral of this PR: a shared conformance case that a write
       sent as a read is refused on every dialect. Server cases hold it on MySQL
       and on PostgreSQL, where the exit test asks for it.

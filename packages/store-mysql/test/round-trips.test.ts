@@ -7,9 +7,10 @@ import { openMysqlTestDb } from '../src/testing.js'
 
 /**
  * Every query a store call sends is a round trip, with the named lock, START TRANSACTION,
- * and COMMIT among them, and the link to MySQL is the slow part of every batch. A batch
- * of one statement with no lock coordinate is sent as that statement alone, under the
- * session's autocommit, and every other shape keeps its transaction. The counts are
+ * and COMMIT among them, and the link to MySQL is the slow part of every batch. One read
+ * that the executor knows to be a read, which is a read core built or the schema-version
+ * read, is sent as that statement alone, under the session's autocommit. Every other shape
+ * keeps its transaction, a single write and a read sent as text among them. The counts are
  * pinned here, against a server, for each shape. A query is counted where the executor
  * sends it, so the one extra trip that prepares a statement the first time a connection
  * sees it is left out, as it is from the cost of every later call.

@@ -363,12 +363,14 @@ jobs:
                   "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
                   "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
                   "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
+                  "mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy",
                   "mutation-verdict:construction:mysql-session-autocommit-on",
                   "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
                   "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
                   "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
                   "mutation-verdict:behavior:postgres-lone-statement-is-a-read",
                   "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
+                  "mutation-verdict:behavior:postgres-lone-read-is-one-statement",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

@@ -131,8 +131,11 @@ const treeBuiltReads = new TrustedWeakSet<object>()
  * Whether a `FencedBatch` compiled this statement from a tree AS A READ: through `readTree`
  * or `readPrepared`, which refuse a root that is not a SELECT, inside a grammar whose
  * functions are a closed list. It is asked of the statement an executor receives, and it
- * is how an executor can know that a statement writes nothing, where a statement's text
- * can only be guessed at.
+ * says where that statement came from, where a statement's text can only be guessed at.
+ * Through nodes such a read cannot write. A store's own fragment is text that core reads
+ * for clocks and comments only, so the brand says nothing of a second statement inside a
+ * fragment, or of a function a fragment calls. An executor that sends a branded read
+ * outside a read-only transaction has to see that the server takes one statement.
  */
 export function isTreeBuiltRead(statement: unknown): boolean {
   return (
