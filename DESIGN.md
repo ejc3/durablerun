@@ -635,7 +635,13 @@ One invocation executes one claimed run to its next suspension point:
     the same failure at every fault point, to the refused call having run no
     body and left no row, to the saga's row checkers, and to a checkpoint table
     equal to the reference's but for the first step's own rows, each of which
-    is either missing or exactly what the program says it holds. One case
+    is either missing or exactly what the program says it holds. That trusts
+    neither run for those rows. Its false negative is a row of the first step
+    that is wrongly MISSING from a run where it should have landed, which
+    nothing sees. That is tolerable here: the task has failed for good, and the
+    only later reader of those rows is the rollback, which is held to being run
+    when and only when the start marker landed and to being handed the output
+    when and only when the result landed. One case
     reverses the order two spawns are answered in and shows each child still
     under the key of its own call, and shows that the comparison fails when the
     children are swapped. Each shape heads a short program of its own, so every
@@ -646,17 +652,22 @@ One invocation executes one claimed run to its next suspension point:
     checking that these programs can fail: one drops the replayed step's guard,
     one lowers the guard while a registered step writes its start marker, and
     one lets a rollback pass keep its own ordinal.
-  - **Known cost for a task in flight when the build changes.** An older build
-    could carry a task past such a group: a crash after the first step's
-    checkpoint, and the next pass admitted the later call. With both members
+  - **Known cost for a task in flight when the build changes.** The way in is
+    narrow. It takes task code that starts a durable call beside a step, which
+    every ordinary pass refuses; an older build; a crash or an outage at that
+    pass's own `fail` call, after the first step's checkpoint landed, so that
+    the next pass replayed the step and admitted the later call; and a deploy
+    of this build while that task is still in flight. With both members
     memoized, the first pass of the new build that replays the group refuses
     it, and the task fails for good. Its failure reason is the refusal, naming
     the later call, which is how an operator tells. A saga that was already
     rolling back halts instead, with nothing compensated: the refusal ends the
     pass's replay at the group, no step after it registers its rollback, and
     the rollback outcome is `failed` with `$RollbackNotRegistered` naming the
-    step that started last. The cost is accepted, because the alternative keeps
-    two histories for one program.
+    step that started last. An operator reads both on the task's result, and
+    compensating the steps that ran is left to them, by hand. It is fail-stop:
+    nothing completes silently. The cost is accepted, because the alternative
+    keeps two histories for one program.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no

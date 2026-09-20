@@ -2013,13 +2013,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `saga-start-marker-is-written-with-the-guard-up`, which brings back the
     review's finding 2, and `saga-pass-replays-as-the-run-that-failed`, which
     brings back its finding 6.
-  - Measured: the harness file takes 22.7 s where main's takes 14.2 s, at the median of
-    five interleaved rounds on one machine under a load average of 22 to 28
-    (main 13.7 to 14.3 s, this branch 22.1 to 23.1 s), for 42 tests where main
-    has 27. About 8.5 s are added, and about twice that on CI's slowest runner.
-    A program holds at most one shape and one failed attempt, a program
-    generated for a shape is short, and the file runs six sagas of random ops
-    where it ran eight. Those are the levers, and no shape was dropped.
+  - Measured: the harness file takes 23.7 s where main's takes 13.6 s, at the
+    median of five interleaved rounds on one machine under a load average of
+    17 to 22 (main 13.4 to 14.0 s, this branch 23.3 to 24.1 s), for 44 tests
+    where main has 27. About 10 s are added, and about twice that on CI's
+    slowest runner. A program holds at most one shape and one failed attempt,
+    and a program generated for a shape is short. Those are the levers, and no
+    shape and no seed was dropped.
   - Open question, recorded and not pursued here: a handler that swallows every
     rejection can observe an injected store outage and complete with it in its
     result. The shape is `Promise.allSettled([ctx.awaitEvent('never', {
