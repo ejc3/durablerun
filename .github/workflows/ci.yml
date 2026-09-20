@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
               # On MySQL a write keyed by a subquery reads its keys first and its table second,
               # through the index of its key, and a delete reads its keys through the index of
               # their stamp.
@@ -363,7 +363,7 @@ jobs:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
           base.write_text(repaired)
-          print('Bridged the base registry for this arm; all other base registry bytes are unchanged.')
+          print('Bridged the base registry as its arm says; all other base registry bytes are unchanged.')
           PY
       - name: The base branch's checkers, applied to this tree
         env:
