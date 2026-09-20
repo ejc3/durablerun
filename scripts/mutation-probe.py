@@ -12430,6 +12430,13 @@ MUTATION_SPECS.extend(
             "the saga row checker passes rows with the defect saga/forward-checkpoint-in-the-phase",
         ),
         (
+            "saga-row-checker-attempt-records-share-a-run",
+            "packages/conformance/src/saga-rows.ts",
+            "    if (new Set(owners).size !== owners.length) {\n",
+            "    if (false) {\n",
+            "the saga row checker passes rows with the defect saga/attempt-records-share-a-run",
+        ),
+        (
             "saga-replay-harness-reports-the-order",
             "packages/sdk/test/replay-equivalence.test.ts",
             "      undone: [...new Set(undos)].map((line) => Number(line.slice('undo:'.length))),\n",
@@ -12764,6 +12771,17 @@ for _verdict, _names in (
         ),
         (
             "saga-row-checker-forward-checkpoint-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/attempt-records-share-a-run, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-attempt-records-share-a-run",
         ),
     ),
     (
@@ -17068,7 +17086,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 881:
+        if len(MUTATIONS) != 882:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
