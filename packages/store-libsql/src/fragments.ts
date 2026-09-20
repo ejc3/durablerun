@@ -203,6 +203,26 @@ export const storedIntegerWithin = (
 }
 
 /**
+ * `storedIntegerWithin` for a statement that must not reach its rows through this column.
+ * SQLite reads a bare column's BETWEEN as a range over an index of that column, and with no
+ * statistics it rates a two-sided range above two equalities. So the claim's receipt read
+ * walked every unexpired lease of its queue through `runs_lease` to find the few runs its
+ * token holds. A unary plus keeps a term out of index selection, which is SQLite's
+ * documented use of it. It also takes the column's affinity out of the comparison, and
+ * that changes nothing here: the other two operands are this fragment's own integer
+ * literals, which carry no affinity to apply, and the first conjunct has already required
+ * the stored value to be an integer, so an integer is compared with integers under either
+ * spelling and a value of any other storage class is refused before the comparison counts.
+ */
+export const storedIntegerWithinOffIndex = (
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+  alias?: string,
+): string => {
+  const column = persistedColumn(bounds, alias)
+  return `(${storedInteger(column)} AND +${column} BETWEEN ${bounds.min} AND ${bounds.max})`
+}
+
+/**
  * A persisted integer that is safe to increment once without leaving its
  * semantic field range. The guard describes the RESULT of the arithmetic, not
  * merely the source representation.
