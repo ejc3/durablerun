@@ -103,6 +103,16 @@ node -e "const fs=require('node:fs');const file=process.argv[1];const before=fs.
 surface_refusal_holds 'a released interface that lost a member' \
   "$surface_lost_member" "$surface_snapshot" \
   'Checkpoint is declared differently' '- checkpointName: string;'
+# A private constructor is part of what a consumer sees, because it says the class cannot be
+# constructed: a copy in which UserName lost its private constructor, and kept its other
+# private member, is refused.
+surface_lost_constructor="$PACK_DIR/surface-lost-constructor"
+cp -R "$PACK_DIR/surface" "$surface_lost_constructor"
+node -e "const fs=require('node:fs');const file=process.argv[1];const before=fs.readFileSync(file,'utf8');const member='    private constructor();\n';if(before.split(member).length!==2)throw new Error('package-smoke: expected one private constructor in '+file);fs.writeFileSync(file,before.replace(member,''))" \
+  "$surface_lost_constructor/core/package/dist/validate.d.ts"
+surface_refusal_holds 'a released class that lost its private constructor' \
+  "$surface_lost_constructor" "$surface_snapshot" \
+  'UserName is declared differently' '- private constructor();'
 # The same from the other side: the snapshot says a member was declared another way.
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \
