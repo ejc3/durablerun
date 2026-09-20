@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
-import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
+import {
+  PERSISTED_COUNTER_FIELDS,
+  PERSISTED_TEMPORAL_FIELDS,
+  type SqlExecutor,
+} from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor, LibsqlStoreAdmin, MIGRATIONS } from '../src/index.js'
 
@@ -65,6 +69,81 @@ describe('migrations', () => {
       expected,
     )
     expect(observed).toHaveLength(31)
+  })
+})
+
+describe('a version that failed', () => {
+  it('leaves nothing behind, at every version, and the next migrate() applies it', async () => {
+    // A version is one batch, and libSQL runs a batch as one transaction: the sentinel, the
+    // version's statements and the version itself commit together or not at all. Each
+    // version in turn is made to fail after every one of its statements has run. The
+    // statement that fails it writes the version's own sentinel a second time, which the
+    // primary key refuses only once the first is there, so the batch was not refused before
+    // it ran. What the database holds afterwards must be what it held before.
+    const holdings = async (raw: LibsqlExecutor): Promise<string> => {
+      const results = await raw.batch(
+        'fixture:holdings',
+        [
+          {
+            sql: 'SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name',
+            args: [],
+          },
+          { sql: 'SELECT key, value FROM meta ORDER BY key', args: [] },
+        ],
+        'read',
+      )
+      return JSON.stringify(results.map(({ rows }) => rows))
+    }
+    const outcomes: Record<string, unknown>[] = []
+    for (const { version } of MIGRATIONS) {
+      const raw = LibsqlExecutor.open(':memory:')
+      try {
+        let before = 'the version was never sent'
+        const failing: SqlExecutor = {
+          batch: async (label, statements, control) => {
+            if (label !== `migrate:v${version}`) return raw.batch(label, statements, control)
+            before = await holdings(raw)
+            return raw.batch(
+              label,
+              [
+                ...statements,
+                {
+                  sql: `INSERT INTO meta (key, value) VALUES ('applied:v${version}', 'again')`,
+                  args: [],
+                },
+              ],
+              control,
+            )
+          },
+        }
+        const migrate = await new LibsqlStoreAdmin(failing).migrate().then(
+          () => 'resolved',
+          () => 'rejected',
+        )
+        const after = await holdings(raw)
+        await new LibsqlStoreAdmin(raw).migrate()
+        outcomes.push({
+          version,
+          migrate,
+          recorded: JSON.parse(after)[1].find(
+            (row: { key: string }) => row.key === 'schema_version',
+          )?.value,
+          leftBehind: after === before ? 'nothing' : 'something',
+          theNextMigrateReaches: await new LibsqlStoreAdmin(raw).schemaVersion(),
+        })
+      } finally {
+        raw.close()
+      }
+    }
+    expect(outcomes).toEqual(
+      MIGRATIONS.map(({ version }) => ({
+        version,
+        migrate: 'rejected',
+        recorded: String(version - 1),
+        leftBehind: 'nothing',
+        theNextMigrateReaches: MIGRATIONS.length,
+      })),
+    )
   })
 })
 
