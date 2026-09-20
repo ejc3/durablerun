@@ -539,6 +539,50 @@ One invocation executes one claimed run to its next suspension point:
   transition — a lost response may already have committed — so recovery is the
   lease story and the user's retry budget is never touched; only errors from
   user code spend user attempts.
+- **What a store executor throws, and what a pass does with it.** An executor
+  types a driver's failure from its error CODE and never from its message
+  text, into one of four kinds. `SchemaNotInitializedError` and
+  `SchemaMismatchError` say the database is not the one this build expects, and
+  a migration repairs them. `PermanentStoreError` says the store answered and no
+  retry changes the answer: the statement broke a constraint, carried a value
+  its column cannot hold, or is one the server will never accept. Everything
+  else is `StoreUnavailableError`, an outage that waiting can cure, and a code
+  the map does not know stays an outage, which is what every code was before
+  the map. A deadlock victim is none of the four: the two server executors run
+  it again, and a victim they report after three tries is an outage. The maps:
+  libSQL reads the primary SQLite result code, and `SQLITE_CONSTRAINT`, with
+  every extended code, and `SQLITE_MISMATCH` are permanent. PostgreSQL reads the
+  SQLSTATE class after its schema mismatch states, and classes 22 (data
+  exception), 23 (integrity constraint violation) and 42 (syntax error or
+  access rule violation) are permanent. MySQL reads the same three classes from
+  the SQLSTATE the server sends beside its error number, after the numbers that
+  have a type of their own, and adds error 1366 by number, because MySQL files
+  a value of the wrong type under its general state HY000, beside a lock wait
+  timeout. One difference between dialects is deliberate: a syntax error is
+  permanent on the two servers, which give it a code of its own, and an outage
+  on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
+  together with a transaction state error that a new connection cures, and
+  mapping by code cannot tell the two apart. A shared conformance surface holds
+  the kinds a consumer can meet on every dialect (§3.4).
+
+  A worker pass treats a permanent store error EXACTLY as it treats an outage,
+  at its own store calls and at a context store call alike: the pass ends
+  `aborted`, nothing more is written, the task's attempts are untouched, and
+  the lease recovers the run, on the infrastructure budget if the run had been
+  activated. The reason is that naming an error more precisely must not change
+  who pays for it. Before the type existed these failures were outages and were
+  paid from the infrastructure budget. Thrown into task code as an ordinary
+  error, the same failure would be recorded through `fail` as the task's own
+  and paid from the attempts the caller asked for. `SchemaMismatchError` at a
+  context store call IS billed that way in this build, and is left alone here.
+  So a deterministic failure inside an activated run is still retried until the
+  infrastructure budget is gone, and its task still ends
+  `$InfraRetriesExhausted`: the type makes the cause nameable at every catch,
+  and no transition exists yet that ends a run for it. Ending such a run at
+  once, under a terminal reason of its own, needs a new reason and a new
+  transition, which is a spec change first (BUILD.md, PR2.5a). The driver loop,
+  the tick, the launch reconciler, the inline launcher and the HTTP worker
+  treat every throw alike, and none of them changed.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -2461,6 +2505,21 @@ not depend on careful reading:
   its cap, so the cap's statement alone can lose its generation comparison
   with every case green. The column costs about 0.5 s of test time on libSQL,
   about 1.4 s on PostgreSQL and about 1.3 s on MySQL, on a shared machine.
+- *The executor error surface* (`conformance/src/executor-errors.ts`): what an
+  executor throws, by kind, through each fixture's real executor, with
+  statements all three dialects read alike (§3.2). A task row inserted again
+  under its own primary key is a `PermanentStoreError` and writes nothing. A
+  batch sent after the executor closed is a `StoreUnavailableError`. Two write
+  batches that update the same two rows in opposite orders, started together,
+  are both answered with each update applied once: PostgreSQL and MySQL make
+  one of them a deadlock victim and run it again, and libSQL runs one after the
+  other. The case does not require that a deadlock happened, because libSQL
+  cannot have one. Measured over three rounds, PostgreSQL ran a victim again in
+  two, MySQL in three, and libSQL in none. A syntax error is not in the surface,
+  because libSQL types it differently by design. The self-concurrency surface
+  books a permanent store error with the outages, so a port call that breaks a
+  constraint fails its contest in either order, as it did while that error was
+  typed an outage.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.
@@ -3043,6 +3102,16 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
+- **Hosted answers to a store failure**: a route answers a store outage,
+  `StoreUnavailableError`, with 503 `service_unavailable`, because a retry can
+  cure it. It answers a permanent store error, `PermanentStoreError` (§3.2),
+  with 500 `internal_error`, as it answers `SchemaMismatchError`: a 503 would
+  invite a producer to retry a request the store refuses the same way every
+  time. It is never a 400, which is for what the caller sent, and a permanent
+  store error is the store's answer. Before the executors typed the error,
+  these failures answered 503. No durable state depends on the status, and an
+  at-least-once tick host retries any answer that is not a success. Neither
+  answer carries the error's message.
 - **Driver hosting**: the hosted alpha is fully serverless. Each accepted
   mutation gives the host a best-effort opportunity to run the same bounded
   inline tick, and an independent cron recovers a lost hint. Vercel itself
