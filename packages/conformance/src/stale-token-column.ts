@@ -222,10 +222,27 @@ const SCAN_VERDICTS = {
   'sweep:claim-timeout': 'mutation-verdict:behavior:stale-scan-sweep-claim-timeout',
 } as const satisfies Record<SweepLabel, string | null>
 
-/** An executor whose sweep scan reports `runId` one claim later than the run stands. */
-function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
+/**
+ * The caller the sweep cases seed for: a run at its second claim, so that a scan can have
+ * read the claim before it.
+ */
+const SWEPT: InvocationTarget = {
+  ...HEALTHY_INVOCATION,
+  claimGen: HEALTHY_INVOCATION.claimGen + 1,
+}
+
+/**
+ * The scans that read another claim of the run, by how many claims off they stand. The
+ * claim before is what a real stale scan reads, because the run was claimed again after
+ * the scan. A claim not yet made is the other side of the comparison.
+ */
+const STALE_SCANS = { 'the claim before': -1, 'a claim not yet made': 1 } as const
+
+/** An executor whose sweep scan reports `runId` `claims` off from where the run stands. */
+function scanOfAnotherClaim(raw: SqlExecutor, runId: string, claims: number) {
   let rewritten = 0
-  const later = (value: unknown) => (typeof value === 'bigint' ? value + 1n : Number(value) + 1)
+  const moved = (value: unknown) =>
+    typeof value === 'bigint' ? value + BigInt(claims) : Number(value) + claims
   const executor: SqlExecutor = {
     batch: async (label, statements, control) => {
       const results = await raw.batch(label, statements, control)
@@ -238,8 +255,8 @@ function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
           // Both counters move together, so the row stays in the arm its scan chose.
           return {
             ...row,
-            claim_gen: later(row.claim_gen),
-            activated_gen: later(row.activated_gen),
+            claim_gen: moved(row.claim_gen),
+            activated_gen: moved(row.activated_gen),
           }
         }),
       }))
@@ -248,15 +265,19 @@ function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
   return { executor, rewritten: () => rewritten }
 }
 
-/** Runs `label`'s sweep over its healthy seed, through a scan of a later claim. */
-async function sweepOverALaterScan(f: StoreFixture, label: SweepLabel) {
+/** Seeds `label`'s healthy run for the swept caller, and answers with the rows as they stand. */
+async function seedSwept(f: StoreFixture, label: SweepLabel) {
   await seedBase(f)
-  await seedHealthyTrigger(f.raw, label)
+  await seedHealthyTrigger(f.raw, label, SWEPT)
   expect(await engineInvariantViolations(f.raw)).toEqual([])
-  const before = await snapshot(f.raw)
-  const scan = scanOfALaterClaim(f.raw, HEALTHY_INVOCATION.runId)
-  const swept = await outcomeOf(invoke(label, f.storeOver(scan.executor), HEALTHY_INVOCATION))
-  return { before, swept, rewritten: scan.rewritten() }
+  return snapshot(f.raw)
+}
+
+/** Runs `label`'s sweep through a scan that stands `claims` off from the run. */
+async function sweepOverAScanOf(f: StoreFixture, label: SweepLabel, claims: number) {
+  const scan = scanOfAnotherClaim(f.raw, SWEPT.runId, claims)
+  const swept = await outcomeOf(invoke(label, f.storeOver(scan.executor), SWEPT))
+  return { swept, rewritten: scan.rewritten() }
 }
 
 export function staleTokenConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
@@ -348,24 +369,35 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       if (verdict === null) {
         it(`${label} is handed no generation by its scan`, () =>
           withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
-            const { swept, rewritten } = await sweepOverALaterScan(f, label)
+            await seedSwept(f, label)
+            const { swept, rewritten } = await sweepOverAScanOf(f, label, -1)
             expect({ swept: swept.kind, rewritten }).toEqual({ swept: 'resolved', rewritten: 0 })
           }))
         continue
       }
       it(`${label} acts on nothing when its scan read another generation`, () =>
         withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
-          const { before, swept, rewritten } = await sweepOverALaterScan(f, label)
-          expect(rewritten, 'the scan handed the write no generation to present').toBeGreaterThan(0)
-          expect({ swept, rows: await snapshot(f.raw) }, verdict).toEqual({
-            swept: { kind: 'resolved', value: [] },
+          const before = await seedSwept(f, label)
+          const answers: Record<string, Outcome> = {}
+          for (const [which, claims] of Object.entries(STALE_SCANS)) {
+            const { swept, rewritten } = await sweepOverAScanOf(f, label, claims)
+            expect(
+              rewritten,
+              `the scan of ${which} handed the write no generation`,
+            ).toBeGreaterThan(0)
+            answers[which] = swept
+          }
+          expect({ answers, rows: await snapshot(f.raw) }, verdict).toEqual({
+            answers: Object.fromEntries(
+              Object.keys(STALE_SCANS).map((which) => [which, { kind: 'resolved', value: [] }]),
+            ),
             rows: before,
           })
           // The same sweep over the scan the store really sends acts, so the generation
-          // was the only reason the first one did not.
-          expect(await outcomeOf(invoke(label, f.store, HEALTHY_INVOCATION))).toMatchObject({
+          // was the only reason the others did not.
+          expect(await outcomeOf(invoke(label, f.store, SWEPT))).toMatchObject({
             kind: 'resolved',
-            value: [{ kind: label.slice('sweep:'.length), runId: HEALTHY_INVOCATION.runId }],
+            value: [{ kind: label.slice('sweep:'.length), runId: SWEPT.runId }],
           })
         }))
     }

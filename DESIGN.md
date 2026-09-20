@@ -2113,12 +2113,16 @@ not depend on careful reading:
   comparison that asks whether any run holds the token would admit. A
   receipt's generation is presented from the claim before and from a claim
   not yet made. The lease sweeps present no token and act on the claim their
-  scan read (the shared statements, above), so their two cases run the sweep
-  over a scan that reports the run one claim later, require that nothing is
-  swept and no row moves, and then require the honest sweep to act. A typed
-  record asks
-  every `sweep:` label whether its scan hands it a generation, and each case
-  checks that answer against the scan the store sends. Seventeen registered
+  scan read (the shared statements, above). Their two cases seed a run at its
+  second claim and run the sweep over a scan that reports the claim before,
+  which is what a real stale scan reads, because the run was claimed again
+  after it, and then over a scan that reports a claim not yet made. Each
+  must sweep nothing and move no row, and then the honest sweep must act.
+  With `>=` in place of `=` in the sweeps' shared predicate, which admits
+  exactly the real case, a column that presented only the later scan stayed
+  green. A typed record asks every `sweep:` label whether its scan hands it
+  a generation, and each case checks that answer against the scan the store
+  sends. Seventeen registered
   mutations, one for each comparison of each call, remove it from the
   statement the call sends, and the enrollment case holds the marker tables
   to the derived column, so a call that joins the column fails there until
@@ -2132,10 +2136,9 @@ not depend on careful reading:
   token-taking argument that `invoke` never passes is still outside. It makes
   each call once, with one set of arguments, from one seed: the immediate
   chain, a `reschedule` with no delay, shares the park's statement and keeps
-  its hand-written case. It samples the callers and does not prove equality,
-  and a sweep's scan is presented from one side only. The column costs about
-  0.4 s of test time on libSQL and about 1.4 s on PostgreSQL and on MySQL, on
-  a shared machine.
+  its hand-written case. It samples the callers and does not prove equality.
+  The column costs about 0.4 s of test time on libSQL and about 1.4 s on
+  PostgreSQL and on MySQL, on a shared machine.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.

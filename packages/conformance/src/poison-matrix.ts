@@ -1721,15 +1721,26 @@ export async function seedHealthyTrigger(
       ]
       break
     case 'sweep:lost-launch':
+      // The launch lost is the target's claim, by a run last activated under the claim before.
       statements = [
         triggerTask('running'),
-        triggerRun({ state: 'running', activatedGen: 0, expiresAt: NOW - 1 }),
+        triggerRun({
+          state: 'running',
+          claimGen: target.claimGen,
+          activatedGen: target.claimGen - 1,
+          expiresAt: NOW - 1,
+        }),
       ]
       break
     case 'sweep:claim-timeout':
       statements = [
         triggerTask('running'),
-        triggerRun({ state: 'running', activatedGen: 1, expiresAt: NOW - 1 }),
+        triggerRun({
+          state: 'running',
+          claimGen: target.claimGen,
+          activatedGen: target.claimGen,
+          expiresAt: NOW - 1,
+        }),
       ]
       break
     case 'fail-rollback':
