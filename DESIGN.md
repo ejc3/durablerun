@@ -1472,7 +1472,18 @@ are load-bearing):
    waits at most 30 seconds, for the event, claim, and migration locks alike. A
    batch that cannot take its lock in that time has written nothing and fails
    with `StoreUnavailableError`, which a caller retries like any outage.
-   PostgreSQL's row lock has no bound of the store's own. Any further
+   PostgreSQL's row lock has no bound of the store's own. A lock has a kind:
+   an event, a claim, or the migration lock, which has no coordinates of its
+   own because there is one for each database (rule 9). An executor REFUSES a
+   lock of a kind it does not implement, before it sends anything. It never
+   ignores one and never takes it for a kind it knows: a batch that asked for
+   a lock and ran without it has reopened the race that lock closes, and an
+   executor that tells one kind from all the rest takes a kind of a later
+   build for one it knows. The rule binds every executor of the port, a third
+   party's and a port in another language included. libSQL's executor implements every kind, a
+   kind of a later build included, by taking nothing: a lock here asks only
+   that two write batches be kept apart, and its one writer already does. Any
+   further
    row locks retain the documented order: event first, then run (FOR
    SHARE/FOR UPDATE). The timeout branch is part of the contract: a wait with
    a timeout sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
@@ -1802,9 +1813,44 @@ are load-bearing):
    and treats the write as complete only when metadata now exists at or beyond
    that batch's target. An absent or behind version rethrows the original
    failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
+   MySQL sends every pending version as one batch (the MySQL notes below), so
+   its batch is forgiven when the version has moved past the one the batch was
+   planned from, and what is still pending is then planned again: a migrator of
+   the released build goes one version at a time and can be part of the way
+   through. A failure that moved nothing is rethrown.
    On PostgreSQL a version's batch first takes a lock on `meta` that a second
    migrator waits on, so the loser's error is the sentinel's unique violation
    and never a deadlock (rule 11).
+   A migration write names the migration lock in its batch control, as the
+   lock kind `migration`, and core exports the one control that carries it
+   (`MIGRATION_WRITE`). The lock travels there, where a wrapper that forwards
+   the control cannot drop it, and no executor chooses it from a batch's label.
+   Every version's batch carries it, on every dialect. The bootstrap carries it
+   wherever the dialect's lock does not live in the version table: MySQL's is a
+   name, which can be taken before that table exists, and libSQL's is its one
+   writer. PostgreSQL's migration lock is a lock on `meta`, the table its
+   bootstrap creates, so that bootstrap names no lock, and racing bootstraps
+   converge as above. For that lock MySQL's executor takes the session named
+   lock `durablerun:migrate` of the database, PostgreSQL's sends `LOCK TABLE
+   meta IN SHARE ROW EXCLUSIVE MODE` after `BEGIN` and ahead of the sentinel,
+   and libSQL's takes nothing. Both are what the released build takes, because
+   a deploy runs that build beside the next one and both migrate: a MySQL case
+   takes the lock with the released build's statement, spelled in the test, and
+   requires `migrate()` to wait for that name with nothing written, and a
+   fresh `migrate()` and a second one send PostgreSQL the 132 protocol messages
+   the released build sends, byte for byte.
+   The MySQL executor knows a migration write by its label's prefix,
+   `migrate:`, and that match can only REFUSE: a write under such a label whose
+   control names no migration lock is refused before anything is sent. MySQL
+   commits each DDL statement on its own, so a migration write that ran beside
+   another migrator could not be undone, and a lock chosen from a list of
+   labels leaves a `migrate:` label the list does not know to run unlocked. The
+   lock a batch runs under is always the one its control names.
+   On libSQL and PostgreSQL a version is one transaction, and a version that
+   failed leaves nothing behind. Each store holds that at every version, with
+   a statement that fails only after every statement of the version has run.
+   MySQL has no such transaction and holds the other half: every statement is
+   safe to repeat, at every place a migrator can die (the MySQL notes below).
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
@@ -2099,8 +2145,9 @@ are load-bearing):
    executor's three attempts, and left the schema at version 6.
 
    Migrators that race on one database converge as they did (rule 9), and the
-   second one waits. Every version's batch begins with `LOCK TABLE meta IN
-   SHARE ROW EXCLUSIVE MODE`, ahead of its sentinel row. That lock conflicts
+   second one waits. Every version's batch names the migration lock, and the
+   executor begins its transaction with `LOCK TABLE meta IN SHARE ROW EXCLUSIVE
+   MODE`, ahead of its sentinel row. That lock conflicts
    with itself and with the lock a sentinel insert takes, so a second migrator
    stops there holding nothing, and when the first has committed it loses to
    the committed sentinel and finds the version written. A read does not
@@ -2119,9 +2166,12 @@ are load-bearing):
    rounds over a second. With it: none with either, a median round of 40 ms
    with four and 47 with eight, and no round over 77 ms. Main, whose last
    version is 6, takes 23 ms. `store-postgres/test/racing-migrators.test.ts`
-   holds it without a race: two connections replay each version's batch as the
-   admin builds it, and the second starts once the first has written its
-   sentinel. The first must commit. The second must wait for that lock while
+   holds it without a race, and is the rolling deploy case: one migrator is the
+   released build's, sent by hand with the lock as the first statement of its
+   batch, and the other is this build's batch and control, as the real admin
+   builds them, through the real executor. It runs in both orders, and the
+   second starts once the first has written its sentinel.
+   The first must commit. The second must wait for that lock while
    it holds no lock on a relation of the schema, end in a unique violation, and
    find the version written. Without the lock it fails at every version.
 
@@ -2676,8 +2726,31 @@ realized in the store's compiler, executor, fragments, or schema:
   sentinel row cannot roll one back. The bootstrap is one statement, so the
   version table never exists without its row (rule 9). Every migration
   statement is safe to repeat, so a migrator that died halfway leaves work a
-  rerun finishes, and migrators take turns under one named lock. A rowless
-  version table is a foreign database on the first read, as on every dialect.
+  rerun finishes, and migrators take turns under one named lock, which every
+  migration write names in its control (rule 9). A batch is the unit of
+  nothing here, so `migrate()` reads the version once and sends every pending
+  version as ONE batch under one hold of the lock. A fresh database costs three
+  version reads and two locked batches whatever the number of versions, where
+  one batch for each version costs nine and eight at seven versions. Five of
+  those versions are empty, and version 6 splits them, so nothing short of one
+  batch crosses them together. Measured over 100 fresh databases a build, interleaved:
+  32.7 ms became 30.2, beside PostgreSQL, which did not change, at 37.3 and
+  36.9. The read comes before the lock, so a batch can be planned from a
+  version that has since moved: it repeats statements that change nothing, and
+  its advances match no row. What a migrator that died leaves follows from
+  what commits. An advance is ordinary DML inside the batch's transaction. The
+  first statement that commits by itself commits what is pending and ends that
+  transaction, so an advance sent before it is lost with the session unless
+  that statement was reached, and an advance sent after it commits at once.
+  `store-mysql/test/migration.test.ts` cuts the batch the real admin plans at
+  every statement, from every version a database can be at, 58 cuts at seven
+  versions, by destroying the session that sent them. It holds the version the
+  server left to that rule, and the next `migrate()` to the schema of a clean
+  migration. Two more cases stop this build's migrator between its read and
+  its batch, while another migrator of this build finishes, and while one of
+  the released build stands between two of its versions, in either order. A
+  rowless version table is a foreign database on the first read, as on every
+  dialect.
 - **The schema.** An indexed string is `VARCHAR(255)` under
   `utf8mb4_0900_bin`, which is case, accent, and trailing-space exact. MySQL
   cannot index unbounded text, and that is where the width of a durable

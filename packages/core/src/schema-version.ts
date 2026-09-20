@@ -8,8 +8,8 @@ import { storageValueKind } from './validate.js'
  * wrapper forwards, and no executor chooses it from the batch's label.
  *
  * Every version's batch carries it. The bootstrap carries it wherever the dialect's lock
- * does not live in the version table, which the bootstrap is what creates: a named lock can
- * be taken before that table exists, and a lock on the table cannot.
+ * does not live in the version table, the table a bootstrap creates: a named lock can be
+ * taken before that table exists, and a lock on the table cannot.
  */
 export const MIGRATION_WRITE: SqlLockedBatch = Object.freeze({
   mode: 'write',

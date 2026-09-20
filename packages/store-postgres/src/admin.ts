@@ -26,7 +26,7 @@ export class PostgresStoreAdmin implements StoreAdmin {
     // canonical version read. No message matching occurs at this layer.
     //
     // The bootstrap names no migration lock, where every version's batch does. PostgreSQL's
-    // migration lock is a lock on meta, which this batch is what creates. Racing bootstraps
+    // migration lock is a lock on meta, the table this batch creates. Racing bootstraps
     // converge without one: the batch is one transaction, and a loser is forgiven below.
     if ((await this.readSchemaVersion()) === null) {
       await this.applyVersionedWrite(
