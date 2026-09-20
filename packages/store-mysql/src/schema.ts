@@ -219,6 +219,9 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     version: 6,
     statements: createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
   },
+  // PostgreSQL's version 7 declares a byte collation on every text column. Version 1
+  // above already declares one on every string column.
+  { version: 7, statements: [] },
   {
     // A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
     // where a single-table UPDATE reads it with none. A batch that deletes the waits of
@@ -229,7 +232,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     // one batch's stamp touches no other entry. The stamp is a LONGTEXT, so the index is a
     // prefix, as wide as InnoDB allows. It is an index and nothing else: a build that
     // predates it runs against this schema unchanged.
-    version: 7,
+    version: 8,
     statements: createIndexIfMissing('runs', 'runs_stamp', `(fence_stamp(${STAMP_INDEX_PREFIX}))`),
   },
 ]

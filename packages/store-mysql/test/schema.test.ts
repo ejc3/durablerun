@@ -28,8 +28,8 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('MySQL schema', () => {
   it('keeps the logical version numbers of the other dialects', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7])
-    expect(CURRENT_SCHEMA_VERSION).toBe(7)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect(CURRENT_SCHEMA_VERSION).toBe(8)
   })
 
   it('writes only statements that are safe to repeat', () => {
@@ -39,7 +39,7 @@ describe('MySQL schema', () => {
     // such a version the comparison below is with that form's own output and cannot fail:
     // it only keeps the version out of the table check. That the form is safe to repeat
     // is carried by the real-server test, which runs it again over an index that exists
-    // and twice over one that was dropped, and by the frozen hashes of versions 6 and 7.
+    // and twice over one that was dropped, and by the frozen hashes of versions 6 and 8.
     // Every other statement creates a table if missing.
     const guardedIndexes = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
@@ -127,7 +127,8 @@ describe('MySQL migrations are append-only', () => {
     4: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     6: '282e8754775295bf61972db61c285b7e3ffd92726bd38dbb6c2b60fdf7250ee9',
-    7: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
+    7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    8: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
   }
 
   it('matches every migration to an independently frozen content hash', () => {
