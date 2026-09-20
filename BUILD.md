@@ -258,6 +258,25 @@ a last docs PR gives a live owner to every open bullet that is left.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
+21. PR3.2c: removing a counter guard from the claim receipt's admission, from
+    the revival, or from the failure batch fails a targeted cell of the poison
+    matrix by name, the matrix reaches the rollback pass, and every statement
+    of the SQL corpus that inserts a run is held to the carry by a generated
+    case, on three dialects. This is met. Five target profiles seed the
+    poisoned task where its label acts on a target with nothing corrupt: a
+    claim no activation has reached, for `activate` and for `defer-launch`, a
+    task that failed for good, for `retry-task`, and an activated claim whose
+    task has a registered step started, for `fail`, or stands in the
+    rolling-back phase, for `fail-rollback`. The 48 new target cells each fail
+    under one of eleven guards removed by hand, where the whole matrix stayed
+    green with the receipt's relaunch bound, the revival's bound on
+    infrastructure retries, or the failure batch's guard on the highest owned
+    ordinal removed. The control of `fail` on a started step leaves the
+    rollback pass as the task's second run beside the phase marker. Five
+    registered mutations, one for each profile, are each caught by a generated
+    cell of that profile. Six generated cases hold the ten run inserts of the
+    corpus, and a successor that drops the parked wake step and a revival that
+    carries nothing each fail one by name.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1587,10 +1606,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `deferLaunch`, so a guard added to one reaches the other. Six registered
     mutations that owned find texts inside activation's SQL now own the
     fragment's.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
-    case generated from every batch that inserts a run, in place of one
-    hand-listed family per path. The model property covers the protocol today,
-    and generating the SQL-side enumeration belongs with this PR's SQL-tree work.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
@@ -1623,14 +1638,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   says. What stays open here: the required attestation
   runs no probe and a red test may name none, so a red commit that holds its
   own fix is seen only by an attester who asks for `--prove-reds`.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
-    profile for a running, unactivated claim, so the `activate` and
-    `defer-launch` cells reach their corruption guards instead of refusing on
-    the receipt.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a poison target
-    profile for a failed task, so the `retry-task` cells reach the counter
-    guards behind its state condition. The conformance cases pin each guard
-    today.
   - Deferred from `postmortems/pr3.3b-hoists-review.md`: a poison case for the
     batch that records an unrecorded ending (`record-task-done`), over rows
     where a run's claim outlives its task or names a task of another queue, so
@@ -1775,6 +1782,78 @@ these three things; nothing else in the system does I/O, time, or randomness.
   and `postmortems/pr3.2b-retry-task-review.md`.
   Its residual is NOT recorded here: each item sits under the named PR that will
   do it, with its source postmortem.
+
+- **PR3.2c poison target profiles and a generated successor-carry case**: DONE.
+  It builds four bullets that merged entries carried, two under PR3.10 from
+  `postmortems/pr3.2a-lifecycle-review.md` and
+  `postmortems/pr3.2b-retry-task-review.md`, one under PR3.4, and one under
+  PR3.9, and takes them out from under those entries. The profiles went into
+  the targeted cells and not the ambient ones, on a measurement: with the
+  poisoned run seeded as a claim no activation had reached, all 292 ambient
+  `activate` and `defer-launch` cells passed, and stayed green with the
+  receipt's relaunch bound, its sole-live-run guard, or its accounting guard
+  removed, because an ambient cell requires no refusal. A targeted cell
+  requires the poison's rows unchanged. The arms that name their target,
+  `activate`, `defer-launch`, `retry-task`, `fail` and `fail-rollback`, are a
+  second kind beside `claim` and the lease sweeps, which scan: the call on the
+  poison must be refused and the healthy trigger wins a call of its own. Each
+  profile has a control, the same call with nothing corrupt, which must act on
+  the poison and whose effect is pinned, so that a refusal is the corruption's
+  and not the profile's (DESIGN.md, the poison matrix). The inventory went from
+  50 target cases and 26 declared unreachable targets to 98 and 83, with two
+  new reasons: a receipt names the generation it holds and the port refuses one
+  outside the bounds, and a failed task has no live run for a relation of one
+  to hold of. A failed task's top run is already charged, so its profile
+  isolates a boundary by the revival's own relation, and two boundaries that no
+  live arm can isolate, the budget's lower bound and a run ordinal's, are
+  isolated there by companions of their own. With the receipt's relaunch bound
+  removed the whole libSQL matrix stayed green at the base, 3,082 of 3,082, and
+  six cells fail now, the first being `activate-unactivated contains
+  counter-bound/run-relaunch-count`. With the revival's bound on infrastructure
+  retries removed it stayed green and two cells fail now. With the failure
+  batch's guard on the highest owned ordinal removed it stayed green and two
+  fail now, and with its accounting guard removed six ambient cells already
+  failed, by the findings the failure left behind, and twelve targeted cells
+  fail as well, ten of them on boundaries no cell held. The control of `fail`
+  on a started step is how the matrix reaches the rollback pass. The pass's own
+  integer guard, that the budget its batch writes fits, stays with the two saga
+  cases that hold it on valid, extreme states, because no single corrupt
+  pre-state reaches it: the failure's compare-and-set in front of it vouches
+  for the run's ordinal, the task's three counters and the relation between
+  them. Five mutations, one for each profile, are each owned by a generated
+  cell of that profile: 977. The successor-carry case is generated from the SQL
+  corpus (`conformance/src/successor-carry.ts`, DESIGN.md §3.8): each of the
+  ten statements that insert a run, across six labels, must be made to insert
+  one by some scenario, through an executor that records which corpus statement
+  inserted which run, and the run is judged as its batch left it. A label with
+  a run insert and no scenario fails, and so does an insert no scenario
+  reaches. The hand-written case is deleted, the mutation it owned is owned by
+  the generated case of `fail`, and the rollback passes of `fail`,
+  `fail-rollback` and both sweep cap arms are reached for the first time. The
+  new cells and controls cost 0.7 s of test time on libSQL, 4.3 s on PostgreSQL
+  and 2.7 s on MySQL, and the generated carry cases 0.3, 0.7 and 0.6 s, on a
+  shared machine at a load average of 17 to 70. Against that, the matrix's own
+  total moved by less than its noise: over five interleaved rounds the base
+  took 45.6 to 47.3 s on libSQL, 231.9 to 255.2 s on PostgreSQL and 161.8 to
+  187.4 s on MySQL. `verify` runs the libSQL and PostgreSQL legs, so it gains
+  about 6 s here and about twice that on CI's slowest runner, under a limit
+  that holds the three-times rule until its slowest run reaches 2,400 seconds.
+  - An option, not built: targeted witnesses for the claim receipt's guards
+    that are not counters, the sole live run, the stored retry strategy and
+    headers, and the lease. No targeted witness of that kind exists on any arm,
+    and hand-written cases with registered mutations hold each of those guards
+    today. Its trigger is one of those mutations surviving, or a review that
+    finds one of those guards unheld.
+  - An option, not built: the ambient `fail` cells over a task with a started
+    step, with insert authority for the pass. A probe placed a pass on the
+    poisoned task in 101 of 146 such cells, and the ambient oracle objected
+    only that it grants no such authority. It would hold the pass's live-task
+    conditions and nothing else, for about eleven seconds on PostgreSQL. Its
+    trigger is a defect in where a pass is placed over a corrupt pre-state.
+  - An option, not built: a retrying form of `fail-rollback` in the matrix's
+    `invoke`, which would reach the pass that follows a failed rollback from
+    the matrix itself. The generated successor-carry case reaches that pass
+    today.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
@@ -2063,11 +2142,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stopped whether or not the step there registered a rollback. The review
   round is `postmortems/pr3.4-sagas-review.md`.
   Open, and owned by this entry until it merges:
-  - The poison matrix seeds no task with a started step, so it never reaches
-    the rollback pass. The pass's one integer guard is that the budget its
-    batch writes fits. Two cases in the `sagas` surface hold it: a run at the
-    largest user ordinal gets no pass, and a task spawned with the largest
-    budget rolls back.
   - The store records the attempt count the SDK hands it and does not check
     it against the last one, and nothing caps how many passes a task may
     take. Rollback budgets are the SDK's to keep.
