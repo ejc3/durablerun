@@ -722,14 +722,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a transition that writes it, so it is a spec change first
     (`specs/Scheduler.tla`, beside FailRunTerminal), and it holds a design
     question for the maintainer: the write that ends the run goes to the store
-    that has just refused a write. Trigger: the first permanent code met on an
-    activated run in dogfood or CI, or the first `$InfraRetriesExhausted` whose
-    cause was one.
+    that has just refused a write. Whoever builds it keeps the admin's
+    convergence out of it: racing migrators meet a constraint violation by
+    design, the loser's sentinel (DESIGN.md §3.4), and `migrate()` has no run to
+    end. Trigger: the first permanent code met on an activated run in dogfood
+    or CI, or the first `$InfraRetriesExhausted` whose cause was one.
   - Option for the libSQL executor, not built, with its trigger: type a syntax
     error permanent on libSQL too. `SQLITE_ERROR` is SQLite's generic code, and
     it also names a transaction state error that a new connection cures, so the
     code alone cannot say which, and the executor reads no message text.
     Trigger: the driver reports a code, or a field, that tells the two apart.
+  - Option for the fault matrix, not built, with its trigger: fail a cell when
+    a port call rejects with a type the cell did not inject. The matrix's
+    driver actor wraps every port call in a bare catch, so that a crash it
+    injected reads as a process that died, and a green matrix therefore says
+    nothing about a port call that met a permanent store error, or any other
+    rejection nobody expected. It was so before this entry. Here the question
+    was answered another way, by counting every `PermanentStoreError` the
+    conformance directory constructs on three dialects, by batch label: no
+    scheduler port batch met one under legal use. Trigger: a port call is found
+    to reject with an unexpected type inside a cell the matrix passed.
   - Option for the executors, not built, with its trigger: widen the maps.
     `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, SQLSTATE class 21 on the two
     servers, and MySQL numbers under HY000 other than 1366 stay outages,

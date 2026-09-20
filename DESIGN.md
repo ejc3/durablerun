@@ -1861,6 +1861,18 @@ are load-bearing):
    On PostgreSQL a version's batch first takes a lock on `meta` that a second
    migrator waits on, so the loser's error is the sentinel's unique violation
    and never a deadlock (rule 11).
+   The loser's error is a constraint violation, so its executor types it
+   `PermanentStoreError` (§3.2), and this is the one place where a legal use of
+   a port meets one. Convergence does not change, because the admin reads the
+   authoritative version and never the error's type. What a caller can see is
+   the other half: a `migrate()` that really failed on a constraint code, with
+   the version still absent or behind, now rejects as permanent where it
+   rejected as an outage. That is right, because the batch fails the same way
+   on every retry, and nothing in the repository branches on it. Outside the
+   stores and core, the only source files that name a store error type are the
+   SDK's `task-control.ts` and the driver's `hosted.ts`, and neither calls
+   `migrate()`. Its callers, the two host programs, the dogfood runtime and the
+   example's scripts, await it and read no error type.
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
