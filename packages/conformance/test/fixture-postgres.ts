@@ -4,11 +4,12 @@ import {
   openPostgresTestDb,
   postgresPersistedIntegerCatalogStatements,
 } from '@durablerun/store-postgres/testing'
-import type {
-  StorageCorruption,
-  StorageCorruptionAttempt,
-  StoreFixture,
-  StoreFixtureOptions,
+import {
+  type StorageCorruption,
+  type StorageCorruptionAttempt,
+  type StoreFixture,
+  type StoreFixtureOptions,
+  unboundedOverWidthAttempt,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
@@ -32,6 +33,9 @@ function sqlState(error: unknown): string | undefined {
 }
 
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'over-width') {
+    return unboundedOverWidthAttempt(corruption)
+  }
   const fractionalValue =
     corruption.column === 'max_attempts' ||
     corruption.column === 'attempt' ||

@@ -8,6 +8,7 @@ import {
   treeBuilder as db,
   fenceValue,
   isFencedBatchBindError,
+  isTreeBuiltRead,
   isTreeBuiltStatement,
   literalValue,
   nowValue,
@@ -1400,6 +1401,33 @@ describe('the tree path', () => {
         expect(new Set(sent.map((statement) => statement.sql)).size).toBe(1)
         expect(new Set(sent).size).toBe(3)
         expect(sent.every((statement) => isTreeBuiltStatement(statement))).toBe(true)
+      })
+
+      it('brands what it compiled as a read, and no write, as a read', async () => {
+        // An executor sends a statement alone only when it knows it for a read, and this
+        // brand is how it knows. A compare-and-set comes from a tree too, and is no read.
+        const state = (runId: string) =>
+          statement(db.selectFrom('runs').select('state').where('run_id', '=', runId))
+        const read = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+          state(binds.runId),
+        )
+        const prepared = capturingExecutor(0)
+        await batch().readPrepared('state', read, { runId: 'r1' }).run(prepared.executor)
+        const built = capturingExecutor(0)
+        await batch().readTree('state', state('r1')).run(built.executor)
+        const written = capturingExecutor(1)
+        await batch().casTree('win', statement(winCas())).run(written.executor)
+        expect([...prepared.captured, ...built.captured].map(isTreeBuiltRead)).toEqual([true, true])
+        // Frozen, so nothing between core and the executor can change the text under the brand.
+        expect(
+          [...prepared.captured, ...built.captured].map((sent) => Object.isFrozen(sent)),
+          'mutation-verdict:construction:core-read-brand-is-frozen',
+        ).toEqual([true, true])
+        expect(written.captured.map(isTreeBuiltStatement)).toEqual([true])
+        expect(
+          written.captured.map(isTreeBuiltRead),
+          'mutation-verdict:construction:core-read-brand-marks-reads-alone',
+        ).toEqual([false])
       })
 
       it('is first prepared inside a task that has replaced Map and WeakMap', () => {

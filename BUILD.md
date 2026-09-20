@@ -60,14 +60,31 @@ a last docs PR gives a live owner to every open bullet that is left.
    library holds every identifier column of a snapshot to the width of a
    durable identifier: it reports the over-width rows `legacy-rows.test.ts`
    plants and nothing else there, and a walk fails when a store entry's width
-   check is removed.
+   check is removed. This is met. PR4.5b's axis takes every room from
+   `packages/sdk/test/name-rooms.ts`, and
+   `sdk-repeated-name-key-held-with-its-counter` is registered to the harness,
+   where only the `step used twice` member catches it. The invariant library's
+   `identifier/over-width` condition reads every column of
+   `IDENTIFIER_COLUMNS`, `legacy-rows.test.ts` expects exactly the rows it
+   plants, and a pinned case of eight fuzz walks owns
+   `libsql-emitted-name-held-at-the-entry`, which removes one store entry's
+   width check.
 2. PR4.4a: on MySQL and PostgreSQL a batch of one statement that carries no
    lock is sent alone, in one round trip, when the executor can show that what
    the transaction gave still holds. Any other batch keeps its transaction, and
    the server still refuses a write sent as a read. The counts are pinned
    against a real server on both dialects. The claim's
    `FORCE INDEX (runs_poll)` legs have a plan test, with rows in the table,
-   that fails when the hint is removed from a leg.
+   that fails when the hint is removed from a leg. This is met. In both
+   server executors PR4.4a sends alone a read that core's read path built,
+   and MySQL's schema-version read, which are the statements it knows to be
+   reads. Every write, and every other read sent as text, keeps its
+   transaction.
+   `round-trips.test.ts` in each store pins the counts against a server, and
+   server cases on each dialect hold the refusal and a single write's
+   rollback. The plan case over a small backlog in
+   `store-mysql/test/query-plans.test.ts` fails with the hint removed, which
+   a registered mutation keeps checking.
 3. PR3.3b: the lines that take the event lock leave the dialect stores. Core
    takes it, refuses a batch that adds a completion event without it where that
    batch is built, and decides once whether a batch that ends no task needs it.
@@ -134,7 +151,24 @@ a last docs PR gives a live owner to every open bullet that is left.
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
     not an ancestor of its green. A postmortem that cites the copy of a commit
-    from before a rebase is refused.
+    from before a rebase is refused. This is met. PR3.10a made
+    `scripts/review-attest.sh` read the commits an added postmortem cites, in
+    `--check-postmortem` and in the whole attestation. A postmortem of
+    several findings cites several reds and greens and does not say which
+    green answers which red, so the script holds the reading it can: a commit
+    is refused when it comes first under both labels or under neither, and a
+    red is refused
+    when no cited fix descends from it. The commits under the red and fix
+    labels are also held to the pull request's own range, from the base it
+    was cut from to its head, so a red and a green left in place from the
+    postmortem that a new one was copied from are refused. 55 cases in
+    `scripts/lint-selftest.py` hold each refusal over a git history with a
+    real rebase in it, the copy a rebase leaves behind and the copied pair
+    among them; the postmortems that PR #55 to PR #60 added pass it. It also
+    built the opt-in
+    proof that a red fails: `--prove-reds` runs the probe a red test names, at
+    the red commit, where it must fail by name, and at the head, where it
+    must pass.
 11. PR2.4a: the chaos process test,
     `packages/driver/test/chaos-process.test.ts`, picks no port. A host that
     binds starts on port 0 and reports the port it bound in its ready message,
@@ -1431,10 +1465,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   audit is required to prove those current declarations; even that receipt
   cannot prove that a future semantic arm is enrolled. PR3.10 must derive both
   the cases and their mutation/verdict ownership from the same layer descriptor.
-  The same gate must verify each postmortem's cited red and green hashes are
-  distinct, ordered commits and that the red commit demonstrably leaves the
-  named probe failing; the final attribution closeout showed that prose-only
-  evidence still permits repair findings to be bundled into a green commit.
+  The final attribution closeout showed that prose-only evidence still permits
+  repair findings to be bundled into a green commit, so this entry also asked
+  the gate to verify that each postmortem's cited red and green hashes are
+  distinct, ordered commits and that the red commit leaves the named probe
+  failing. PR3.10a built both, the first as far as roles can be read from
+  prose: a commit under both labels is refused when it comes first after both
+  or after neither, and is otherwise what the label it comes first after
+  says. What stays open here: the required attestation
+  runs no probe and a red test may name none, so a red commit that holds its
+  own fix is seen only by an attester who asks for `--prove-reds`.
   - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
     profile for a running, unactivated claim, so the `activate` and
     `defer-launch` cells reach their corruption guards instead of refusing on
@@ -1443,6 +1483,117 @@ these three things; nothing else in the system does I/O, time, or randomness.
     profile for a failed task, so the `retry-task` cells reach the counter
     guards behind its state condition. The conformance cases pin each guard
     today.
+  - Deferred from PR3.10a: `--check-postmortem` checks a postmortem's tables
+    and the commits it cites, and the whole attestation also checks its
+    sections, its placeholder lines and its unfilled markers, inline. One
+    function for both entry points would make the offline answer the
+    attestation's. It tightens the offline mode and rebuilds two older
+    fixtures, so PR3.10a did not take it.
+  - Deferred from PR3.10a: two known ways a commit cited as a red test skips
+    the order check, both from reading roles out of prose. The word before the
+    buggy commit, today "against", reaches the next id in its clause however
+    many words stand between, so in "against the reviewed head and commit
+    `U`" the commit U gets no role. A bound on the distance was tried and
+    withdrawn: over the 55 postmortems that merges added, the word reaches an
+    id 45 times with up to four words between ("against its buggy PR
+    parent"), and the example has five. And the role an in-line label gives
+    lasts to the end of its bullet, so "commit R1 (fix: F1), commit R2 (fix:
+    F2)" reads R2 as a fix. Both commits are still held to the branch, and a
+    label before every pair is read rightly today.
+  - An option, not built: a declared Evidence format in place of reading
+    prose. A label line would list only its own commits, and what a red test
+    ran against, or what a fix turns green, would go on a line of its own, so
+    that no role is read out of a sentence. It would close both ways above
+    and the honest phrasings that are still refused. Trigger: a third class
+    of misread.
+
+- **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
+  postmortem cites its red tests and its fixes by commit id, and an id does
+  not survive a rebase. `postmortems/pr3.3-child-tasks-spec-review.md` merged
+  citing eleven commits that were never on its branch, each with a twin there
+  under the same subject, and nothing read them. `scripts/review-attest.sh`,
+  in `--check-postmortem <path> [<head> [<base>]]` and in the whole
+  attestation, now
+  refuses an ADDED postmortem when a backticked commit id anywhere in it names
+  a commit the head does not descend from, reports every such id in one run,
+  and names the twin to cite when the branch holds exactly one commit with the
+  same subject and the same patch. An id that names no commit of the
+  repository is left alone outside the labels, because a digest is written
+  the same way, and is printed as not judged, because the copy of a commit
+  from before a rebase reads the same in a clone that never held it. A commit
+  that is rightly elsewhere is written without backticks. Under the labels of
+  the template's two evidence lines that carry a `<hash>` slot an id must
+  also resolve, be the pull request's own and not a commit its base already
+  holds, not come first under both labels or under neither, and, if a red
+  test, have some
+  cited fix that descends from it. The range is there because the usual way
+  to write a postmortem is to copy the last one, whose red and fix are real,
+  distinct, ordered ancestors of the head. "Its fix" is any fix cited,
+  because a postmortem of several findings cites several of each, a fix line
+  also names the commit a defect came in with, and a later round's red
+  follows the first round's fixes. A label is the first word of one of those
+  two lines, whole or cut short to three letters or more, which the script
+  reads from the template and never spells: at the start of a bullet, or
+  inside one at the start of a clause, before a colon or straight before an
+  id. A hyphen or a digit after the word makes it part of a longer word, so
+  the template's own heading "Fix-induced defects" is no fixes line, and
+  straight before an id the word is a label only with the template's capital,
+  so the verb in "commit F fixes R" is none.
+  An id takes the role of the nearest label before it, so a red test and
+  its fix may share a line, as `postmortems/pr3.2a-lifecycle-review.md`
+  writes four of its five rounds, and a line may name a commit of the other
+  kind: a commit under both labels counts where it comes first after its
+  label. First after both it is refused, because a red test and its fix are
+  two commits, and first after neither, as in the second pair of a line that
+  names two, because nothing says which it is: a label before every pair
+  reads every pair.
+  An id that follows the word before the template's `<buggy commit>`
+  slot, today "against", in the same clause, is the code a red ran against
+  and is neither, which matters because a fix is often the code a later red
+  ran against. Replayed at their own heads and bases, the postmortems added
+  by PR #55, #56, #57, #59 and #60 pass, PR #58 added none, and PR #63's
+  passes with no red, because its round had none: a red line may cite no
+  commit, the line that sums up then reads 0 red and says that no order was
+  checked, and a fixes line always cites one. Of all 55 that merges added, 32
+  pass and 23 are refused with 65 lines: 36 name a label the document does
+  not have (21 documents, which predate the template's labels), 17 are one
+  document that calls its fixes green, 11 are the stale ids, and one names,
+  on its red line and in backticks, the commit of main it was rebased onto.
+  Postmortems already on main are not judged again.
+  `--prove-reds` is the other half and is opt-in, because it needs the
+  attester's toolchain and servers. A red test names a probe on its line, a
+  test file and then a test name, and the script runs it in a scratch
+  worktree with its own offline install: at the red commit a test must fail
+  by name, and at the head the same probe must pass, or the failure was never
+  the defect's. The probe is named and not derived: choosing the test files a
+  red commit changed refused a real red, whose case lives in a generated
+  surface under `src/` that an unchanged test file runs. A scratch copy that
+  borrows another tree's `node_modules` directories runs that tree's workspace
+  packages (measured: 4 of the 10 tests of a real red pass falsely), so every
+  dependency link is held to the copy before anything runs. Every copy
+  installs offline from the store of the checkout the script runs from, as
+  the mutation probe's worktrees do, because pnpm picks a store by mount point
+  and the one it picks for a copy elsewhere may hold nothing. A probe's name
+  is matched as it is written, because vitest reads `-t` as a regular
+  expression and a conformance title holds `[libsql]`. Measured on
+  libSQL, PostgreSQL and MySQL with the reds of two merged rounds given
+  probes: the nine-finding postmortem of PR #60, three reds, 31 seconds, and
+  the fourteen-finding one of PR #56, three reds, 42 seconds, at 4 to 8
+  seconds a red and the rest at the head. A run that proves no red exits 1,
+  and a red that names no probe is counted on the line that sums up. A commit
+  that was dropped from the reds for coming first under the fixes label has
+  the probe it named run all the same, because a commit that holds its own
+  fix is cited just so, and its probe passes where it is cited. A probe
+  that still runs after ten minutes is stopped
+  (`REVIEW_ATTEST_PROBE_SECONDS` raises the limit), one that is killed is
+  reported as killed, which a machine out of memory does too, and the probe
+  stays in the foreground so that an interrupt reaches it. A run removes the
+  scratch copies it made and prunes nothing, because other worktrees of the
+  repository may be away for the moment, and a copy the repository has
+  already forgotten does not fail a run that was satisfied.
+  `lint-selftest.py` holds 55 cases over a git history that git builds with a
+  real rebase in it, through both entry points, and each of 53 deletions of a
+  condition of the new code fails a named case.
 
 - **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
   other entry owned.
@@ -1747,13 +1898,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
-  - Deferred from `postmortems/pr4.5-identifier-width-review.md`: a name-length
-    axis for the replay-equivalence harness. It draws every name from a list of
-    six, the longest six characters, so no generated program builds a key near
-    the 255 character width of a durable identifier, and a refusal the store
-    gives by a name's length is met by no generated SDK program. The axis is,
-    for every keyed call the harness generates, a name at its room, one under,
-    and one past.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
@@ -2147,17 +2291,102 @@ these three things; nothing else in the system does I/O, time, or randomness.
     coordinate. With it goes the case no test has: a version that was half
     applied, rerun through `migrate()`. It changes core's batch control and
     every executor, which PR3.9e part 3b and the child-task fold are editing.
-  - Deferred from PR4.3: a read batch costs four round trips and a
-    single-statement write three, where autocommit needs one. Five of the six
-    read batches hold one statement, the per-tick next-wake among them.
+  - Done in PR4.4a: one read that the executor knows to be a read is sent
+    alone, under the session's autocommit, where a read batch cost four round
+    trips. The executor knows because core brands what its read path
+    compiles, which refuses a root that is not a SELECT, and MySQL's canonical
+    schema-version read is matched by its whole text. A read sent as text
+    keeps the read-only transaction, and every write keeps its transaction,
+    because what a transaction gives a write, its rollback when MySQL cut a
+    value to fit or when its result is refused, cannot be shown from the
+    statement. DESIGN.md's MySQL notes say how each part was checked.
+    PostgreSQL has the same rule, where the schema-version read is text and so
+    keeps its transaction. `round-trips.test.ts` in each store pins the counts
+    against a server. Measured on loopback against main, medians of
+    interleaved rounds on one shared machine, in microseconds a call:
+
+    | Call | MySQL, main | MySQL | PostgreSQL, main | PostgreSQL |
+    |---|---|---|---|---|
+    | next-wake | 345 | 156 | 1252 | 1139 |
+    | task result | 301 | 119 | 695 | 521 |
+    | heartbeat, refused | 755 | 523 | 1113 | 981 |
+    | heartbeat, held | 530 | 547 | 1056 | 1118 |
+    | one idle driver tick | 4218 | 4235 | 9181 | 8890 |
+
+    The last two rows did not move. A held heartbeat is two statements. A
+    claim with nothing to claim is most of an idle tick, 3.3 ms of MySQL's
+    4.7 ms and 6.8 ms of PostgreSQL's 11 ms in a second run of the same kind,
+    and the next-wake read's saving is lost in what the rounds spread. Thirteen
+    mutations hold the rule's conditions, the one statement a read sent alone
+    may hold, the place where MySQL decides, the session's autocommit, core's
+    brand, and the plan tests below, and the mutant of MySQL's schema-version
+    read is re-aimed at the rule. The rule first decided from a statement's
+    text and binds. The review of this PR reproduced, against main, a write
+    that MySQL cut at a trailing tab and committed before it was refused, and
+    a DELETE sent behind a SELECT that ran as a read on PostgreSQL. A second
+    review, of the fold, ran a read that core built whose fragment held a
+    DELETE, which PostgreSQL ran once the read went alone as plain text, and
+    found that the MySQL executor decided whether a batch goes alone after its
+    wait for a connection. The postmortem of those reviews records all four.
+    - Option, not a deferral of this PR: the sweep's discovery scan is a read
+      batch of two statements, five round trips on MySQL and four on
+      PostgreSQL. As two batches of one statement it would be two. Nothing a
+      sweep does needs the two reads to share a snapshot, because every
+      transition it then makes checks its own row again, but it changes a
+      batch's shape on all three stores.
+    - Option, not a deferral of this PR: the read brand shows where a statement
+      came from, and not what a store's own fragment holds. Core reads a
+      fragment for clocks and comments only. The review of the fold ran a
+      branded read whose fragment held a second statement, a DELETE. Sent
+      alone on PostgreSQL as plain text it ran, where the same text sent as a
+      read was refused, and MySQL refused both. A read sent alone now goes
+      through PostgreSQL's extended protocol, which takes one statement, so
+      both servers refuse it. What remains is a fragment that CALLS a function
+      that writes: run on a server, a read whose fragment called `nextval` was
+      sent alone and advanced the sequence, where the same text sent as a read
+      was refused. No read of the stores calls a function that writes. The
+      trigger is the first store read that calls a function outside core's
+      grammar list. A rule in core's fragment parser that refuses a semicolon
+      outside a literal would refuse the second statement at build time on
+      every dialect. It is recorded and not built: it is a new condition of a
+      tree rule, with its mutation and a bridge line, and both servers already
+      refuse the statement. A MySQL pool handed to `fromPool` with multiple
+      statements switched on is outside what was checked.
+    - Option, not a deferral of this PR: a shared conformance case that a write
+      sent as a read is refused on every dialect. Server cases hold it on MySQL
+      and on PostgreSQL, where the exit test asks for it.
+    - Option, not a deferral of this PR: the PostgreSQL executor could check a
+      pool's default isolation level once for each client. DESIGN.md states
+      what a read sent alone asks of it, and nothing refuses a pool set to
+      SERIALIZABLE.
   - Deferred from PR4.3: `migrate()` reads the version before each of the four
     empty versions and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
     database for every case.
-  - Deferred from PR4.3: the claim's `FORCE INDEX (runs_poll)` legs have no
-    measured plan test. `store-mysql/test/query-plans.test.ts` is where it
-    goes. The shared concurrency case fails when a leg over-locks, which is
-    how the shape was found.
+  - Done in PR4.4a: the claim's candidate legs have a measured plan test in
+    `store-mysql/test/query-plans.test.ts`, with rows in the table. Beside 800
+    due runs, and as many that are not due or belong to another queue, the
+    statement that owns the legs walked 56 rows and held 8 record locks on
+    `runs`. With a leg that has no LIMIT of its own it walked 3,246 rows and
+    held 1,602 locks, and a registered mutation makes the case refuse that.
+    The index hint changed neither number there, under stale statistics or
+    analyzed ones, so a second case holds the hint where it does: over forty
+    due runs that are the whole table, once the server has counted them, a
+    leg with no hint is a table scan and a sort that locked all forty runs
+    for a claim of two. It held 40 record locks and walked 166 rows, against
+    4 and 49 as shipped, and a second registered mutation makes that case
+    refuse it. With no hint the scan was the plan from twelve due runs to
+    eighty at a limit of one or two, and not at eight, under stale
+    statistics, or where half the table belonged to another queue. Two
+    things measured on the way belong elsewhere. Under statistics InnoDB had
+    not yet recalculated, as after a bulk load, the claim's task update and
+    its receipt read walked every run in the table, 3,213 and 1,606 rows
+    beside 2,000 runs, and 11 and 8 once the tables were analyzed, which
+    bears on the option under PR3.14. And as shipped the claim's update scans
+    `runs` and locks every row of it when the limit is a large part of the
+    table: with a limit of one at five rows and fewer, and with a limit of
+    half the table at 20, 120, and 400 rows, where a quarter of the table
+    was still read by key. The plan tests say so and do not pin it.
   - Deferred from PR4.3: third copies. The test id source, the admin's
     version read and versioned write, the fixture's corruption-table switch,
     and the store's dialect-free declarations are now in three packages.
@@ -2324,11 +2553,115 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (`fixture-id-namespace.ts`): spelled out when the ids leave 64 characters of
     room in the width, hashed when they would not, so no fixture mints an id the
     contract says cannot exist.
-  - An option, not built: a check that finds rows whose names pass the width,
-    a stranded queue above all. The invariant library derives and pins its
-    inventory of conditions, so a width probe there is a new family of
-    conditions with its own enrollment, and no database anyone has observed
-    holds such a row.
+
+- **PR4.5b the identifier width's two checks**: DONE. PR4.5 parked two checks
+  of rule 10 (DESIGN.md §3.4), and this builds both.
+  - The replay-equivalence harness has a name-length axis. Every generated
+    call that passes a name runs with a name one character under its room, at
+    its room, and one past it: a step, a step used twice, a step that
+    registers a rollback, `awaitEvent`, `emitEvent`, `spawn`, and `awaitTask`.
+    `packages/sdk/test/name-rooms.ts` states the longest durable name the
+    engine builds from each name, and a room is what that leaves of
+    `IDENTIFIER_CHARACTERS`, so no room is typed as a number. The axis is a
+    record typed by the generated methods, so a new one does not compile
+    without its members. The table case of `identifier-width.test.ts` typed
+    the same rooms by hand. That case now takes every length from that one
+    table and states the numbers DESIGN.md gives once, in one expectation. The
+    file's other cases keep the lengths they had. Under and at its room a program
+    ends as its reference run did at every sampled fault point, and the run
+    left a name of the length the member claims. Past it, on every schedule,
+    the task fails for good with a `FatalTaskError` that names what the task
+    passed, no body at or after the refused call runs, the task is charged one
+    attempt, and once the refused call starts the SDK makes no store call but
+    the one that records the failure. A child's task name is the documented
+    exception: the store builds the child key and refuses it, so that member
+    expects the one `spawn` call first. An awaited child's id is the engine's,
+    so that member pads the first id minted inside the child's spawn and
+    checks the stored id's length.
+  - The axis can fail, and the audit keeps checking that it can. Each
+    mutation runs only its registered test, and the four mutations of the
+    SDK's hold are registered to `identifier-width.test.ts`, which runs its 16
+    cases in 2.2 s on libSQL and PostgreSQL where the harness file takes
+    13.9 s on libSQL alone. They stay there. One new mutation,
+    `sdk-repeated-name-key-held-with-its-counter`, names the harness: the SDK
+    holds the name a task passed and not the key it derives, so `name#2`
+    passes the width, and only the `step used twice` member sees it. By hand,
+    every member goes red by name under a registered mutant: `step`,
+    `step used twice`, `step that registers a rollback`, `awaitEvent`, and
+    `awaitTask` under `sdk-durable-key-held-before-the-body-runs`, `emitEvent`
+    under `sdk-emitted-event-name-held`, and `spawn` under core's
+    `stored-child-key-held-to-the-width`. The axis stays green under
+    `sdk-key-already-stored-is-not-held` and
+    `sdk-started-key-held-to-the-width`, which need a name an older build
+    stored, and no generated program has one.
+  - Measured over five interleaved rounds against main on one machine, the
+    SDK suite goes from 12.4 s to 16.4 s at the median and from 167 tests to
+    174, all of it in the harness file, 10.3 s to 13.9 s. The suite runs
+    inside CI's verify job.
+  - The invariant library has the condition `identifier/over-width`. One
+    inventory, `IDENTIFIER_COLUMNS`, names the 22 columns of the six table
+    snapshots that hold a durable identifier and selects them into the
+    snapshot, and the condition reads each with core's `fitsCharacters`. It is
+    rule 10's executable twin on libSQL and PostgreSQL, whose columns do not
+    bound a name, and every sim, scenario, and fuzz walk runs it. It reads
+    snapshots in tests. It is not an admin check of a production database. It
+    is enrolled as the library demands: 115 pinned conditions, one poison
+    witness through a new storage corruption variant, injected on libSQL and
+    PostgreSQL and structurally rejected by MySQL's column with error 1406, 146
+    witnesses and 3,066 cells, one checker case that plants a name at the
+    width and one past it in every column, a second that holds every VARCHAR
+    column of MySQL's schema, by name and width, to the inventory or to a short
+    named list of bounded columns that are not identifiers, with a reader that
+    refuses a migration statement it cannot read, and three mutations.
+    `legacy-rows.test.ts` expects exactly the violations for the rows it
+    plants.
+  - No walk could trip the condition, so the operation fuzz gained one op.
+    With the libSQL store's `emitEvent` hold removed, a run of 608 seeds by 100
+    steps passed whole. The op passes the port a name one character past the
+    width about one step in ten, from a random stream of its own, and leaves
+    an accepted name for the condition to report. With the op, the same
+    removal fails all 32 shard files and the pinned regression seeds, 37 walks
+    naming the condition on `events.event_name`, and removing core's stored
+    child key hold fails all 32 shard files, 71 walks naming it on
+    `tasks.idempotency_key`. Over 60 seeds by 100 steps every counter of every
+    walk equals main's. The audit keeps checking this too: a pinned case of
+    eight such walks owns `libsql-emitted-name-held-at-the-entry`, which
+    removes that one store entry's hold. The case sits in the checker test,
+    because the audit leaves the fuzz files out of a mutation's run.
+  - A limit of the mutation audit, met here. Its test command excludes
+    `packages/conformance/test/fuzz-*` and the driver's process chaos test, so
+    a verdict in one of those files never runs and its mutation can never be
+    caught. The registry's self-test now refuses such a verdict where it is
+    declared, with three cases and an injected fault of its own. No verdict
+    sits in one: 0 of 880.
+  - The review of PR #65 found no bug in shipped code, and six places where a
+    check or a sentence this work added said more than it held. They are
+    recorded in `postmortems/pr4.5b-width-checks-review.md`. The worst was
+    reproduced: the inventory pin's reader skipped a migration statement in
+    the schema's repeat-safe shape, so a column added that way would have been
+    missing from the inventory with every test green. It was committed as a
+    failing case and then fixed.
+  - The mutation registry gains five mutations: 875 to 880 on main as it stood
+    when this merged after PR4.4c.
+  - An option, not built: an admin command that lists rows whose names pass
+    the width, a stranded queue above all. No database anyone has observed
+    holds one. The harness's other stated gaps stay where the sagas entry lists
+    them.
+  - An option, not built: hold the inventory to MySQL's catalog, which states
+    each column's width, in the `conformance-mysql` job. The fixtures' catalog
+    statements return a type without a width, so it means a change to three
+    store packages' test exports and to the fixture contract. The pin reads
+    the migrations' text, which sees a VARCHAR column in any statement and not
+    a column bounded by another type.
+  - An option, not built: draw the fuzz op's names from the port-typed
+    `ENTRIES` table of `identifier-bound.ts`. The op lists four entries by
+    hand, and its names are ASCII. PR3.3c generates an axis from that table
+    and may absorb this.
+  - An option, not built: a poison witness for each of the 22 identifier
+    columns. One column has one.
+  - An option, not built: read PostgreSQL's `event_locks`, which holds
+    identifiers outside the six snapshot tables. Each of its rows has a sibling
+    row in `events` or `waits` that the condition reads.
 
 ## Phase 5 — operations + sharding
 

@@ -414,20 +414,68 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
-  it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
+  it('runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read', async () => {
+    // A read is sent alone only when core's read path built it. A statement sent as a read
+    // in text keeps the read-only transaction, where the server refuses a write.
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
       const [write] = await db.raw.batch('fixture:isolation', [
-        { sql: 'SELECT @@transaction_isolation AS level', args: [] },
+        { sql: 'SELECT @@transaction_isolation AS level, @@autocommit AS autocommit', args: [] },
       ])
-      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED' }])
-      await expect(
-        db.raw.batch(
+      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED', autocommit: 1 }])
+      await db.raw.batch('fixture:seed', [
+        { sql: "INSERT INTO meta (`key`, value) VALUES ('kept', 'v')", args: [] },
+      ])
+      const outcome = await db.raw
+        .batch(
           'fixture:read-only',
-          [{ sql: "DELETE FROM meta WHERE `key` = 'nothing'", args: [] }],
+          [{ sql: "DELETE FROM meta WHERE `key` = 'kept'", args: [] }],
           'read',
-        ),
-      ).rejects.toThrow(/READ ONLY/)
+        )
+        .then(
+          () => 'accepted',
+          (error: unknown) => (/READ ONLY/.test(String(error)) ? 'refused by the server' : error),
+        )
+      const [kept] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE `key` = 'kept'", args: [] }],
+        'read',
+      )
+      expect(
+        { outcome, kept: kept?.rows },
+        'mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read',
+      ).toEqual({ outcome: 'refused by the server', kept: [{ n: 1 }] })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses a single write whose key ends in a tab and would be cut to fit, and writes nothing', async () => {
+    // MySQL cuts more than a trailing space with a note: a tab, a line break, a bind sent
+    // as bytes, a literal in the text. The executor cannot tell from a statement that none
+    // of them is in it, so a single write keeps its transaction, where the cut rolls back.
+    const db = await openMysqlTestDb({ idNamespace: 'cut-tab' })
+    try {
+      const outcome = await db.raw
+        .batch('fixture:cut-tab', [
+          {
+            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+            args: [`${'k'.repeat(255)}\t`, 'tabbed'],
+          },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      const [rows] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'tabbed'", args: [] }],
+        'read',
+      )
+      expect(
+        { refused: outcome instanceof InvalidDurableStringError, stored: rows?.rows[0]?.n },
+        'mutation-verdict:behavior:mysql-lone-statement-is-a-read',
+      ).toEqual({ refused: true, stored: 0 })
     } finally {
       await db.close()
     }

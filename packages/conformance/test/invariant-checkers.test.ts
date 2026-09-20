@@ -1,4 +1,5 @@
 import {
+  IDENTIFIER_CHARACTERS,
   INFRA_RETRY_CAP,
   MAX_COUNT,
   MAX_EPOCH_MS,
@@ -7,13 +8,55 @@ import {
   type SqlExecutor,
   type SqlResult,
 } from '@durablerun/core'
-import { describe, expect, it } from 'vitest'
 import {
+  META_TABLE_SQL as MYSQL_META_TABLE_SQL,
+  MIGRATIONS as MYSQL_MIGRATIONS,
+} from '@durablerun/store-mysql'
+import { describe, expect, it } from 'vitest'
+import { runFuzzScenario } from '../src/fuzz.js'
+import {
+  IDENTIFIER_COLUMNS,
   bindInvariantSnapshotRows,
   engineInvariantFindings,
   engineInvariantViolations,
 } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
+
+/**
+ * Every column a migration list types as VARCHAR, and its width. MySQL is the one dialect
+ * whose schema bounds a durable identifier, so its migrations say which columns hold one.
+ * Any `name VARCHAR(n)` in a statement that starts with CREATE TABLE or ALTER TABLE is read,
+ * however it is laid out. A statement that types a VARCHAR this reader did not read is
+ * refused, not skipped: this schema writes DDL that is safe to repeat as a statement inside
+ * a string, and a column added that way would otherwise never reach the pin. What the
+ * reader cannot see is a column bounded by another type, CHAR(n) for one.
+ */
+function boundedColumns(
+  migrations: readonly { readonly statements: readonly string[] }[],
+): { table: string; column: string; width: number }[] {
+  return migrations
+    .flatMap((migration) => migration.statements)
+    .flatMap((sql) => {
+      const table = /^\s*(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE)\s+`?(\w+)`?/i.exec(
+        sql,
+      )?.[1]
+      const read =
+        table === undefined
+          ? []
+          : [...sql.matchAll(/`?(\w+)`?\s+VARCHAR\((\d+)\)/gi)].map((match) => ({
+              table,
+              column: String(match[1]),
+              width: Number(match[2]),
+            }))
+      const typed = [...sql.matchAll(/VARCHAR\s*\(/gi)].length
+      if (typed !== read.length) {
+        throw new Error(
+          `a migration statement types ${typed} VARCHAR column(s) and the reader read ${read.length}: ${sql.trim().replace(/\s+/g, ' ').slice(0, 80)}`,
+        )
+      }
+      return read
+    })
+}
 
 /**
  * Checkers must be checked: every invariant added to the library gets a
@@ -606,6 +649,132 @@ describe('invariant checkers fire on constructed corruption', () => {
     await f.close()
   })
 
+  it('reports a name past the width in every identifier column, and none at the width, counted in code points', async () => {
+    // 255 code points in 510 UTF-16 units: a count of units would call this name too long.
+    const atTheWidth = '\u{1F600}'.repeat(IDENTIFIER_CHARACTERS)
+    const observed: Record<string, { atTheWidth: string[]; pastTheWidth: string[] }> = {}
+    const expected: typeof observed = {}
+    for (const [table, columns] of Object.entries(IDENTIFIER_COLUMNS)) {
+      for (const column of columns) {
+        const f = await seeded(`width-${table}-${column}`)
+        try {
+          // One row in each of the four tables the seed world leaves empty.
+          await f.raw.batch('every-table', [
+            {
+              sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, owner_run_id,
+                      owner_attempt, updated_at_ms)
+                    VALUES ('t1', 'cp', ?, '1', 'r1', 1, ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                    VALUES (?, 'go', '{"x":1}', ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, created_at_ms)
+                    VALUES ('r1', '$await:other', ?, 't1', 'other', ?)`,
+              args: [Q, NOW],
+            },
+            {
+              sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+                    VALUES (?, 'd1', ?, ?)`,
+              args: [Q, NOW, NOW + 30_000],
+            },
+          ])
+          const found = async (name: string): Promise<string[]> => {
+            await f.raw.batch('name', [{ sql: `UPDATE ${table} SET ${column} = ?`, args: [name] }])
+            return (await engineInvariantFindings(f.raw))
+              .filter((finding) => finding.conditionId === 'identifier/over-width')
+              .map((finding) => `${finding.subjectIdentity[0]}.${finding.subjectIdentity.at(-1)}`)
+          }
+          observed[`${table}.${column}`] = {
+            atTheWidth: await found(atTheWidth),
+            pastTheWidth: await found(`${atTheWidth}w`),
+          }
+          expected[`${table}.${column}`] = {
+            atTheWidth: [],
+            pastTheWidth: [`${table}.${column}`],
+          }
+        } finally {
+          await f.close()
+        }
+      }
+    }
+    expect(
+      observed,
+      'mutation-verdict:behavior:identifier-over-width-read-in-every-column',
+    ).toEqual(expected)
+  })
+
+  it('reads every column MySQL bounds at the width, and no other', () => {
+    // Every VARCHAR column of MySQL's schema is an identifier column, which the width
+    // condition reads, or is named here with its width and the reason it is not one. So a
+    // new column, a new width, and a column in another table each fail this case.
+    const notIdentifiers = {
+      // One of a closed set of words the engine writes, never a name a caller passes.
+      'tasks.state': 16,
+      'runs.state': 16,
+      'checkpoints.status': 16,
+      'waits.status': 16,
+      // The schema version's key, in a table outside the six snapshots.
+      'meta.key': IDENTIFIER_CHARACTERS,
+    }
+    const identifiers = Object.fromEntries(
+      Object.entries(IDENTIFIER_COLUMNS).flatMap(([table, columns]) =>
+        columns.map((column) => [`${table}.${column}`, IDENTIFIER_CHARACTERS]),
+      ),
+    )
+    expect(
+      Object.fromEntries(
+        boundedColumns([{ statements: [MYSQL_META_TABLE_SQL] }, ...MYSQL_MIGRATIONS]).map(
+          ({ table, column, width }) => [`${table}.${column}`, width],
+        ),
+      ),
+      'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
+    ).toEqual({ ...identifiers, ...notIdentifiers })
+  })
+
+  it('finds bounded columns in SQL formatting it did not anticipate', () => {
+    expect(
+      boundedColumns([
+        {
+          statements: [
+            'create table if not exists `a` (`id` varchar(255) NOT NULL, name VARCHAR(16), n BIGINT,\n PRIMARY KEY (id, name)) ENGINE=InnoDB',
+            'CREATE INDEX a_name ON a (name)',
+            'ALTER TABLE a\n  ADD COLUMN later VARCHAR(255)',
+          ],
+        },
+      ]),
+    ).toEqual([
+      { table: 'a', column: 'id', width: 255 },
+      { table: 'a', column: 'name', width: 16 },
+      { table: 'a', column: 'later', width: 255 },
+    ])
+  })
+
+  it('refuses a migration statement that types a VARCHAR column it did not read', () => {
+    // MySQL has no ADD COLUMN IF NOT EXISTS, so this schema writes DDL that is safe to repeat
+    // as a statement inside a string, which it sets, prepares and executes. A column added
+    // that way is in no statement the reader reads, so the reader must refuse the statement
+    // and not skip it.
+    expect(() =>
+      boundedColumns([
+        {
+          statements: [
+            "SET @durablerun_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'a' AND column_name = 'guarded') = 0, 'ALTER TABLE a ADD COLUMN guarded VARCHAR(255)', 'DO 0')",
+            'PREPARE durablerun_ddl FROM @durablerun_ddl',
+            'EXECUTE durablerun_ddl',
+          ],
+        },
+      ]),
+    ).toThrow(/VARCHAR/)
+    // A column the pattern does not read, inside a statement it does read, is refused too.
+    expect(() =>
+      boundedColumns([{ statements: ['CREATE TABLE a (id VARCHAR (255), name VARCHAR(16))'] }]),
+    ).toThrow(/types 2 VARCHAR column\(s\) and the reader read 1/)
+  })
+
   it('stays silent on the consistent seed world', async () => {
     const f = await seeded('clean')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
@@ -641,4 +810,33 @@ describe('invariant checkers fire on constructed corruption', () => {
       bindings: projections.map(({ table }) => [table, [table]]),
     })
   })
+})
+
+/**
+ * The width condition can fail only when something stores a name past the width, and the
+ * one op of the fuzz walk that passes such a name is refused by a store that holds the rule.
+ * So these walks are green while every entry holds it, and a store entry that stops holding
+ * it fails them by that condition. The case lives here and not beside the fuzz shards,
+ * because the mutation audit leaves the fuzz files out of a mutation's run.
+ */
+describe('walks that pass the port names past the width', () => {
+  it('uphold the invariants, and the port refuses every name', async () => {
+    const failures: string[] = []
+    let refusals = 0
+    // Eight walks of fifty steps pass a few dozen names between them.
+    for (let walk = 0; walk < 8; walk++) {
+      await runFuzzScenario(makeLibsqlFixture, `past-the-width-${walk}`, 50).then(
+        (stats) => {
+          refusals += stats.overWidthRefusals
+        },
+        (error: unknown) => {
+          failures.push(String(error).replace(/w{40,}/g, '<a name past the width>'))
+        },
+      )
+    }
+    expect(
+      { failures, refusedSomething: refusals > 0 },
+      'mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width',
+    ).toEqual({ failures: [], refusedSomething: true })
+  }, 120_000)
 })

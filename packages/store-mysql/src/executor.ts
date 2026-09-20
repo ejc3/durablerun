@@ -10,6 +10,7 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -82,8 +83,12 @@ class MysqlResultContractError extends TypeError {}
  *   truncation, whatever the server's default is. Backslash escapes stay on.
  * - UTC, English server messages, because the affected-row normalization reads the
  *   server's `Rows matched:` line.
+ * - Autocommit on. It is the server's default, and a read sent alone depends on it
+ *   (`sentAlone`): with autocommit off, the read would open a transaction that stays open
+ *   on a pooled connection.
  */
 const SESSION_SETUP = `SET SESSION
+  autocommit = 1,
   transaction_isolation = 'READ-COMMITTED',
   sql_mode = 'STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ONLY_FULL_GROUP_BY,NO_ZERO_DATE,NO_ZERO_IN_DATE',
   time_zone = '+00:00',
@@ -274,23 +279,10 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch sees one consistent snapshot, and cannot write. */
+/** A read batch sees one consistent snapshot and cannot write, unless it is one read sent alone (`sentAlone`). */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
-] as const
-/**
- * The one-statement schema-version read begins under READ COMMITTED, with no snapshot
- * taken ahead of it. A consistent snapshot is older than the statement that reads
- * through it, and MySQL refuses to read a table whose definition committed after the
- * snapshot (error 1412, "Table definition has changed"), so a version read racing a
- * bootstrap failed. Measured over 250 cold starts with six racing readers: 1500 such
- * refusals under the snapshot and none under READ COMMITTED, where the statement sees
- * either no table or the table with its row.
- */
-const BEGIN_VERSION_READ = [
-  'SET TRANSACTION ISOLATION LEVEL READ COMMITTED',
-  'START TRANSACTION READ ONLY',
 ] as const
 
 /** Matching coordinates hash to one server-wide lock name, scoped to this database. */
@@ -321,10 +313,11 @@ async function acquireNamedLock(connection: PoolConnection, lock: LockCoordinate
 }
 
 /**
- * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, where
- * any other excess is error 1406. The cut value is a different identifier, so a write that
- * was cut is refused like one that did not fit, and its transaction rolls back. The server
- * reports a warning count with every result, so this costs a round trip only when there
+ * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, and was
+ * measured to cut a trailing tab and a trailing line break the same way under this session's
+ * mode, where any other excess is error 1406. The cut value is a different identifier, so a
+ * write that was cut is refused like one that did not fit, and its transaction rolls back. The
+ * server reports a warning count with every result, so this costs a round trip only when there
  * is something to read.
  */
 async function refuseWriteCutToFit(
@@ -343,6 +336,56 @@ async function refuseWriteCutToFit(
   }
 }
 
+/**
+ * Whether a batch is sent as its one statement alone, with no transaction around it. The
+ * session has autocommit on, so the server commits the statement by itself, in one round
+ * trip where a read batch's transaction cost four.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar, or the canonical schema-version read, which is matched by its whole text. How a
+ * statement's text begins shows nothing, because a text that begins with SELECT can still
+ * call what writes. A read sent as text therefore keeps the read-only transaction, where
+ * the server refuses every write.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, which takes one statement in a text unless the
+ * connection asked for more, and a pool this executor opens never does
+ * (`multipleStatements: false`). A pool handed to `fromPool` that does is outside what was
+ * checked. A fragment that CALLS a function that writes is refused by nothing once the
+ * read goes alone. No read of the stores calls one.
+ *
+ * What the transaction gave such a read still holds. One statement reads through one view
+ * under READ COMMITTED, its subqueries included. The schema-version read has to be such a
+ * statement: a snapshot taken ahead of it is older than a table created since, and MySQL
+ * refuses to read such a table (error 1412). Measured over 250 cold starts with six racing
+ * readers: 1500 such refusals under a snapshot, and none for one statement under READ
+ * COMMITTED, which sees either no table or the table with its row.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * MySQL cut a value to fit (`refuseWriteCutToFit`) or when its result is refused, and the
+ * executor learns of either only after the server has run the statement. Nothing about a
+ * statement's text or binds shows that neither will happen: MySQL cuts a trailing tab or
+ * line break as it cuts a space, in a bind sent as bytes or a literal in the text as in a
+ * bound string.
+ */
+function sentAlone(
+  statements: readonly SqlStatement[],
+  mode: SqlBatchMode,
+  schemaVersionRead: boolean,
+): boolean {
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return schemaVersionRead || isTreeBuiltRead(statement)
+}
+
+/**
+ * The canonical version read, for which a missing table means a database with no schema
+ * yet. It is matched by its whole text, so the executor knows it for a read and sends it
+ * alone.
+ */
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -412,9 +455,11 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over mysql2. Every batch owns one connection and one transaction, so
- * statements are ordered and observe earlier statements of the same batch. Write batches
- * run at READ COMMITTED. Read batches run in a read-only consistent snapshot.
+ * SqlExecutor over mysql2. Every batch owns one connection. A batch of more than one
+ * statement owns one transaction, so its statements are ordered, atomic, and observe
+ * earlier statements of the same batch: a write batch at READ COMMITTED, a read batch
+ * in a read-only consistent snapshot. One read that the executor knows to be a read is
+ * sent alone, because one statement reads one view by itself (`sentAlone`).
  *
  * Statements that carry arguments go through the server's prepared-statement protocol,
  * so a bind is data and never SQL text.
@@ -493,6 +538,9 @@ export class MysqlExecutor implements SqlExecutor {
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    // Decided here, beside the copy and before any wait: what the caller's array holds
+    // after a wait is not what was copied. The brand is on the caller's own object.
+    const alone = sentAlone(statements, mode, schemaVersionRead)
     const lock: LockCoordinates | null =
       transactionLock !== undefined
         ? lockCoordinates(transactionLock)
@@ -516,7 +564,7 @@ export class MysqlExecutor implements SqlExecutor {
         await connection.query(SESSION_SETUP)
         this.configured.add(physical)
       }
-      return await this.transact(connection, prepared, mode, lock, schemaVersionRead)
+      return await this.transact(connection, prepared, mode, lock, alone)
     } catch (error) {
       discard = !(error instanceof MysqlResultContractError) && errorNumber(error) === undefined
       throw classifyError(error, label, schemaVersionRead)
@@ -531,7 +579,7 @@ export class MysqlExecutor implements SqlExecutor {
     prepared: readonly PreparedStatement[],
     mode: SqlBatchMode,
     lock: LockCoordinates | null,
-    schemaVersionRead: boolean,
+    alone: boolean,
   ): Promise<SqlResult[]> {
     let locked = false
     try {
@@ -542,14 +590,14 @@ export class MysqlExecutor implements SqlExecutor {
       for (let attempt = 1; ; attempt += 1) {
         let transactionStarted = false
         try {
-          if (mode === 'read') {
-            for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {
-              await connection.query(statement)
+          if (!alone) {
+            if (mode === 'read') {
+              for (const statement of BEGIN_READ) await connection.query(statement)
+            } else {
+              await connection.query('START TRANSACTION')
             }
-          } else {
-            await connection.query('START TRANSACTION')
+            transactionStarted = true
           }
-          transactionStarted = true
           const results: SqlResult[] = []
           for (const statement of prepared) {
             // Each statement is a round trip here. One whose gating statement wrote no row
@@ -572,7 +620,7 @@ export class MysqlExecutor implements SqlExecutor {
               normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql),
             )
           }
-          await connection.query('COMMIT')
+          if (transactionStarted) await connection.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {

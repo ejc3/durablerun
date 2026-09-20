@@ -1,4 +1,5 @@
 import {
+  IDENTIFIER_CHARACTERS,
   type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
   PERSISTED_TEMPORAL_FIELDS,
@@ -9,6 +10,7 @@ import {
   type SqlResult,
   type SqlRow,
   decodeBoundedInteger,
+  fitsCharacters,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -89,6 +91,7 @@ const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'counter-bound/run-activated-gen': 'counter-out-of-range',
   'counter-bound/run-relaunch-count': 'counter-out-of-range',
   'counter-bound/checkpoint-owner-attempt': 'counter-out-of-range',
+  'identifier/over-width': 'identifier-over-width',
 } as const)
 
 export type TemporalStorageConditionId = `temporal/${PersistedTemporalFieldId}`
@@ -141,13 +144,29 @@ type ProtocolRows = Readonly<Record<PersistedTemporalTable, readonly SqlRow[]>>
 
 type SqlValue = SqlRow[string] | undefined
 
-function withTemporalColumns(
+/**
+ * Every column of the six snapshot tables that holds a durable identifier (DESIGN.md
+ * §3.4 rule 10). MySQL bounds each at the width in its schema, and the checker test
+ * holds this list to that schema. libSQL and PostgreSQL store unbounded text, so there
+ * the `identifier/over-width` condition is all that reads the length of a stored name.
+ */
+export const IDENTIFIER_COLUMNS = Object.freeze({
+  tasks: ['task_id', 'queue', 'idempotency_key', 'last_attempt_run'],
+  runs: ['run_id', 'queue', 'task_id', 'wake_event', 'wake_step'],
+  checkpoints: ['task_id', 'checkpoint_name', 'queue', 'owner_run_id'],
+  events: ['queue', 'event_name'],
+  waits: ['run_id', 'step_name', 'queue', 'task_id', 'event_name'],
+  drivers: ['queue', 'driver_id'],
+} as const satisfies Readonly<Record<PersistedTemporalTable, readonly string[]>>)
+
+function withEnrolledColumns(
   table: PersistedTemporalTable,
   baseColumns: readonly string[],
 ): readonly string[] {
   return Object.freeze([
     ...new Set([
       ...baseColumns,
+      ...IDENTIFIER_COLUMNS[table],
       ...PERSISTED_TEMPORAL_FIELDS.filter((field) => field.table === table).map(
         (field) => field.column,
       ),
@@ -156,13 +175,14 @@ function withTemporalColumns(
 }
 
 /**
- * The six portable table snapshots are closed over the inventory: adding a
- * descriptor necessarily selects that durable column for invariant evaluation.
+ * The six portable table snapshots are closed over both inventories: adding a temporal
+ * descriptor or an identifier column necessarily selects that durable column for
+ * invariant evaluation.
  */
 const SNAPSHOT_PROJECTIONS = [
   {
     table: 'tasks',
-    columns: withTemporalColumns('tasks', [
+    columns: withEnrolledColumns('tasks', [
       'task_id',
       'queue',
       'state',
@@ -176,7 +196,7 @@ const SNAPSHOT_PROJECTIONS = [
   },
   {
     table: 'runs',
-    columns: withTemporalColumns('runs', [
+    columns: withEnrolledColumns('runs', [
       'run_id',
       'queue',
       'task_id',
@@ -193,7 +213,7 @@ const SNAPSHOT_PROJECTIONS = [
   },
   {
     table: 'checkpoints',
-    columns: withTemporalColumns('checkpoints', [
+    columns: withEnrolledColumns('checkpoints', [
       'task_id',
       'checkpoint_name',
       'queue',
@@ -203,11 +223,11 @@ const SNAPSHOT_PROJECTIONS = [
   },
   {
     table: 'events',
-    columns: withTemporalColumns('events', ['queue', 'event_name', 'payload', 'fence_stamp']),
+    columns: withEnrolledColumns('events', ['queue', 'event_name', 'payload', 'fence_stamp']),
   },
   {
     table: 'waits',
-    columns: withTemporalColumns('waits', [
+    columns: withEnrolledColumns('waits', [
       'run_id',
       'step_name',
       'queue',
@@ -219,7 +239,7 @@ const SNAPSHOT_PROJECTIONS = [
   },
   {
     table: 'drivers',
-    columns: withTemporalColumns('drivers', ['queue', 'driver_id']),
+    columns: withEnrolledColumns('drivers', ['queue', 'driver_id']),
   },
 ] as const
 
@@ -299,7 +319,7 @@ export function eventKey(queue: string, eventName: string): string {
   return JSON.stringify([queue, eventName])
 }
 
-function temporalSubject(
+function rowSubject(
   table: PersistedTemporalTable,
   row: SqlRow,
 ): { subject: string; identity: readonly string[] } {
@@ -419,8 +439,23 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   // gains a field.
   for (const field of PERSISTED_TEMPORAL_FIELDS) {
     for (const row of rows[field.table]) {
-      const { subject, identity } = temporalSubject(field.table, row)
+      const { subject, identity } = rowSubject(field.table, row)
       temporal(row[field.column], field, subject, identity)
+    }
+  }
+
+  // The width of a durable identifier (DESIGN.md §3.4 rule 10), read from every identifier
+  // column and counted by core's own function. The port refuses a longer name on the way
+  // in, so a row that holds one was written by an older build, or holds a name the engine
+  // derived and nothing held.
+  for (const table of Object.keys(IDENTIFIER_COLUMNS) as PersistedTemporalTable[]) {
+    for (const row of rows[table]) {
+      for (const column of IDENTIFIER_COLUMNS[table]) {
+        const value = row[column]
+        if (typeof value !== 'string' || fitsCharacters(value, IDENTIFIER_CHARACTERS)) continue
+        const { subject, identity } = rowSubject(table, row)
+        add('identifier/over-width', `${table}.${column} of ${subject}`, [...identity, column])
+      }
     }
   }
 

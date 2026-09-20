@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import fnmatch
 import hashlib
 import io
 import json
@@ -6945,6 +6946,48 @@ MUTATION_SPECS.extend(
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
         ),
         (
+            "core-read-brand-marks-reads-alone",
+            "packages/core/src/fenced-batch.ts",
+            "    if (reading) brandRead(held.compiled)\n",
+            "    brandRead(held.compiled)\n",
+            "a compare-and-set is branded as a read, so the brand an executor trusts to send a statement alone no longer says the statement writes nothing",
+        ),
+        (
+            "core-read-brand-is-frozen",
+            "packages/core/src/fenced-batch.ts",
+            "  weakSetAdd(treeBuiltReads, Object.freeze(compiled))\n",
+            "  weakSetAdd(treeBuiltReads, compiled)\n",
+            "a statement branded as a read can have its text changed between core and the executor, which then sends what is no longer a read alone",
+        ),
+        (
+            "postgres-lone-statement-is-the-whole-batch",
+            "packages/store-postgres/src/executor.ts",
+            "  if (statement === undefined || statements.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two reads that core built is sent outside a transaction block, so the two read through different snapshots",
+        ),
+        (
+            "postgres-lone-statement-is-a-read",
+            "packages/store-postgres/src/executor.ts",
+            "  if (mode !== 'read') return false\n",
+            "  if (mode !== 'read') return true // MUTATION\n",
+            "a single write is sent outside a transaction block, so a write whose result the executor refuses is already committed",
+        ),
+        (
+            "postgres-lone-read-is-known-to-be-a-read",
+            "packages/store-postgres/src/executor.ts",
+            "  return isTreeBuiltRead(statement)\n",
+            "  return true // MUTATION\n",
+            "a read sent as text runs alone, outside the read-only transaction, so a write the text holds is run",
+        ),
+        (
+            "postgres-lone-read-is-one-statement",
+            "packages/store-postgres/src/executor.ts",
+            "  return { text, values: [...values], queryMode: 'extended' }\n",
+            "  return { text, values: [...values] } as never // MUTATION: the driver chooses the protocol\n",
+            "a read sent alone with no bind goes through the simple protocol, which runs every statement of its text, so a second statement in a store's fragment is run",
+        ),
+        (
             "postgres-event-lock-is-advisory",
             "packages/store-postgres/src/executor.ts",
             "           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text\n",
@@ -7242,8 +7285,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-version-read-is-read-committed",
             "packages/store-mysql/src/executor.ts",
-            "        for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {\n",
-            "        for (const statement of schemaVersionRead ? BEGIN_READ : BEGIN_READ) { // MUTATION\n",
+            "  return schemaVersionRead || isTreeBuiltRead(statement)\n",
+            "  return isTreeBuiltRead(statement) // MUTATION\n",
             "a version read racing a bootstrap reads through a snapshot older than the table and MySQL refuses it with error 1412",
         ),
         (
@@ -7315,6 +7358,55 @@ MUTATION_SPECS.extend(
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 1\n",
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 0 // MUTATION\n",
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
+        ),
+        (
+            "mysql-lone-statement-is-the-whole-batch",
+            "packages/store-mysql/src/executor.ts",
+            "  if (statement === undefined || statements.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two reads that core built is sent with no transaction around it, so the two read through different views",
+        ),
+        (
+            "mysql-lone-statement-is-a-read",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode !== 'read') return false\n",
+            "  if (mode !== 'read') return true // MUTATION\n",
+            "a single write is sent alone, so a write MySQL cut to fit has committed before the executor reads its warning, and the refusal leaves the cut identifier stored",
+        ),
+        (
+            "mysql-lone-read-is-known-to-be-a-read",
+            "packages/store-mysql/src/executor.ts",
+            "  return schemaVersionRead || isTreeBuiltRead(statement)\n",
+            "  return true // MUTATION\n",
+            "a write sent as a read in text runs alone under autocommit, where the read-only transaction refused it",
+        ),
+        (
+            "mysql-lone-send-is-decided-with-the-copy",
+            "packages/store-mysql/src/executor.ts",
+            "      return await this.transact(connection, prepared, mode, lock, alone)\n",
+            "      return await this.transact(connection, prepared, mode, lock, sentAlone(statements, mode, schemaVersionRead)) // MUTATION\n",
+            "whether a batch goes alone is asked of the caller's array after the wait for a connection, so a statement swapped in during the wait decides for the statement that was copied",
+        ),
+        (
+            "mysql-session-autocommit-on",
+            "packages/store-mysql/src/executor.ts",
+            "  autocommit = 1,\n",
+            "  autocommit = 0,\n",
+            "a read sent alone opens a transaction that stays open on the pooled connection it returns",
+        ),
+        (
+            "mysql-claim-leg-stops-at-the-limit",
+            "packages/store-mysql/src/store.ts",
+            "        ORDER BY r.available_at_ms, r.run_id\n        LIMIT ?\n        FOR UPDATE SKIP LOCKED)`\n",
+            "        AND ? IS NOT NULL\n        ORDER BY r.available_at_ms, r.run_id\n        FOR UPDATE SKIP LOCKED)`\n",
+            "a claim leg reads and locks every due run of its state, so concurrent claimers skip runs this claim never takes",
+        ),
+        (
+            "mysql-claim-leg-names-its-index",
+            "packages/store-mysql/src/store.ts",
+            "        FROM runs r FORCE INDEX (runs_poll)\n",
+            "        FROM runs r\n",
+            "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
         ),
     )
 )
@@ -9853,6 +9945,42 @@ VERDICTS = {
         "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
         "mutation-verdict:construction:postgres-version-read-isolation",
     ),
+    "postgres-lone-statement-is-the-whole-batch": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions gives two reads that core built one repeatable-read, read-only snapshot",
+        "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
+    ),
+    "postgres-lone-statement-is-a-read": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "rolls back a single write whose result it refuses",
+        "mutation-verdict:behavior:postgres-lone-statement-is-a-read",
+    ),
+    "postgres-lone-read-is-known-to-be-a-read": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a delete sent behind a select in one read, and keeps the row",
+        "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
+    ),
+    "postgres-lone-read-is-one-statement": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a read that core built whose fragment holds a second statement, and keeps the row",
+        "mutation-verdict:behavior:postgres-lone-read-is-one-statement",
+    ),
+    "core-read-brand-is-frozen": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times brands what it compiled as a read, and no write, as a read",
+        "mutation-verdict:construction:core-read-brand-is-frozen",
+    ),
+    "core-read-brand-marks-reads-alone": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times brands what it compiled as a read, and no write, as a read",
+        "mutation-verdict:construction:core-read-brand-marks-reads-alone",
+    ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/schema-gate.test.ts",
@@ -11319,6 +11447,48 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock counts every deadlock victim, the one it runs again and the one it reports",
             "mutation-verdict:behavior:mysql-deadlock-victims-are-counted",
+        ),
+        "mysql-lone-statement-is-the-whole-batch": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions gives two reads that core built one consistent read-only snapshot",
+            "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
+        ),
+        "mysql-lone-statement-is-a-read": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server refuses a single write whose key ends in a tab and would be cut to fit, and writes nothing",
+            "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
+        ),
+        "mysql-lone-read-is-known-to-be-a-read": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read",
+            "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
+        ),
+        "mysql-lone-send-is-decided-with-the-copy": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions decides whether a batch goes alone when it copies the statements, and not from what the array holds later",
+            "mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy",
+        ),
+        "mysql-session-autocommit-on": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions turns autocommit on with the session settings, which a read sent alone depends on",
+            "mutation-verdict:construction:mysql-session-autocommit-on",
+        ),
+        "mysql-claim-leg-stops-at-the-limit": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks each state in claim order and stops at the limit, locking only the runs it takes, beside a backlog of due runs",
+            "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
+        ),
+        "mysql-claim-leg-names-its-index": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
+            "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
         ),
     }
 )
@@ -13086,6 +13256,95 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The invariant library's width condition (DESIGN.md S3.4 rule 10). It reads every
+# identifier column of the six table snapshots, it counts as core counts, and its list of
+# columns is held to the columns MySQL's migrations bound at the width. The last two keep
+# the audit checking that the two generated surfaces can fail: the replay-equivalence
+# harness's name-length axis owns one mutation of the SDK's hold, and a fuzz walk owns one
+# of a store entry's hold.
+MUTATION_SPECS.extend(
+    (
+        (
+            "invariant-identifier-width-read",
+            "packages/conformance/src/invariants.ts",
+            "        if (typeof value !== 'string' || fitsCharacters(value, IDENTIFIER_CHARACTERS)) continue\n",
+            "        if (typeof value !== 'string' || fitsCharacters(value, Number.MAX_SAFE_INTEGER)) continue\n",
+            "a stored name past the width is reported by nothing on libSQL and PostgreSQL, whose columns do not bound it",
+        ),
+        (
+            "invariant-identifier-width-counts-code-points",
+            "packages/conformance/src/invariants.ts",
+            "fitsCharacters(value, IDENTIFIER_CHARACTERS)) continue\n",
+            "value.length <= IDENTIFIER_CHARACTERS) continue\n",
+            "a stored name of 255 characters outside the basic plane is reported as too long, which the port accepted",
+        ),
+        (
+            "identifier-column-inventory-holds-every-bounded-column",
+            "packages/conformance/src/invariants.ts",
+            "  runs: ['run_id', 'queue', 'task_id', 'wake_event', 'wake_step'],\n",
+            "  runs: ['run_id', 'queue', 'task_id', 'wake_event'],\n",
+            "an identifier column the width condition does not read: a wake step past the width is stored and reported by nothing",
+        ),
+        (
+            "sdk-repeated-name-key-held-with-its-counter",
+            "packages/sdk/src/context.ts",
+            "    requireRoom(what, key, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "    requireRoom(what, raw, started ? IDENTIFIER_CHARACTERS : room)\n",
+            "a name used twice is held as the task passed it and not as the key it is stored under, so `name#2` passes the width, every store refuses it on every pass, and the second body runs again on each retry until the budget is gone",
+        ),
+        (
+            "libsql-emitted-name-held-at-the-entry",
+            "packages/store-libsql/src/store.ts",
+            "    requireIdentifiersFit({ queue, eventName })\n",
+            "    // MUTATION: an emitted name is not held at this entry\n",
+            "the libSQL store stores an event name past the width, which the port admits on no dialect and no emit can reach again, and no walk fails for it",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption reports a name past the width in every identifier column, and none at the width, counted in code points",
+            "mutation-verdict:behavior:identifier-over-width-read-in-every-column",
+        ),
+        (
+            "invariant-identifier-width-read",
+            "invariant-identifier-width-counts-code-points",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption reads every column MySQL bounds at the width, and no other",
+            "mutation-verdict:construction:identifier-columns-are-the-bounded-columns",
+        ),
+        ("identifier-column-inventory-holds-every-bounded-column",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "the name-length axis (every call that passes a name: under its room, at it, and past it) step used twice: a name under its room and at it replays like any other, and one past it fails the task for good with nothing stored",
+            "mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call",
+        ),
+        ("sdk-repeated-name-key-held-with-its-counter",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "walks that pass the port names past the width uphold the invariants, and the port refuses every name",
+            "mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width",
+        ),
+        ("libsql-emitted-name-held-at-the-entry",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
@@ -14597,6 +14856,7 @@ def classify_verdict(
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
 VERDICT_INVENTORY_ORPHAN_FAULT = "accept-orphan-verdict-marker"
 FROZEN_MIGRATION_TARGET_FAULT = "accept-frozen-migration-mutation"
+VERDICT_FILE_EXCLUDED_FAULT = "accept-verdict-in-a-file-the-audit-excludes"
 TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT = (
     "poison-typescript-mutant-syntax-live-enrollment"
 )
@@ -14680,6 +14940,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-halt-says-where-the-replay-ended": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
+    "sdk-repeated-name-key-held-with-its-counter": (
+        "one test is generated for each member of the name-length axis, and its title carries the member"
+    ),
     "sdk-durable-key-held-before-the-body-runs": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -14717,6 +14980,7 @@ SELF_TEST_FAULTS = (
     "accept-collateral-message",
     VERDICT_INVENTORY_ORPHAN_FAULT,
     FROZEN_MIGRATION_TARGET_FAULT,
+    VERDICT_FILE_EXCLUDED_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
     TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
     TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT,
@@ -14746,6 +15010,28 @@ def verdict_inventory_problems(
             f"source verdict marker {marker!r} has no live ExpectedVerdict or exact exemption"
         )
     return problems
+
+
+def verdicts_the_audit_never_runs(verdict_files: dict[str, str]) -> list[str]:
+    """Verdicts whose file the audit's own test command leaves out.
+
+    Each mutation runs only its registered test, through TEST_CMD. A test in a file that
+    command excludes never runs, so its mutation can never be caught. The audit says so
+    only when it selects that mutation, as a baseline whose target did not run. This
+    refuses the verdict where it is declared.
+    """
+    excludes = [
+        TEST_CMD[index + 1]
+        for index, argument in enumerate(TEST_CMD[:-1])
+        if argument == "--exclude"
+    ]
+    return [
+        f"{name}: its verdict's file {file} matches the audit's --exclude {glob!r}, "
+        "so the audit never runs its test"
+        for name, file in sorted(verdict_files.items())
+        for glob in excludes
+        if fnmatch.fnmatchcase(file, glob)
+    ]
 
 
 # Where the rules that read a statement tree live. A region runs from its first anchor to
@@ -15649,6 +15935,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         pass
     elif fault == FROZEN_MIGRATION_TARGET_FAULT:
         pass
+    elif fault == VERDICT_FILE_EXCLUDED_FAULT:
+        pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT:
@@ -16521,6 +16809,38 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
             )
+    excluded_file_checker = verdicts_the_audit_never_runs
+    if fault == VERDICT_FILE_EXCLUDED_FAULT:
+        excluded_file_checker = lambda verdict_files: []
+    excluded_file_cases = (
+        (
+            "a verdict in a fuzz file",
+            {"in-a-fuzz-file": "packages/conformance/test/fuzz-regressions.test.ts"},
+            (
+                "in-a-fuzz-file: its verdict's file "
+                "packages/conformance/test/fuzz-regressions.test.ts matches the audit's "
+                "--exclude 'packages/conformance/test/fuzz-*', so the audit never runs its test",
+            ),
+        ),
+        (
+            "a verdict in the process chaos test",
+            {"in-the-chaos-test": "packages/driver/test/chaos-process.test.ts"},
+            (
+                "in-the-chaos-test: its verdict's file "
+                "packages/driver/test/chaos-process.test.ts matches the audit's --exclude "
+                "'packages/driver/test/chaos-process.test.ts', so the audit never runs its test",
+            ),
+        ),
+        (
+            "a verdict in a file the audit runs",
+            {"in-the-checker-test": "packages/conformance/test/invariant-checkers.test.ts"},
+            (),
+        ),
+    )
+    for label, verdict_files, wanted in excluded_file_cases:
+        got = tuple(excluded_file_checker(verdict_files))
+        if got != wanted:
+            failures.append(f"excluded-file {label}: expected {wanted!r}, got {got!r}")
     tree_coverage_source = (
         "function gate(node) {\n"
         "  if (node.a && node.b) return null\n"
@@ -16978,7 +17298,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 875:
+        if len(MUTATIONS) != 893:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
@@ -17136,6 +17456,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 VERDICT_MARKER_EXEMPTIONS,
             )
         )
+        failures.extend(
+            excluded_file_checker(
+                {mutation.name: mutation.verdict.file for mutation in MUTATIONS}
+            )
+        )
     for label, result, verdict, wanted in cases:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
@@ -17199,6 +17524,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(direct_marker_cases)} direct-marker cases, "
         f"{len(title_owner_cases)} title-owner cases, "
         f"{len(verdict_inventory_cases)} verdict-inventory cases, "
+        f"{len(excluded_file_cases)} excluded-file cases, "
         f"{len(question_delta_cases)} question-delta cases, "
         f"{len(syntax_mutations)} mutant-syntax cases, "
         f"{len(live_enrollment_faults)} live-enrollment faults, "
