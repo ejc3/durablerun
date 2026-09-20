@@ -6,7 +6,12 @@ import type { SqlRow } from './primitives.js'
 import type { SqlFragment } from './sql-tree.js'
 import { rollbackTriesRead } from './statements/reads.js'
 import type { CheckpointWrite, FailedRollback, RollbackOutcome } from './types.js'
-import { fitsCharacters, parseTaskValueJson, serializeTaskValue } from './validate.js'
+import {
+  fitsCharacters,
+  parseTaskValueJson,
+  requireIdentifiersFit,
+  serializeTaskValue,
+} from './validate.js'
 
 const {
   NumberIsSafeInteger: isSafeInteger,
@@ -126,9 +131,10 @@ export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREF
 
 /**
  * What `failRollback` was handed, held to its shape where it crosses the port, and read
- * once. The port used to take the attempt record itself from its caller, as
- * `{ key, stateJson }`. A caller of that shape is refused here, before anything is read or
- * sent, and told what the port takes.
+ * once. A caller of an older build hands over the attempt record itself, as
+ * `{ key, stateJson }`. It is refused here, before anything is read or sent, and told what
+ * the port takes. The step is held to the room the attempt record's
+ * name leaves, here where the name is derived, as core holds a child's key it derives.
  */
 export function requireFailedRollback(value: unknown): FailedRollback {
   const { stepKey, errorJson } = (typeof value === 'object' && value !== null ? value : {}) as {
@@ -140,6 +146,12 @@ export function requireFailedRollback(value: unknown): FailedRollback {
       'failRollback takes the failed rollback as { stepKey, errorJson }: the step whose rollback failed, and the failure of that attempt. The store names the attempt record and counts the attempt itself, so a record handed over as { key, stateJson } is refused',
     )
   }
+  // The width is held to the name as it will be stored, and the refusal names what the
+  // caller passed, which is the step.
+  requireIdentifiersFit({
+    "rollback.stepKey, as the attempt record's name, which also holds its reserved prefix,":
+      rollbackTriesName(stepKey),
+  })
   return { stepKey, errorJson }
 }
 

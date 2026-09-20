@@ -124,4 +124,26 @@ describe("a rollback's attempt record, as the store names it and counts it", () 
       refused: Array.from({ length: 6 }, () => 'refused, naming the shape'),
     })
   })
+
+  it('holds the step to the room the record name leaves, and names the step it was passed', () => {
+    // `$rollback-tries:` is 16 characters, so a step of 239 fits the 255 a name holds.
+    const answer = (stepKey: string) => {
+      try {
+        requireFailedRollback({ stepKey, errorJson: '{}' })
+        return 'fits'
+      } catch (error) {
+        const refusal = error as Error
+        return `${refusal.constructor.name}, naming the step: ${refusal.message.includes('rollback.stepKey')}`
+      }
+    }
+    expect([
+      answer('k'.repeat(239)),
+      answer('k'.repeat(240)),
+      answer(`${'k'.repeat(239)} `),
+    ]).toEqual([
+      'fits',
+      'InvalidDurableStringError, naming the step: true',
+      'InvalidDurableStringError, naming the step: true',
+    ])
+  })
 })

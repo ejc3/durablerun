@@ -3317,9 +3317,11 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   records it for its parent is refused already, so no later pass could find
   it. The child's insert carries the phase as a required bind beside the
   parent's live claim, as the checkpoint write, the suspension, the failure
-  and the wait registration carry theirs. So the test is atomic with the
-  insert, and a store does not compile until it has said what the phase asks
-  of a child spawn. A child the forward phase spawned is still found by a
+  and the wait registration carry theirs. Those four may answer that the
+  phase asks nothing of them, and a child spawn may not: its bind is a
+  predicate and never open. So the test is atomic with the insert, and a
+  store does not compile until it has said what the phase asks of a child
+  spawn. A child the forward phase spawned is still found by a
   replay in either phase, because finding one creates nothing. Neither model
   holds this guard, and neither has to. `SpawnChild` of ChildTasks.tla asks
   only for a running parent, so a store that refuses more runs a subset of

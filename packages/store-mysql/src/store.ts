@@ -86,7 +86,6 @@ import {
   requireFailedRollback,
   requireIdentifiersFit,
   requireSagaStepFits,
-  rollbackTriesName,
   requireEpochMs,
   requirePositiveClaimGeneration,
   requirePositiveInt,
@@ -1956,12 +1955,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     rollback: FailedRollback,
   ): Promise<FailOutcome> {
     const failed = requireFailedRollback(rollback)
-    requireIdentifiersFit({
-      queue,
-      runId,
-      "rollback.stepKey, as the attempt record's name, which also holds its reserved prefix,":
-        rollbackTriesName(failed.stepKey),
-    })
+    requireIdentifiersFit({ queue, runId })
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)

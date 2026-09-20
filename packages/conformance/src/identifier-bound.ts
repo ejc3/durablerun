@@ -73,6 +73,7 @@ const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
   failRollback: (s, id) => [
     s.failRollback(id, 'r', 'c', '{}', null, { stepKey: 'k', errorJson: '{}' }),
     s.failRollback('q', id, 'c', '{}', null, { stepKey: 'k', errorJson: '{}' }),
+    s.failRollback('q', 'r', 'c', '{}', null, { stepKey: id, errorJson: '{}' }),
   ],
   sweep: (s, id) => [s.sweep(id, 10)],
   expireLeaseNow: (s, id) => [s.expireLeaseNow(id, 'r', 'c'), s.expireLeaseNow('q', id, 'c')],
