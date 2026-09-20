@@ -614,4 +614,44 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
       await db.close()
     }
   })
+
+  it('spawns a child without walking the checkpoints its parent has', async () => {
+    // A child spawn tests its parent's phase: one name of the parent, which is one row of
+    // the checkpoints key, however many checkpoints the parent has.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-child-spawn', nowMs: 1_000_000 })
+    try {
+      const { executor, walked } = countingRowsWalked(db, ['spawn'])
+      const store = new MysqlSchedulerStore(executor, db.ids)
+      const parentTask = await store.spawn(Q, 'parent', '{}')
+      const [parent] = await store.claim(Q, 'w-parent', { leaseSeconds: 60, limit: 1 })
+      if (parent?.taskId !== parentTask.taskId) throw new Error('the parent was not claimed')
+      await store.activate(Q, parent.runId, parent.claimToken, parent.claimGen)
+      await store.setCheckpoint(Q, parent.taskId, parent.runId, parent.claimToken, 'step', '1', 60)
+      for (const copy of ['a', 'b', 'c', 'd', 'e']) {
+        await cloneRows(
+          db,
+          'checkpoints',
+          `src.task_id = '${parent.taskId}' AND src.checkpoint_name = 'step'`,
+          { checkpoint_name: `CONCAT('step-${copy}-', seq.n)` },
+        )
+      }
+      walked.delete('spawn')
+      const child = await store.spawn('kids', 'child', '{}', {
+        childOf: {
+          parentQueue: Q,
+          parentTaskId: parent.taskId,
+          runId: parent.runId,
+          claimToken: parent.claimToken,
+          replayKey: '$spawn:child',
+        },
+      })
+      expect({ created: child.created, walkedFewRows: Number(walked.get('spawn')) < 150 }).toEqual({
+        created: true,
+        walkedFewRows: true,
+      })
+      console.log()
+    } finally {
+      await db.close()
+    }
+  })
 })

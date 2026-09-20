@@ -223,6 +223,19 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     await store.complete('q', completed.runId, completed.claimToken, '{}')
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    // A child spawn tests its parent's phase, under the parent's live claim. The child lives
+    // in a queue of its own, so no claim below takes it.
+    const parent = await started('spawns-a-child')
+    await store.spawn('kids', 'child', '{}', {
+      childOf: {
+        parentQueue: 'q',
+        parentTaskId: parent.taskId,
+        runId: parent.runId,
+        claimToken: parent.claimToken,
+        replayKey: '$spawn:child',
+      },
+    })
+    await store.complete('q', parent.runId, parent.claimToken, '{}')
     const saga = await rollingBack('rolls-back')
     const pass = await passOf(saga.taskId)
     await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, tried(1, '{"name":"R"}'))
@@ -345,7 +358,7 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     }
     expect(faults.join('\n')).toBe('')
     expect(
-      ['complete', 'fail', 'fail-rollback', 'task-result'].filter((l) => !reached.has(l)),
+      ['complete', 'fail', 'fail-rollback', 'spawn', 'task-result'].filter((l) => !reached.has(l)),
     ).toEqual([])
     // The attempt records are read for the saga that halted, and for no task whose saga
     // never began.

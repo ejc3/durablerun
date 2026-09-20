@@ -408,6 +408,7 @@ describe('every batch a saga touches', () => {
    * listed.
    */
   const TOUCHED = [
+    'spawn',
     'set-checkpoint',
     'fail',
     'fail-rollback',
@@ -452,6 +453,17 @@ describe('every batch a saga touches', () => {
     const forward = await claimed('w1')
     await mark(forward, `${SAGA_STARTED_PREFIX}a`, '1')
     await mark(forward, `${SAGA_STARTED_PREFIX}b`, '2')
+    // A child spawn tests its parent's phase, under the parent's live claim. The child lives
+    // in a queue of its own, so no claim below takes it.
+    await store.spawn('kids', 'child', '{}', {
+      childOf: {
+        parentQueue: 'q',
+        parentTaskId: saga.taskId,
+        runId: forward.runId,
+        claimToken: forward.claimToken,
+        replayKey: '$spawn:child',
+      },
+    })
     expect(await store.fail('q', forward.runId, forward.claimToken, E, null)).toEqual({
       rollingBack: true,
     })
@@ -511,6 +523,14 @@ describe('every batch a saga touches', () => {
   }
 
   /** What is wrong with one statement's plan, by the rules every saga statement is held to. */
+  /**
+   * The task update that follows a pass. It is told from a revival, which sets the same
+   * budget column, by the batch it rides in, and from a spawn, which inserts that column,
+   * by being an update: a column's name is not what a statement is.
+   */
+  const followsThePass = (label: string, sql: string): boolean =>
+    /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
+
   function planFaults(label: string, sql: string, plan: string): string[] {
     const faults: string[] = []
     const lines = plan.split('\n')
@@ -529,12 +549,8 @@ describe('every batch a saga touches', () => {
     }
     // The statements a saga adds: the rollback pass, the phase marker, the attempt record,
     // and the task that follows the pass.
-    // The task that follows the pass is told from a revival, which sets the same budget
-    // column, by the batch it rides in: a column's name is not what a statement is.
-    const followsThePass =
-      /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
     const added =
-      followsThePass ||
+      followsThePass(label, sql) ||
       (/^\s*insert into "runs"/.test(sql) && SAGA_ALIAS.test(plan)) ||
       (/^\s*insert into "checkpoints"/.test(sql) &&
         label !== 'set-checkpoint' &&
@@ -575,9 +591,9 @@ describe('every batch a saga touches', () => {
       for (const alias of ['sp', 'ss', 'sr', 'st'] as const) {
         if (new RegExp(`^SEARCH ${alias} `, 'm').test(plan)) reached[alias]++
       }
-      const followsThePass = /"max_attempts"/.test(st.sql) && st.label !== 'retry-task'
-      if (followsThePass) reached.followsThePass++
-      if (SAGA_ALIAS.test(plan) || followsThePass) reached.labels.add(st.label)
+      const followed = followsThePass(st.label, st.sql)
+      if (followed) reached.followsThePass++
+      if (SAGA_ALIAS.test(plan) || followed) reached.labels.add(st.label)
       for (const fault of planFaults(st.label, st.sql, plan)) {
         faults.push(`[${st.label}] ${fault} :: ${st.sql.replace(/\s+/g, ' ').slice(0, 60)}`)
       }
