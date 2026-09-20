@@ -504,6 +504,43 @@ describe('PgExecutor transactions', () => {
     ])
   })
 
+  it('refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing', async () => {
+    // The lock that makes a second migrator wait was a statement of every version's batch,
+    // which no wrapper could drop. It is the control's now, and a wrapper that rebuilds a
+    // control from a mode drops it: the batch would then run with no lock on meta, and a
+    // second migrator would deadlock with a version that locks the table. The bootstrap
+    // names no lock, because the lock lives on the table it creates.
+    const sent = async (label: string) => {
+      const client = new FakeClient(() => EMPTY_RESULT)
+      const pool = new FakePool(client)
+      const outcome = await executor(pool)
+        .batch(label, [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+        .then(
+          () => 'accepted',
+          (error: unknown) =>
+            error instanceof TypeError ? `refused: ${error.message}` : `failed: ${String(error)}`,
+        )
+      return { outcome, statements: client.calls.length, connections: pool.connectCalls }
+    }
+    expect({
+      aVersion: await sent('migrate:v1'),
+      aLabelNoListKnows: await sent('migrate:backfill'),
+      theBootstrap: await sent('migrate:bootstrap'),
+    }).toEqual({
+      aVersion: {
+        outcome: expect.stringContaining('names no migration lock'),
+        statements: 0,
+        connections: 0,
+      },
+      aLabelNoListKnows: {
+        outcome: expect.stringContaining('names no migration lock'),
+        statements: 0,
+        connections: 0,
+      },
+      theBootstrap: { outcome: 'accepted', statements: 3, connections: 1 },
+    })
+  })
+
   it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
     // A lock kind is added by a later build of core, and an executor of this build can
     // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
