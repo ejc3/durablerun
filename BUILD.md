@@ -784,6 +784,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     none, and the scheduler suite's case of a stale `fail` with budget left
     holds the retry form by hand. It would move the pinned thirteen calls to
     fourteen and add a mutation.
+  - PR3.1c's one review found no HIGH, one MEDIUM and five LOW, recorded in
+    `postmortems/pr3.1c-stale-token-column-review.md`. Five are counted there:
+    three holds of the column that could not fail, and two sentences that said
+    more than was held. All six are folded. The fold's own unfiltered audit
+    caught one defect that a fix had introduced, before anything was pushed.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
