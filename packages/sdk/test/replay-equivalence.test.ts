@@ -10,6 +10,7 @@ import {
   SAGA_STARTED_PREFIX,
   type SchedulerStore,
   StoreUnavailableError,
+  taskDoneEventName,
 } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -354,8 +355,9 @@ function faultPoints(measuredCalls: number): number[] {
 interface Watch {
   /**
    * What the task did, in order: `attempt` as a worker takes the run, `op N` as the task
-   * starts its Nth call, and every store call the SDK makes in between, by method. Only the
-   * SDK's calls are counted and traced: the loop that drives the task calls the store itself.
+   * starts its Nth call, and every store call the SDK makes in between, by method, with
+   * `injected outage` after the one call the harness failed. Only the SDK's calls are counted
+   * and traced: the loop that drives the task calls the store itself.
    */
   readonly trace: string[]
   /** The index of every step whose body ran, once for each time it ran. */
@@ -363,6 +365,9 @@ interface Watch {
   /** The user attempts the task was charged. */
   attempts?: number
 }
+
+/** The trace's mark for the store call the harness failed. */
+const INJECTED_OUTAGE = 'injected outage'
 
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
@@ -383,14 +388,13 @@ async function runProgram(
   options: RunOptions = {},
 ): Promise<{
   result: string | undefined
-  state: string | undefined
   failure: string | undefined
   checkpoints: unknown[]
   /** How many tasks of each name exist at the end: a second child is a second row here. */
   tasks: string[]
-  /** The longest checkpoint name, event name and task id the run left, in characters. */
+  /** The longest checkpoint name, emitted event name and task id the run left, in characters. */
   longestCheckpointName: number
-  longestEventName: number
+  longestEmittedName: number
   longestTaskId: number
   calls: number
 }> {
@@ -430,6 +434,7 @@ async function runProgram(
           calls++
           watch?.trace.push(String(prop))
           if (calls === failAtCall) {
+            watch?.trace.push(INJECTED_OUTAGE)
             return Promise.reject(new StoreUnavailableError('injected outage'))
           }
           if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
@@ -498,7 +503,7 @@ async function runProgram(
     )
     expect(await engineInvariantViolations(raw)).toEqual([])
     expect(await childTaskViolations(raw)).toEqual([])
-    const [counted, measured] = await raw.batch(
+    const [counted, measured, named] = await raw.batch(
       't',
       [
         {
@@ -507,10 +512,10 @@ async function runProgram(
         },
         {
           sql: `SELECT (SELECT MAX(LENGTH(task_id)) FROM tasks) AS id_width,
-                       (SELECT MAX(LENGTH(event_name)) FROM events) AS event_width,
                        (SELECT attempts FROM tasks WHERE task_id = ?) AS attempts`,
           args: [spawned.taskId],
         },
+        { sql: 'SELECT event_name FROM events', args: [] },
       ],
       'read',
     )
@@ -519,13 +524,20 @@ async function runProgram(
       calls,
       tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
       result: outcome?.completedPayloadJson,
-      state: outcome?.state,
       failure: outcome?.failureReasonJson,
       longestCheckpointName: Math.max(
         0,
         ...(cps?.rows ?? []).map((row) => [...String(row.checkpoint_name)].length),
       ),
-      longestEventName: Number(measured?.rows[0]?.event_width),
+      // The task's own emits only. An external event this loop emits, and the completion
+      // event of a child that happened to run, are there or not by schedule, for no defect.
+      longestEmittedName: Math.max(
+        0,
+        ...(named?.rows ?? [])
+          .map((row) => String(row.event_name))
+          .filter((name) => !externals.includes(name) && !name.startsWith(taskDoneEventName('')))
+          .map((name) => [...name].length),
+      ),
       longestTaskId: Number(measured?.rows[0]?.id_width),
       checkpoints: withoutChildIds(
         (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
@@ -547,11 +559,8 @@ async function everyFaultPointYieldsTheReference(
   const reference = await run(`ref-${label}`, 0)
   for (const call of faultPoints(reference.calls)) {
     const faulted = await run(`fault-${label}-${call}`, call)
-    expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
-    expect(faulted.state, `fault at call ${call}`).toBe(reference.state)
-    expect(faulted.failure, `fault at call ${call}`).toBe(reference.failure)
-    expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
-    expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
+    // Everything a run reports, but for how many store calls it took, which a fault changes.
+    expect({ ...faulted, calls: reference.calls }, `fault at call ${call}`).toEqual(reference)
   }
   return reference
 }
@@ -659,7 +668,10 @@ interface NamedCall {
   emitted?(name: string): string
   /** The calls that pass the name. A name past its room is refused at the last of them. */
   ops(name: string): ProgramOp[]
-  /** What the failure names, which is what the task passed. */
+  /**
+   * What the failure says: what the task passed, or, for a child's task name, the store's
+   * refusal of the child key it built from that name.
+   */
   readonly names: string
   /**
    * The store calls the SDK makes for the refused call. There are none, except that a
@@ -739,7 +751,7 @@ const NAME_AXIS: Record<GeneratedMethod, readonly [NamedCall, ...NamedCall[]] | 
       longest: LONGEST_NAME_BUILT.spawnUnder(SAMPLE_TASK_ID),
       stored: (name) => `$spawn:${name}`,
       ops: (name) => [{ kind: 'spawn', valueIndex: 0, nameIndex: 0, name }],
-      names: "ctx.spawn('",
+      names: 'was refused: childOf.replayKey, as the stored child key',
       reaches: ['spawn'],
     },
   ],
@@ -801,7 +813,7 @@ describe('the name-length axis (every call that passes a name: under its room, a
           )
         }
         if (call.emitted !== undefined) {
-          expect(reference.longestEventName, `a name of ${length}`).toBe(
+          expect(reference.longestEmittedName, `a name of ${length}`).toBe(
             [...call.emitted(name)].length,
           )
         }
@@ -820,17 +832,24 @@ describe('the name-length axis (every call that passes a name: under its room, a
           const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
           // On every schedule: no body at or after the refused call ran. Every attempt that
           // started the refused call then made the store calls the member names and recorded
-          // the failure, and nothing else: an attempt the injected outage cut short made the
-          // first of those only. The task was charged one attempt, so nothing was retried.
+          // the failure, and nothing else. The one attempt the injected outage cut short made
+          // some of those calls, in order, and stopped at the call the harness failed. The
+          // task was charged one attempt, so nothing was retried.
           const thenCalled = [...call.reaches, 'fail']
           const after = callsAfter(watch.trace, `op ${refusedAt}`)
+          const asExpected = (calls: readonly string[]): boolean => {
+            const cutShort = calls.at(-1) === INJECTED_OUTAGE
+            const made = cutShort ? calls.slice(0, -1) : calls
+            return (
+              (cutShort ? made.length > 0 : made.length === thenCalled.length) &&
+              made.every((name, at) => name === thenCalled[at])
+            )
+          }
           expect(
             {
               faultAtCall: failAtCall,
               ranAtOrAfterTheRefusedCall: watch.bodies.filter((index) => index >= refusedAt),
-              calledAnythingElse: after.filter((calls) =>
-                calls.some((made, at) => made !== thenCalled[at]),
-              ),
+              calledAnythingElse: after.filter((calls) => !asExpected(calls)),
               lastAttempt: after.at(-1),
               attempts: watch.attempts,
             },
