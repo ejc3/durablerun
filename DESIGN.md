@@ -317,6 +317,9 @@ the normal lost-launch path, so a hung transport costs one timeout, never a
 stalled driver. With a bounded-slot SYNC launcher (§3.9 — the call runs the
 worker inline and legitimately lasts as long as the run) the watchdog must
 be DISABLED; the slot bound, not a timeout, is the backpressure.
+When the deadline passes, and once the failed launch is decided, the loop also
+fires the abort signal it handed the call (§3.9 port 2), so the transport can
+let go of what the call holds.
 
 ```
 tick():
@@ -565,7 +568,9 @@ One invocation executes one claimed run to its next suspension point:
 - The worker server and the resident driver's `/wake` server bind to 127.0.0.1
   only. Neither installs a server `error` handler after bind, so a server error
   is an uncaught event that ends the host process. Every pass it was running
-  recovers through the lease, like any other worker death.
+  recovers through the lease, like any other worker death. Their limits, their
+  shutdown order, and the deadline of the ping are in §3.9 (the local HTTP
+  transport's lifecycle).
 - Rolling deploys, ported from Absurd: a worker whose build has no handler for
   the claimed task name **defers** the claim before activation (`deferLaunch`,
   15s + jitter, nothing consumed; the activation bullet above says how the name
@@ -2724,6 +2729,20 @@ stutters.
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).
+   `launch` takes an optional second argument, `{ signal }`. The signal fires
+   once the caller has stopped waiting for the call, which for the resident
+   driver is when its launch deadline passes (§3.1). For the outcome an abort
+   means nothing: the caller has already reconciled the launch as
+   `launch-failed`, exactly as it does for a call that never settles, and it
+   reads nothing the launcher answers afterwards. A launcher may use the signal
+   to let go of what the call holds, and may ignore it: a launcher that declares
+   the invocation alone still satisfies the port, and a caller may pass no
+   options. A launcher never reads the signal as evidence that the run did not
+   start, and never as a reason to stop a worker. The worker may hold the
+   launch, the lease stays the only recovery, and a worker that did start
+   revives an advisorily expired lease with its next heartbeat. A driver of a
+   SYNC launcher runs without the launch deadline, so its calls are never
+   aborted.
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
    `{queue, runId, claimToken?, endedAtEpochMs, kind:
@@ -2751,6 +2770,46 @@ brief-overlap window lease expiry already tolerates; the zombie's scheduler
 writes die on the stale token, its checkpoints on attempt guards, and its next
 `heartbeat` tells it to exit. Feed totally lost = reclaim latency degrades to
 the lease timeout; correctness unchanged.
+
+**The local HTTP transport's lifecycle.** The driver package's HTTP `Launcher`
+and its two loopback servers (the worker's `/launch`, the resident driver's
+`/wake`) hold no connection for longer than somebody waits for it:
+
+- The launch request carries the caller's signal, so it ends when the driver's
+  launch deadline passes. A worker that accepts the connection and never
+  answers holds the driver's connection until then and no longer. The
+  connection pool under `fetch` may open one idle connection to the same
+  address once an aborted one is gone, and closes it on its own keep-alive
+  timer.
+- The ping a worker sends after a pass is never awaited, so it carries a
+  deadline of its own: five seconds on the injected clock, after which the
+  request is aborted. A ping that is answered leaves no timer behind.
+- Both servers give a connection ten seconds to deliver its headers and thirty
+  for its whole request, where the platform's defaults are sixty seconds and
+  five minutes. The platform checks its connections every thirty seconds, so a
+  stalled one ends within its limit plus that.
+- A request that is answered before its body is read, or whose body nobody
+  reads, leaves its kept-alive connection usable, because the platform discards
+  what is left of a request body once its response has finished. The transport
+  adds nothing to that, and a case on each server holds it on every route that
+  answers early. A launch body past the 64 KiB cap is the exception: it is
+  answered 413 and its connection is torn down, because its client may still be
+  sending.
+- The worker server's `close()` stops accepting, which ends the idle kept-alive
+  connections, and then waits for the connections that hold a request. Such a
+  request is read, answered and run, and once `close()` has begun every answer
+  carries `connection: close`, so a connection ends after its answer is written
+  and is never kept alive for a request the server will not take. An ack is
+  therefore never dropped by the shutdown: a dropped ack is a failed launch
+  counted against a run that ran. The wait is bounded by five seconds on the
+  injected clock, because a closed server no longer enforces the limits above.
+  What is left is then force-closed, and `close()` resolves once the passes in
+  flight have finished.
+- The wake server's `close()` ends every connection at once. Nothing there is
+  worth a wait: a wake reaches the loop before its answer is written, and the
+  answer tells the pinger nothing. Left alone, a client that connected and sent
+  nothing, or that held a request half sent, would hold `close()` open for as
+  long as it liked.
 
 Any combination of implementations across the five ports is correct, because
 the only load-bearing component is the lease in port 1 — that is the
