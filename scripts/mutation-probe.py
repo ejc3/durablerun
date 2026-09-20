@@ -7453,9 +7453,16 @@ MUTATION_SPECS.extend(
         (
             "mysql-keyed-write-takes-its-key",
             "packages/store-mysql/src/tree.ts",
-            "      if (index === null || target === null || table === undefined) {\n",
-            "      if (table !== null) { // MUTATION: a keyed delete is written as any other\n",
+            "      this.append(`delete ${keysFirst(target)} `)\n",
+            "      return super.visitDeleteQuery(node) // MUTATION: a keyed delete is written as any other\n",
             "a keyed delete is planned by the server alone, which scans a small waits table and locks every wait in it",
+        ),
+        (
+            "mysql-unkeyed-delete-refused",
+            "packages/store-mysql/src/tree.ts",
+            "    if (keyed === null || target === null || table === undefined) throw unkeyedDelete(target)\n",
+            "    if (keyed === null || target === null || table === undefined) return super.visitDeleteQuery(node) // MUTATION\n",
+            "a delete keyed in a way the compiler does not read is written as the server plans it, with no index of the stamp and no refusal, so its keys are read with shared locks through any index",
         ),
         (
             "mysql-keyed-write-key-stands-anywhere",
@@ -11692,6 +11699,12 @@ VERDICTS.update(
             "packages/store-mysql/test/query-plans.test.ts",
             "a keyed write on MySQL reaches its target through its key in every keyed write a small database sends",
             "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
+        ),
+        "mysql-unkeyed-delete-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete that no subquery keys",
+            "mutation-verdict:construction:mysql-unkeyed-delete-refused",
         ),
         "mysql-keyed-write-key-stands-anywhere": ExpectedVerdict(
             "construction",
@@ -17597,7 +17610,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 916:
+        if len(MUTATIONS) != 917:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

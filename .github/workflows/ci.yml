@@ -310,7 +310,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '918b8d397f1cf4fbcc129effd45509abaf5c3898c63089e7f07af82db83b8c31':
+          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
               # On MySQL a write keyed by a subquery reads its keys first and its table second,
               # through the index of its key, and a delete reads its keys through the index of
               # their stamp.
@@ -325,6 +325,7 @@ jobs:
                   "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
                   "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
                   "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
+                  "mutation-verdict:construction:mysql-unkeyed-delete-refused",
                   "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
                   "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
                   "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",

@@ -525,7 +525,7 @@ describe("the claim's candidate legs on MySQL", () => {
 
 /** A keyed write's table and key column: `update` or `delete`, then a required `column in (subquery)`. */
 const KEYED_WRITE =
-  /^(?:update|delete)\s+(?:\/\*\+.*?\*\/\s+)?`(\w+)`[\s\S]*?(?<![.\w])`(\w+)` in \(\s*\(?\s*select\b/i
+  /^(?:update|delete)\s+(?:\/\*\+.*?\*\/\s+)?(?:from\s+)?`(\w+)`[\s\S]*?(?<![.\w])`(\w+)` in \(\s*\(?\s*select\b/i
 
 /** The index each keyed write should reach its target through, by table and key column. */
 const KEY_OF: Readonly<Record<string, string>> = {

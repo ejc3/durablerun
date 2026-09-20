@@ -185,6 +185,17 @@ const NOT_IN_A_KEYED_WRITE = [
   'endModifiers',
 ] as const
 
+/**
+ * Every delete a tree sends on MySQL is keyed by a subquery. A DELETE reads its subquery's
+ * table with shared locks, so the rule for a delete's keys (`stampedKeys`) has to reach
+ * every one. A delete keyed in a way this compiler does not read, or keyed by nothing, is
+ * refused, where it would otherwise be written as the server plans it.
+ */
+const unkeyedDelete = (target: string | null): Error =>
+  new Error(
+    `store-mysql: a delete of ${target ?? 'something other than one table'} is keyed by no subquery, so nothing says how its keys are read`,
+  )
+
 /** The query block a write's keys are read in, and the name the block's one table goes by. */
 const KEYS = { block: 'keys', table: 'k' } as const
 
@@ -528,24 +539,20 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
     const [table] = node.from.froms
     const target = tableName(table)
     const keyed = keyIndex(target, node.where?.where)
-    const index = keyed?.index ?? null
+    if (keyed === null || target === null || table === undefined) throw unkeyedDelete(target)
     this.writing(target, () => {
-      if (index === null || target === null || table === undefined) {
-        super.visitDeleteQuery(node)
-        return
-      }
       this.requireKeyedGrammar(node.from.froms, [
         node.using,
         ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause]),
       ])
-      const keysFrom = stampedKeys(target, keyed?.keys)
+      const keysFrom = stampedKeys(target, keyed.keys)
       this.append(`delete ${keysFirst(target)} `)
       this.visitNode(table)
       this.append(' from ')
-      this.visitKeyedTarget(table, index)
+      this.visitKeyedTarget(table, keyed.index)
       this.#keysFrom = keysFrom
       try {
-        this.visitKeyedWhere(node.where, keyed?.condition)
+        this.visitKeyedWhere(node.where, keyed.condition)
       } finally {
         this.#keysFrom = null
       }
