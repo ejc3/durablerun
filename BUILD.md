@@ -149,13 +149,24 @@ a last docs PR gives a live owner to every open bullet that is left.
    contest of PR4.4c's surface meets no deadlock victim. That surface found the
    defect: at five rows or fewer the claim's update scans `runs` and locks
    every row, so concurrent claimers deadlock.
-9. PR3.4b: `rollback_error` names the rollback that failed when a cancellation
-   follows a failed attempt that had budget left, held by a case on three
-   dialects that was committed failing. Saga reads on libSQL and MySQL are
-   ranges the checkpoint key serves, and their plan pins refuse the walk.
-   PostgreSQL keeps the walk, which is keyed by task, because a range over a
-   name is not sound under a linguistic collation. The hosted inspect route
-   shows the rollback outcome.
+9. PR3.4b: `rollback_error` names a rollback only when that rollback's failure
+   ended the task, so it names none when a cancellation or a cap follows a
+   failed attempt that had budget left, held by a case on three dialects that
+   was committed failing. Saga reads on libSQL and MySQL are ranges the
+   checkpoint key serves, and their plan pins refuse the walk. PostgreSQL
+   keeps the walk, which is keyed by task, because a range over a name is not
+   sound under a linguistic collation. The hosted inspect route shows the
+   rollback outcome. This is met. PR3.4b reads the attempt record that the
+   task's last run wrote: a `sagas` case committed failing holds it on three
+   dialects, and the fuzz walk holds it over every task it spawns. What an
+   operator loses is the last failed attempt's error in the result of a saga
+   that something else halted. It stays readable through `getCheckpoints`, in
+   the `$rollback-tries:<step>` record. The plan pins of `store-libsql` and
+   `store-mysql` refuse the walk. The one in `store-postgres` accepts the
+   task-keyed walk, and refuses a checkpoint name ordered or compared by
+   order, in an index condition or in a saga statement's text, where it reads
+   spellings and lists the ones it misses. A hosted router case holds the
+   inspect route.
 10. PR3.10a: the attestation refuses a postmortem that the pull request adds
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
@@ -187,6 +198,26 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+12. `scripts/spec-ledger.py` reads the ledger blocks of ChildTasks.tla and
+    Sagas.tla, the side models that `scripts/tla.sh` enrols. A label in either
+    block that no store sends, an action that is not in the module's
+    next-state relation, an action of that relation the block leaves out, and
+    a class that disagrees with Scheduler.tla's ledger each fail
+    `pnpm lint:ledger`. Nothing in a block goes unread: `Next` is read to the
+    end of its definition, and a line that is not an entry may hold no arrow
+    and no class. The main ledger is held one way too: an action it names is
+    a disjunct of Scheduler's `Next`, or the action a side block maps from the
+    same label. This is met. Twenty-seven cases in
+    `scripts/lint-selftest.py`, each committed failing, hold the refusals. Writing
+    the two blocks for the reader showed what had gone stale unread:
+    ChildTasks.tla's mapped `AwaitMaterialize` from `await-event` where the
+    stores send `record-task-done`, left out `fail-rollback` and five of the
+    model's fourteen actions, and gave `claim` a class the main ledger does
+    not, and Sagas.tla's left out `Complete`. The main ledger had mapped `fail`
+    and `fail-rollback` to `FailRun`, which no module defines, with one marker
+    standing for the two actions behind it. Both lines now name
+    `FailRunWithRetry` and `FailRunTerminal`, and a case refuses a stale `fail`
+    on each.
 13. PR4.6: `getCheckpoints` returns a caller's names in byte order on every
     dialect. CI's PostgreSQL service is created with a linguistic collation, so
     the suite sees what a managed server may show. The order case writes names
@@ -200,6 +231,19 @@ a last docs PR gives a live owner to every open bullet that is left.
     one that drops a column from the version, one that makes it rewrite a table
     and one that declares another collation on an index key, are each caught by
     that test.
+15. PR2.5b: a launch the resident driver stopped waiting for is aborted through
+    the Launcher port and reconciles exactly as a timed-out launch does, held by
+    a case in which the worker receives the launch, the driver aborts, and the
+    run completes once. The detached launch and wake requests end at a deadline,
+    both local servers set header and request limits, and the worker server's
+    `close()` lets a launch on the wire finish, within a bound, before it
+    force-closes what is left. This is met. Eight cases were committed failing,
+    seven of them in `packages/driver/test/http-lifecycle.test.ts` against real
+    local servers on ports the OS picks, with the driver or the worker on a
+    hand-cranked clock, and one in `loop.test.ts`. A request rejected with a
+    body was expected to leave its kept-alive connection unusable and does not,
+    because the platform discards what is left of such a body, so two cases pin
+    that and no code changed.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings. A batch of reads refuses a state or status column tested against
@@ -606,18 +650,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
-  enqueue → done; kill-worker chaos → sweep recovers. Carries two deferrals
+  enqueue → done; kill-worker chaos → sweep recovers. Carries one deferral
   from the loop review: the `/wake` HTTP endpoint (producers currently
   cannot reach the in-process wake(); it rides the worker server's process
-  entry), and an abort signal through the Launcher port so a timed-out
-  transport call can actually be cancelled instead of abandoned.
+  entry). The other one it carried, an abort signal through the Launcher
+  port, is PR2.5b.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
-  against real processes. Also carries the transport-lifecycle deferrals
-  from the residual review: graceful worker shutdown that drains queued
-  acks before force-closing sockets, deadlines + abort on the detached
-  launch and wake fetches, connection/header timeouts and body draining on
-  every route, and splitting permanent SQL errors from transient
+  against real processes. The transport-lifecycle deferrals it carried from
+  the residual review (the worker's shutdown order, deadlines on the detached
+  launch and wake requests, header and request timeouts, body draining) are
+  PR2.5b. It still carries one from that review:
+  splitting permanent SQL errors from transient
   unavailability in the executor's error typing. Includes the systematic fault MATRIX from the
   PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
   with per-operation bounds asserted — curated fault lists missed the
@@ -635,6 +679,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
   told that URL. The start helpers take a started worker and refuse a bare
   number. The test determinism review rule flags any port number fixed before
   the bind and passes port 0.
+- **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
+  `Launcher.launch` takes an optional second argument whose one field is an
+  abort signal. The resident driver's launch deadline hands every call a signal
+  and fires it once the failed launch is decided, and the HTTP launcher ends its
+  request with it. A worker that accepts a connection and never answers now
+  holds the driver's connection until the deadline, where it held it for
+  fetch's own five minutes. An aborted launch is reconciled exactly as a call
+  that never settles, and nothing a launcher answers after the abort is read: a
+  case compares task rows, run rows and loop counters, under one seed, between
+  a launcher that never hears the abort and one that lets go and then claims
+  the launch was taken. The worker's wake ping carries a deadline of five
+  seconds on the injected clock. The worker server's `close()` stops accepting,
+  lets a request that is on the wire finish with an answer that ends its
+  connection, waits at most five seconds on the injected clock, force-closes
+  the rest, and then waits for the passes in flight. Before, it destroyed every
+  connection at once, so a launch on the wire was never answered, or ran with
+  its ack dropped. The wake server's `close()` ends every connection at once.
+  Before, a client that connected and sent nothing held it open for as long as
+  it liked. Both servers give a connection ten seconds for its headers and
+  thirty for its whole request. A request rejected with a body was expected to
+  leave its kept-alive connection unusable, and does not: the platform discards
+  what is left of the body once the response has finished, on every route
+  tried, so two cases pin that and no code changed. Thirteen mutations hold the
+  new lines, and the registry goes from 939 to 952.
+  - Option, not scheduled: end the connections that never sent a byte when the
+    worker server's `close()` begins. Today such a connection holds `close()`
+    for its whole bound of five seconds, measured in the review at 5.0 s for a
+    silent raw client, where the old `close()` took no time, and at 3.9 s for
+    the connection that fetch's pool opens after an aborted launch. Trigger: a
+    host that calls `close()` where those seconds matter, such as a deploy that
+    waits for it. The red is ready-made: a raw client connects and sends
+    nothing, and `close()` has to resolve with the clock where it was.
+  - Option, not scheduled: a standing control for the two cases that pin the
+    platform's discard of an unread request body. Today the control is a run by
+    hand: with the discard switched off both cases fail, and with their first
+    bodies of 1,000 and 5 bytes both passed. A case would switch the discard
+    off and expect the pins' scenario to wedge. Trigger: a change to either
+    pin, or a new major version of the runtime.
+  - PR2.5b's one review found no HIGH, no MEDIUM, three LOW and two notes,
+    recorded in `postmortems/pr2.5b-transport-lifecycle-review.md`. Four are
+    counted there: a sentence of DESIGN.md that was narrower than the code, two
+    pins that could not fail for the reason they name, a wrapper that dropped an
+    argument of the port, and a comment that blamed the client for every stall.
 
 ## Phase 3 — full Absurd semantics
 
@@ -1700,10 +1787,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   implementation then maps every terminal batch onto the model's ChildTerminal, takes the dialect's event
   lock in each of them, reserves the `$task-done:` name at the store's
   `emitEvent` port, and adds `ctx.spawn` and an internal child await to the
-  SDK. Nothing reads the model's ledger block, because `scripts/spec-ledger.py`
-  reads Scheduler.tla only. So the implementation adds one conformance case
-  per terminal batch, six of them, generated from the batch labels: the batch
-  writes the completion event and wakes a registered waiter, on both dialects.
+  SDK. Nothing read the model's ledger block then, because
+  `scripts/spec-ledger.py` read Scheduler.tla only. So the implementation adds
+  one conformance case per terminal batch, six of them, generated from the
+  batch labels: the batch writes the completion event and wakes a registered
+  waiter, on both dialects. The script reads the block now, its labels and its
+  actions and no guard, so those cases still hold the guards.
   Event cleanup, when it is built, must not remove a completion event whose
   task can still be awaited. The spec's review round is
   `postmortems/pr3.3-child-tasks-spec-review.md`.
@@ -1849,9 +1938,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   step's body, enters the phase in the same batch as the terminal decision in
   `fail` and in both sweep caps, admits rollback passes past the user attempt
   budget, and changed `retry-task`'s admission, because reviving a task whose
-  saga ran was unsound. `scripts/spec-ledger.py` reads Scheduler.tla
-  only, so nothing checks this model's ledger block, and the implementation
-  gave every guard an executable twin on every dialect. Beyond the conformance
+  saga ran was unsound. `scripts/spec-ledger.py` read Scheduler.tla only then,
+  so nothing checked this model's ledger block, and the implementation gave
+  every guard an executable twin on every dialect. The script reads the block
+  now, its labels and its actions and no guard. Beyond the conformance
   cases above those are: the start marker commits before the body runs; the
   decision and the phase marker are one batch in `fail` and in both sweep
   caps; no forward step starts or commits in the phase; `retry-task` refuses a
@@ -2005,20 +2095,195 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
+  - An option, not built: executable-twin markers for the side models.
+    `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
+    that shows a refusal, for every action a `[cas-fenced]` line of the main
+    ledger names. It reads the ledger blocks of ChildTasks.tla and Sagas.tla
+    too, and it could demand `fenceTwin('Sagas.UserTerminal')` of them the
+    same way, the module in the name so that two models may share an action
+    name. It was weighed when the script began to read the blocks. The
+    registry already takes the SQL of both models apart one condition at a
+    time, each mutation naming the case that must fail, which a comment token
+    does not do. And an action can refuse nothing that a stale or repeated
+    caller could try, as a cancellation does under the rule the maintainer
+    chose, so its marker would need a wider meaning or a new case on three
+    dialects. Trigger: a guard of a side model is found with no case and no
+    registered mutation behind it.
+  - Options for the ledger script, not built, each with its trigger:
+    - Hold the main ledger to Scheduler's `Next` the other way. `Next` has 24
+      disjuncts and the main ledger names 19 of them. It names neither sweep
+      cap arm, `SweepRelaunchExhausted` and `SweepInfraExhausted`, which both
+      side blocks map from the caps of `sweep:lost-launch` and
+      `sweep:claim-timeout`, and `Drop`, `WorkerCrash`, and `TimeAdvance`
+      would need exclusion lines. Trigger: an action joins Scheduler's `Next`
+      with no ledger line, or a defect is found at a sweep cap that a twin
+      asked of the main ledger would have met.
+    - Hold the main block to the rule that every quoted token is a label. It
+      quotes `duplicate` once and `running` three times, so four comment
+      lines would be reworded. Trigger: a label deleted from the stores is
+      found still quoted in the main ledger.
+    - A side block does not notice a label line that is removed while another
+      line still maps the action: without its `fail-rollback` line the block
+      of ChildTasks.tla still passes. Nothing knows which labels ought to map
+      to an action. For `ChildTerminal` the list exists, as
+      `TERMINAL_BATCH_LABELS`. Trigger: a label that ends a task is added to
+      the stores and the block is found without it.
+    - The script passes over a module that no mutant list enrols. The
+      structure check of `scripts/tla.sh` refuses such a module, inside the
+      required `tla` check. Trigger: that check is moved, narrowed, or made
+      to depend on the scope.
   - `failRollback` takes the attempt record's name and count from its caller.
     The name is now checked in SQL. A port that takes the step and derives
     both would make a foreign name unwritable and close the limit above.
   - The pass's budget guard is held at the bound by two cases whose tasks
     have no infrastructure retries, so a guard that ignored them would pass.
-  - `rollback_error` is the latest attempt record of any step not rolled
-    back, which names the wrong rollback when a cancellation follows a failed
-    attempt that had budget left.
-  - The rollback outcome reaches `getTaskResult` only. A parent that awaits
-    the child and the hosted inspect route do not see it.
-  - Saga reads find checkpoints by a prefix test that cannot use the key's
-    second column, so `rollbackPending` walks a task's checkpoints, the plan
-    pin accepts that walk, and the `rollback_error` subquery runs for every
-    result read.
+  - A parent that awaits a child does not see the child's rollback outcome.
+    PR3.4b put the outcome on the hosted inspect route and left this half
+    open, because the obstacle is the writer and not the wire: a terminal
+    batch binds its completion payload before it runs, and the outcome is a
+    fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
+    and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
+    and attempt records are found by a test of each name among the task's own
+    checkpoints, because a range of names is not sound under the database's
+    collation (DESIGN.md §3.4). Two partial indexes would make each read one
+    seek: `checkpoints (task_id, checkpoint_name) WHERE
+    substr(checkpoint_name, 1, 9) = '$started:'`, and the same for
+    `$rollback-tries:`. Each predicate is the text the fragments already
+    spell, so no statement changes and the planner proves it. Measured on
+    PostgreSQL 17 beside 10,000 checkpoints of the task, without the indexes
+    and then with them, three interleaved processes a side: the result of a
+    rolled back saga 6.2 ms and 0.76 ms, of a halted saga 4.5 ms and 0.77 ms,
+    and the rollback-owed predicate of a plain task's failure 4.2 ms and
+    0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
+    every dialect, an empty one on libSQL and MySQL. The trigger is a real
+    task with thousands of checkpoints, or result reads showing up in a
+    profile. The other way out is the column's collation: once
+    `checkpoint_name` is declared to compare by byte on PostgreSQL, the range
+    is sound there, PostgreSQL can read it as the other two stores do, and the
+    PostgreSQL pin's text check, which reads spellings, is deleted with the
+    walk it guards.
+  - Option, not a deferral of this entry: hold a stored value to JSON on the
+    way in, at the port entries that take one: `fail` for a failure reason,
+    `failRollback` for the error in its attempt record, and `complete` for a
+    result. The port takes any text today, and the SDK is the only caller that
+    always hands it JSON. The hosted inspect route answers such a value as
+    its text since PR3.4b, where it answered 500, so nothing is lost today.
+    Refusing the text at the entry would make the state unwritable. It also
+    changes what `fail` accepts from a caller that is not the SDK, so it is a
+    change of the port's contract and a PR of its own. The trigger is a reader
+    of these values outside the SDK besides the inspect route, which would
+    have to repeat the route's care, or such text seen in a real store. The
+    SDK reads bare what it wrote: its rollback pass parses the saga's cause
+    before it calls a rollback, so a cause that another caller stored as text
+    that is not JSON fails that parse on every attempt.
+  - Option, not a deferral of this entry: measure the shard runner's common
+    floors. They switch on at twenty walks of 50 steps, a size that was chosen
+    and never measured. Measured on libSQL with a correct store, for PR3.4b's
+    halt count: of 300 shards of that size, six older stats each stayed at
+    zero in about 2 to 6 percent (`rollbacks`, `rollbackFailures`,
+    `checkpoints`, `childAwaits`, `awaits` and `recordedEndings`, 5 to 18
+    shards each over three measurements), and `sagasEnded` in under 1 percent.
+    At the sizes the configured runs use, 62 walks of 100 steps and up, none
+    did. So no configured run fails a correct store today, and a run sized
+    near the threshold would, in up to one shard of five. The trigger is any
+    new fuzz size between the threshold and the size `verify:fuzz` runs, or a
+    common floor that fails on a run whose store is right. The fix is a
+    measured size for each rare stat, which `RARE_STAT_FLOOR_STEPS` in the
+    shard runner already holds for the halt count.
+
+- **PR3.4b saga reads and results**: DONE. Three findings of the saga review
+  that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,
+  findings 10 to 12). Its own review round is
+  `postmortems/pr3.4b-saga-reads-review.md`.
+  - The rollback error named the wrong rollback. It was the latest attempt
+    record of any step not rolled back, so a rollback that failed with budget
+    left was read as the halt when a cancellation or a capped failure ended
+    the task afterwards. An attempt record is written only by the batch that
+    fails its run, and a failure with budget left places a pass, which becomes
+    the task's last run. The read now names the record the task's last run
+    wrote, on all three stores. A case in the `sagas` surface builds both
+    histories, and it failed on three dialects before the change. The fuzz
+    walk now reads the result of every task it spawned at its end, and
+    requires a rollback error exactly when a rollback's failure ended the
+    task, and that rollback's: the class ran green under the fuzz before,
+    because no row invariant can see a value that is derived when it is read.
+    The read takes one record under a limit of one and no order, which rests
+    on a run writing one attempt record at most, and the saga row checker now
+    holds that over every history the suite builds. What an operator loses is
+    the last failed attempt's error in the result of a saga that something
+    else halted. It stays readable through `getCheckpoints`, in the
+    `$rollback-tries:<step>` record. The walk counts the results that named a
+    halt, and the shard runner holds that count above zero only from 20,000
+    walked steps in a shard. A halt is one pass move in ten. Measured with a
+    correct store, a shard of twenty walks of 50 steps names none two times in
+    five, and a shard of the size `verify:fuzz` runs names none about once in
+    nine hundred, which the common floor would have turned into a false
+    failure in one run of thirty. The nightly plan test holds every nightly
+    batch at or above that size, because nothing else ties the two. The walk
+    also refuses a failed rollback's answer other than what it asked for, so
+    a store that ends a saga it was asked to retry fails the walk.
+  - A saga's start markers and attempt records were found by a test of each
+    name, which the checkpoints key cannot serve, so the failure of any task
+    and every read of a result walked all the checkpoints the task has. libSQL
+    and MySQL now read the names under a prefix as a range of the key, from
+    the prefix to the first name past it, which core derives once
+    (`firstNamePast`). MySQL keeps its byte comparison: a column compares in
+    its own collation, which is binary, so the literals are plain, and a
+    binary cast was measured to stop the key from serving the range.
+    PostgreSQL keeps the test of each name, because a name there orders under
+    the database's collation and the range is not sound. DESIGN.md §3.4
+    records that difference with the measured miss, which neither the local
+    server nor CI's can show, because both sort by byte. On PostgreSQL the
+    attempt record is read only for a failed task whose saga began, which
+    spares every other result read the walk. libSQL and MySQL read a range of
+    the key and carry no such guard, because there it would change no result
+    of a history the store can reach and spare no walk, and nothing could hold
+    it. On rows no history builds the three differ, and DESIGN.md §3.10 says
+    how. The plan pins hold each
+    dialect to what it does. libSQL's refuses the walk it used to accept and
+    lets nothing sort. MySQL's counts the rows walked beside 2,000 checkpoints
+    of the task, which was 2,030 for a plain task's failure. PostgreSQL's
+    accepts a walk keyed by the task, refuses a checkpoint name ordered or
+    compared by order, in an index condition or in a saga statement's text,
+    and requires that no attempt record is read when no saga began or a
+    cancellation ended it. Its text check reads spellings: its table of
+    controls holds the ones it refuses, the legal ones it passes, and the ones
+    it misses, which are a name ordered behind a parenthesis, a row
+    comparison, a comparison behind a COLLATE or a cast, and MIN or MAX.
+    Medians in ms beside the task's own checkpoints,
+    main and then this change, from one harness run in a worktree of each,
+    five processes a side, interleaved, 200 timed reads in each:
+
+    | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
+    |---|---|---|---|
+    | result of a plain task, 10 | 0.130, 0.118 | 0.819, 0.703 | 0.360, 0.341 |
+    | result of a plain task, 1,000 | 0.198, 0.111 | 0.962, 0.702 | 0.733, 0.311 |
+    | result of a plain task, 10,000 | 0.880, 0.108 | 2.692, 0.833 | 3.886, 0.290 |
+    | result of a rolled back saga, 10,000 | 1.551, 0.112 | 5.736, 5.133 | 9.681, 0.303 |
+    | result of a halted saga, 10,000 | 0.987, 0.115 | 4.199, 3.654 | 12.558, 0.298 |
+    | rollback owed, plain task, 10,000 | 0.753, 0.060 | 3.750, 3.607 | 1.998, 0.257 |
+    | rollback owed, rolled back saga, 10,000 | 0.756, 0.060 | 3.720, 3.691 | 6.265, 0.263 |
+
+    Beside 10 checkpoints every read is the same on both sides. "Rollback
+    owed" is the predicate a failure evaluates, read alone. On PostgreSQL what
+    moved is the plain task's result, by the guard. The walk stays, and the
+    option under PR3.4 above says what would remove it.
+  - The rollback outcome reached `getTaskResult` only. The hosted inspect
+    route now shows it: `rollback.outcome`, and `rollback.error` when a
+    rollback's failure ended the task. A stored value that is not JSON, which
+    the store's port accepts from a caller that is not the SDK, is answered as
+    its text under a key of its own, where the route answered 500: for a
+    rollback's error on this entry's first version, and on main for a failure
+    reason and a result. A value that parses and cannot be serialized, as JSON
+    nested deeper than the serializer can walk, is answered the same way, with
+    every stored value of the answer as its text. A stored `1e999` parses and
+    is answered as `null`, which is left as it is. The parent's view stays
+    open under PR3.4 above, with the reason.
+  - Eight mutations hold the new lines and checks, and the registry holds 939.
+    The base gate's one live arm is this entry's, keyed on main's registry,
+    and it exempts five verdict markers the base predates. It must be keyed
+    again if main's registry changes before this entry merges.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent

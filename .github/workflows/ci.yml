@@ -326,23 +326,26 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '0eec60003f1e21025c8fd11c489563f42ba61826fb486c7f681c93bff420eb37':
-              # PostgreSQL's schema gained a version that declares the byte collation on
-              # every text column, and a server test reads the catalog to hold it: no text
-              # column or index key keeps its database's collation, and no migration
-              # rewrites a table. A second server test holds that a second migrator waits
-              # for the first and never deadlocks with it, a third that a read batch which
-              # loses a deadlock is run again, and a fourth that a statement which arrives
-              # while a version waits holds no store table. Their mutations are newer than the
-              # base registry, so their verdict markers are exempted there. No base entry
-              # is re-aimed.
+          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+              # The local HTTP transport's lifecycle gained thirteen mutations, under twelve verdict
+              # markers that are newer than this registry: the launch deadline's abort through
+              # the Launcher port, the deadline of the wake ping, the limits of both local
+              # servers, and the order in which each closes. Nothing is re-aimed: every find of
+              # this registry still occurs exactly once in this tree. The arm is keyed on main's
+              # registry as of the merge of pull request 66, whose own arm it replaces.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
-                  "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
-                  "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
-                  "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
-                  "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
-                  "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
+                  'mutation-verdict:behavior:launch-deadline-tells-the-launcher',
+                  'mutation-verdict:behavior:aborted-launch-answer-is-never-read',
+                  'mutation-verdict:behavior:http-launch-ends-at-the-callers-deadline',
+                  'mutation-verdict:behavior:wake-ping-ends-at-its-deadline',
+                  'mutation-verdict:behavior:answered-wake-ping-leaves-no-timer',
+                  'mutation-verdict:behavior:worker-close-answers-a-launch-on-the-wire',
+                  'mutation-verdict:behavior:closing-worker-answer-ends-its-connection',
+                  'mutation-verdict:behavior:worker-close-is-bounded',
+                  'mutation-verdict:behavior:wake-server-close-ends-every-connection',
+                  'mutation-verdict:behavior:local-servers-carry-their-limits',
+                  'mutation-verdict:behavior:worker-close-ends-with-its-last-connection',
+                  'mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
