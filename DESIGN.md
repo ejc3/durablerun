@@ -4177,10 +4177,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   and the attempt records, are one range of it on libSQL and MySQL, where a
   name compares by its bytes, so the failure of a task and a read of its
   result cost the same whatever the task has checkpointed. On PostgreSQL a
-  name orders under the database's collation and that range is not sound
-  (§3.4), so there the names are tested one by one among the task's own
-  checkpoints: a walk keyed by the task, which grows with what the task has
-  checkpointed. There the attempt record is read only for a failed task whose
+  name ordered under the database's collation when these reads were built,
+  and that range was not sound (§3.4), so there the names are tested one by
+  one among the task's own checkpoints: a walk keyed by the task, which grows
+  with what the task has checkpointed. From schema version 7 on the range is
+  sound there too (§3.4), and the reads still walk: BUILD.md records reading
+  them as ranges as an option under PR3.4. There the attempt record is read
+  only for a failed task whose
   saga began, which spares every other result read that walk, and the plan pin
   holds the guard. libSQL and MySQL carry no such guard: their read is one
   seek into a range of the key, empty for a task with no attempt record, so a
