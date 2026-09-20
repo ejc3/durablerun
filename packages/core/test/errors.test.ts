@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   FatalTaskError,
   LeaseLostError,
+  PermanentStoreError,
   StoreUnavailableError,
   SuspendSignal,
   UNINSPECTABLE_TASK_FAILURE_JSON,
@@ -201,6 +202,29 @@ describe('snapshotTaskThrowable', () => {
   it('exports the one generic wire spelling used by the worker', () => {
     expect(UNINSPECTABLE_TASK_FAILURE_JSON).toBe(
       '{"name":"Error","message":"task threw an uninspectable value"}',
+    )
+  })
+})
+
+describe('PermanentStoreError', () => {
+  it('is a type of its own beside an outage, and an ordinary failure when task code constructs one', () => {
+    const driverError = new Error('duplicate key')
+    const refused = new PermanentStoreError('batch(spawn) was refused for good', {
+      cause: driverError,
+    })
+    expect({
+      name: refused.name,
+      cause: refused.cause,
+      isAnOutage: refused instanceof StoreUnavailableError,
+      anOutageIsPermanent: new StoreUnavailableError('offline') instanceof PermanentStoreError,
+    }).toEqual({
+      name: 'PermanentStoreError',
+      cause: driverError,
+      isAnOutage: false,
+      anOutageIsPermanent: false,
+    })
+    expect(snapshotTaskThrowable(refused)).toEqual(
+      failure('PermanentStoreError', 'batch(spawn) was refused for good'),
     )
   })
 })
