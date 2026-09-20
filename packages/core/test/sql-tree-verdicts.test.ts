@@ -586,7 +586,10 @@ describe('the tree rules', () => {
       const bound = (eb: Loose) => eb.selectFrom('tasks as t').select(eb.val('running').as('s'))
       const underIn = (eb: Loose) => eb('r.state', 'in', bound(eb))
       const asAScalar = (eb: Loose) => eb('r.state', '=', bound(eb).limit(1))
-      expect(String(problem(runs().where(underIn)))).toMatch(BOUND)
+      expect(
+        String(problem(runs().where(underIn))),
+        'mutation-verdict:construction:tree-read-state-reads-a-subquery-selection',
+      ).toMatch(BOUND)
       expect(String(problem(runs().where(asAScalar)))).toMatch(BOUND)
     })
 

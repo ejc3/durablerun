@@ -2497,9 +2497,16 @@ MUTATION_SPECS = [
     (
         "tree-read-state-stops-at-a-subquery",
         "packages/core/src/sql-tree.ts",
-        "  if (SelectQueryNode.is(node)) return false\n  return isBind(node)",
-        "  return isBind(node)",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "",
         "a bind inside a subquery on the right, which stands beside no state, refuses the read",
+    ),
+    (
+        "tree-read-state-reads-a-subquery-selection",
+        "packages/core/src/sql-tree.ts",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "  if (SelectQueryNode.is(node)) return false\n",
+        "a read may bind the state it compares by selecting the bound value in a subquery",
     ),
     (
         "tree-read-state-plain-list-is-bound",
@@ -9051,6 +9058,12 @@ VERDICTS = {
         "the tree rules a state a read compares is admitted with a subquery on the right, which is its own statement",
         "mutation-verdict:construction:tree-read-state-stops-at-a-subquery",
     ),
+    "tree-read-state-reads-a-subquery-selection": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when a subquery on the right selects a bound value",
+        "mutation-verdict:construction:tree-read-state-reads-a-subquery-selection",
+    ),
     "tree-read-state-plain-list-is-bound": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
@@ -13956,6 +13969,12 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "tree-read-state-stops-at-a-subquery": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
+    "tree-read-state-reads-a-subquery-selection": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
     "tree-reads-run-in-read-mode": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
@@ -18492,7 +18511,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 959:
+        if len(MUTATIONS) != 960:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

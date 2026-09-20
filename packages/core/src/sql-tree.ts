@@ -1304,10 +1304,12 @@ const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.imme
 /**
  * Whether an operand holds a bound value: the value itself, or parentheses, a list, a cast, a
  * call, a CASE or a fragment around it, found the way `namesColumn` finds a column. The
- * builder binds every member of a list of plain values. A subquery is its own statement.
+ * builder binds every member of a list of plain values. A subquery is its own statement, so a
+ * bind in its WHERE stands beside no state and is not read. What it selects is the value the
+ * state is compared with, so its selections are read.
  */
 function holdsBind(node: OperationNode): boolean {
-  if (SelectQueryNode.is(node)) return false
+  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)
   return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)
 }
 
