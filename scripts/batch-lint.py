@@ -118,9 +118,7 @@ OPAQUE_STATEMENT_LISTS = {
     ),
     ("packages/store-postgres/src/admin.ts", "migrate:v*"): (
         "fencedBatch(migration)",
-        "the batch's control names the migration lock, which the executor takes on "
-        "meta so that a second migrator waits, the migration runner prepends an "
-        "applied:vN primary-key sentinel ahead of every statement of the version, "
+        "the migration runner prepends an applied:vN primary-key sentinel "
         "and schema tests execute and freeze every generated migration",
     ),
     ("packages/store-mysql/src/admin.ts", "migrate:v*"): (

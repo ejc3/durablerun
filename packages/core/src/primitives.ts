@@ -132,6 +132,20 @@ export function sqlTransactionLock(
   return typeof control === 'object' ? control.transactionLock : undefined
 }
 
+/**
+ * What an executor answers a lock of a kind it does not implement, which it reaches in the
+ * `default` of its switch over the kinds: there the compiler has narrowed the lock to
+ * `never`, and a later build of core that adds a kind stops that switch compiling. At
+ * runtime an executor of this build can still meet such a kind. Taken for a kind it knows,
+ * the batch would run under the wrong lock, and ignored it would run under none, so it is
+ * refused, and an executor decides the kind before it sends anything.
+ */
+export function refuseUnknownLockKind(lock: never): never {
+  throw new TypeError(
+    `this executor does not implement a transaction lock of kind ${String((lock as { kind?: unknown }).kind)}, and a lock is never ignored`,
+  )
+}
+
 export interface SqlExecutor {
   /**
    * Run the statements as one batch and answer with one result for each, in order.

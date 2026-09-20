@@ -11,6 +11,7 @@ import {
   type SqlTransactionLock,
   StoreUnavailableError,
   isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -305,17 +306,6 @@ function lockCoordinates(lock: SqlTransactionLock): LockCoordinates {
 }
 
 /**
- * A later build of core can add a kind of lock. Taken for a kind this executor knows, the
- * batch would run under the wrong lock, and ignored it would run under none, so it is
- * refused before anything is sent.
- */
-function refuseUnknownLockKind(lock: never): never {
-  throw new TypeError(
-    `this executor does not implement a transaction lock of kind ${String((lock as { kind?: unknown }).kind)}, and a lock is never ignored`,
-  )
-}
-
-/**
  * A named lock is held by the session, not the transaction, so it is taken before the
  * transaction starts and released after it ends. Rows therefore never wait on a lock
  * while holding row locks of their own, and a connection that dies releases it.
@@ -423,8 +413,8 @@ function isSchemaVersionRead(
  * A write whose label begins with `migrate:` is a migration write, and it has to name the
  * migration lock in its control. The label is read here only to REFUSE. The lock a batch
  * runs under is the one its control names, and no label chooses one: chosen from a list of
- * labels, a `migrate:` label the list did not know ran its DDL beside another migrator,
- * and MySQL commits each DDL statement on its own, so nothing could undo it.
+ * labels, a `migrate:` label the list does not know runs its DDL beside another migrator,
+ * and MySQL commits each DDL statement on its own, so nothing can undo it.
  */
 function refuseMigrationWriteWithoutItsLock(
   label: string,

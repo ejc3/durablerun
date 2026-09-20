@@ -46,11 +46,13 @@ async function send(session: Connection, statements: readonly SqlStatement[]): P
   }
 }
 
-async function until(what: string, holds: () => Promise<boolean>): Promise<void> {
+/** Asks until it holds, for ten seconds at most, and says whether it did. */
+async function reached(holds: () => Promise<boolean>): Promise<boolean> {
   const deadline = performance.now() + 10_000
   while (!(await holds())) {
-    if (performance.now() > deadline) throw new Error(`waited ten seconds for ${what}`)
+    if (performance.now() > deadline) return false
   }
+  return true
 }
 
 /** Every table, column, index and check of the fixture's database, and what `meta` holds. */
@@ -163,21 +165,22 @@ describe('a MySQL migrator that died inside its batch', () => {
     const outcomes: Record<string, unknown>[] = []
     const expected: Record<string, unknown>[] = []
     for (let from = 0; from < CURRENT_SCHEMA_VERSION; from += 1) {
-      let statementsPlanned = 1
-      for (let ran = 1; ran <= statementsPlanned; ran += 1) {
+      // The plan depends on the version it is made from and on nothing else.
+      let plan: SqlStatement[] | undefined
+      for (let ran = 1; ran <= (plan?.length ?? 1); ran += 1) {
         const db = await databaseAt(from, `died-from-${from}-after-${ran}`)
         const dying = await sessionOn(db)
         const watcher = await sessionOn(db)
         try {
-          const planned = await plannedBatch(db)
-          statementsPlanned = planned.length
+          plan ??= await plannedBatch(db)
+          const planned = plan
           const { id } = await one(dying, 'SELECT CONNECTION_ID() AS id')
           await one(dying, `SELECT GET_LOCK(${RELEASED_LOCK_NAME}, 0) AS acquired`)
           await dying.query('START TRANSACTION')
           await send(dying, planned.slice(0, ran))
           dying.destroy()
           // The server ends the session: it rolls back what was pending and frees the lock.
-          await until('the server to end the session that died', async () => {
+          const ended = await reached(async () => {
             const { sessions } = await one(
               watcher,
               `SELECT COUNT(*) AS sessions FROM performance_schema.threads
@@ -185,6 +188,7 @@ describe('a MySQL migrator that died inside its batch', () => {
             )
             return Number(sessions) === 0
           })
+          if (!ended) throw new Error('the server did not end the session that died')
           const left = await db.admin.schemaVersion()
           const migrate = await db.admin.migrate().then(
             () => 'finished',
@@ -406,16 +410,16 @@ describe('a MySQL migrator beside one of the released build', () => {
       )
       // The server's own lock table says when a session waits for that very name.
       let waiting = 0
-      const deadline = performance.now() + 10_000
-      while (waiting === 0 && settled === 'still waiting' && performance.now() < deadline) {
+      await reached(async () => {
         const pending = await one(
           released,
           `SELECT COUNT(*) AS waiting FROM performance_schema.metadata_locks
-            WHERE OBJECT_TYPE = 'USER LEVEL LOCK' AND LOCK_STATUS = 'PENDING'
-              AND OBJECT_NAME = ${RELEASED_LOCK_NAME}`,
+              WHERE OBJECT_TYPE = 'USER LEVEL LOCK' AND LOCK_STATUS = 'PENDING'
+                AND OBJECT_NAME = ${RELEASED_LOCK_NAME}`,
         )
         waiting = Number(pending.waiting)
-      }
+        return waiting > 0 || settled !== 'still waiting'
+      })
       const { tables } = await one(
         released,
         'SELECT COUNT(*) AS tables FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()',

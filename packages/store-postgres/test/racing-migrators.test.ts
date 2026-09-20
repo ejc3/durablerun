@@ -79,155 +79,146 @@ async function raceAtEveryVersion(order: Order): Promise<Record<string, unknown>
   const connectionString = process.env.DURABLERUN_POSTGRES_URL
   const outcomes: Record<string, unknown>[] = []
   for (const { version } of MIGRATIONS) {
-    {
-      const db = await openPostgresTestDb({
-        idNamespace: `racing-migrators-${version}-${order === 'this build first' ? 'this' : 'released'}`,
-        migrate: false,
-      })
-      const options = `-c search_path=${db.schemaName}`
-      const clients: Client[] = []
-      const connect = async (): Promise<Client> => {
-        const client = new Client({ connectionString, options })
-        clients.push(client)
-        await client.connect()
-        return client
+    const db = await openPostgresTestDb({
+      idNamespace: `racing-migrators-${version}-${order === 'this build first' ? 'this' : 'released'}`,
+      migrate: false,
+    })
+    const options = `-c search_path=${db.schemaName}`
+    const clients: Client[] = []
+    const connect = async (): Promise<Client> => {
+      const client = new Client({ connectionString, options })
+      clients.push(client)
+      await client.connect()
+      return client
+    }
+    // This build's migrator has one connection, so that the backend the server is
+    // asked about is the one its batch will run on.
+    const thisBuild = PgExecutor.open({ connectionString, options, max: 1 })
+    try {
+      const [byHand, watcher] = await Promise.all([connect(), connect()])
+      const [backend] = await thisBuild.batch(
+        'fixture:backend',
+        [{ sql: 'SELECT pg_backend_pid() AS pid', args: [] }],
+        'read',
+      )
+      const thisBuildPid = Number(backend?.rows[0]?.pid)
+      const byHandPid = Number(
+        (await byHand.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid,
+      )
+
+      // The schema at the version before this one, and this version's batch with its
+      // control as the admin builds them: the real migrator runs, and is stopped where
+      // it would send the batch.
+      const batch: SqlStatement[] = []
+      let control: SqlBatchControl | undefined
+      const stopping: SqlExecutor = {
+        batch: async (label, statements, sent) => {
+          if (label !== `migrate:v${version}`) return db.raw.batch(label, statements, sent)
+          batch.push(...statements)
+          control = sent
+          throw new StoppedBeforeTheVersion()
+        },
       }
-      // This build's migrator has one connection, so that the backend the server is
-      // asked about is the one its batch will run on.
-      const thisBuild = PgExecutor.open({ connectionString, options, max: 1 })
-      try {
-        const [byHand, watcher] = await Promise.all([connect(), connect()])
-        const backendOf = async (ask: () => Promise<unknown>) => Number(await ask())
-        const thisBuildPid = await backendOf(async () => {
-          const [answer] = await thisBuild.batch(
-            'fixture:backend',
-            [{ sql: 'SELECT pg_backend_pid() AS pid', args: [] }],
-            'read',
-          )
-          return answer?.rows[0]?.pid
-        })
-        const byHandPid = await backendOf(
-          async () =>
-            (await byHand.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid,
-        )
+      await expect(new PostgresStoreAdmin(stopping).migrate()).rejects.toBeInstanceOf(
+        StoppedBeforeTheVersion,
+      )
+      const sentinelAt = batch.findIndex(({ sql }) => sql.includes(`'applied:v${version}'`))
+      expect(sentinelAt, `version ${version} writes its sentinel`).toBeGreaterThanOrEqual(0)
+      const releasedBuildBatch = [{ sql: RELEASED_BUILD_LOCK, args: [] }, ...batch]
 
-        // The schema at the version before this one, and this version's batch with its
-        // control as the admin builds them: the real migrator runs, and is stopped where
-        // it would send the batch.
-        const batch: SqlStatement[] = []
-        let control: SqlBatchControl | undefined
-        const stopping: SqlExecutor = {
-          batch: async (label, statements, sent) => {
-            if (label !== `migrate:v${version}`) return db.raw.batch(label, statements, sent)
-            batch.push(...statements)
-            control = sent
-            throw new StoppedBeforeTheVersion()
-          },
-        }
-        await expect(new PostgresStoreAdmin(stopping).migrate()).rejects.toBeInstanceOf(
-          StoppedBeforeTheVersion,
-        )
-        const sentinelAt = batch.findIndex(({ sql }) => sql.includes(`'applied:v${version}'`))
-        expect(sentinelAt, `version ${version} writes its sentinel`).toBeGreaterThanOrEqual(0)
-        const releasedBuildBatch = [{ sql: RELEASED_BUILD_LOCK, args: [] }, ...batch]
-
-        const blocks = async (pid: number, settled: () => boolean) => {
-          const deadline = performance.now() + WAIT_BOUND_MS
-          while (!settled() && performance.now() < deadline) {
-            const seen = await watcher.query<{
-              granted: boolean
-              locktype: string
-              mode: string
-              relname: string | null
-            }>(LOCKS_OF, [pid])
-            const waiting = seen.rows.find((row) => !row.granted)
-            if (waiting === undefined) continue
-            return {
-              waitsFor: [waiting.locktype, waiting.relname, waiting.mode]
-                .filter((part) => part !== null)
-                .join(' '),
-              holds: seen.rows
-                .filter((row) => row.granted)
-                .map((row) => `${row.relname} ${row.mode}`)
-                .sort(),
-            }
+      const blocks = async (pid: number, settled: () => boolean) => {
+        const deadline = performance.now() + WAIT_BOUND_MS
+        while (!settled() && performance.now() < deadline) {
+          const seen = await watcher.query<{
+            granted: boolean
+            locktype: string
+            mode: string
+            relname: string | null
+          }>(LOCKS_OF, [pid])
+          const waiting = seen.rows.find((row) => !row.granted)
+          if (waiting === undefined) continue
+          return {
+            waitsFor: [waiting.locktype, waiting.relname, waiting.mode]
+              .filter((part) => part !== null)
+              .join(' '),
+            holds: seen.rows
+              .filter((row) => row.granted)
+              .map((row) => `${row.relname} ${row.mode}`)
+              .sort(),
           }
-          return { waitsFor: 'nothing: it never blocked', holds: [] }
         }
-
-        let first: Promise<string>
-        let second: Promise<string>
-        let secondBlocked: Awaited<ReturnType<typeof blocks>>
-        let secondSettled = false
-        if (order === 'the released build first') {
-          await byHand.query('BEGIN')
-          await send(byHand, releasedBuildBatch.slice(0, sentinelAt + 2))
-          second = thisBuild
-            .batch(`migrate:v${version}`, batch, control)
-            .then(() => 'committed', sqlState)
-            .finally(() => {
-              secondSettled = true
-            })
-          secondBlocked = await blocks(thisBuildPid, () => secondSettled)
-          first = send(byHand, releasedBuildBatch.slice(sentinelAt + 2))
-            .then(() => byHand.query('COMMIT'))
-            .then(() => 'committed', sqlState)
-        } else {
-          // This build's migrator stops after its sentinel on a lock the test holds.
-          await watcher.query('SELECT pg_advisory_lock(hashtext($1), $2)', [db.schemaName, version])
-          let firstSettled = false
-          first = thisBuild
-            .batch(
-              `migrate:v${version}`,
-              [
-                ...batch.slice(0, sentinelAt + 1),
-                {
-                  sql: `SELECT pg_advisory_xact_lock(hashtext(current_schema()), ${version})`,
-                  args: [],
-                },
-                ...batch.slice(sentinelAt + 1),
-              ],
-              control,
-            )
-            .then(() => 'committed', sqlState)
-            .finally(() => {
-              firstSettled = true
-            })
-          const stopped = await blocks(thisBuildPid, () => firstSettled)
-          expect(stopped.waitsFor, 'this build stops after its sentinel').toMatch(/^advisory/)
-          await byHand.query('BEGIN')
-          second = send(byHand, releasedBuildBatch)
-            .then(() => byHand.query('COMMIT'))
-            .then(() => 'committed', sqlState)
-            .finally(() => {
-              secondSettled = true
-            })
-          secondBlocked = await blocks(byHandPid, () => secondSettled)
-          await watcher.query('SELECT pg_advisory_unlock(hashtext($1), $2)', [
-            db.schemaName,
-            version,
-          ])
-        }
-        const firstEnded = await first
-        const secondEnded = await second
-        const recorded = await watcher.query<{ value: string }>(
-          "SELECT value FROM meta WHERE key = 'schema_version'",
-        )
-        outcomes.push({
-          version,
-          order,
-          first: firstEnded,
-          second: secondEnded,
-          secondWaitsFor: secondBlocked.waitsFor,
-          secondHolds: secondBlocked.holds,
-          versionTheSecondFinds: recorded.rows[0]?.value,
-          deadlocksThisBuildRanAgain: thisBuild.deadlocks,
-        })
-      } finally {
-        await Promise.all(clients.map((client) => client.end().catch(() => undefined)))
-        await thisBuild.close().catch(() => undefined)
-        await db.close()
+        return { waitsFor: 'nothing: it never blocked', holds: [] }
       }
+
+      let first: Promise<string>
+      let second: Promise<string>
+      let secondBlocked: Awaited<ReturnType<typeof blocks>>
+      let secondSettled = false
+      if (order === 'the released build first') {
+        await byHand.query('BEGIN')
+        await send(byHand, releasedBuildBatch.slice(0, sentinelAt + 2))
+        second = thisBuild
+          .batch(`migrate:v${version}`, batch, control)
+          .then(() => 'committed', sqlState)
+          .finally(() => {
+            secondSettled = true
+          })
+        secondBlocked = await blocks(thisBuildPid, () => secondSettled)
+        first = send(byHand, releasedBuildBatch.slice(sentinelAt + 2))
+          .then(() => byHand.query('COMMIT'))
+          .then(() => 'committed', sqlState)
+      } else {
+        // This build's migrator stops after its sentinel on a lock the test holds.
+        await watcher.query('SELECT pg_advisory_lock(hashtext($1), $2)', [db.schemaName, version])
+        let firstSettled = false
+        first = thisBuild
+          .batch(
+            `migrate:v${version}`,
+            [
+              ...batch.slice(0, sentinelAt + 1),
+              {
+                sql: `SELECT pg_advisory_xact_lock(hashtext(current_schema()), ${version})`,
+                args: [],
+              },
+              ...batch.slice(sentinelAt + 1),
+            ],
+            control,
+          )
+          .then(() => 'committed', sqlState)
+          .finally(() => {
+            firstSettled = true
+          })
+        const stopped = await blocks(thisBuildPid, () => firstSettled)
+        expect(stopped.waitsFor, 'this build stops after its sentinel').toMatch(/^advisory/)
+        await byHand.query('BEGIN')
+        second = send(byHand, releasedBuildBatch)
+          .then(() => byHand.query('COMMIT'))
+          .then(() => 'committed', sqlState)
+          .finally(() => {
+            secondSettled = true
+          })
+        secondBlocked = await blocks(byHandPid, () => secondSettled)
+        await watcher.query('SELECT pg_advisory_unlock(hashtext($1), $2)', [db.schemaName, version])
+      }
+      const firstEnded = await first
+      const secondEnded = await second
+      const recorded = await watcher.query<{ value: string }>(
+        "SELECT value FROM meta WHERE key = 'schema_version'",
+      )
+      outcomes.push({
+        version,
+        order,
+        first: firstEnded,
+        second: secondEnded,
+        secondWaitsFor: secondBlocked.waitsFor,
+        secondHolds: secondBlocked.holds,
+        versionTheSecondFinds: recorded.rows[0]?.value,
+        deadlocksThisBuildRanAgain: thisBuild.deadlocks,
+      })
+    } finally {
+      await Promise.all(clients.map((client) => client.end().catch(() => undefined)))
+      await thisBuild.close().catch(() => undefined)
+      await db.close()
     }
   }
   return outcomes

@@ -2730,7 +2730,8 @@ realized in the store's compiler, executor, fragments, or schema:
   migration write names in its control (rule 9). A batch is the unit of
   nothing here, so `migrate()` reads the version once and sends every pending
   version as ONE batch under one hold of the lock. A fresh database costs three
-  version reads and two locked batches whatever the number of versions, where
+  version reads and two locked batches whatever the number of versions, and a
+  current one a single read, where
   one batch for each version costs nine and eight at seven versions. Five of
   those versions are empty, and version 6 splits them, so nothing short of one
   batch crosses them together. Measured over 100 fresh databases a build, interleaved:

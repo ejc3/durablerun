@@ -33,7 +33,8 @@ export class MysqlStoreAdmin implements StoreAdmin {
     // halfway leaves work a rerun finishes. And every migration write names the
     // migration lock in its control, which the executor takes before the batch and
     // refuses a migration write without, so migrators take turns.
-    if ((await this.readSchemaVersion()) === null) {
+    const found = await this.readSchemaVersion()
+    if (found === null) {
       await this.applyVersionedWrite(
         () =>
           this.db.batch(
@@ -48,30 +49,32 @@ export class MysqlStoreAdmin implements StoreAdmin {
     // A batch is the unit of nothing here: a statement is what commits, and the lock is
     // what makes migrators take turns. So every version this database has yet to reach
     // goes out as one batch, after one read of the version and under one hold of the lock,
-    // where a batch for each version cost a read and the lock each, the versions that hold
-    // no statement included.
+    // where a batch for each version would cost a read and the lock each, the versions that
+    // hold no statement included. A database that had its version table is planned from the
+    // read that found it, so a process that starts on a current database reads once.
     //
     // The read comes before the lock, so the version can have moved by the time the batch
     // runs. That changes nothing a batch does: each version is advanced only from the one
     // before it, so a batch planned from a version that has moved repeats statements that
     // change nothing and then matches no row. It changes what a FAILED batch means. Another
-    // migrator may be part of the way through, a released build's one version at a time
-    // among them, so a failure is forgiven when the version has moved past the one this
+    // migrator may be part of the way through, as one of the released build is between two
+    // of its versions, so a failure is forgiven when the version has moved past the one this
     // batch was planned from, and what is still pending is then planned again. A failure
     // that moved nothing is rethrown, and a batch that reports success and moved nothing
     // ends the loop, so the post-condition below is what reports it.
-    let recorded = await this.schemaVersion()
-    for (;;) {
-      const pending = MIGRATIONS.filter(({ version }) => version > recorded)
-      const first = pending[0]
-      const last = pending[pending.length - 1]
-      if (first === undefined || last === undefined) break
+    let recorded = found ?? (await this.schemaVersion())
+    while (recorded < CURRENT_SCHEMA_VERSION) {
+      const plannedFrom = recorded
+      const pending = MIGRATIONS.filter(({ version }) => version > plannedFrom)
       await this.applyVersionedWrite(
         () =>
-          this.db.batch(`migrate:v${last.version}`, pending.flatMap(versionBatch), MIGRATION_WRITE),
-        first.version,
+          this.db.batch(
+            `migrate:v${CURRENT_SCHEMA_VERSION}`,
+            pending.flatMap(versionBatch),
+            MIGRATION_WRITE,
+          ),
+        plannedFrom + 1,
       )
-      const plannedFrom = recorded
       recorded = await this.schemaVersion()
       if (recorded <= plannedFrom) break
     }

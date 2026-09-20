@@ -57,7 +57,7 @@ describe('MysqlStoreAdmin', () => {
   it('crosses every pending version with one version read and one batch, each version advanced only from the one before', async () => {
     const db = new MigrationExecutor()
     const admin = new MysqlStoreAdmin(db)
-    const labels = () => db.calls.splice(0).map(({ label }) => label)
+    const sent = () => db.calls.splice(0).map(({ label, control }) => [label, control])
     const advance = (version: number) => ({
       sql: "UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND value = ?",
       args: [String(version), String(version - 1)],
@@ -80,7 +80,7 @@ describe('MysqlStoreAdmin', () => {
     // Every migration write names the migration lock in its control, the bootstrap too: the
     // lock is a name, which can be taken before the version table exists.
     expect(
-      db.calls.map(({ label, control }) => [label, control]),
+      sent(),
       'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
     ).toEqual([
       ['migrate:version', 'read'],
@@ -89,29 +89,22 @@ describe('MysqlStoreAdmin', () => {
       [`migrate:v${CURRENT_SCHEMA_VERSION}`, MIGRATION_WRITE],
       ['migrate:version', 'read'],
     ])
-    expect(labels()).toEqual([
-      'migrate:version',
-      'migrate:bootstrap',
-      'migrate:version',
-      `migrate:v${CURRENT_SCHEMA_VERSION}`,
-      'migrate:version',
-    ])
     expect(MIGRATIONS.filter(({ statements }) => statements.length === 0).length).toBeGreaterThan(1)
 
-    // A database that is current is read and not written.
+    // A database that is current is read once and not written: the read that finds its
+    // version table is the one the plan is made from.
     await admin.migrate()
-    expect(labels()).toEqual(['migrate:version', 'migrate:version'])
+    expect(sent()).toEqual([['migrate:version', 'read']])
 
     // A database an older build left behind gets the versions after its own, and no other.
     db.version = 5
     await admin.migrate()
     const behind = db.calls.find(({ label }) => label === `migrate:v${CURRENT_SCHEMA_VERSION}`)
     expect(behind?.statements).toEqual(batchFrom(5))
-    expect(labels()).toEqual([
-      'migrate:version',
-      'migrate:version',
-      `migrate:v${CURRENT_SCHEMA_VERSION}`,
-      'migrate:version',
+    expect(sent()).toEqual([
+      ['migrate:version', 'read'],
+      [`migrate:v${CURRENT_SCHEMA_VERSION}`, MIGRATION_WRITE],
+      ['migrate:version', 'read'],
     ])
     expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
   })

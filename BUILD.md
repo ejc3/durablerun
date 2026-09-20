@@ -2620,8 +2620,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     nothing behind. MySQL's `migrate()` sends everything pending as one batch.
     DESIGN.md section 3.4 rule 9 and the MySQL notes hold the rules, and exit
     test 5 above the evidence. `batch-lint.py` never checked the lock: what
-    named the label match there was the reason text of two declared
-    exceptions, which now name the control.
+    named it there was the reason text of two declared exceptions. MySQL's
+    names the control now, and PostgreSQL's says what libSQL's says, because
+    the lock left that statement list.
     - Option, not a deferral of this PR: the MySQL executor knows a migration
       write by its label's prefix, a match that can only refuse. It could
       recognise the statements that commit by themselves, whatever the label,

@@ -56,12 +56,15 @@ export async function readSchemaVersion(read: () => Promise<SqlResult[]>): Promi
 }
 
 /**
- * A migration write that failed is complete only if the authoritative version says so:
- * the metadata now exists at or beyond the write's target. A concurrent migrator may have
- * won, or this migrator's own commit may have landed with only its answer lost. An absent
- * or behind version rethrows the original failure, so a failure that is not a lost race
- * is never swallowed. The version decides, never the error's code or text: a database may
- * report a lost CREATE as a catalog uniqueness error even under IF NOT EXISTS.
+ * A migration write that failed is forgiven only if the authoritative version says so:
+ * the metadata now exists at or beyond `minimumVersion`, which the caller picks. A batch
+ * of one version passes that version, and the write is then complete. A batch of several
+ * passes the first of them, and then plans again what is still pending.
+ * A concurrent migrator may have won, or this migrator's own commit may have landed with
+ * only its answer lost. An absent or behind version rethrows the original failure, so a
+ * failure that is not a lost race is never swallowed. The version decides, never the
+ * error's code or text: a database may report a lost CREATE as a catalog uniqueness error
+ * even under IF NOT EXISTS.
  */
 export async function applyVersionedWrite(
   write: () => Promise<unknown>,

@@ -7386,8 +7386,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-failed-batch-is-forgiven-where-the-version-moved",
             "packages/store-mysql/src/admin.ts",
-            "        first.version,\n",
-            "        last.version, // MUTATION\n",
+            "        plannedFrom + 1,\n",
+            "        CURRENT_SCHEMA_VERSION, // MUTATION\n",
             "a batch that failed while a slower migrator was part of the way through fails migrate(), where nothing was wrong",
         ),
         (
@@ -7407,8 +7407,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-pending-batch-names-the-migration-lock",
             "packages/store-mysql/src/admin.ts",
-            "          this.db.batch(`migrate:v${last.version}`, pending.flatMap(versionBatch), MIGRATION_WRITE),\n",
-            "          this.db.batch(`migrate:v${last.version}`, pending.flatMap(versionBatch)), // MUTATION\n",
+            "            pending.flatMap(versionBatch),\n            MIGRATION_WRITE,\n",
+            "            pending.flatMap(versionBatch),\n            'write', // MUTATION\n",
             "the batch of pending versions names no lock, and the executor refuses every migrate() of a MySQL database",
         ),
         (

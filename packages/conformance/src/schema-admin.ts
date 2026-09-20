@@ -1,4 +1,5 @@
 import {
+  MIGRATION_WRITE,
   PERSISTED_COUNTER_FIELDS,
   PERSISTED_TEMPORAL_FIELDS,
   SchemaMismatchError,
@@ -161,6 +162,28 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
 
         await fixture.admin.migrate()
         expect(await fixture.admin.schemaVersion()).toBe(current)
+      } finally {
+        await fixture.close()
+      }
+    })
+
+    it("names the migration lock in the control of every version's batch", async () => {
+      // The lock travels in the batch control, where a wrapper that forwards the control
+      // cannot drop it, and no executor chooses it from a label. Every version's batch
+      // carries it, on every dialect. A bootstrap carries it only where the dialect's lock
+      // does not live in the version table, so each store holds its own bootstrap to that.
+      const fixture = await makeFixture('schema-admin-migration-lock', { migrate: false })
+      try {
+        const controls: unknown[] = []
+        const recording: SqlExecutor = {
+          batch: (label, statements, control) => {
+            if (/^migrate:v[0-9]+$/.test(label)) controls.push(control)
+            return fixture.raw.batch(label, statements, control)
+          },
+        }
+        await fixture.adminOver(recording).migrate()
+        expect(controls.length).toBeGreaterThan(0)
+        expect(controls).toEqual(controls.map(() => MIGRATION_WRITE))
       } finally {
         await fixture.close()
       }
@@ -384,12 +407,20 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       const fixture = await makeFixture('schema-admin-missed-version', { migrate: false })
       try {
         let suppressedMigrationWrites = 0
+        const suppressed = new Set<string>()
         const stalledMigration: SqlExecutor = {
           batch: (label, statements, mode) => {
             if (label === 'migrate:version') {
               return fixture.raw.batch(label, statements, mode)
             }
             if (label === 'migrate:bootstrap' || label.startsWith('migrate:v')) {
+              // Nothing moves here, so a label that comes a second time is a migrator that
+              // plans again for ever. It is refused, so that such a migrator fails this case
+              // and does not hang it.
+              if (suppressed.has(label)) {
+                return Promise.reject(new Error(`${label} was sent again, and nothing had moved`))
+              }
+              suppressed.add(label)
               suppressedMigrationWrites += 1
               return Promise.resolve(statements.map(() => ({ rows: [], rowsAffected: 0 })))
             }

@@ -11,6 +11,7 @@ import {
   type SqlTransactionLock,
   StoreUnavailableError,
   isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -190,12 +191,6 @@ function transactionLockAcquisition(lock: SqlTransactionLock): LockAcquisition {
   }
 }
 
-function refuseUnknownLockKind(lock: never): never {
-  throw new TypeError(
-    `this executor does not implement a transaction lock of kind ${String((lock as { kind?: unknown }).kind)}, and a lock is never ignored`,
-  )
-}
-
 async function acquireTransactionLock(
   client: PoolClient,
   lock: Exclude<SqlTransactionLock, { readonly kind: 'migration' }>,
@@ -242,6 +237,8 @@ async function acquireTransactionLock(
     )
     return
   }
+
+  if (lock.kind !== 'claim') return refuseUnknownLockKind(lock)
 
   // Claim tokens are fresh per tick, so a durable row sentinel would grow
   // without bound. A transaction-scoped advisory lock has exactly the needed

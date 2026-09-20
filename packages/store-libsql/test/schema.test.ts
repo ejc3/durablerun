@@ -7,6 +7,7 @@ import {
 } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor, LibsqlStoreAdmin, MIGRATIONS } from '../src/index.js'
+import { CURRENT_SCHEMA_VERSION } from '../src/schema.js'
 
 let db: LibsqlExecutor
 let admin: LibsqlStoreAdmin
@@ -145,13 +146,12 @@ describe('a version that failed', () => {
           () => 'rejected',
         )
         const after = await holdings(raw)
+        const recorded = await new LibsqlStoreAdmin(raw).schemaVersion()
         await new LibsqlStoreAdmin(raw).migrate()
         outcomes.push({
           version,
           migrate,
-          recorded: JSON.parse(after)[1].find(
-            (row: { key: string }) => row.key === 'schema_version',
-          )?.value,
+          recorded,
           leftBehind: after === before ? 'nothing' : 'something',
           theNextMigrateReaches: await new LibsqlStoreAdmin(raw).schemaVersion(),
         })
@@ -163,9 +163,9 @@ describe('a version that failed', () => {
       MIGRATIONS.map(({ version }) => ({
         version,
         migrate: 'rejected',
-        recorded: String(version - 1),
+        recorded: version - 1,
         leftBehind: 'nothing',
-        theNextMigrateReaches: MIGRATIONS.length,
+        theNextMigrateReaches: CURRENT_SCHEMA_VERSION,
       })),
     )
   })
