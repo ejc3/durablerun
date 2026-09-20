@@ -246,7 +246,12 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           await ctx.step('b', () => 2, {
             rollback: () => {
               effects.push('try:b')
-              throw new Error('b cannot be undone')
+              // A fourth attempt would succeed, and a budget of two never reaches it. A worker
+              // that lost count of its attempts would reach it, and this case would see `a`
+              // undone and the saga complete.
+              if (effects.filter((effect) => effect === 'try:b').length < 4) {
+                throw new Error('b cannot be undone')
+              }
             },
             rollbackConfig: { maxAttempts: 2, retryStrategy: NO_DELAY },
           })
@@ -256,14 +261,17 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       const task = await f.store.spawn(Q, 'saga', '{}')
       const outcomes = await drive(f, reg, task.taskId)
       const result = await f.store.getTaskResult(Q, task.taskId)
-      expect({
-        outcomes,
-        effects,
-        state: result?.state,
-        outcome: result?.rollback?.outcome,
-        error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { message?: string } | null)
-          ?.message,
-      }).toEqual({
+      expect(
+        {
+          outcomes,
+          effects,
+          state: result?.state,
+          outcome: result?.rollback?.outcome,
+          error: (JSON.parse(result?.rollback?.errorJson ?? 'null') as { message?: string } | null)
+            ?.message,
+        },
+        'mutation-verdict:behavior:saga-sdk-budget-is-counted',
+      ).toEqual({
         outcomes: ['rolling-back', 'rolling-back', 'rollback-failed'],
         // The step that started first is left uncompensated: a halt runs nothing after it.
         effects: ['do:a', 'try:b', 'try:b'],

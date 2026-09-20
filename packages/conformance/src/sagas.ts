@@ -1068,9 +1068,13 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         task: (await taskRow(f, taskId))?.state,
         checkpoints: await checkpointNames(f, taskId),
       }
-      await f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, failedRollback('a'))
+      // Held as an answer and not awaited bare: a caller that was wrongly let through above
+      // has ended the pass, and the assertion below must say so, not a throw from here.
+      const halts = await refusalName(
+        f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, failedRollback('a')),
+      )
       expect(
-        { refused, untouched, halted: await checkpointNames(f, taskId) },
+        { refused, untouched, halts, halted: await checkpointNames(f, taskId) },
         'mutation-verdict:behavior:saga-store-names-the-attempt-record',
       ).toEqual({
         refused: 'a TypeError that names the shape',
@@ -1078,6 +1082,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           task: 'running',
           checkpoints: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a'].sort(),
         },
+        halts: 'accepted',
         halted: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a', triesOf('a', 1).key].sort(),
       })
     })

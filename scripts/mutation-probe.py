@@ -12265,6 +12265,13 @@ MUTATION_SPECS.extend(
             "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
         ),
         (
+            "saga-store-count-goes-on-from-the-record",
+            "packages/core/src/sagas.ts",
+            "      tries: (last?.tries ?? 0) + 1,\n",
+            "      tries: last?.tries ?? 1,\n",
+            "a rollback's count stops at its first record, so a second failed attempt is stored as the first",
+        ),
+        (
             "saga-store-names-the-attempt-record",
             "packages/core/src/sagas.ts",
             "export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`\n",
@@ -12958,6 +12965,17 @@ for _verdict, _names in (
             "packages/sdk/test/sagas.test.ts",
             "step rollbacks through the SDK [libsql] counts each failed rollback attempt and retries it under its own budget, past the spent task budget",
             "mutation-verdict:behavior:saga-sdk-attempts-counted",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts the saga when a rollback spends its budget, and the result says what was left",
+            "mutation-verdict:behavior:saga-sdk-budget-is-counted",
         ),
         (
             "saga-failed-attempts-accumulate",
@@ -18150,7 +18168,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 947:
+        if len(MUTATIONS) != 948:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
