@@ -288,10 +288,12 @@ function requiresStampOf(alias: string, condition: OperationNode): boolean {
 /**
  * The table a delete of `target` takes its keys from, and the index of that table's stamp.
  * The keys are a selection of one plain table, read under an alias, that requires the
- * table's stamp: what core generates for every delete that follows a fence. Anything else
- * is refused, because nothing else is known to touch this transaction's rows alone. That
- * the stamp compared is this batch's own is core's gating rule, which no single statement
- * can show.
+ * table's stamp: what core generates for every delete that follows a fence. A source of
+ * any other shape is refused, because nothing else is known to touch this transaction's
+ * rows alone. So are keys from the table the delete writes: MySQL reads that table through
+ * a derived table, which takes no index hint. The rest of the selection is core's to
+ * refuse. That the stamp compared is this batch's own is core's gating rule, which no
+ * single statement can show.
  */
 function stampedKeys(
   target: string,
@@ -307,6 +309,11 @@ function stampedKeys(
   if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {
     throw new Error(
       `store-mysql: a delete of ${target} takes its keys from something other than a selection of one table`,
+    )
+  }
+  if (table === target) {
+    throw new Error(
+      `store-mysql: a delete of ${target} takes its keys from ${table}, the table it writes`,
     )
   }
   const fenced = requiredConditions(selection?.where?.where).some((condition) =>

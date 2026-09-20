@@ -7625,6 +7625,13 @@ MUTATION_SPECS.extend(
             "  // MUTATION: a forced index that is not there is no schema mismatch\n",
             "a database that has not reached the version whose index a statement forces answers as an outage, which callers retry and no retry repairs",
         ),
+        (
+            "mysql-keyed-delete-own-table-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (table === target) {\n",
+            "  if (table === null) { // MUTATION: keys that come from the written table are compiled\n",
+            "a delete keyed by the table it writes is sent with an index hint on a derived table, which the server answers with a syntax error when the batch runs",
+        ),
     )
 )
 
@@ -11892,6 +11899,12 @@ VERDICTS.update(
             "packages/store-mysql/test/real-server.test.ts",
             "MysqlExecutor against a real server answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs",
             "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
+        ),
+        "mysql-keyed-delete-own-table-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys come from the table it writes",
+            "mutation-verdict:construction:mysql-keyed-delete-own-table-refused",
         ),
     }
 )
@@ -18612,7 +18625,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 977:
+        if len(MUTATIONS) != 978:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

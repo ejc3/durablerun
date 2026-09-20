@@ -360,6 +360,7 @@ jobs:
                   "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
                   "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
                   "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
+                  "mutation-verdict:construction:mysql-keyed-delete-own-table-refused",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

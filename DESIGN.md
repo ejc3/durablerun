@@ -2699,13 +2699,24 @@ realized in the store's compiler, executor, fragments, or schema:
   delete's keys through it. Every stamping write changes the stamp, so a
   stamped run's entry in that index is its own transaction's, and a search of
   the index for one batch's stamp touches no other entry. It waits for nothing.
-  The compiler refuses a keyed `DELETE` whose keys are anything else: not a
-  selection, a table read under no alias, a derived table, more than one table,
-  a join, a fence that is not an equality on the `fence_stamp` of the table the
-  keys come from, or a table that declares no index of its stamp. A delete that
-  no subquery keys, or that is keyed in a way the compiler does not read, by
-  `EXISTS` for one, is refused too, so the rule reaches every delete a tree
-  sends. Each condition has a case and a registered mutation. That the stamp
+  By itself the compiler refuses a keyed `DELETE` whose keys are not a
+  selection, or come from a table read under no alias, a derived table, more
+  than one table, a join, or the table the delete writes, or whose fence is not
+  an equality on the `fence_stamp` of the table the keys come from, or whose
+  table declares no index of its stamp. Keys from the written table are refused
+  because MySQL reads that table through a derived table, which takes no index
+  hint: such a delete was sent, and the server answered with error 1064. A
+  delete that no subquery keys, or that is keyed in a way the compiler does not
+  read, by `EXISTS` for one, is refused too, so the rule reaches every delete a
+  tree sends. Each condition has a case and a registered mutation. The rule
+  does not read the rest of the key selection. Compiled by the dialect alone, a
+  second `UNION ALL` arm, `FOR SHARE SKIP LOCKED` and a second selected column
+  all pass it, and core refuses each of them ahead of the compiler: as a set
+  operation, as an end modifier, and as a gate not tied to the rows written.
+  One shape passes both and is sent, a subquery nested inside the key
+  selection. The stamp's index is forced on the keys' table only, and the
+  nested table is read as the server plans it, under the shared locks a
+  `DELETE` takes. No statement has that shape today. That the stamp
   compared is the batch's own is not the compiler's to know, because it reads
   one statement. Keys fenced on another batch's stamp compile, and core's
   gating rule refuses the batch that holds them, which a case shows both ways.
