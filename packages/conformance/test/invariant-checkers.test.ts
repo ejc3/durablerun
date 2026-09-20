@@ -725,6 +725,24 @@ describe('invariant checkers fire on constructed corruption', () => {
     ])
   })
 
+  it('refuses a migration statement that types a VARCHAR column it did not read', () => {
+    // MySQL has no ADD COLUMN IF NOT EXISTS, so this schema writes DDL that is safe to repeat
+    // as a statement inside a string, which it sets, prepares and executes. A column added
+    // that way is in no statement the reader reads, so the reader must refuse the statement
+    // and not skip it.
+    expect(() =>
+      boundedColumns([
+        {
+          statements: [
+            "SET @durablerun_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'a' AND column_name = 'guarded') = 0, 'ALTER TABLE a ADD COLUMN guarded VARCHAR(255)', 'DO 0')",
+            'PREPARE durablerun_ddl FROM @durablerun_ddl',
+            'EXECUTE durablerun_ddl',
+          ],
+        },
+      ]),
+    ).toThrow(/VARCHAR/)
+  })
+
   it('stays silent on the consistent seed world', async () => {
     const f = await seeded('clean')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
