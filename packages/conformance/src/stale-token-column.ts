@@ -303,6 +303,9 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       })
     })
 
+    // fenceTwin('Heartbeat') fenceTwin('FailRun') fenceTwin('SleepSuspend'): these cases are
+    // the executable twins of those modeled guards. Each refuses a caller whose token is
+    // not the claim's, and leaves the rows as they were.
     for (const form of STALE_CALLER_CASES) {
       it(`${form.name} refuses a caller that does not hold the claim`, () =>
         withFixture(makeFixture, fixtureName('stale-token', form.name), async (f) => {
