@@ -3919,16 +3919,18 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   happens only beside a halt, which ends the task. A direct caller of the
   port that asks for another pass over such a record gets every spent attempt
   back, as it could at any time before the store counted, when the count was
-  the caller's to choose. The last
-  record is read before the batch, under the read label `rollback-tries`,
-  and the count cannot go stale between that read and a batch that wins. That
-  rests on one invariant with four legs. A test holds each of the first
-  three, and the fourth is a premise about executors that no test holds. Only
+  the caller's to choose. The last record is read before the batch, under the
+  read label `rollback-tries`, and the count cannot go stale between that
+  read and a batch that wins. That rests on one invariant with four legs. A
+  test holds each of the first three, and the fourth is a premise about
+  executors that no test holds. Only
   `fail-rollback` writes an attempt record: the reserved-names table refuses
   that name at the two batches that take a caller's checkpoint name, in both
-  phases. It wins only under its caller's live claim: a saga case hands it a
+  phases. It wins only under its caller's live claim: the generated
+  stale-token column holds that for every write label that takes a claim
+  token, `fail-rollback` among them, and a saga case hands `fail-rollback` a
   token the claim never had, and the same call replayed after it won, and
-  each is refused with the count left as it was. A live task has one live
+  sees each refused with the count left as it was. A live task has one live
   run: the engine's invariants hold that over every conformance case and
   every fuzz walk. The read is current: it sees every attempt record that has
   committed. It is a batch of reads, outside the write's transaction, and
