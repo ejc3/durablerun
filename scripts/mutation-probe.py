@@ -2509,6 +2509,13 @@ MUTATION_SPECS = [
         "a read may bind the state it compares by selecting the bound value in a subquery",
     ),
     (
+        "tree-read-state-bare-value-is-a-bind",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "a bound value counts only inside a list of plain values, so a read may bind the state it compares anywhere else",
+    ),
+    (
         "tree-read-state-plain-list-is-bound",
         "packages/core/src/sql-tree.ts",
         "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
@@ -9063,6 +9070,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules a state a read compares is refused when a subquery on the right selects a bound value",
         "mutation-verdict:construction:tree-read-state-reads-a-subquery-selection",
+    ),
+    "tree-read-state-bare-value-is-a-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused as a bare bound value, whatever the operator",
+        "mutation-verdict:construction:tree-read-state-bare-value-is-a-bind",
     ),
     "tree-read-state-plain-list-is-bound": ExpectedVerdict(
         "construction",
@@ -18511,7 +18524,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 960:
+        if len(MUTATIONS) != 961:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

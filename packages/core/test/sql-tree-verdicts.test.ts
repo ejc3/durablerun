@@ -521,6 +521,13 @@ describe('the tree rules', () => {
       ).toMatch(BOUND)
     })
 
+    it('is refused as a bare bound value, whatever the operator', () => {
+      expect(
+        String(problem(runs().where('r.state', '<>', 'failed'))),
+        'mutation-verdict:construction:tree-read-state-bare-value-is-a-bind',
+      ).toMatch(BOUND)
+    })
+
     it('is refused in a one-state list under IN', () => {
       expect(String(problem(runs().where('r.state', 'in', ['running'])))).toMatch(BOUND)
     })
@@ -599,13 +606,19 @@ describe('the tree rules', () => {
       const rights: ((eb: Loose) => unknown)[] = [
         (eb) => eb.cast(eb.val('running'), 'text'),
         (eb) => eb.fn('coalesce', [eb.val('running'), eb.val('pending')]),
-        (eb) => eb.case().when('r.attempt', '>', 1).then('running').else('pending').end(),
+        // Its WHEN is inline, so only the values of THEN and ELSE can refuse it.
+        (eb) =>
+          eb.case().when('r.attempt', '>', literalValue(1)).then('running').else('pending').end(),
         () => value<string>('lower(?)', ['RUNNING']),
       ]
       for (const right of rights) {
         const compared = (eb: Loose) => eb('r.state', '=', right(eb))
         expect(String(problem(runs().where(compared)))).toMatch(BOUND)
       }
+      // The control for the CASE above: with its values inline too, nothing in it is bound.
+      const inline = (eb: Loose) =>
+        eb.case().when('r.attempt', '>', literalValue(1)).then(literalValue('running')).end()
+      expect(problem(runs().where((eb: Loose) => eb('r.state', '=', inline(eb))))).toBeNull()
     })
   })
 
