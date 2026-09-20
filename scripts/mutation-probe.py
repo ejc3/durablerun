@@ -2986,7 +2986,7 @@ MUTATION_SPECS = [
     ),
     (
         "persisted-row-rejects-spread-descriptor",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/validate.ts",
         "export function persistedRowInteger(\n"
         "  scope: string,\n"
         "  row: SqlRow,\n"
@@ -3956,14 +3956,14 @@ MUTATION_SPECS = [
     ),
     (
         "claim-retry-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
         "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
         "claim retry decoding resolves ambient JSON.parse after the durable guard",
     ),
     (
         "claim-headers-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "      row.headers === null\n"
         "        ? {}\n"
         "        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),",
@@ -5610,7 +5610,7 @@ MUTATION_SPECS.extend(
         ),
         (
             "retry-persisted-normalization",
-            "packages/store-libsql/src/store.ts",
+            "packages/core/src/statements/claim-receipt.ts",
             "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
             "    retryStrategy: parseTaskValueJson(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
             "claim exposes unchecked durable retry JSON",

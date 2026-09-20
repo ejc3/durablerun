@@ -1,3 +1,5 @@
+import type { SqlRow } from '../primitives.js'
+import { normalizeRetryStrategy } from '../retry.js'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
@@ -7,6 +9,14 @@ import {
   rawSql,
 } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
+import type { ClaimedRun } from '../types.js'
+import {
+  RUN_INTEGER_BOUNDS,
+  TASK_INTEGER_BOUNDS,
+  parseTaskValueJson,
+  persistedPositiveClaimGeneration,
+  persistedRowInteger,
+} from '../validate.js'
 import { type RunsUpdate, claimedRunRows, whereClaimedRun } from './claimed-run.js'
 import { parkAssignments } from './park.js'
 
@@ -154,3 +164,47 @@ export const activatedRunRead = defineStatement(
       .where('r.fence_stamp', '=', fenceValue('activate'))
       .where('r.state', '=', 'running'),
 )
+
+/**
+ * A claimed run, decoded from one row of `claimReceiptRead` or `activatedRunRead`, which both
+ * select the columns of `claimedRunRows`, and the claim token the caller holds. Every dialect's
+ * store decodes through this one function, so a worker is handed the same run whichever
+ * database claimed it.
+ */
+export function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
+  const claimed: ClaimedRun = {
+    runId: String(row.run_id),
+    taskId: String(row.task_id),
+    taskName: String(row.task_name),
+    attempt: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.attempt),
+    infraRetries: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.infra_retries),
+    claimGen: persistedPositiveClaimGeneration('claim', row),
+    claimToken,
+    claimExpiresAtEpochMs: persistedRowInteger(
+      'claim',
+      row,
+      RUN_INTEGER_BOUNDS.claim_expires_at_ms,
+    ),
+    leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
+    paramsJson: String(row.params),
+    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),
+    maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
+    headers:
+      row.headers === null
+        ? {}
+        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),
+  }
+  if (row.wake_event !== null && row.wake_step !== null) {
+    // The SDK matches on the exact step key. Rows parked before schema v3
+    // carry it only in waits, so claim and emit copy it into the run before
+    // deleting that registration. Never fabricate a step from the event name:
+    // repeated awaits may share the event while using distinct step keys.
+    const event = String(row.wake_event)
+    const step = String(row.wake_step)
+    claimed.wake =
+      row.event_payload === null
+        ? { event, step, timedOut: true }
+        : { event, step, payloadJson: String(row.event_payload) }
+  }
+  return claimed
+}
