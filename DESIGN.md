@@ -2734,9 +2734,9 @@ realized in the store's compiler, executor, fragments, or schema:
   current one a single read, where
   one batch for each version costs nine and eight at seven versions. Five of
   those versions are empty, and version 6 splits them, so nothing short of one
-  batch crosses them together. Measured over 100 fresh databases a build, interleaved:
-  32.7 ms became 30.2, beside PostgreSQL, which did not change, at 37.3 and
-  36.9. The read comes before the lock, so a batch can be planned from a
+  batch crosses them together. Measured twice over 100 fresh databases a build,
+  interleaved: 32.7 ms became 30.2, and 33.1 became 31.4, beside PostgreSQL,
+  which did not change, at 37.3 and 36.9, and at 38.5 and 38.9. The read comes before the lock, so a batch can be planned from a
   version that has since moved: it repeats statements that change nothing, and
   its advances match no row. What a migrator that died leaves follows from
   what commits. An advance is ordinary DML inside the batch's transaction. The

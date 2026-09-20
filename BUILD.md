@@ -151,9 +151,11 @@ a last docs PR gives a live owner to every open bullet that is left.
    58 cuts, by destroying the session that sent them, and it fails once an
    index is created in a form that is not safe to repeat. A fresh MySQL
    database costs three version reads and two locked batches whatever the
-   number of versions, where it cost nine and eight, and 32.7 ms became 30.2
-   over 100 fresh databases a build, interleaved, beside PostgreSQL unchanged
-   at 37.3 and 36.9. The registry gained eleven mutations.
+   number of versions, where it cost nine and eight, and a current one a
+   single read, where it cost nine. Measured twice over 100 fresh databases a
+   build, interleaved, 32.7 ms became 30.2 and 33.1 became 31.4, beside
+   PostgreSQL unchanged at 37.3 and 36.9, and at 38.5 and 38.9. The registry
+   gained eleven mutations.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free
