@@ -127,7 +127,9 @@ spec = (root / "specs" / "Scheduler.tla").read_text()
 
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.
-LEDGER_BLOCK = re.compile(r"BATCH-LABEL LEDGER.*?-{20,}\n\n", re.S)
+# The block starts at the comment line that begins with its name. Prose that
+# names the block starts nothing, or what it quotes would count as mapped.
+LEDGER_BLOCK = re.compile(r"^\\\* BATCH-LABEL LEDGER.*?-{20,}\n\n", re.S | re.M)
 match = LEDGER_BLOCK.search(spec)
 if not match:
     sys.exit("spec-ledger: BATCH-LABEL LEDGER block not found in Scheduler.tla")
@@ -270,7 +272,7 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
         )
     mapped: set[str] = set()
     no_batch: set[str] = set()
-    for line in side_block.splitlines()[1:]:
+    for line in side_block.splitlines():
         shape = re.fullmatch(r"\\\*( *)(.*)", line)
         indent, body = (len(shape.group(1)), shape.group(2)) if shape else (0, line)
         if not body or indent == 1 or indent >= 5:
