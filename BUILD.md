@@ -251,8 +251,9 @@ a last docs PR gives a live owner to every open bullet that is left.
     parses or formats the reserved name by hand. A port's refusal of what its
     caller passed has one typed class, and the hosted route maps the family to
     its answer once, with a test for each kind of refusal. One helper runs
-    every violation checker and every surface calls it, the fault matrix
-    included, which is shown by a cell that a bent guard fails. The test
+    every violation checker, and every generated surface and seeded race
+    whose rows only the engine wrote calls it, the fault matrix included,
+    which is shown by a cell that a bent guard fails. The test
     helpers that are copies inside the files those four items touch exist
     once. This is met. PR3.3d added `RunTaskMemo.forget`, which each store
     calls when its own `complete`, `fail`, or `failRollback` has won, and a
@@ -1902,9 +1903,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   that are copies, the SDK tests' `expectCleanRows` exists once. Not built
   here, each with its reason:
   - A number, a retry strategy, or a saga step name that a port refuses stays
-    a bare `RangeError`. No hosted route passes a caller's value of those, so
-    500 is the right answer there, and they can take the class when a route
-    does.
+    a bare `RangeError`. It is not a member of the refusal family, so the
+    hosted mapping leaves it at 500, and it can take the class when a
+    caller's value of one reaches a route.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.

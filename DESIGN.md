@@ -709,8 +709,10 @@ One invocation executes one claimed run to its next suspension point:
     caller's event by its name, and a completion event as `task <id>`, because
     the reserved name never reaches task code and the error of an await does.
     The wait registration reads the awaited child from the name it is given,
-    so no caller passes a child's id beside its event, and no store parses or
-    formats the reserved name. So the `emitEvent`
+    so no caller passes a child's id beside its event, and no store formats
+    the reserved name for a person or reads a task out of it. One store
+    still tests the reserved prefix: the PostgreSQL executor, to choose the
+    lock of a completion event. So the `emitEvent`
     and `awaitEvent` ports cannot forget the refusal, and they write or
     register nothing for a reserved name. The hosted emit route and the SDK
     already refused one through `UserName.parse`. Any other caller of the emit
@@ -745,7 +747,9 @@ One invocation executes one claimed run to its next suspension point:
     together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
     still holds for them. `error.name` reads `PortRefusalError` where it read
     `RangeError`, which a caller that compares names will see, and so does
-    the recorded failure of a task that lets one escape. `isPortRefusal` is
+    the recorded failure of a task whose own code calls a port and lets the
+    refusal escape. The SDK's own calls are not such a path: it makes a
+    refused spawn or await a `FatalTaskError`, as before. `isPortRefusal` is
     the one definition of the family: that class, `InvalidDurableStringError`,
     which stays a `TypeError` because it was released as one, and
     `ChildAwaitRefusedError`. The hosted route answers 400 `invalid_request`
@@ -753,9 +757,11 @@ One invocation executes one claimed run to its next suspension point:
     key: the enqueue route sends the key to the port. An answer carries a
     fixed code and never an error's name or message, so no answer changed. A
     number, a retry strategy, or a saga step name that a port refuses is
-    still a bare `RangeError`. No hosted route passes a caller's value of
-    those, so a refusal of one there is the host's own fault, and 500 is its
-    answer.
+    still a bare `RangeError`. It is not a member of the family, so the
+    mapping leaves it at 500. What the mapping answers is the family, and
+    not what a route can raise today: no hosted route can raise
+    `ChildAwaitRefusedError`, and it is answered 400 all the same, so a route
+    that gains an await needs no rule of its own.
   - The payload is the child's first outcome, in the shape `getTaskResult`
     answers with: the terminal state, and the completed payload or the failure
     reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds
