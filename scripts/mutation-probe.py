@@ -3764,62 +3764,62 @@ MUTATION_SPECS = [
     ),
     (
         "schema-absence-is-typed",
-        "packages/store-libsql/src/admin.ts",
-        "      if (error instanceof SchemaNotInitializedError) return null",
-        "      if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
+        "packages/core/src/schema-version.ts",
+        "    if (error instanceof SchemaNotInitializedError) return null",
+        "    if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
         "schema-version-missing-result",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length === 0) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length === 0) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "an absent schema-version result is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-results",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length > 1) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length > 1) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "duplicated schema-version results are interpreted as a fresh database",
     ),
     (
         "schema-version-missing-row",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length === 0) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length === 0) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "an absent schema-version row is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-rows",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length > 1) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length > 1) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
         "libsql-bootstrap-loss-forgiven",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        throw error\n",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (false) return\n",
         "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
     ),
     (
         "libsql-bootstrap-failure-rethrown",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        if ((await this.readSchemaVersion()) === undefined) throw error\n",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version === null || version >= minimumVersion) return\n",
         "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
     ),
     (
         "postgres-bootstrap-loss-forgiven",
-        "packages/store-postgres/src/admin.ts",
-        "      if (version !== null && version >= minimumVersion) return\n",
-        "      if (version !== null && version > minimumVersion) return\n",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version > minimumVersion) return\n",
         "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
     ),
     (
@@ -3873,9 +3873,9 @@ MUTATION_SPECS = [
     ),
     (
         "migration-postcondition-old-version",
-        "packages/store-libsql/src/admin.ts",
-        "    if (version !== CURRENT_SCHEMA_VERSION) {",
-        "    if (version > CURRENT_SCHEMA_VERSION) {",
+        "packages/core/src/schema-version.ts",
+        "  if (version !== current) {",
+        "  if (version > current) {",
         "a committed migration can leave the recorded version behind and still report success",
     ),
     (
@@ -7340,9 +7340,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "mysql-bootstrap-loss-forgiven",
-            "packages/store-mysql/src/admin.ts",
-            "      if (version !== null && version >= minimumVersion) return\n",
-            "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
+            "packages/core/src/schema-version.ts",
+            "    if (version !== null && version >= minimumVersion) return\n",
+            "    if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
             "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
         ),
         (
