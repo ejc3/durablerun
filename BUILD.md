@@ -2212,9 +2212,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the reserved-names table went with the caller's name. An argument of the
     older shape is refused at the entry by an error that says what the port
     takes. Every fuzz walk now holds the count it finds stored to the failed
-    attempts it saw recorded. That check fails under a store that stores
-    every attempt as the first, at eight shards of walks of 150 steps, and
-    one shard of walks of 100 steps did not reach it.
+    attempts it saw recorded. At the fuzz gate's own size, 2,000 seeds of
+    walks of 100 steps, a store that stores every attempt as the first
+    fails 29 of the 32 shards, and every failure printed is that check's.
+    One shard alone did not reach a second failed attempt of one step, so
+    the check leans on the whole gate.
   - A published port signature changed in one step. Two builds against one
     database need no staging, because the record keeps its name, its format
     and its bytes, and a case plants a record as an older build wrote it and
