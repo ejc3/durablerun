@@ -11,7 +11,7 @@ import {
   decodeRollbackTry,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import type { TaskContext } from '../src/index.js'
+import type { ChildTask, TaskContext } from '../src/index.js'
 import { SAGA_DIALECTS, type SagaFixture, checkpointNames, drive, runNext } from './saga-harness.js'
 import { Q, registry } from './worker-harness.js'
 
@@ -724,6 +724,80 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       })
       await expectCleanRows(f)
       await f.close()
+    })
+
+    // Every durable call with no memo ends a pass's replay with the engine's phase signal
+    // (DESIGN.md §3.10). Each call freezes with a line of its own, so each is held here. A
+    // task function that is not deterministic reaches the call for the first time on a
+    // rollback pass: the call throws the signal, nothing is written for it, and the pass
+    // goes on to roll back what it owes. An emit is the one call that is skipped and not
+    // refused, and the case below holds it.
+    it('throws the phase signal from every durable call that has no memo, and writes nothing for it', async () => {
+      const KIDS = 'kids'
+      const calls: Record<string, (ctx: TaskContext, child: ChildTask) => Promise<unknown>> = {
+        step: (ctx) => ctx.step('late', () => 'ran inside the phase'),
+        sleepFor: (ctx) => ctx.sleepFor(5),
+        sleepUntil: (ctx) => ctx.sleepUntil(4_102_444_800_000),
+        awaitEvent: (ctx) => ctx.awaitEvent('never'),
+        awaitTask: (ctx, child) => ctx.awaitTask(child),
+        spawn: (ctx) => ctx.spawn('child', {}, { queue: KIDS }),
+      }
+      const answers: Record<string, unknown> = {}
+      for (const [call, make] of Object.entries(calls)) {
+        const f = await open(`saga-frozen-${call}`)
+        let forward = true
+        let thrown: string | undefined
+        const reg = registry({
+          saga: async (ctx) => {
+            await ctx.step('a', () => 'a', { rollback: () => {} })
+            // Memoized by the forward pass, so the replay passes it and hands the child on.
+            const child = await ctx.spawn('child', {}, { queue: KIDS })
+            if (forward) {
+              forward = false
+              throw new FatalTaskError('boom')
+            }
+            try {
+              await make(ctx, child)
+            } catch (error) {
+              thrown = (error as Error).name
+              throw error
+            }
+          },
+        })
+        const task = await f.store.spawn(Q, 'saga', '{}')
+        const entered = await runNext(f, reg, 'w-forward')
+        const before = await checkpointNames(f, task.taskId)
+        const pass = await runNext(f, reg, 'w-pass')
+        const [children, waits] = await f.raw.batch(
+          'saga-frozen-rows',
+          [
+            { sql: 'SELECT COUNT(*) AS n FROM tasks WHERE queue = ?', args: [KIDS] },
+            { sql: 'SELECT COUNT(*) AS n FROM waits', args: [] },
+          ],
+          'read',
+        )
+        answers[call] = {
+          entered,
+          pass,
+          thrown,
+          wrote: (await checkpointNames(f, task.taskId)).filter((name) => !before.includes(name)),
+          children: Number(children?.rows[0]?.n),
+          waits: Number(waits?.rows[0]?.n),
+        }
+        await expectCleanRows(f)
+        await f.close()
+      }
+      const frozen = {
+        entered: 'rolling-back',
+        pass: 'rolled-back',
+        thrown: 'RollbackPhaseSignal',
+        wrote: ['$rollback:a'],
+        children: 1,
+        waits: 0,
+      }
+      expect(answers, 'mutation-verdict:behavior:saga-sdk-every-call-is-frozen').toEqual(
+        Object.fromEntries(Object.keys(calls).map((call) => [call, frozen])),
+      )
     })
 
     it('emits nothing from a rollback pass that the forward pass never reached', async () => {

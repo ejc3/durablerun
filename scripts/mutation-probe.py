@@ -12279,6 +12279,34 @@ MUTATION_SPECS.extend(
             "a caller of the older port is not told what the port takes, and its record is read as a step named undefined",
         ),
         (
+            "saga-sdk-step-is-frozen",
+            "packages/sdk/src/context.ts",
+            "      this.replayLastCutAt = key\n      this.#controls.rollbackPhase()\n",
+            "      this.replayLastCutAt = key\n",
+            "a step with no memo runs its body inside the rolling-back phase",
+        ),
+        (
+            "saga-sdk-spawn-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n",
+            "a rollback pass asks the store for a child, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-await-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n    this.refuseForwardProgress()\n",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n",
+            "a rollback pass asks the store to register a wait, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-sleep-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n",
+            "a sleep with no memo throws the sleep signal inside the phase, and task code that tells signals apart is misled",
+        ),
+        (
             "saga-nesting-guard-covers-the-start-marker",
             "packages/sdk/src/context.ts",
             "    this.inStep = true\n    let raw: unknown\n",
@@ -13191,6 +13219,20 @@ for _verdict, _names in (
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] throws the phase signal from every durable call that has no memo, and writes nothing for it",
+            "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "saga-sdk-spawn-is-frozen",
+            "saga-sdk-await-is-frozen",
+            "saga-sdk-sleep-is-frozen",
         ),
     ),
     (
@@ -18089,7 +18131,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 942:
+        if len(MUTATIONS) != 946:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
