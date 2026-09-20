@@ -100,7 +100,9 @@ were re-reviewed as new code or merely re-tested.>
   red test and its fix are two commits, and first under neither it is
   refused, because nothing says which it is. So for two findings write a
   label before every pair: "Red test: commit R1. Fix: commit F1, which turns
-  R1 green. Red test: commit R2. Fix: commit F2, which turns R2 green." An id that
+  R1 green. Red test: commit R2. Fix: commit F2, which turns R2 green." A
+  round with no red test of its own says so on the first line above, which
+  may then cite no commit; the second line always cites one. An id that
   follows the word that stands before the buggy commit above, in the same
   clause, is the code a red test ran against, and is neither. A red test that
   names a probe as the first line above does, the test file and then a test

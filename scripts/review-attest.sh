@@ -761,7 +761,7 @@ CITED_SUMMARY=""
 CITED_UNREAD=""
 check_postmortem_commits() {
   local path="$1" content="$2" head="$3" base="$4"
-  local head_id base_id cited record first second third id where red index shared advice last_red=""
+  local head_id base_id cited record first second third id where red index shared advice order last_red=""
   local -a labels=() words=() problems=() reds=()
   local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=() unread=()
   CITED_UNREAD=""
@@ -859,7 +859,10 @@ check_postmortem_commits() {
   for index in "${!labels[@]}"; do
     if [[ -z "${lines_on[$index]:-}" ]]; then
       problems+=("has no Evidence line that begins '- ${words[index]}', the template's '${labels[index]}' line, so what it cites there cannot be read.")
-    elif [[ -z "${commits_on[$index]:-}" ]]; then
+    # A red line may cite no commit: a round with no red test of its own says
+    # so there, and the line that sums up counts 0 red. A fixes line always
+    # cites one, because a postmortem records what was fixed.
+    elif [[ "$index" -ne 1 && -z "${commits_on[$index]:-}" ]]; then
       problems+=("cites no commit under a '- ${words[index]}' label. The template's '${labels[index]}' line carries one.")
     fi
   done
@@ -894,7 +897,9 @@ check_postmortem_commits() {
     [[ -z "${red_cited[$red]:-}" && -z "${CITED_PROBE_FILE[$red]:-}" ]] || CITED_REDS+=("$red")
   done
   CITED_HEAD="$head_id"
-  CITED_SUMMARY="on ${head_id:0:7} since ${base_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
+  order="each red is before a fix"
+  [[ ${#red_cited[@]} -gt 0 ]] || order="no red test is cited, so no order was checked"
+  CITED_SUMMARY="on ${head_id:0:7} since ${base_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; $order"
 }
 
 # --- --prove-reds: a cited red test fails where it is cited ------------------
