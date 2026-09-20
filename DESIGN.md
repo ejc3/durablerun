@@ -1197,12 +1197,12 @@ are load-bearing):
      The claim-timeout write takes everything it needs from the stored row
      (still running, activated at its own generation, lease expired, owner
      admissible), so without the comparison it admits only a sweep the stored
-     row justifies, and no test failed when it was removed. The lost-launch
-     write reports the relaunch count its scan read, which only the generation
-     ties to the row, and the claim-timeout batch once took its successor's
-     attempt from the scan. Both keep the comparison, and the stale-token
-     column holds both to it: a sweep whose scan read another generation acts
-     on nothing.
+     row justifies, and before the column no test failed when it was removed.
+     The lost-launch write reports the relaunch count its scan read, which
+     only the generation ties to the row, and the claim-timeout batch once
+     took its successor's attempt from the scan. Both keep the comparison,
+     and the stale-token column holds both to it: a sweep whose scan read
+     another generation acts on nothing.
    - The emit's wake is a shared UPDATE, `wakeRunsUpdate`. It reads the event
      the batch recorded through one node-built subquery in four places: the
      gate, the wake instant, the stored payload, and the provenance instant.
