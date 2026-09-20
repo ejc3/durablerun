@@ -346,6 +346,37 @@ describe('a store that extends the held port', () => {
     expect(outcome).toBe('threw TypeError')
   })
 
+  it('puts the check in front of every entry of a store built while the array iterator answers nothing', async () => {
+    class Entry extends HeldPort {
+      claim(): Promise<unknown> {
+        return Promise.resolve('the entry')
+      }
+    }
+    for (const method of Object.keys(PORT_STRINGS)) {
+      if (method !== 'claim')
+        Object.defineProperty(Entry.prototype, method, { value: () => Promise.resolve() })
+    }
+    const iterator = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator)
+    if (iterator === undefined) throw new Error('the array iterator is not an own property')
+    let built: (Entry & SchedulerStore) | undefined
+    try {
+      // Nothing between these two lines may iterate an array, and nothing does but the code
+      // under test: the store is constructed and the iterator is put back.
+      Object.defineProperty(Array.prototype, Symbol.iterator, {
+        ...iterator,
+        value: function* () {},
+      })
+      built = new Entry() as Entry & SchedulerStore
+    } finally {
+      Object.defineProperty(Array.prototype, Symbol.iterator, iterator)
+    }
+    const refused = await built.claim(NUL, 'w', { leaseSeconds: 30, limit: 1 }).then(
+      () => 'accepted',
+      (error: unknown) => (error instanceof Error ? error.name : String(error)),
+    )
+    expect(refused).toBe('InvalidDurableStringError')
+  })
+
   it('refuses to construct a store that lacks a method of the port', () => {
     class Lacking extends HeldPort {}
     expect(() => new Lacking()).toThrow(/must define spawn as a method/)
@@ -399,6 +430,17 @@ describe('the type of the table', () => {
     const optionalGivenNull: Enqueues = { enqueue: ['queue', { '?': { key: null } }] }
     // @ts-expect-error an options object with an optional string given null
     const optionsGivenNull: Enqueues = { enqueue: ['queue', null] }
+    type Queue = string & { readonly brand: 'queue' }
+    interface TakesOtherStrings {
+      move(queue: Queue, to: `q-${string}`, order: 'oldest' | 'newest'): void
+    }
+    type Moves = PortStringsOf<TakesOtherStrings>
+    // A branded string and a template literal string are a caller's strings too.
+    const moves: Moves = { move: ['queue', 'queue', null] }
+    // @ts-expect-error a branded string the table does not name
+    const brandUnnamed: Moves = { move: [null, 'queue', null] }
+    // @ts-expect-error a template literal string the table does not name
+    const templateUnnamed: Moves = { move: ['queue', null, null] }
     // @ts-expect-error a member the object does not have
     const extraMember: Parked = { park: ['queue', null, { ...inside, extra: 'queue' }] }
 
@@ -419,6 +461,7 @@ describe('the type of the table', () => {
     const more = [unknownName, nameForANumber, shorter, extraMember, gained, named, words]
     const options = [optional, optionalGivenNull, optionsGivenNull]
     const marks = [memberUnmarked, argumentUnmarked, requiredMarked, memberMarked]
-    expect(controls.length + more.length + options.length + marks.length).toBe(20)
+    const shapes = [moves, brandUnnamed, templateUnnamed]
+    expect(controls.length + more.length + options.length + marks.length + shapes.length).toBe(23)
   })
 })

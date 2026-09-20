@@ -70,14 +70,17 @@ export type PortStringRule = (typeof PORT_STRING_RULES)[PortStringName]
 export type PortMethod = keyof SchedulerStore
 
 /**
- * Whether a value of this type can carry a string its caller chose. A union of literals
- * is not one: the caller picks among the engine's words, and the entry that reads it
- * refuses any other.
+ * Whether a string type is one its caller chooses. A union of literals is not: the caller
+ * picks among the engine's words, and the entry that reads it refuses any other. Every
+ * other string type is, a branded string and a template literal string among them, because
+ * neither is a list of words. A record keyed by a list of words requires each word, and a
+ * record keyed by any other string type requires nothing, which is the test.
  */
+type CallersString<T extends string> = Record<never, never> extends Record<T, 1> ? true : false
+
+/** Whether a value of this type can carry a string its caller chose. */
 type CarriesStrings<T> = T extends string
-  ? string extends T
-    ? true
-    : false
+  ? CallersString<T>
   : T extends object
     ? string extends keyof T
       ? true
@@ -280,7 +283,12 @@ export abstract class HeldPort {
   private declare readonly heldPortBrand: undefined
 
   constructor() {
-    for (const method of PORT_METHODS) {
+    // An indexed loop over a frozen array. A `for...of` would ask the array iterator as it
+    // is when a store is constructed, and a store built while that answered nothing would
+    // hold no entry and say nothing.
+    for (let index = 0; index < PORT_METHODS.length; index++) {
+      const method = PORT_METHODS[index]
+      if (method === undefined) continue
       const entry: unknown = reflectGet(this, method)
       if (typeof entry !== 'function') {
         throw new TrustedTypeError(
