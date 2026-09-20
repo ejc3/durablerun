@@ -2829,12 +2829,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     deadlock to the delete, 104 victims against main's 55. A 64-character
     prefix did not hold a conformance fixture's token, and the older native
     claim case failed 5 times of 5. With the written table read after every
-    table an emit walked the live tasks of its queue, and took 258 ms beside a
-    million runs against 21. With the keys merely ahead of the written table a
+    table an emit walked the live tasks of its queue, and took 66 ms beside
+    200,000 runs against 21. With the keys merely ahead of the written table a
     completion walked 1,204 rows under statistics the server had not
     recalculated. The class survey had checked only how a keyed write reaches
     the table it writes, so plan cases now count the rows every statement of a
-    batch walks, from inside the batch. Twenty-four mutations hold the rule.
+    batch walks, from inside the batch. The review's fold added three things. A
+    database that has not reached version 8 answers a keyed delete with MySQL
+    error 1176, and the executor now answers that as a schema mismatch and not
+    as an outage, so DESIGN.md says to migrate first. A delete keyed by the
+    table it writes is refused where it is built, because it was sent as text
+    the server refuses. The schema file defines the two index names the
+    compiler forces, so a rename moves a frozen schema hash. Twenty-six
+    mutations hold the rule.
     For PR3.14b: with every fenced read of `runs` forced through `runs_stamp` a
     claim was 7 percent faster beside 2,000 running runs on MySQL, 3.31 ms
     against 3.57, so the walk it removes is small at that size; libSQL's three
@@ -2844,6 +2851,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     of different calls, and of one call on different targets, over tables of
     two or three rows met no victim on either server, in 13 pairs of 10 rounds
     each.
+  - Option for the MySQL compiler, not built, with its trigger: read a keyed
+    delete's keys through an index of the stamp on a table other than `runs`,
+    or from a derived table. Core's generator can build a delete over a self
+    relation, or one keyed from `tasks`, `waits` or `events`, and the MySQL
+    compiler alone refuses both, because its rule takes one plain table that
+    declares an index of its stamp. Trigger: the first statement of either
+    shape, which fails when its batch is built in `conformance-mysql`.
 
 - **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
   item of PR4.3: the engine behaves identically on every dialect, so the 255

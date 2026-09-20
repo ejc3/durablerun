@@ -2662,8 +2662,8 @@ realized in the store's compiler, executor, fragments, or schema:
   the written row. With the written table after every table (`JOIN_SUFFIX`) the
   emit's update of `runs` reached `tasks` with no run in hand and walked the
   live tasks of its queue, 2,009 rows beside 2,000. Inside a mix of claims,
-  events and reads an emit then took 66 ms beside 200,000 runs and 258 ms
-  beside a million, against 21 ms. With the keys merely ahead of the written
+  events and reads that statement then took 50 ms beside 200,000 runs against
+  3, and its emit 66 ms against 21. With the keys merely ahead of the written
   table (`JOIN_ORDER`) the server still read `tasks` first under statistics it
   had not recalculated, and a completion's wake walked 1,204 rows beside 2,000
   tasks. As built the emit's update walks 9 rows and the completion's 1, and an
@@ -2699,6 +2699,14 @@ realized in the store's compiler, executor, fragments, or schema:
   delete's keys through it. Every stamping write changes the stamp, so a
   stamped run's entry in that index is its own transaction's, and a search of
   the index for one batch's stamp touches no other entry. It waits for nothing.
+  The read is forced, because the server left alone picks the index of the
+  keys by its estimates. With the index there and the hint removed it read the
+  keys through `runs_poll` in three idle arrangements, 4 runs due beside no
+  waits, 4 beside 50 parked waiters and 40 beside 200, and yet every plan case
+  and both claim contests passed, the contests 5 times of 5, because under
+  contention its estimates tip to the stamp's index. So no behavioural case
+  fails without the hint. The compiler's text cases are its only holders, and
+  it stays because it closes the window between planning and reading.
   By itself the compiler refuses a keyed `DELETE` whose keys are not a
   selection, or come from a table read under no alias, a derived table, more
   than one table, a join, or the table the delete writes, or whose fence is not
@@ -2780,6 +2788,22 @@ realized in the store's compiler, executor, fragments, or schema:
   `SchemaMismatchError`, as after every migration, and its store still reads
   and writes. In that mix the older build's executor counted 119 and 131
   deadlock victims in about half a minute, and the newer build's counted none.
+- **A keyed delete's keys are one plain table that declares an index of its
+  stamp, which today is `runs`.** That is a limit of this dialect on a shared
+  primitive, and core does not know it. Core's generator can build two deletes
+  that the MySQL compiler refuses and the other two dialects accept: one over
+  a self relation, whose keys core reads through a derived table, and one
+  whose keys come from `tasks`, `waits` or `events`, which declare no index of
+  their stamp. Nothing sends either. The first statement that does fails when
+  its batch is built in the MySQL conformance leg, so it cannot ship silently.
+  BUILD.md records the option and its trigger.
+- **The keyed write rule assumes the server's default `optimizer_switch`.** The
+  keys block is a semijoin's. In a session with `semijoin=off` the server
+  builds none, raises warning 3128, an unresolved name for the `JOIN_PREFIX`
+  hint, and plans the claim's update as a scan of the written table. Nothing
+  reads that warning at run time, and the executor does not pin the switch.
+  Main's statement scans the written table in the same session too, so the
+  rule is no worse there than what it replaced.
 - **`MIN()` is not answered from an index once another predicate stands beside
   it.** The next-wake read walked 1207 rows of a 1200-row queue. Each wake
   source is now the first row in index order of one state, with the index
