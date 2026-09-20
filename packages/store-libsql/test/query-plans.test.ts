@@ -2,9 +2,7 @@ import {
   INFRA_RETRY_CAP,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
-  encodeRollbackTry,
 } from '@durablerun/core'
 import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -408,6 +406,7 @@ describe('every batch a saga touches', () => {
    * listed.
    */
   const TOUCHED = [
+    'spawn',
     'set-checkpoint',
     'fail',
     'fail-rollback',
@@ -443,23 +442,31 @@ describe('every batch a saga touches', () => {
     type Held = { taskId: string; runId: string; claimToken: string }
     const mark = (run: Held, name: string, state: string) =>
       store.setCheckpoint('q', run.taskId, run.runId, run.claimToken, name, state, 60)
-    const tried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
-    })
+    const tried = { stepKey: 'a', errorJson: '{"name":"R"}' }
     const E = '{"name":"E"}'
     const saga = await store.spawn('q', 'saga', '{}')
     const forward = await claimed('w1')
     await mark(forward, `${SAGA_STARTED_PREFIX}a`, '1')
     await mark(forward, `${SAGA_STARTED_PREFIX}b`, '2')
+    // A child spawn tests its parent's phase, under the parent's live claim. The child lives
+    // in a queue of its own, so no claim below takes it.
+    await store.spawn('kids', 'child', '{}', {
+      childOf: {
+        parentQueue: 'q',
+        parentTaskId: saga.taskId,
+        runId: forward.runId,
+        claimToken: forward.claimToken,
+        replayKey: '$spawn:child',
+      },
+    })
     expect(await store.fail('q', forward.runId, forward.claimToken, E, null)).toEqual({
       rollingBack: true,
     })
     const pass = await claimed('w2')
     await mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null')
-    await store.failRollback('q', pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried(1))
+    await store.failRollback('q', pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried)
     const last = await claimed('w3')
-    await store.failRollback('q', last.runId, last.claimToken, E, null, tried(2))
+    await store.failRollback('q', last.runId, last.claimToken, E, null, tried)
     expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
     expect(await store.retryTask('q', saga.taskId)).toBeNull()
     await store.spawn('q', 'retrying', '{}', { maxAttempts: 2 })
@@ -510,6 +517,14 @@ describe('every batch a saga touches', () => {
     return seen.filter((st) => (TOUCHED as readonly string[]).includes(st.label))
   }
 
+  /**
+   * The task update that follows a pass. It is told from a revival, which sets the same
+   * budget column, by the batch it rides in, and from a spawn, which inserts that column,
+   * by being an update: a column's name is not what a statement is.
+   */
+  const followsThePass = (label: string, sql: string): boolean =>
+    /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
+
   /** What is wrong with one statement's plan, by the rules every saga statement is held to. */
   function planFaults(label: string, sql: string, plan: string): string[] {
     const faults: string[] = []
@@ -529,12 +544,8 @@ describe('every batch a saga touches', () => {
     }
     // The statements a saga adds: the rollback pass, the phase marker, the attempt record,
     // and the task that follows the pass.
-    // The task that follows the pass is told from a revival, which sets the same budget
-    // column, by the batch it rides in: a column's name is not what a statement is.
-    const followsThePass =
-      /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
     const added =
-      followsThePass ||
+      followsThePass(label, sql) ||
       (/^\s*insert into "runs"/.test(sql) && SAGA_ALIAS.test(plan)) ||
       (/^\s*insert into "checkpoints"/.test(sql) &&
         label !== 'set-checkpoint' &&
@@ -575,9 +586,9 @@ describe('every batch a saga touches', () => {
       for (const alias of ['sp', 'ss', 'sr', 'st'] as const) {
         if (new RegExp(`^SEARCH ${alias} `, 'm').test(plan)) reached[alias]++
       }
-      const followsThePass = /"max_attempts"/.test(st.sql) && st.label !== 'retry-task'
-      if (followsThePass) reached.followsThePass++
-      if (SAGA_ALIAS.test(plan) || followsThePass) reached.labels.add(st.label)
+      const followed = followsThePass(st.label, st.sql)
+      if (followed) reached.followsThePass++
+      if (SAGA_ALIAS.test(plan) || followed) reached.labels.add(st.label)
       for (const fault of planFaults(st.label, st.sql, plan)) {
         faults.push(`[${st.label}] ${fault} :: ${st.sql.replace(/\s+/g, ' ').slice(0, 60)}`)
       }
@@ -760,10 +771,7 @@ describe('every write a store ships, by the table it writes', () => {
     )
     const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
     if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
-    const sagaTried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
-    })
+    const sagaTried = { stepKey: 'a', errorJson: '{}' }
     const passOf = async () => {
       claims += 1
       const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
@@ -778,11 +786,11 @@ describe('every write a store ships, by the table it writes', () => {
       firstPass.claimToken,
       '{}',
       { delaySeconds: 0 },
-      sagaTried(1),
+      sagaTried,
     )
     if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
     const lastPass = await passOf()
-    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried)
     await store.retryTask('q', failed.taskId)
     await store.cancelTask('q', failed.taskId)
     // One run whose launch is lost and one whose worker dies, then the clock passes both leases.

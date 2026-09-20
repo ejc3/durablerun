@@ -9,7 +9,7 @@ import {
   parseFenceStamp,
 } from '@durablerun/core'
 import type { StoreFixture } from './fixture.js'
-import { triesOf } from './sagas.js'
+import { failedRollback } from './sagas.js'
 import { checkpointOwned, claimActivated, claimOne, infraRetrySeed } from './scenario.js'
 import {
   CORPUS_VARIANT_NAMERS,
@@ -176,7 +176,7 @@ const SCENARIOS: Readonly<Record<string, readonly Scenario[]>> = {
         pass.claimToken,
         BOOM,
         { delaySeconds: 0 },
-        triesOf('a', 1),
+        failedRollback('a'),
       )
     },
   ],

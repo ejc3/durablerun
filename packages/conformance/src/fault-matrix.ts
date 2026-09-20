@@ -6,15 +6,13 @@ import {
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
-  encodeRollbackTry,
   taskDoneEventName,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
+import { missingCompletionEvent } from './child-task-rows.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
 import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
@@ -84,6 +82,7 @@ export const MATRIX_READ_LABELS = [
   'claimed-task-name',
   'refusal-state',
   'run-task',
+  'rollback-tries',
   'task-done-state',
   'sweep:scan',
   'get-checkpoints',
@@ -528,9 +527,40 @@ async function assertEdgePostcondition(
 }
 
 /**
+ * What the rows a cell leaves violate: everything `engineHistoryViolations` names, less
+ * one excusal. The workload ends one child through a simulated older build, and the
+ * model allows what that leaves behind: specs/ChildTasks.tla's LegacyTerminal ends the
+ * child, writes no event, wakes nobody, and records nothing, so the child is terminal
+ * with no completion event until an await of it records the outcome (AwaitMaterialize).
+ * `endedByOlderBuild` holds that child from the spawn that creates it until an await of
+ * it has answered, which a crash can prevent. Only the missing event of a task in the
+ * set is excused, and only while its row is cancelled, which is the state the older
+ * build's cancel leaves. A crash can stop that cancel too, and the child is then an
+ * ordinary task: whatever ends it owes it its completion event. The missing event of any
+ * other task still fails the cell, and so does any other violation that names the
+ * excused one.
+ */
+export async function matrixHistoryViolations(
+  raw: SqlExecutor,
+  endedByOlderBuild: ReadonlySet<string>,
+): Promise<string[]> {
+  const [tasks] = await raw.batch(
+    'matrix-older-build',
+    [{ sql: 'SELECT task_id, state FROM tasks', args: [] }],
+    'read',
+  )
+  const excused = new Set(
+    (tasks?.rows ?? [])
+      .filter((task) => task.state === 'cancelled' && endedByOlderBuild.has(String(task.task_id)))
+      .map((task) => missingCompletionEvent(String(task.task_id))),
+  )
+  return (await engineHistoryViolations(raw)).filter((violation) => !excused.has(violation))
+}
+
+/**
  * One matrix cell: run the canonical workload with the given fault armed
- * at the given label, then require (1) engine invariants clean, (2) the
- * claim bound held — no token ever owns more running rows than the limit
+ * at the given label, then require (1) the rows clean by every checker
+ * (`matrixHistoryViolations`), (2) the claim bound held — no token ever owns more running rows than the limit
  * it asked for, (3) the system still makes progress afterward: a fresh
  * task can be driven to completion. strictSpecs means a workload that
  * fails to FIRE the armed label is itself an error — the workload's
@@ -559,6 +589,11 @@ export async function runFaultMatrixCase(
         when: fault === 'crash-before' ? 'before' : 'after',
       })
     }
+
+    // The one task `matrixHistoryViolations` may excuse: the child the older build ends
+    // below, from the spawn that creates it until an await of it has answered. The judge
+    // excuses it only while its row is cancelled.
+    const endedByOlderBuild = new Set<string>()
 
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
@@ -723,13 +758,17 @@ export async function runFaultMatrixCase(
       })
       const endedTask = await go(() => store.spawn(Q, 'ended-child', '{}'))
       if (endedTask) {
+        endedByOlderBuild.add(endedTask.taskId)
         await go(() => olderBuild.cancelTask(Q, endedTask.taskId))
         const lateParent = await go(() => store.spawn(Q, 'late-parent', '{}'))
         const [late] =
           (await go(() => store.claim(Q, 'w-late-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
         if (lateParent && late?.taskId === lateParent.taskId) {
           await go(() => store.activate(Q, late.runId, late.claimToken, late.claimGen))
-          await go(() => awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null))
+          const recorded = await go(() =>
+            awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null),
+          )
+          if (recorded !== null) endedByOlderBuild.delete(endedTask.taskId)
           await go(() => store.complete(Q, late.runId, late.claimToken, '{"late":1}'))
         }
       }
@@ -760,8 +799,8 @@ export async function runFaultMatrixCase(
         if (pass?.taskId === sagaTask.taskId) {
           await go(() =>
             store.failRollback(Q, pass.runId, pass.claimToken, cause, null, {
-              key: `${SAGA_TRIES_PREFIX}a`,
-              stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+              stepKey: 'a',
+              errorJson: '{"name":"RollbackBoom"}',
             }),
           )
         }
@@ -840,12 +879,9 @@ export async function runFaultMatrixCase(
 
     await assertEdgePostcondition(f.raw, preState, world.trace, cell)
 
-    // (1) Nothing the fault did may have corrupted state, or let a saga's rows say
-    // something Sagas.tla forbids.
-    const violations = [
-      ...(await engineInvariantViolations(f.raw)),
-      ...(await sagaViolations(f.raw)),
-    ]
+    // (1) Nothing the fault did may have corrupted state, or left rows that
+    // ChildTasks.tla or Sagas.tla forbids.
+    const violations = await matrixHistoryViolations(f.raw, endedByOlderBuild)
     if (violations.length > 0) {
       throw new Error(`matrix ${cell}: ${violations.join('; ')}`)
     }
@@ -883,7 +919,7 @@ export async function runFaultMatrixCase(
     if (!done) {
       throw new Error(`matrix ${cell}: system wedged — probe task never completed`)
     }
-    const finalViolations = await engineInvariantViolations(f.raw)
+    const finalViolations = await matrixHistoryViolations(f.raw, endedByOlderBuild)
     if (finalViolations.length > 0) {
       throw new Error(`matrix ${cell} final: ${finalViolations.join('; ')}`)
     }

@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
+          if digest == '2ebefc182f8944fc304c6366c5f75acec1c24ebe723e92556a06f110749b6b57':
               # The poison matrix's target profiles for the arms that name their target
               # register one mutation each, owned by a generated cell of the profile. The
               # base predates them, so their verdict markers are exempted. No base entry is

@@ -1,5 +1,5 @@
 import { type ExpressionBuilder, expressionBuilder } from 'kysely'
-import { EventName, taskDoneEventName } from '../child-tasks.js'
+import { EventName, type TaskDoneEventName, taskDoneEventName } from '../child-tasks.js'
 import type { SagaPhasePredicate } from '../sagas.js'
 import {
   FENCE_ASSIGNMENTS,
@@ -79,14 +79,6 @@ export const registerWaitCas = defineStatement(
     taskEligible: SqlFragment
     /** The forward phase is frozen once a saga began, so no wait registers then (§3.10). */
     phase: SagaPhasePredicate
-    /**
-     * The task whose completion event this is, for a child await, or null for any other
-     * event. A wait on a completion event registers only while that task is live and in
-     * this queue (specs/ChildTasks.tla's AwaitMiss). A task that has ended, in another
-     * queue, or that does not exist will never be ended by a batch that could wake the
-     * wait, so the wait would sleep forever.
-     */
-    awaitedTaskId: string | null
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
     const wait = {
@@ -119,7 +111,12 @@ export const registerWaitCas = defineStatement(
       .$if(binds.phase !== 'open', (query) =>
         query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
       )
-    const awaitedTaskId = binds.awaitedTaskId
+    // A wait on a completion event registers only while the event's task is live and in
+    // this queue (specs/ChildTasks.tla's AwaitMiss). A task that has ended, in another
+    // queue, or that does not exist will never be ended by a batch that could wake the
+    // wait, so the wait would sleep forever. The task is the one the name carries, so a
+    // caller cannot pass one child's event and another child's id.
+    const awaitedTaskId = binds.eventName.taskId
     if (awaitedTaskId !== null) {
       guarded = guarded.where((where) =>
         where.exists(
@@ -363,14 +360,20 @@ export const materializeTaskDoneCas = defineStatement(
   'await-event materialize',
   (
     binds: AwaitingClaim & {
-      childTaskId: string
-      eventName: EventName
+      eventName: TaskDoneEventName
       payloadJson: string
       /** The stamp the child's row carried when its outcome was read, or null. */
       childStamp: string | null
       liveTask: SqlFragment
     },
   ) => {
+    // The child is the one the name carries, and the bind's type holds typed code to a
+    // completion event. An untyped caller that passes another is refused here, because
+    // an insert keyed on a null task id would write nothing and say nothing.
+    const childTaskId: string | null = binds.eventName.taskId
+    if (childTaskId === null) {
+      throw new Error('await-event materialize records a completion event, and was given another')
+    }
     const eb = expressionBuilder<{ c: StoreTables['tasks'] }, 'c'>()
     const event = {
       queue: eb.ref('c.queue'),
@@ -387,7 +390,7 @@ export const materializeTaskDoneCas = defineStatement(
         treeBuilder
           .selectFrom('tasks as c')
           .select(selections)
-          .where('c.task_id', '=', binds.childTaskId)
+          .where('c.task_id', '=', childTaskId)
           .where('c.fence_stamp', 'is not distinct from', binds.childStamp)
           .where((where) =>
             where.not(

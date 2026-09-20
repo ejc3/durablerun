@@ -17,6 +17,20 @@ export async function readOne(
   return result?.rows[0]
 }
 
+/** The stored state of one checkpoint of a task, or undefined when it has none under that name. */
+export async function checkpointState(
+  raw: SqlExecutor,
+  taskId: string,
+  name: string,
+): Promise<string | undefined> {
+  const row = await readOne(
+    raw,
+    'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+    [taskId, name],
+  )
+  return row === undefined ? undefined : String(row.state)
+}
+
 /** A scenario failure whose fixture then also failed to close. */
 export class FixtureCloseFailure extends Error {
   constructor(

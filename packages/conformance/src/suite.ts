@@ -17,6 +17,7 @@ import {
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { engineHistoryViolations } from './engine-history.js'
 import {
   type StoreFixture,
   type StoreFixtureFactory,
@@ -81,8 +82,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
     /**
      * Run `body` once per seed against its own fixture, named `${prefix}${seed}` and
-     * started at START_MS like the default fixture. The fixture always closes, and the engine
-     * invariants must hold at quiescence.
+     * started at START_MS like the default fixture. The fixture always closes, and the rows
+     * must satisfy every checker at quiescence.
      */
     async function forEachSeed(
       seeds: number,
@@ -93,7 +94,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await withFixture(makeFixture, `${prefix}${seed}`, async (fx) => {
           await fx.admin.setFakeNowEpochMs(START_MS)
           await body(fx, seed)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          expect(await engineHistoryViolations(fx.raw), `seed ${seed}`).toEqual([])
         })
       }
     }
@@ -125,7 +126,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { refused, tasks: Number(count?.n) },
           'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
-        ).toEqual({ refused: 'RangeError', tasks: 0 })
+        ).toEqual({ refused: 'PortRefusalError', tasks: 0 })
       })
 
       it('keys a child by its parent and call site, under a key only the store builds', async () => {
@@ -161,7 +162,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           replayFindsTheChild: true,
           siblingIsAnotherTask: true,
           key: childSpawnKey(parentTask.taskId, '$spawn:child'),
-          both: 'RangeError',
+          both: 'PortRefusalError',
         })
       })
 
@@ -3515,7 +3516,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { forged, events: Number(stored?.n) },
           'mutation-verdict:behavior:emit-event-refuses-reserved-name',
-        ).toEqual({ forged: 'RangeError', events: 0 })
+        ).toEqual({ forged: 'PortRefusalError', events: 0 })
       })
 
       // An event name is durable text, and the dialects disagree on a NUL and on a lone

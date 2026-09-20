@@ -1,12 +1,12 @@
-import {
-  InvalidDurableStringError,
-  SchemaMismatchError,
-  encodeRollbackTry,
-  taskDoneEventName,
-} from '@durablerun/core'
+import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
-import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
+import {
+  META_BOOTSTRAP_SQL,
+  META_TABLE_SQL,
+  RUNS_STAMP_INDEX,
+  createIndexIfMissing,
+} from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
@@ -270,32 +270,39 @@ describe('MysqlExecutor against a real server', () => {
     // A migrator that died after the index and before the version runs the version again.
     const db = await openMysqlTestDb({ idNamespace: 'index-repeat' })
     try {
-      const columns = async () => {
-        const [index] = await db.raw.batch(
-          'fixture:read',
-          [
-            {
-              sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
-                    FROM information_schema.statistics
-                    WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_woken'`,
-              args: [],
-            },
-          ],
-          'read',
-        )
-        return index?.rows[0]?.columns
+      const indexes = [
+        ['runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
+        ['runs_stamp', '(fence_stamp(768))', 'fence_stamp'],
+      ] as const
+      for (const [name, definition, expected] of indexes) {
+        const columns = async () => {
+          const [index] = await db.raw.batch(
+            'fixture:read',
+            [
+              {
+                sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
+                      FROM information_schema.statistics
+                      WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = ?`,
+                args: [name],
+              },
+            ],
+            'read',
+          )
+          return index?.rows[0]?.columns
+        }
+        const version = createIndexIfMissing('runs', name, definition).map((sql) => ({
+          sql,
+          args: [],
+        }))
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('migrate:index', version)
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
+        expect(await columns()).toBeNull()
+        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version)
+        expect(await columns()).toBe(expected)
       }
-      const version6 = createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)').map(
-        (sql) => ({ sql, args: [] }),
-      )
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('fixture:drop', [{ sql: 'DROP INDEX runs_woken ON runs', args: [] }])
-      expect(await columns()).toBeNull()
-      await db.raw.batch('migrate:v6', version6)
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
     } finally {
       await db.close()
     }
@@ -398,10 +405,7 @@ describe('MysqlExecutor against a real server', () => {
           pass.claimToken,
           '{"why":"boom"}',
           null,
-          {
-            key: '$rollback-tries:charge',
-            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"why":"refund failed"}' }),
-          },
+          { stepKey: 'charge', errorJson: '{"why":"refund failed"}' },
         )
         expect(halted).toEqual({ rollingBack: false })
         expect(await store.getTaskResult(queue, task.taskId)).toMatchObject({
@@ -476,6 +480,31 @@ describe('MysqlExecutor against a real server', () => {
         { refused: outcome instanceof InvalidDurableStringError, stored: rows?.rows[0]?.n },
         'mutation-verdict:behavior:mysql-lone-statement-is-a-read',
       ).toEqual({ refused: true, stored: 0 })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs', async () => {
+    // A keyed delete reads its keys through `runs_stamp`, which version 8 adds, so a database
+    // that has not reached version 8 answers every batch that holds one with error 1176. That
+    // is a schema this build does not expect, and it is permanent: booked as an outage, a
+    // caller would retry it forever.
+    const db = await openMysqlTestDb({ idNamespace: 'no-stamp-index' })
+    try {
+      await db.raw.batch('fixture:drop-the-stamp-index', [
+        { sql: `ALTER TABLE runs DROP INDEX ${RUNS_STAMP_INDEX}`, args: [] },
+      ])
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      await store.spawn('q', 'task', '{}')
+      const refusal = await store
+        .claim('q', 'w', { leaseSeconds: 60, limit: 1 })
+        .catch((error: unknown) => error)
+      expect(
+        refusal,
+        'mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch',
+      ).toBeInstanceOf(SchemaMismatchError)
+      expect(String(refusal)).toContain('MySQL error 1176')
     } finally {
       await db.close()
     }

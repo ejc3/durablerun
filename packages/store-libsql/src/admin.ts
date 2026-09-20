@@ -1,13 +1,12 @@
 import {
   MAX_EPOCH_MS,
-  SchemaMismatchError,
-  SchemaNotInitializedError,
   type SqlExecutor,
-  type SqlResult,
   type StoreAdmin,
+  applyVersionedWrite,
   decodeBoundedInteger,
+  readSchemaVersion,
+  requireCurrentSchemaVersion,
   requireEpochMs,
-  storageValueKind,
 } from '@durablerun/core'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -34,7 +33,7 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     // from an existing, initialized-but-corrupt empty meta table; running it
     // first launders the latter into a valid version-zero database.
     if ((await this.readSchemaVersion()) === null) {
-      try {
+      await this.applyVersionedWrite(async () => {
         await this.db.batch('migrate:bootstrap', [
           {
             sql: `CREATE TABLE IF NOT EXISTS meta (
@@ -49,85 +48,33 @@ export class LibsqlStoreAdmin implements StoreAdmin {
             args: [],
           },
         ])
-      } catch (error) {
-        // A concurrent migrator may have won the bootstrap, and that is success once the
-        // metadata exists. With the metadata still absent, the failure is real.
-        if ((await this.readSchemaVersion()) === null) throw error
-      }
+      }, 0)
     }
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
-      try {
-        await this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration))
-      } catch (error) {
-        // A concurrent migrator may have won the sentinel race — that is
-        // success, not failure. Anything else is real.
-        if ((await this.schemaVersion()) >= migration.version) continue
-        throw error
-      }
-    }
-    // The post-condition, asserted rather than assumed. Each version bump is
-    // an UPDATE guarded on the previous value, in the same batch as the DDL —
-    // exactly the "a losing statement still writes" shape rule 1 forbids in
-    // engine SQL, and it was unchecked here. When the guard matches nothing
-    // the DDL still commits, so the database ends up physically migrated
-    // while recording the old version; the next process then re-applies the
-    // DDL and dies on a duplicate column, on every restart, while the process
-    // that caused it reported success. Checking the end state covers that and
-    // every other cause without having to enumerate them.
-    const version = await this.schemaVersion()
-    if (version !== CURRENT_SCHEMA_VERSION) {
-      // A recorded version past this build's newest is a healthy schema that a newer build
-      // migrated. It is refused like any other mismatch, with the advice that fits it.
-      throw new SchemaMismatchError(
-        version > CURRENT_SCHEMA_VERSION
-          ? `the schema is recorded at version ${version} and this build knows versions up to ${CURRENT_SCHEMA_VERSION}: a newer build migrated this database, which needs no repair. Run that build or a later one`
-          : `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
+      await this.applyVersionedWrite(
+        () => this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)),
+        migration.version,
       )
     }
+    requireCurrentSchemaVersion(await this.schemaVersion(), CURRENT_SCHEMA_VERSION)
+  }
+
+  private applyVersionedWrite(
+    write: () => Promise<unknown>,
+    minimumVersion: number,
+  ): Promise<void> {
+    return applyVersionedWrite(write, minimumVersion, () => this.readSchemaVersion())
   }
 
   async schemaVersion(): Promise<number> {
     return (await this.readSchemaVersion()) ?? 0
   }
 
-  /**
-   * Null is the one typed fresh-database state. Once meta exists, every
-   * malformed result—including no schema_version row—throws closed.
-   */
-  private async readSchemaVersion(): Promise<number | null> {
-    let results: SqlResult[]
-    try {
-      results = await this.db.batch(
-        'migrate:version',
-        [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
-        'read',
-      )
-    } catch (error) {
-      // Only a genuinely fresh database reads as version 0; a transient
-      // network/auth error must not masquerade as one (it would re-apply
-      // every migration over a live schema).
-      if (error instanceof SchemaNotInitializedError) return null
-      throw error
-    }
-    const result = results.length === 1 ? results[0] : undefined
-    const row = result?.rows.length === 1 ? result.rows[0] : undefined
-    if (!row) {
-      throw new SchemaMismatchError(
-        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,
-      )
-    }
-    const stored = row.value
-    if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
-      throw new SchemaMismatchError(
-        `schema_version must be a canonical nonnegative integer, got ${storageValueKind(stored)}`,
-      )
-    }
-    const version = Number(stored)
-    if (!Number.isSafeInteger(version)) {
-      throw new SchemaMismatchError(`schema_version is outside the safe integer range: ${stored}`)
-    }
-    return version
+  private readSchemaVersion(): Promise<number | null> {
+    return readSchemaVersion(() =>
+      this.db.batch('migrate:version', [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }], 'read'),
+    )
   }
 
   async setFakeNowEpochMs(epochMs: number | null): Promise<void> {

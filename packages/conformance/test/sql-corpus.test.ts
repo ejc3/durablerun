@@ -1,10 +1,5 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import {
-  SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
-  encodeRollbackTry,
-  isTreeBuiltStatement,
-} from '@durablerun/core'
+import { SAGA_STARTED_PREFIX, isTreeBuiltStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
@@ -141,10 +136,7 @@ describe('generated SQL corpus', () => {
         expect(forward.taskId).toBe(saga.taskId)
         await checkpointOwned(store, 'q', forward, `${SAGA_STARTED_PREFIX}a`, '1', 30)
         await store.fail('q', forward.runId, forward.claimToken, '{"name":"E"}', null)
-        const tried = (tries: number) => ({
-          key: `${SAGA_TRIES_PREFIX}a`,
-          stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
-        })
+        const tried = { stepKey: 'a', errorJson: '{"name":"R"}' }
         const pass = await claimActivated(store, 'q', 'w7c')
         expect(pass.taskId).toBe(saga.taskId)
         await store.failRollback(
@@ -153,7 +145,7 @@ describe('generated SQL corpus', () => {
           pass.claimToken,
           '{"name":"E"}',
           { delaySeconds: 0 },
-          tried(1),
+          tried,
         )
         const lastPass = await claimActivated(store, 'q', 'w7d')
         expect(lastPass.taskId).toBe(saga.taskId)
@@ -163,7 +155,7 @@ describe('generated SQL corpus', () => {
           lastPass.claimToken,
           '{"name":"E"}',
           null,
-          tried(2),
+          tried,
         )
         expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
         // Last, because it moves the clock. Under the early fake clock only these three
