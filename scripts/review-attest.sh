@@ -528,10 +528,12 @@ cited_commits() {
       }
     }
 
-    # Which line of the template a word names, or 0.
-    function label_of(word,    i, lower) {
+    # Which line of the template a word names, or 0. A hyphen or a digit after
+    # it makes it part of a longer word: "Fix-induced defects" is a heading of
+    # the template, and no fixes line.
+    function label_of(word, after,    i, lower) {
       lower = tolower(word)
-      if (length(lower) < 3) {
+      if (length(lower) < 3 || after ~ /^[-[:digit:]]/) {
         return 0
       }
       for (i = 1; i <= count; i++) {
@@ -546,18 +548,21 @@ cited_commits() {
     # clause, as the labels of the template do, and its colon comes within forty
     # characters, which the longest label in this repository fits ("Fixes, one
     # commit for each finding:"), so that a sentence which happens to hold the
-    # word "fix", or to begin with it, is no label.
-    function label_in(gap,    rest, found, i, stop, starts) {
+    # word "fix", or to begin with it, is no label. With no colon, straight
+    # before the id, it is written with the capital the template gives it: "Fix
+    # `id`" is a label, and the verb in "commit `id` fixes `id`" is not.
+    function label_in(gap,    rest, found, i, stop, starts, word) {
       rest = gap
       found = 0
       starts = 1
       while (match(rest, /[[:alpha:]]+/)) {
         starts = starts || substr(rest, 1, RSTART - 1) ~ /[.;:,]/
-        i = starts ? label_of(substr(rest, RSTART, RLENGTH)) : 0
+        word = substr(rest, RSTART, RLENGTH)
         rest = substr(rest, RSTART + RLENGTH)
+        i = starts ? label_of(word, substr(rest, 1, 1)) : 0
         starts = 0
         stop = match(rest, /[.;:]/)
-        if (i && ((stop && stop <= 40 && substr(rest, stop, 1) == ":") || rest !~ /[[:alpha:]]/)) {
+        if (i && ((stop && stop <= 40 && substr(rest, stop, 1) == ":") || (rest !~ /[[:alpha:]]/ && substr(word, 1, 1) == substr(words[i], 1, 1)))) {
           found = i
         }
       }
@@ -566,6 +571,8 @@ cited_commits() {
 
     # The word the template puts before the code a red test ran against, when
     # the text before an id holds it with no clause ending after it, or "".
+    # However many words stand between: a postmortem on main writes four,
+    # "against its buggy PR parent", and a bound would read that commit as a red.
     function ran_against(gap,    clause, word) {
       clause = gap
       sub(/^.*[.;:,]/, "", clause)
@@ -624,8 +631,8 @@ cited_commits() {
         return
       }
       kind = -1
-      if (match(bullet, /^- [[:alpha:]]+/) && substr(bullet, RLENGTH + 1, 1) !~ /[[:digit:]]/) {
-        kind = label_of(substr(bullet, 3, RLENGTH - 2))
+      if (match(bullet, /^- [[:alpha:]]+/)) {
+        kind = label_of(substr(bullet, 3, RLENGTH - 2), substr(bullet, RLENGTH + 1, 1))
         kind = kind ? kind : -1
       }
       if (kind > 0) {
@@ -716,9 +723,11 @@ moved_hint() {
 
 refuse_postmortem() {
   local path="$1" problem
+  local -A said=()
   shift
   for problem in "$@"; do
-    echo "SEV rule: postmortem $path $problem" >&2
+    [[ -n "${said[$problem]:-}" ]] || echo "SEV rule: postmortem $path $problem" >&2
+    said[$problem]=1
   done
   [[ $# -eq 0 ]]
 }
@@ -752,7 +761,7 @@ CITED_SUMMARY=""
 CITED_UNREAD=""
 check_postmortem_commits() {
   local path="$1" content="$2" head="$3" base="$4"
-  local head_id base_id cited record first second third id where red index shared last_red=""
+  local head_id base_id cited record first second third id where red index shared advice last_red=""
   local -a labels=() words=() problems=() reds=()
   local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=() unread=()
   CITED_UNREAD=""
@@ -764,7 +773,7 @@ check_postmortem_commits() {
   }
   base_id=$(git -C "$REPO" rev-parse --verify --quiet "${base}^{commit}" 2>/dev/null) || {
     echo "SEV rule: the commits postmortem $path cites cannot be judged: the base $base is not a commit in this repository." >&2
-    echo "  Fetch it, or name the branch the pull request is cut from as the base." >&2
+    echo "  Fetch it, then run this again. Offline, the base is the third argument." >&2
     return 1
   }
   cited=$(cited_commits "$content") || return 1
@@ -806,11 +815,18 @@ check_postmortem_commits() {
           continue
         }
         if ! git -C "$REPO" merge-base --is-ancestor "$id" "$head_id" 2>/dev/null; then
-          problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id") A commit the branch does not hold is written without backticks, and one that reached main after the branch was cut is on the branch once it is rebased.")
+          # Rebasing brings a commit of main onto the branch, and under a label the
+          # range rule would then refuse it, so that advice is for prose alone.
+          if [[ "$first" -ge 1 ]]; then
+            advice="Under a label only the pull request's own commits belong: one that the branch does not hold is cited in prose on another line, or without backticks."
+          else
+            advice="A commit the branch does not hold is written without backticks, and one that reached main after the branch was cut is on the branch once it is rebased."
+          fi
+          problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id") $advice")
           continue
         fi
         if [[ "$first" -ge 1 ]] && git -C "$REPO" merge-base --is-ancestor "$id" "$base_id" 2>/dev/null; then
-          problems+=("cites \`$second\` $where, which the base ${base_id:0:7} already holds: a red test and its fix are commits of the pull request itself, made after it left its base. A commit of an earlier pull request goes in prose on another line, or without backticks.")
+          problems+=("cites \`$second\` $where, which the base ${base_id:0:7} already holds: a red test and its fix are commits of the pull request itself, made after it left its base. A commit of an earlier pull request goes in prose on another line, or without backticks. A postmortem of a pull request that has merged is read with its own base named, because main holds all of it.")
           continue
         fi
         others[$id]=1
@@ -828,7 +844,9 @@ check_postmortem_commits() {
   done <<<"$cited"
 
   # First under one label and later under the other, a commit is what the first
-  # says. First under both, or under neither, it stays both, and is refused.
+  # says. First under both it is one commit claimed as two, and first under
+  # neither nothing says which it is: it stays both, and is refused in the
+  # words that are true of it.
   for id in "${!red_cited[@]}"; do
     [[ -n "${fix_cited[$id]:-}" ]] || continue
     if [[ -n "${red_first[$id]:-}" && -z "${fix_first[$id]:-}" ]]; then
@@ -852,7 +870,11 @@ check_postmortem_commits() {
     for red in "${reds[@]}"; do
       [[ -n "${red_cited[$red]:-}" ]] || continue
       if [[ -n "${fix_cited[$red]:-}" ]]; then
-        problems+=("cites \`${red_cited[$red]}\` under '${labels[1]}' and under '${labels[2]}', first after its label each time: a red test and its fix are two commits. A line that only names the other kind's commit names its own first.")
+        if [[ -n "${red_first[$red]:-}" ]]; then
+          problems+=("cites \`${red_cited[$red]}\` under '${labels[1]}' and under '${labels[2]}', first after its label each time: a red test and its fix are two commits. A line that only names the other kind's commit names its own first.")
+        else
+          problems+=("cites \`${red_cited[$red]}\` under '${labels[1]}' and under '${labels[2]}', and first after neither label, so nothing says which of the two it is. Write a label before every pair, '${labels[1]#- } commit ... ${labels[2]#- } commit ...' once for each finding.")
+        fi
         continue
       fi
       # How much of the red's history is left once every fix's history is taken
@@ -864,9 +886,12 @@ check_postmortem_commits() {
   fi
 
   refuse_postmortem "$path" "${problems[@]}" || return 1
+  # --prove-reds also runs a commit that was dropped from the reds for coming
+  # first under the fixes label, when it named a probe: a commit that holds its
+  # own fix is cited just so, and its probe passes where it is cited.
   CITED_REDS=()
   for red in "${reds[@]}"; do
-    [[ -z "${red_cited[$red]:-}" ]] || CITED_REDS+=("$red")
+    [[ -z "${red_cited[$red]:-}" && -z "${CITED_PROBE_FILE[$red]:-}" ]] || CITED_REDS+=("$red")
   done
   CITED_HEAD="$head_id"
   CITED_SUMMARY="on ${head_id:0:7} since ${base_id:0:7}: ${#red_cited[@]} red, ${#fix_cited[@]} fix, $((${#others[@]} - ${#red_cited[@]} - ${#fix_cited[@]})) other cited; each red is before a fix"
@@ -925,7 +950,11 @@ SCRATCH=""
 remove_scratch_copies() {
   local copy
   for copy in "$SCRATCH"/*/; do
-    [[ -e "$copy.git" ]] && git -C "$REPO" worktree remove --force "${copy%/}" >/dev/null 2>&1
+    # A copy the repository has already forgotten cannot be removed, and the
+    # trap must not turn a satisfied run into a failure over it.
+    if [[ -e "$copy.git" ]]; then
+      git -C "$REPO" worktree remove --force "${copy%/}" >/dev/null 2>&1 || true
+    fi
   done
   rm -rf "$SCRATCH"
 }
@@ -936,7 +965,11 @@ remove_scratch_copies() {
 PROBE_SECONDS="${REVIEW_ATTEST_PROBE_SECONDS-600}"
 
 # Runs one probe in a scratch copy and prints "PASSED FAILED", "stopped" when it
-# ran past the limit, or nothing when the run left no report to read. A test
+# ran past the limit, "killed" when it was killed, which the limit's second
+# signal does and a machine out of memory does too, or nothing when the run
+# left no report to read. The probe stays in the foreground: in a process
+# group of its own an interrupt would not reach it, and the script would wait
+# for it to end. A test
 # the name filter skips is in vitest's total and in neither count, so a name
 # that matches nothing reads "0 0".
 run_probe() {
@@ -949,9 +982,11 @@ run_probe() {
   # bash 5.2.
   # shellcheck disable=SC2001
   [[ -z "$name" ]] || filter=(-t "$(sed 's,[][\\^$.*+?(){}|/],\\&,g' <<<"$name")")
-  (cd "$copy" && timeout --kill-after=10 "$PROBE_SECONDS" pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || status=$?
-  if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+  (cd "$copy" && timeout --foreground --kill-after=10 "$PROBE_SECONDS" pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || status=$?
+  if [[ "$status" -eq 124 ]]; then
     echo stopped
+  elif [[ "$status" -eq 137 ]]; then
+    echo killed
   else
     jq -er '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || true
   fi
@@ -999,6 +1034,8 @@ prove_reds() {
     read -r passed failed <<<"$counts"
     if [[ "$counts" == stopped ]]; then
       problems+=("red \`$short\`: its probe $probe ran past ${PROBE_SECONDS}s at that commit and was stopped.")
+    elif [[ "$counts" == killed ]]; then
+      problems+=("red \`$short\`: its probe $probe was killed at that commit (status 137): it ran past ${PROBE_SECONDS}s and ignored the first signal, or something else killed it, as a machine out of memory does.")
     elif [[ -z "$counts" ]]; then
       tail -5 "$report.log" >&2
       problems+=("red \`$short\`: the run of $probe at that commit left no report to read.")
@@ -1030,6 +1067,8 @@ prove_reds() {
       read -r passed failed <<<"$counts"
       if [[ "$counts" == stopped ]]; then
         problems+=("red \`$short\`: its probe $probe ran past ${PROBE_SECONDS}s at the head $head_short and was stopped.")
+      elif [[ "$counts" == killed ]]; then
+        problems+=("red \`$short\`: its probe $probe was killed at the head $head_short (status 137): it ran past ${PROBE_SECONDS}s and ignored the first signal, or something else killed it, as a machine out of memory does.")
       elif [[ -z "$counts" ]]; then
         tail -5 "$report.log" >&2
         problems+=("red \`$short\`: the run of $probe at the head $head_short left no report to read.")

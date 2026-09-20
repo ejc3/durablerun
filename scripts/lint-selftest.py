@@ -4825,15 +4825,15 @@ CITED_COMMIT_CASES = (
         says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
-        "the word against reaches an id within three words of it, so a second red test further "
-        "along its clause is still a red test",
+        "the word against reaches the id at the end of its clause however many words stand "
+        "between, as a postmortem on main writes four",
         """
-- Red tests: commit `{red}`, run and seen failing against the reviewed head and commit
-  `{later_red}` as well.
-- Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
+- Red tests: commit `{red}`, run and seen failing against its buggy parent on the branch
+  `{change}`.
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
 """,
         None,
-        says=": 2 red, 2 fix, 0 other cited; each red is before a fix",
+        says=": 1 red, 1 fix, 1 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
         "the whole attestation accepts a pull request whose added postmortem cites its branch",
