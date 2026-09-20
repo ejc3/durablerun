@@ -292,6 +292,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
@@ -310,13 +311,13 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
+          if digest == '0eec60003f1e21025c8fd11c489563f42ba61826fb486c7f681c93bff420eb37':
               # The local HTTP transport's lifecycle gained twelve mutations, under eleven verdict
               # markers that are newer than this registry: the launch deadline's abort through
               # the Launcher port, the deadline of the wake ping, the limits of both local
               # servers, and the order in which each closes. Nothing is re-aimed: every find of
               # this registry still occurs exactly once in this tree. The arm is keyed on main's
-              # registry as of the merge of PR4.4a, whose own arm it replaces.
+              # registry as of the merge of PR3.3b, whose own arm it replaces.
               repaired = exempt(previous, candidate, (
                   'mutation-verdict:behavior:launch-deadline-tells-the-launcher',
                   'mutation-verdict:behavior:aborted-launch-answer-is-never-read',

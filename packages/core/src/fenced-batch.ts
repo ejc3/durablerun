@@ -1,5 +1,5 @@
 import { type Expression, type Kysely, isExpression } from 'kysely'
-import type { EventName } from './child-tasks.js'
+import { taskIdOfDoneEvent } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -16,8 +16,10 @@ import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
   SqlClaimLockCoordinates,
+  SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
+  SqlRow,
   SqlStatement,
   SqlTransactionLock,
 } from './primitives.js'
@@ -29,6 +31,7 @@ import {
   columnValue,
   defineStatement,
   eligibilityDefinitionProblem,
+  eventLockProblem,
   fenceValue,
   followOnInsertProvenance,
   fragmentBinds,
@@ -45,7 +48,9 @@ import {
   stampValue,
   statementGrammarProblem,
   statementTable,
+  taskStateProblem,
   writesStampAssignments,
+  writesTerminalTaskState,
 } from './sql-tree.js'
 import { treeBuilder } from './store-tables.js'
 import { readingOnce } from './tree-walk.js'
@@ -204,9 +209,15 @@ export type GeneratedUpdateTarget = RelationTarget<FenceRelation>
  */
 export type DerivedValue = string | Expression<unknown>
 
-type DerivedSet<R extends FenceRelation> = Partial<
-  Record<DerivedWritableColumn<RelationTarget<R>>, DerivedValue>
->
+/**
+ * What a generated UPDATE assigns. The state it gives a task is nodes and never text: a
+ * batch reads it to know whether the statement ends the task, which text cannot tell it.
+ */
+type DerivedSet<R extends FenceRelation> = RelationTarget<R> extends 'tasks'
+  ? Partial<Record<Exclude<DerivedWritableColumn<'tasks'>, 'state'>, DerivedValue>> & {
+      state?: Expression<string>
+    }
+  : Partial<Record<DerivedWritableColumn<RelationTarget<R>>, DerivedValue>>
 
 type DerivedSpec<R extends FenceRelation = FenceRelation> =
   | (DerivedSelection<R> & {
@@ -239,6 +250,10 @@ interface Named {
   atMost: number | null
   /** Compiled once, when the statement was added, so what was checked is what runs. */
   compiled: SqlStatement
+  /** It can end a task: it writes a terminal state into `tasks.state`. */
+  endsTask: boolean
+  /** For the follow-on that records a task's completion event, the statement whose stamp gates it. */
+  recordsEndOf: string | undefined
 }
 
 /**
@@ -306,44 +321,59 @@ export class FencedBatch {
   }
 
   /**
-   * Serialize this event transition against every transition for the same
-   * `(queue, eventName)` coordinate.
-   *
-   * The lock is a transaction prelude rather than a statement: callers name
-   * only inert key data, while the dialect executor owns the lock SQL. It must
-   * be declared before the batch's first statement, and the first statement
-   * after it must be the fenced CAS whose branch the lock protects.
-   */
-  lockEvent(coordinates: { readonly queue: string; readonly eventName: EventName }): this {
-    const { queue, eventName } = coordinates
-    return this.addTransactionLock({ kind: 'event', queue, eventName: eventName?.value })
-  }
-
-  /**
    * Serialize same-token claim attempts before either selects candidates.
    * Candidate row locks alone are disjoint, so they cannot provide this gate.
+   *
+   * A lock is a transaction prelude rather than a statement: a batch names only inert
+   * key data, while the dialect executor owns the lock SQL and takes the lock before the
+   * batch's first statement. A caller declares this one before the batch's first
+   * statement, and the first statement after it must be the fenced CAS whose branch the
+   * lock protects.
    */
   lockClaim(coordinates: SqlClaimLockCoordinates): this {
     const { queue, claimToken } = coordinates
-    return this.addTransactionLock({ kind: 'claim', queue, claimToken })
+    if (this.statements.length !== 0) {
+      throw new Error(
+        `FencedBatch[${this.label}] claim lock must be declared before every SQL statement`,
+      )
+    }
+    return this.holdTransactionLock({ kind: 'claim', queue, claimToken })
   }
 
-  private addTransactionLock(lock: SqlTransactionLock): this {
-    const coordinate = lock.kind === 'event' ? lock.eventName : lock.claimToken
-    if (typeof lock.queue !== 'string' || typeof coordinate !== 'string') {
+  /**
+   * Serialize this batch against every batch that holds the lock of the same
+   * `(queue, eventName)` (§3.4 rule 2). No caller declares it. A statement that records
+   * an event or registers a wait names its event where core defines it, and the batch
+   * holds that lock from the moment it admits the statement, so a store cannot leave the
+   * lock out and has no line that takes it. The executor takes a batch's lock before its
+   * first statement wherever in the batch the statement stands, which is why a terminal
+   * batch's completion event, a follow-on, can bring it.
+   */
+  private holdEventLock(lock: SqlEventLockCoordinates): this {
+    return this.holdTransactionLock({ kind: 'event', ...lock })
+  }
+
+  /** A batch holds one lock. A statement may name the lock the batch already holds. */
+  private holdTransactionLock(lock: SqlTransactionLock): this {
+    // Every coordinate of every kind of lock is a string the executor binds.
+    const coordinates: Readonly<Record<string, unknown>> = lock
+    if (objectKeys(coordinates).some((name) => typeof coordinates[name] !== 'string')) {
       throw new TypeError(
         `FencedBatch[${this.label}] ${lock.kind} lock coordinates must be strings`,
       )
     }
-    if (this.statements.length !== 0) {
+    const held = this.transactionLocks[0]
+    const same =
+      held?.kind === 'event' &&
+      lock.kind === 'event' &&
+      held.queue === lock.queue &&
+      held.eventName === lock.eventName
+    if (held !== undefined && !same) {
       throw new Error(
-        `FencedBatch[${this.label}] ${lock.kind} lock must be declared before every SQL statement`,
+        `FencedBatch[${this.label}] already has a transaction lock: a batch is serialized on one claim or one event`,
       )
     }
-    if (this.transactionLocks.length !== 0) {
-      throw new Error(`FencedBatch[${this.label}] already has a transaction lock`)
-    }
-    this.transactionLocks.push(Object.freeze({ ...lock }))
+    if (held === undefined) this.transactionLocks.push(Object.freeze({ ...lock }))
     return this
   }
 
@@ -738,7 +768,15 @@ export class FencedBatch {
     this.countClockRead(at, name, drift, shape.readsClock)
     weakSetAdd(treeBuilt, compiled)
     brandRead(compiled)
-    this.statements.push({ name, kind: 'tail', fence: null, atMost: null, compiled })
+    this.statements.push({
+      name,
+      kind: 'tail',
+      fence: null,
+      atMost: null,
+      compiled,
+      endsTask: false,
+      recordsEndOf: undefined,
+    })
     this.reads.push(name)
     return this
   }
@@ -956,6 +994,8 @@ export class FencedBatch {
 
     const rawProblem = rawFragmentProblem(tree)
     if (rawProblem !== null) throw new Error(`${at} holds ${rawProblem}`)
+    const unreadState = taskStateProblem(tree)
+    if (unreadState !== null) throw new Error(`${at} ${unreadState}`)
 
     const compiled = this.tree.compile(tree, {
       now: this.now,
@@ -970,10 +1010,19 @@ export class FencedBatch {
     // a statement that must be gated counts: every top-level conjunct is ANDed, so one
     // gate that no row can satisfy is enough.
     let gatedBy: number | undefined
+    let recordsEndOf: string | undefined
     if (!isCas) {
       const positional = gatingFences(tree)
       const gates = positional.filter((gate) => gate.tied)
       const gateName = open ? undefined : gates[0]?.fence
+      // A completion event recorded under a statement's stamp is what that statement owes
+      // when it ends a task, and `run` holds every such statement to it. The lock rule
+      // below has the statement's lock name the event its row names.
+      const ended =
+        following !== null && written === 'events'
+          ? taskIdOfDoneEvent(statement.eventLock?.eventName ?? '')
+          : null
+      if (ended !== null) recordsEndOf = gateName
       const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
       // A skipped statement answers with no rows, which is also what it answers unmatched,
       // unless it answers with a row whatever it matched. That one is always sent.
@@ -1058,9 +1107,15 @@ export class FencedBatch {
         gatedBy === undefined
           ? { sql: compiled.sql, args }
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
+      endsTask: writesTerminalTaskState(tree),
+      recordsEndOf,
     }
     weakSetAdd(treeBuilt, held.compiled)
     if (reading) brandRead(held.compiled)
+    // Asked and held last, so a statement one of the rules above refused leaves no lock behind.
+    const unserialized = eventLockProblem(tree, statement.eventLock)
+    if (unserialized !== null) throw new Error(`${at} ${unserialized}`)
+    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)
     this.statements.push(held)
     if (reading) this.reads.push(name)
     return this
@@ -1074,14 +1129,25 @@ export class FencedBatch {
       throw new Error(`FencedBatch[${this.label}] has no CAS`)
     }
     const mode: SqlBatchMode = readsOnly ? 'read' : asked
+    // A batch that ends a task records the task's completion event, under the stamp of the
+    // statement that ended it, or a parent that awaits the task sleeps for ever (DESIGN.md
+    // §3.2). It is asked here, where the batch is whole, and before anything is sent.
+    const unrecorded = this.statements.find(
+      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf === s.name),
+    )
+    if (unrecorded !== undefined) {
+      throw new Error(
+        `FencedBatch[${this.label}] '${unrecorded.name}' writes a terminal tasks.state, and no follow-on of this batch records the task's completion event under its stamp: a batch that can end a task adds the event through addTaskDone, naming the statement that ends it`,
+      )
+    }
     const compiled = this.statements.map((s) => s.compiled)
     const transactionLock = this.transactionLocks[0]
     if (transactionLock !== undefined && mode !== 'write') {
       throw new Error(`FencedBatch[${this.label}] transaction lock requires a write batch`)
     }
-    // Preserve the string control used by every existing libSQL transition.
-    // Only a batch that explicitly declared a lock exercises the structured
-    // control variant.
+    // A batch that holds no lock keeps the plain string control. One that holds a lock
+    // hands every dialect's executor the same coordinate, libSQL's included, which reads
+    // it as an ordinary write because its single writer is the lock.
     const raw =
       transactionLock === undefined
         ? await db.batch(this.label, compiled, mode)
@@ -1127,6 +1193,13 @@ export class FencedBatch {
     })
     return { won, count, results }
   }
+}
+
+/** The rows of the read a batch held under a name. A name it does not hold is refused, never read as no row. */
+export function readRows(b: FencedBatch, ran: FencedResult, name: string): SqlRow[] {
+  const result = ran.results[name]
+  if (result === undefined) throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
+  return result.rows
 }
 
 /** The values a prepared read is sent with. Each reaches the statement as an argument and as nothing else. */
