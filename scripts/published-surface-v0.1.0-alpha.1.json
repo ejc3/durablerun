@@ -41,7 +41,7 @@
         },
         "FencedBatch": {
           "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent takes an event name minted in core in place of a string, a generated follow-on may bind its queue (both PR #49), and a generated set value may be an expression as well as text (PR #43).",
-          "declarationSha256": "9586b41de08479c83da872a908e93b08c2cc4b3a9a2350f976bd793570954764"
+          "declarationSha256": "407ddd7ca88ecec286b7233a13360c13c5baf2c50b593b673f69a33feca6cc26"
         },
         "LeaseState": {
           "reason": "A refused heartbeat names why (PR #32): the interface became a union, and a lease that is not held carries reason, cancelled or lease-lost. A consumer that reads held and remainingMs changes nothing; a store that answers a heartbeat returns the reason with a refusal.",
@@ -404,11 +404,11 @@
         ],
         "LaunchOutcome": [
           "class LaunchOutcome {",
+          "    private constructor();",
           "    static accepted(): LaunchOutcome;",
           "    static ended(ending: Ending): LaunchOutcome;",
           "    static launchFailed(): LaunchOutcome;",
           "    static reconcile(store: SchedulerStore, queue: string, run: LaunchIdentity, value: unknown): Promise<'accepted' | 'ended' | 'launch-failed'>;",
-          "    (private members)",
           "}"
         ],
         "Launcher": [
@@ -1104,6 +1104,7 @@
         "UserName": [
           "class UserName {",
           "    readonly value: string;",
+          "    private constructor();",
           "    static parse(what: string, raw: string): UserName;",
           "    (private members)",
           "}"

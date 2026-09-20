@@ -2146,11 +2146,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   without their comments, then those of every name they reach inside the packed
   packages that the release did not export, because a consumer's compiler reads
   through such a name. A class's private members are left out, and one line
-  says that the class has some. The check does not judge whether a difference
-  breaks a consumer. Any difference in a released name's lines is refused
-  unless the snapshot's `changed` table lists the name with the reason, what a
-  consumer does about it, and the sha256 of the declaration as it is now, so a
-  second change to a listed name is refused until its entry is written again.
+  says that the class has some. A private constructor stays, because it says
+  that a consumer cannot construct the class. The check does not judge whether
+  a difference breaks a consumer. Any difference in a released name's lines is
+  refused unless the snapshot's `changed` table lists the name with the reason,
+  what a consumer does about it, and the sha256 of the declaration as it is
+  now, so a second change to a listed name is refused until its entry is
+  written again.
   An entry is refused when its name was never released, is also withdrawn, has
   no reason, or is declared as the release declared it. Nineteen released names
   differ on main, each traced to the pull request that changed it, and the

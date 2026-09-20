@@ -17,8 +17,9 @@
 // compiler reads through such a name and cannot import it. A name the release exported is
 // compared under its own entry. A class's private members are left out, because a consumer
 // cannot use them; one line says that the class has some, because the first one stops a plain
-// object from standing in for the class. The check does not judge whether a difference breaks
-// a consumer. Any difference is refused until the snapshot says why it is there.
+// object from standing in for the class. A private constructor stays, because it says that a
+// consumer cannot construct the class. The check does not judge whether a difference breaks a
+// consumer. Any difference is refused until the snapshot says why it is there.
 //
 // A name leaves on purpose through the snapshot's `withdrawn` table, which gives the
 // reason beside the name. A withdrawn name must be one the release exported, and it
@@ -57,9 +58,11 @@ const ts = createRequire(import.meta.url)('typescript')
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
 const sha256 = (data) => createHash('sha256').update(data).digest('hex')
 
+// A private constructor is not hidden: it says that a consumer cannot construct the class.
 const isPrivate = (member) =>
-  (member.name !== undefined && ts.isPrivateIdentifier(member.name)) ||
-  (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Private) !== 0
+  !ts.isConstructorDeclaration(member) &&
+  ((member.name !== undefined && ts.isPrivateIdentifier(member.name)) ||
+    (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Private) !== 0)
 
 // One declaration as lines, without the modifiers that say how it is exported.
 function declared(node) {
