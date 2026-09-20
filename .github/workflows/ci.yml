@@ -357,7 +357,7 @@ jobs:
               if repaired.count(size) != 1:
                   raise SystemExit('the bridge requires the base inventory size assertion.')
               return repaired.replace(size, f'        if len(MUTATIONS) != {inventory - len(names)}:\n')
-          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+          if digest == '404f2a49092d87011af7bd216da83c559f83a14e4db62005e37d2c5a79d20373':
               # `failRollback` takes the step, and the store names and counts a rollback's
               # attempt record. The SQL check of a caller's name went with the name, so the one
               # base entry that mutated that check is retired with its verdict group. No other
@@ -368,7 +368,7 @@ jobs:
               # still names a case and a marker this tree has.
               repaired = retire(previous, candidate, (
                   'saga-attempt-record-name-is-checked',
-              ), 939)
+              ), 1012)
               repaired = exempt(repaired, candidate, (
                   "mutation-verdict:behavior:saga-child-spawn-is-frozen",
                   "mutation-verdict:behavior:saga-store-counts-failed-attempts",

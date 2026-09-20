@@ -1,9 +1,4 @@
 import {
-  childTaskViolations,
-  engineInvariantViolations,
-  sagaViolations,
-} from '@durablerun/conformance'
-import {
   FatalTaskError,
   MAX_COUNT,
   type SchedulerStore,
@@ -12,18 +7,11 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { ChildTask, TaskContext } from '../src/index.js'
-import { SAGA_DIALECTS, type SagaFixture, checkpointNames, drive, runNext } from './saga-harness.js'
+import { expectCleanRows } from './clean-rows.js'
+import { SAGA_DIALECTS, checkpointNames, drive, runNext } from './saga-harness.js'
 import { Q, registry } from './worker-harness.js'
 
 const NO_DELAY = { kind: 'fixed', baseSeconds: 0 } as const
-
-async function expectCleanRows(f: SagaFixture): Promise<void> {
-  expect({
-    engine: await engineInvariantViolations(f.raw),
-    childTasks: await childTaskViolations(f.raw),
-    saga: await sagaViolations(f.raw),
-  }).toEqual({ engine: [], childTasks: [], saga: [] })
-}
 
 /** A step whose body and rollback each leave a line in `effects`. */
 function effectfulStep(ctx: TaskContext, effects: string[], name: string, value: unknown = name) {

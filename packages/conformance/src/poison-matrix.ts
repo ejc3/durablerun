@@ -1364,7 +1364,8 @@ for (const [table, , columns] of SNAPSHOT_TABLES) {
   RELATIONSHIP_COLUMNS[table] = columns
 }
 
-async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
+/** Every row of the six protocol tables, in a stable order. */
+export async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
   const results = await raw.batch(
     'poison:snapshot',
     SNAPSHOT_TABLES.map(([table, orderBy]) => sql(`SELECT * FROM ${table} ORDER BY ${orderBy}`)),
@@ -1396,7 +1397,8 @@ async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
   return protocol
 }
 
-async function seedBase(f: StoreFixture): Promise<void> {
+/** The population every generated case starts from, at the fixed instant. */
+export async function seedBase(f: StoreFixture): Promise<void> {
   await f.admin.setFakeNowEpochMs(NOW)
   await f.raw.batch(
     'poison:setup',
@@ -1575,6 +1577,8 @@ function triggerTask(
 
 function triggerRun(options: {
   state: 'pending' | 'running' | 'sleeping'
+  /** The generation of the claim that holds a running run. One unless the caller says. */
+  claimGen?: number
   activatedGen?: number
   expiresAt?: number | null
   availableAt?: number | null
@@ -1594,7 +1598,7 @@ function triggerRun(options: {
       TRIGGER_TASK,
       options.state,
       running ? TRIGGER_TOKEN : null,
-      running ? 1 : 0,
+      running ? (options.claimGen ?? 1) : 0,
       running ? (options.activatedGen ?? 1) : 0,
       running ? 60_000 : null,
       running ? (options.expiresAt ?? NOW + 60_000) : null,
@@ -1637,8 +1641,16 @@ const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
     ),
   )
 
-async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
-  if (label === 'driver-heartbeat' || label === 'spawn') return
+/** A healthy task and run in the state in which `label` is a legal call on `target`. */
+export async function seedHealthyTrigger(
+  raw: SqlExecutor,
+  label: string,
+  target: InvocationTarget = HEALTHY_INVOCATION,
+): Promise<void> {
+  // A task of its own needs no rows. A child is spawned by a run that is running under
+  // its claim, which is what the default arm seeds.
+  if (label === 'driver-heartbeat') return
+  if (label === 'spawn' && target.childReplayKey === undefined) return
   let statements: readonly SqlStatement[]
   switch (label) {
     case 'claim':
@@ -1646,7 +1658,11 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
       break
     case 'activate':
     case 'defer-launch':
-      statements = [triggerTask('running'), triggerRun({ state: 'running', activatedGen: 0 })]
+      // A claim receipt names its generation, so the run is seeded at the target's.
+      statements = [
+        triggerTask('running'),
+        triggerRun({ state: 'running', activatedGen: 0, claimGen: target.claimGen }),
+      ]
       break
     case 'record-task-done':
       // The awaiting run is running, and each invocation's child ended with nothing recorded.
@@ -1705,15 +1721,26 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
       ]
       break
     case 'sweep:lost-launch':
+      // The launch lost is the target's claim, by a run last activated under the claim before.
       statements = [
         triggerTask('running'),
-        triggerRun({ state: 'running', activatedGen: 0, expiresAt: NOW - 1 }),
+        triggerRun({
+          state: 'running',
+          claimGen: target.claimGen,
+          activatedGen: target.claimGen - 1,
+          expiresAt: NOW - 1,
+        }),
       ]
       break
     case 'sweep:claim-timeout':
       statements = [
         triggerTask('running'),
-        triggerRun({ state: 'running', activatedGen: 1, expiresAt: NOW - 1 }),
+        triggerRun({
+          state: 'running',
+          claimGen: target.claimGen,
+          activatedGen: target.claimGen,
+          expiresAt: NOW - 1,
+        }),
       ]
       break
     case 'fail-rollback':
@@ -1732,12 +1759,15 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
   await raw.batch('poison:trigger', statements, 'write')
 }
 
-interface InvocationTarget {
+/** What one invocation of a write label names: the rows it acts on and the claim it presents. */
+export interface InvocationTarget {
   driverId: string
   taskName: string
   taskId: string
   runId: string
   token: string
+  /** The generation of the claim that holds `runId`. */
+  claimGen: number
   claimWorker: string
   eventName: string
   stepName: string
@@ -1748,14 +1778,38 @@ interface InvocationTarget {
   completionPayload: string
   failure: string
   endedChildId: string
+  /**
+   * Set, `spawn` creates a child of `runId` at this call site, and presents the target's
+   * claim as the parent's. Unset, it creates a task of its own.
+   */
+  childReplayKey?: string
 }
 
-const POISON_INVOCATION: InvocationTarget = {
+type OptionalKey<T> = { [K in keyof T]-?: undefined extends T[K] ? K : never }[keyof T]
+
+/**
+ * Every shape of target `invoke` tells apart: the plain one, and one for each optional
+ * field, set. `form` is what the shape adds to a label's name. The type asks a new
+ * optional field for its shape, so a surface generated from these shapes sees every call
+ * form `invoke` can make.
+ */
+export const INVOCATION_SHAPES: Readonly<
+  Record<
+    'plain' | OptionalKey<InvocationTarget>,
+    { readonly form: string; readonly set: Partial<InvocationTarget> }
+  >
+> = {
+  plain: { form: '', set: {} },
+  childReplayKey: { form: ' of a child', set: { childReplayKey: 'child#1' } },
+}
+
+export const POISON_INVOCATION: InvocationTarget = {
   driverId: POISON_DRIVER,
   taskName: 'poison',
   taskId: TASK,
   runId: RUN,
   token: TOKEN,
+  claimGen: 1,
   claimWorker: 'poison-claim',
   eventName: EVENT,
   stepName: STEP,
@@ -1768,12 +1822,13 @@ const POISON_INVOCATION: InvocationTarget = {
   endedChildId: ENDED_CHILD,
 }
 
-const HEALTHY_INVOCATION: InvocationTarget = {
+export const HEALTHY_INVOCATION: InvocationTarget = {
   driverId: TRIGGER_DRIVER,
   taskName: 'trigger',
   taskId: TRIGGER_TASK,
   runId: TRIGGER_RUN,
   token: TRIGGER_TOKEN,
+  claimGen: 1,
   claimWorker: 'healthy-claim',
   eventName: TRIGGER_EVENT,
   stepName: TRIGGER_STEP,
@@ -1786,7 +1841,8 @@ const HEALTHY_INVOCATION: InvocationTarget = {
   endedChildId: TRIGGER_ENDED_CHILD,
 }
 
-async function invoke(
+/** The one call of the scheduler port that sends `label`, naming `target`. */
+export async function invoke(
   label: (typeof MATRIX_WRITE_LABELS)[number],
   store: SchedulerStore,
   target: InvocationTarget,
@@ -1796,13 +1852,28 @@ async function invoke(
     case 'driver-heartbeat':
       return store.driverHeartbeat(Q, target.driverId, 30)
     case 'spawn':
-      return store.spawn(Q, target.taskName, '{}', { idempotencyKey: target.idempotencyKey })
+      return store.spawn(
+        Q,
+        target.taskName,
+        '{}',
+        target.childReplayKey === undefined
+          ? { idempotencyKey: target.idempotencyKey }
+          : {
+              childOf: {
+                parentQueue: Q,
+                parentTaskId: target.taskId,
+                runId: target.runId,
+                claimToken: target.token,
+                replayKey: target.childReplayKey,
+              },
+            },
+      )
     case 'claim':
       return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: selectionLimit })
     case 'activate':
-      return store.activate(Q, target.runId, target.token, 1)
+      return store.activate(Q, target.runId, target.token, target.claimGen)
     case 'defer-launch':
-      return store.deferLaunch(Q, target.runId, target.token, 1, 1)
+      return store.deferLaunch(Q, target.runId, target.token, target.claimGen, 1)
     case 'heartbeat':
       return store.heartbeat(Q, target.runId, target.token, 60)
     case 'reschedule':

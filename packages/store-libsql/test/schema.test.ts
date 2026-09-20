@@ -108,6 +108,7 @@ describe('migrations are append-only', () => {
     5: '7f3f2fe9f4e203110ed0001500ad7ca805e1d467aea3b13b2b6aba6d966d8295',
     6: '9a3117ae07e404ed99b2906def9987cf5e4bd71843ab8a15f6c9a5fc6876d10f',
     7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    8: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
   }
 
   it('every migration hash matches its frozen value', () => {

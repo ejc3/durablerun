@@ -1382,6 +1382,34 @@ def red_pair_corpus(rule_body: str, synopsis: str) -> dict[str, str]:
     )
 
 
+# clock-lint reads its spellings from the tree it audits, so a fixture of it carries these rules.
+TREE_RULES = "packages/core/src/sql-tree.ts"
+TREE_RULES_TEXT = (SCRIPTS.parent / TREE_RULES).read_text()
+
+
+def tree_rules_without_spelling(name: str) -> str:
+    """The repository's tree rules with one clock function taken off the list.
+
+    It fails when the name is not on the list. A replace that finds nothing returns the
+    text as it was, and the case built from it would pass while showing nothing.
+    """
+    entry = f"  '{name}',\n"
+    if TREE_RULES_TEXT.count(entry) != 1:
+        raise SystemExit(f"lint-selftest: the clock function list does not hold {name!r} exactly once")
+    return TREE_RULES_TEXT.replace(entry, "")
+
+
+def tree_rules_with_arm(arm: str) -> str:
+    """The repository's tree rules with one more arm in the list of clock spellings, ahead of the last.
+
+    It fails when the last arm is not the fake clock's, for the reason given above.
+    """
+    last = "    String.raw`\\bfake_now_ms\\b`,\n"
+    if TREE_RULES_TEXT.count(last) != 1:
+        raise SystemExit("lint-selftest: the list of clock spellings does not end with the fake clock's arm")
+    return TREE_RULES_TEXT.replace(last, f"    String.raw`{arm}`,\n{last}")
+
+
 CLEAN_STORE = store(
     """
 export class S {
@@ -3706,6 +3734,24 @@ export class Store {
         "nightly checkout must disable persisted credentials",
         "a scheduled verification checkout must not retain a write-capable token",
     ),
+    (
+        "clock-lint.py",
+        {
+            **CLEAN_STORE,
+            TREE_RULES: "export const CLOCK_SPELLING = /now/\n",
+        },
+        "cannot read the clock spellings",
+        "a tree whose rules define no list of spellings is refused, because a pattern built from nothing matches nothing",
+    ),
+    (
+        "clock-lint.py",
+        {
+            **store("const SQL = `SELECT later_than_now() AS t`\n"),
+            TREE_RULES: tree_rules_with_arm(r"\b(?:${MORE_CLOCKS.join('|')})\s*\("),
+        },
+        "cannot read the clock spellings",
+        "an arm written through an interpolation the lint cannot read stops the lint: left in, it matches nothing, and a store that calls one of its spellings passes",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -3744,6 +3790,9 @@ export class Store {
         "curdate()",
         "CURTIME()",
         "curtime()",
+        # PostgreSQL's age() with one argument measures from the current date.
+        "age(created_at)",
+        "AGE(created_at)",
     )
 ]
 
@@ -4503,6 +4552,16 @@ const pattern = /this\.db\.batch\(/
         "process contracts refer to their executable single definitions",
     ),
     ("clock-lint.py", CLEAN_STORE, "a batch label containing the word 'now'"),
+    (
+        # The false negative, kept on purpose: the lint holds no list of its own, so it is
+        # exactly as strong as the tree's. What holds an entry there is its registered mutation.
+        "clock-lint.py",
+        {
+            **store("const SQL = `SELECT SYSDATE() AS t`\n"),
+            TREE_RULES: tree_rules_without_spelling("sysdate"),
+        },
+        "a name the audited tree's list does not hold is not refused: the list has one definition",
+    ),
     (
         "clock-lint.py",
         store("// derived from the CAS above at ITS single NOW — not a second NOW\n"),
@@ -5562,6 +5621,12 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
+        # clock-lint reads the clock spellings from the tree it audits. A fixture that brings
+        # no list of its own gets the repository's, as batch-lint's gets its list of text statements.
+        spellings = root / TREE_RULES
+        if lint == "clock-lint.py" and not spellings.exists():
+            spellings.parent.mkdir(parents=True, exist_ok=True)
+            spellings.write_text(TREE_RULES_TEXT)
         listed = root / "scripts" / "text-statements.json"
         if lint == "batch-lint.py" and not listed.exists():
             listed.write_text((SCRIPTS / "text-statements.json").read_text())

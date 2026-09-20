@@ -9,7 +9,6 @@ import {
   type SqlStatement,
   type StoreAdmin,
 } from '@durablerun/core'
-import type { SelfRaceName } from './self-concurrency.js'
 
 type PersistedNumericField = PersistedCounterFieldDescriptor | PersistedTemporalFieldDescriptor
 export type PersistedNumericTable = PersistedNumericField['table']
@@ -117,6 +116,48 @@ export function unboundedOverWidthAttempt(
   }
 }
 
+/** The one stored row a corruption lands in. */
+export interface CorruptionTarget {
+  readonly table: StorageCorruption['table']
+  /** The predicate that names the row by its key columns, the same text on every dialect. */
+  readonly where: string
+  /** The binds of `where`, in order. */
+  readonly identityArgs: string[]
+}
+
+/**
+ * Where a corruption of one stored value lands. The shared schema names every table's key
+ * columns, so the table, the predicate and its binds are the same on every dialect. What a
+ * dialect writes there, and how its column refuses the value, stays in that dialect's
+ * fixture. An over-width name has its own write, `overWidthWrite`, and is not a target here.
+ */
+export function corruptionTarget(
+  corruption: Exclude<StorageCorruption, OverWidthCorruption>,
+): CorruptionTarget {
+  const at = (where: string, identityArgs: string[]): CorruptionTarget => ({
+    table: corruption.table,
+    where,
+    identityArgs,
+  })
+  switch (corruption.table) {
+    case 'tasks':
+      return at('task_id = ?', [corruption.taskId])
+    case 'runs':
+      return at('run_id = ?', [corruption.runId])
+    case 'checkpoints':
+      return at('task_id = ? AND checkpoint_name = ?', [
+        corruption.taskId,
+        corruption.checkpointName,
+      ])
+    case 'events':
+      return at('queue = ? AND event_name = ?', [corruption.queue, corruption.eventName])
+    case 'waits':
+      return at('run_id = ? AND step_name = ?', [corruption.runId, corruption.stepName])
+    case 'drivers':
+      return at('queue = ? AND driver_id = ?', [corruption.queue, corruption.driverId])
+  }
+}
+
 export type StorageCorruptionDisposition = 'injected' | 'structurally-rejected'
 
 /**
@@ -190,16 +231,6 @@ export interface StoreFixture {
    * victim answers zero.
    */
   deadlocks(): number
-  /**
-   * The contests of the self-concurrency surface in which this dialect's server may pick a
-   * deadlock victim today, by name, each with what was measured and why. An entry excuses
-   * that one count, up to what the copies' attempts allow, and nothing else: the contest
-   * still holds its answers, its rows, and the invariants, and every other contest holds
-   * the count at zero. An entry records a defect that is deferred, never a convenience,
-   * and it goes when the defect does. The type admits only the name of a contest that
-   * exists.
-   */
-  selfRaceDeadlocksExcused: Readonly<Partial<Record<SelfRaceName, string>>>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

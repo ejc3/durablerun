@@ -43,9 +43,9 @@ export const failedRunColumns = (reason: string) =>
 
 /**
  * What a claim hands its worker, read from the run `r` and the task `t` that owns it.
- * Both reads of a claimed run select this one list, and every store's decoder reads
- * these names, so the receipt a retry returns and the payload an activation returns
- * cannot differ in shape.
+ * Both reads of a claimed run select this one list, and `decodeClaimedRun`, the one decoder
+ * every store calls, reads these names, so the receipt a retry returns and the payload an
+ * activation returns cannot differ in shape.
  */
 const CLAIMED_RUN_SELECTION = [
   'r.run_id',
