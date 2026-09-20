@@ -103,16 +103,6 @@ it('builds the write-plan schema through the production migration contract', asy
 /** The first two words of a statement, which name it among the statements of its label. */
 const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
 
-/** The access a write is allowed to reach each table by: a seek by the key it was handed. */
-const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
-  tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
-  runs: [
-    / USING PRIMARY KEY \(run_id=\?\)$/,
-    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
-  ],
-  waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
-}
-
 describe('claim candidate legs', () => {
   async function shippedClaimStatements(): Promise<{ sql: string; args: unknown[] }[]> {
     const seen: { sql: string; args: unknown[] }[] = []
@@ -190,7 +180,8 @@ describe('claim candidate legs', () => {
    * is listed.
    */
   const CLAIM_REACHES_RUNS_BY: readonly RegExp[] = [
-    ...(KEYED.runs ?? []),
+    / USING PRIMARY KEY \(run_id=\?\)$/,
+    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
     / USING (?:COVERING )?INDEX runs_held \(queue=\? AND claimed_by=\?\)$/,
     / USING INDEX runs_poll \(queue=\? AND state=\? AND available_at_ms>\? AND available_at_ms<\?\)$/,
   ]
@@ -925,73 +916,19 @@ async function sendEveryStatement(): Promise<Shipped[]> {
   return seen
 }
 
-describe('every write a store ships, by the table it writes', () => {
-  /**
-   * A generated follow-on writes the rows that belong to the rows its batch stamped: the
-   * task of a run, the runs of a task. Left to correlate its source to the written table
-   * on the queue, the source is a correlated subquery, SQLite cannot drive the write from
-   * it, and the statement scans the table it writes and probes the source once for each
-   * row. That is every task in the database, in any queue, on claim, activate, and
-   * complete: one `complete` measured 61 ms beside 100,000 tasks. The statements are
-   * recovered from the real operations, as the other pins of this file are, and every
-   * UPDATE and DELETE of every label is planned, so a new follow-on is read too.
-   */
-  const shippedWrites = async () =>
-    [...(await shippedStatements()).values()].filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
-
-  const named = (st: { label: string; sql: string }) => `${st.label}: ${head(st.sql)}`
-
-  it('reaches the table it writes by the key it was handed, whatever the plan calls that table', async () => {
-    // The property, and not one spelling of its failure: the plan step over the written
-    // table, under its name or its alias in that statement, must be a seek by key. A scan,
-    // a walk of (queue, state), a covering variant, or an index added later all fail alike,
-    // and a table with no key declared above fails until one is.
-    const unkeyed: string[] = []
-    for (const st of await shippedWrites()) {
-      const target = /^\s*(?:update|delete from)\s+"?([a-z_]+)"?(?:\s+as\s+"?([a-z_]+)"?)?/i.exec(
-        st.sql,
-      )
-      if (!target?.[1]) throw new Error(`cannot name the table of: ${st.sql.slice(0, 60)}`)
-      const [, table, alias] = target
-      const p = await writePlan(st.sql, st.args as (string | number)[])
-      const step = p
-        .split('\n')
-        .map((line) => line.trim())
-        .find((line) => new RegExp(`^(?:SCAN|SEARCH) (?:${table}|${alias ?? table})\\b`).test(line))
-      const keyed = step !== undefined && (KEYED[table] ?? []).some((key) => key.test(step))
-      if (!keyed) unkeyed.push(`${named(st)} -> ${step ?? 'no step over the written table'}`)
-    }
-    expect([...new Set(unkeyed)].sort()).toEqual([])
-  })
-
-  it('walks the runs of a queue by state in no step of any write', async () => {
-    // Any step, under any alias, through any index, covering or not, that is pinned by a
-    // queue and a state and nothing more reads every run of the queue in that state.
-    const walks: string[] = []
-    for (const st of await shippedWrites()) {
-      const p = await writePlan(st.sql, st.args as (string | number)[])
-      const walked = p
-        .split('\n')
-        .some((line) =>
-          / USING (?:COVERING )?INDEX \w+ \(queue=\? AND state=\?\)$/.test(line.trim()),
-        )
-      if (walked) walks.push(named(st))
-    }
-    expect([...new Set(walks)].sort()).toEqual([])
-  })
-})
-
 describe('every statement a store ships, by the nests of its plan', () => {
   /**
-   * The pins above hold the statements someone chose, three reads among them, and the block
-   * before this one holds the table each write writes. Neither is generated, so a read added
-   * later, or the SELECT of an INSERT, is planned only if someone chooses it, and neither
-   * sees a step that runs once for each row of a backlog unless it spells the one failure it
-   * was written against. Here every statement of every batch is planned and its
-   * loop nests are judged by `readNests` in `plan-nests.ts`, whose header says what a nest
-   * is and what the rule is. "Every" is held by the two checked inventories of what a store
-   * sends: the generated corpus of statement trees, and the list of the statements that
-   * stay text.
+   * The pins above hold the statements someone chose, three reads among them. None is
+   * generated, so a statement added later is planned only if someone chooses it, and a pin
+   * sees a walk only where it spells the one failure it was written against. Here every
+   * statement of every batch is planned, of every kind, and its steps and loop nests are
+   * judged by `readNests` in `plan-nests.ts`, whose header says what a walk is, what a nest
+   * is and what the rule is. Two pins that planned every UPDATE and DELETE stood before this
+   * block: the written table had to be reached by a key from a list kept there, and no step
+   * of a write could be pinned by a queue and a state alone. The reader's refusal of a walk
+   * holds both for every statement, so they are gone. "Every" is held by the two checked
+   * inventories of what a store sends: the generated corpus of statement trees, and the list
+   * of the statements that stay text.
    */
   const CORPUS: Record<string, Record<string, { sql: string }[]>> = JSON.parse(
     readFileSync(new URL('../../conformance/corpus/libsql.json', import.meta.url), 'utf8'),
