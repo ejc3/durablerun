@@ -2796,7 +2796,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   in a row is still reported: the driver counts an outage, and the run waits
   out its lease. The version itself lost all three in 1 of 160 migrations in
   this order, which leaves version 6 and can be run again.
-  The registry moves from 893 to 899. The per-fixture cost
+  The registry moves from 925 to 931. The per-fixture cost
   is also why this PR raises the limits of three CI jobs, by the rule and with
   the arithmetic in the PR3.13 entry. An
   operator's own view, materialized view, trigger with a column list or a
