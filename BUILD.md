@@ -2345,8 +2345,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a verdict in one of those files never runs and its mutation can never be
     caught. The registry's self-test now refuses such a verdict where it is
     declared, with three cases and an injected fault of its own. No verdict
-    sits in one: 0 of 878.
-  - The mutation registry goes from 873 to 878.
+    sits in one: 0 of 880.
+  - The review of PR #65 found no bug in shipped code, and six places where a
+    check or a sentence this work added said more than it held. They are
+    recorded in `postmortems/pr4.5b-width-checks-review.md`. The worst was
+    reproduced: the inventory pin's reader skipped a migration statement in
+    the schema's repeat-safe shape, so a column added that way would have been
+    missing from the inventory with every test green. It was committed as a
+    failing case and then fixed.
+  - The mutation registry gains five mutations: 875 to 880 on main as it stood
+    when this merged after PR4.4c.
   - An option, not built: an admin command that lists rows whose names pass
     the width, a stranded queue above all. No database anyone has observed
     holds one. The harness's other stated gaps stay where the sagas entry lists
