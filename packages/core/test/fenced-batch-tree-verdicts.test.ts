@@ -16,6 +16,7 @@ import {
   rawSql,
   sqlFragment,
   stampValue,
+  stampedRunState,
   taskDoneEventInsert,
   taskDoneEventName,
 } from '../src/index.js'
@@ -1515,6 +1516,24 @@ describe('the tree path', () => {
         OWES,
         () => run(ends(arm)),
       )
+    })
+
+    // What a column receives is a result. A filter chooses a row and a condition chooses
+    // an arm, and neither gives the task anything, whatever text it holds.
+    it("does not read the filter of a copied state, where a run id is a caller's string", async () => {
+      await expect(run(ends({ state: stampedRunState('failed', 'win') }))).resolves.toBeDefined()
+    })
+
+    it('does not read the condition of an arm', async () => {
+      const chosen = (eb: Loose) => ({
+        state: eb
+          .case()
+          .when('failure_reason', '=', 'failed')
+          .then('sleeping')
+          .else('pending')
+          .end(),
+      })
+      await expect(run(ends(chosen))).resolves.toBeDefined()
     })
 
     it('takes no fragment, whatever the fragment holds', () => {
