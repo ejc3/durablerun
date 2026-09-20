@@ -3443,6 +3443,9 @@ export class Store {
         "curdate()",
         "CURTIME()",
         "curtime()",
+        # PostgreSQL's age() with one argument measures from the current date.
+        "age(created_at)",
+        "AGE(created_at)",
     )
 ]
 

@@ -860,6 +860,14 @@ describe('the tree rules', () => {
       )
     })
 
+    it('refuses age in a fragment, with one argument and with two', () => {
+      // PostgreSQL's age() with one argument measures from the current date, so it reads
+      // the clock. With two it reads none and is refused all the same: no statement calls
+      // it, and telling the two apart would mean reading SQL.
+      expect(() => startedAt('age(created_at)')).toThrow(READS)
+      expect(() => startedAt('age(created_at, updated_at)')).toThrow(READS)
+    })
+
     const KEYWORDS = [
       ['current_timestamp', 'mutation-verdict:construction:tree-clock-keyword-current-timestamp'],
       ['current_time', 'mutation-verdict:construction:tree-clock-keyword-current-time'],
