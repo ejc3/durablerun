@@ -61,9 +61,14 @@ describe('PostgreSQL text collation', () => {
       expect(named.length).toBeGreaterThan(30)
 
       // An index orders by its own collation, which it took from its column when it was
-      // built. Changing a column's collation rebuilds its indexes, and this holds that.
+      // built. Changing a column's collation rebuilds its indexes, and this holds that. A
+      // key that declares a collation of its own keeps it through the column's change, so a
+      // version that builds such an index is reported here by the index's name.
       const keys = await catalog(db.raw, INDEX_KEY_COLLATIONS)
-      expect(keys.filter(({ value }) => value !== 'C').map(({ name }) => name)).toEqual([])
+      expect(
+        keys.filter(({ value }) => value !== 'C').map(({ name }) => name),
+        'mutation-verdict:behavior:postgres-index-key-keeps-another-collation',
+      ).toEqual([])
       expect(keys.length).toBeGreaterThan(10)
     } finally {
       await db.close()

@@ -3858,6 +3858,13 @@ MUTATION_SPECS = [
         "a read batch that loses a deadlock to a schema version's table locks is reported to its caller and never run again",
     ),
     (
+        "postgres-index-key-keeps-another-collation",
+        "packages/store-postgres/src/schema.ts",
+        "      `CREATE INDEX runs_woken ON runs (queue, wake_event)\n",
+        "      `CREATE INDEX runs_woken ON runs (queue, wake_event COLLATE \"POSIX\")\n",
+        "an index key declares a collation of its own, which the column's change to the byte collation does not reach, so the index orders by another rule than its column",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9905,6 +9912,12 @@ VERDICTS = {
         "packages/store-postgres/test/deadlocked-read.test.ts",
         "a read batch that loses a deadlock is run again and returns",
         "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
+    ),
+    "postgres-index-key-keeps-another-collation": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation declares the byte collation on every text column and every index key",
+        "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -17181,7 +17194,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 884:
+        if len(MUTATIONS) != 885:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

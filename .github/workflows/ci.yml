@@ -334,6 +334,7 @@ jobs:
                   "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
                   "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
                   "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
+                  "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
