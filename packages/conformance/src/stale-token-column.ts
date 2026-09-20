@@ -383,21 +383,20 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       it(`${label} acts on nothing when its scan read another generation`, () =>
         withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
           const before = await seedSwept(f, label)
-          const answers: Record<string, Outcome> = {}
-          for (const [which, claims] of Object.entries(STALE_SCANS)) {
+          for (const [scan, claims] of Object.entries(STALE_SCANS)) {
             const { swept, rewritten } = await sweepOverAScanOf(f, label, claims)
-            expect(
-              rewritten,
-              `the scan of ${which} handed the write no generation`,
-            ).toBeGreaterThan(0)
-            answers[which] = swept
+            expect({ scan, swept, rows: await snapshot(f.raw) }, verdict).toEqual({
+              scan,
+              swept: { kind: 'resolved', value: [] },
+              rows: before,
+            })
+            // A scan that returned no row for the run would pass the lines above for nothing.
+            // This comes after them: once a stale sweep has acted, the next scan finds no
+            // row, and that failure is the marked one's to report.
+            expect(rewritten, `the scan of ${scan} handed the write no generation`).toBeGreaterThan(
+              0,
+            )
           }
-          expect({ answers, rows: await snapshot(f.raw) }, verdict).toEqual({
-            answers: Object.fromEntries(
-              Object.keys(STALE_SCANS).map((which) => [which, { kind: 'resolved', value: [] }]),
-            ),
-            rows: before,
-          })
           // The same sweep over the scan the store really sends acts, so the generation
           // was the only reason the others did not.
           expect(await outcomeOf(invoke(label, f.store, SWEPT))).toMatchObject({
