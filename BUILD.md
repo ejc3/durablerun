@@ -621,8 +621,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   thirty for its whole request. A request rejected with a body was expected to
   leave its kept-alive connection unusable, and does not: the platform discards
   what is left of the body once the response has finished, on every route
-  tried, so two cases pin that and no code changed. Eleven mutations hold the
-  new lines, and the registry goes from 880 to 891.
+  tried, so two cases pin that and no code changed. Twelve mutations hold the
+  new lines, and the registry goes from 880 to 892.
 
 ## Phase 3 — full Absurd semantics
 

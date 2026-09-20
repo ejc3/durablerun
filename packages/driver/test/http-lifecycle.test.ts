@@ -373,9 +373,11 @@ describe('closing the worker server', () => {
         client.seen.data,
         'mutation-verdict:behavior:closing-worker-answer-ends-its-connection',
       ).toMatch(/\r\nconnection: close\r\n/i)
+      // close() resolves once the launch is acked and its pass is over, with the clock
+      // where it was: the wait ends with the last connection, not with its bound.
       expect(
         await reached(() => closed, SOCKET_WAIT_MS),
-        'close() resolves once the launch is acked and its pass is over',
+        'mutation-verdict:behavior:worker-close-ends-with-its-last-connection',
       ).toBe(true)
       expect((await f.store.getTaskResult(Q, launch.taskId))?.state).toBe('completed')
       expect(
@@ -385,7 +387,12 @@ describe('closing the worker server', () => {
       await closing
     } finally {
       client.socket.destroy()
-      await worker.close()
+      // A close() that still waits on its bound ends only when the clock moves, and a case
+      // that hangs here would hide the assertion that failed.
+      const closedAgain = worker.close()
+      f.clock.advance(5_000)
+      f.clock.fire()
+      await closedAgain
       f.close()
     }
   })

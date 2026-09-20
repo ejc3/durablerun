@@ -13260,6 +13260,13 @@ MUTATION_SPECS.extend(
             "    {}, // MUTATION: the platform's limits stand\n",
             "a stalled client keeps a connection of either local server for the platform's sixty seconds of headers and five minutes of request",
         ),
+        (
+            "transport-worker-close-ends-with-its-last-connection",
+            "packages/driver/src/http.ts",
+            "      void closed.then(() => drained.abort())\n",
+            "      // MUTATION: the wait never ends early\n",
+            "every close() of the worker server waits out its whole bound of five seconds, even with nothing on the wire",
+        ),
     )
 )
 for _verdict, _names in (
@@ -13372,6 +13379,17 @@ for _verdict, _names in (
         ),
         (
             "transport-local-servers-carry-their-limits",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the worker server lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both",
+            "mutation-verdict:behavior:worker-close-ends-with-its-last-connection",
+        ),
+        (
+            "transport-worker-close-ends-with-its-last-connection",
         ),
     ),
 ):
@@ -17337,7 +17355,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 891:
+        if len(MUTATIONS) != 892:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

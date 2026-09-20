@@ -311,7 +311,7 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
-              # The local HTTP transport's lifecycle gained eleven mutations, under ten verdict
+              # The local HTTP transport's lifecycle gained twelve mutations, under eleven verdict
               # markers that are newer than this registry: the launch deadline's abort through
               # the Launcher port, the deadline of the wake ping, the limits of both local
               # servers, and the order in which each closes. Nothing is re-aimed: every find of
@@ -328,6 +328,7 @@ jobs:
                   'mutation-verdict:behavior:worker-close-is-bounded',
                   'mutation-verdict:behavior:wake-server-close-ends-every-connection',
                   'mutation-verdict:behavior:local-servers-carry-their-limits',
+                  'mutation-verdict:behavior:worker-close-ends-with-its-last-connection',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
