@@ -535,14 +535,26 @@ async function assertEdgePostcondition(
  * with no completion event until an await of it records the outcome (AwaitMaterialize).
  * `endedByOlderBuild` holds that child from the spawn that creates it until an await of
  * it has answered, which a crash can prevent. Only the missing event of a task in the
- * set is excused. The missing event of any other task still fails the cell, and so does
- * any other violation that names the excused one.
+ * set is excused, and only while its row is cancelled, which is the state the older
+ * build's cancel leaves. A crash can stop that cancel too, and the child is then an
+ * ordinary task: whatever ends it owes it its completion event. The missing event of any
+ * other task still fails the cell, and so does any other violation that names the
+ * excused one.
  */
 export async function matrixHistoryViolations(
   raw: SqlExecutor,
   endedByOlderBuild: ReadonlySet<string>,
 ): Promise<string[]> {
-  const excused = new Set([...endedByOlderBuild].map(missingCompletionEvent))
+  const [tasks] = await raw.batch(
+    'matrix-older-build',
+    [{ sql: 'SELECT task_id, state FROM tasks', args: [] }],
+    'read',
+  )
+  const excused = new Set(
+    (tasks?.rows ?? [])
+      .filter((task) => task.state === 'cancelled' && endedByOlderBuild.has(String(task.task_id)))
+      .map((task) => missingCompletionEvent(String(task.task_id))),
+  )
   return (await engineHistoryViolations(raw)).filter((violation) => !excused.has(violation))
 }
 
@@ -579,8 +591,9 @@ export async function runFaultMatrixCase(
       })
     }
 
-    // The one task `matrixHistoryViolations` excuses: the child the older build ends
-    // below, from the spawn that creates it until an await of it has answered.
+    // The one task `matrixHistoryViolations` may excuse: the child the older build ends
+    // below, from the spawn that creates it until an await of it has answered. The judge
+    // excuses it only while its row is cancelled.
     const endedByOlderBuild = new Set<string>()
 
     world.actor('driver', async (simDb) => {
