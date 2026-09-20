@@ -770,7 +770,17 @@ One invocation executes one claimed run to its next suspension point:
     worker's own terminal write pays no read. Any other caller pays one read of
     the run's task (`run-task`) before the batch. A run's task never changes
     and run ids are never reused, so neither the read nor the memory can be
-    stale. Passing the task id through the port would remove the read, and
+    stale. The store forgets a run once its own `complete`, `fail`, or
+    `failRollback` has ended it, so what it holds is the runs still at work.
+    Until it did, an ended run stayed until 1,024 newer activations pushed it
+    out. Such an entry could change no answer: it named the right task for as
+    long as it stayed, and a run remembered under another queue still loses
+    the batch's compare-and-set. What it could do was take the room of a run
+    still at work. A store that activated more than 1,024 runs while one ran
+    lost that run's entry, and the run's terminal write then paid the read. A
+    caller sees the forgetting only when it repeats a terminal write through
+    the same store: the repeat reads the run's task again before it is
+    refused. Passing the task id through the port would remove the read, and
     would change the rule that a launch carries only the run and its token. The
     maintainer chose the memory.
   - A child is awaited only within its parent's queue. Events are keyed by
@@ -1932,7 +1942,9 @@ are load-bearing):
 `awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal
 (`refusal-state`), so a write that wins pays for no refusal read. The one read a
 winning `complete` or `fail` can pay is its run's task (`run-task`, §3.2), and
-only in a store that did not activate the run. It throws `RunCancelledError` (AB001)
+only in a store that did not activate the run. A store forgets a run it has
+ended, so a repeat of that write reads the task again before its refusal. It
+throws `RunCancelledError` (AB001)
 when the task's cancellation ended the run and `LeaseLostError` (AB002)
 otherwise, including when that read fails. `heartbeat` reports `held: false`
 with `reason: 'cancelled'` or `reason: 'lease-lost'`, from the same read. A worker retrying `complete` after a lost

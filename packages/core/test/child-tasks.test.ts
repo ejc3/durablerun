@@ -152,4 +152,17 @@ describe('the run-to-task memo', () => {
       'mutation-verdict:behavior:run-task-memo-is-bounded',
     ).toEqual({ r1: 't1', r2: undefined, r3: 't3' })
   })
+
+  it('lets a run go when told it has ended, which leaves its room to the others', () => {
+    const memo = new RunTaskMemo(2)
+    memo.remember('r1', 't1')
+    memo.remember('r2', 't2')
+    memo.forget('r2')
+    memo.remember('r3', 't3')
+    expect({ r1: memo.recall('r1'), r2: memo.recall('r2'), r3: memo.recall('r3') }).toEqual({
+      r1: 't1',
+      r2: undefined,
+      r3: 't3',
+    })
+  })
 })

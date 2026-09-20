@@ -1748,6 +1748,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
+    this.runTasks.forget(runId)
   }
 
   /**
@@ -2107,6 +2108,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    this.runTasks.forget(runId)
     return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 

@@ -230,7 +230,9 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
  * its task's completion event without a read. `complete` and `fail` are handed only
  * the run, and the worker that calls them activated the run through the same store a
  * moment earlier. A run's task never changes and run ids are never reused, so an entry
- * cannot go stale, and a miss only costs the read. The oldest entry leaves first.
+ * cannot go stale, and a miss only costs the read. A store lets a run go once its own
+ * terminal batch has ended it, so what is held is the runs still at work, and only a
+ * store with more of those than the capacity loses one early. The oldest leaves first.
  */
 export class RunTaskMemo {
   readonly #tasks = new Map<string, string>()
@@ -247,6 +249,11 @@ export class RunTaskMemo {
       const oldest = this.#tasks.keys().next()
       if (!oldest.done) this.#tasks.delete(oldest.value)
     }
+  }
+
+  /** Let a run go. Its terminal batch has ended it, so its own worker asks no more. */
+  forget(runId: string): void {
+    this.#tasks.delete(runId)
   }
 
   /** The run's task, if this store handed the run out and has not yet let the entry go. */
