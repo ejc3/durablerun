@@ -1671,7 +1671,10 @@ describe('runClaimedRun', () => {
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       )
-      expect({ observed, failCalls }).toEqual({
+      expect(
+        { observed, failCalls },
+        'mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass',
+      ).toEqual({
         observed: { value: { kind: 'aborted' } },
         failCalls: 0,
       })
