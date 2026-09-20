@@ -908,7 +908,7 @@ One invocation executes one claimed run to its next suspension point:
     nothing and the fence reaches the same rows through the same stamp. It is
     there for the planner: beside a bound queue and a state, SQLite prefers the
     (queue, state) index to the key and walks the queue. `store-libsql`'s plan
-    pins recover every UPDATE and DELETE of thirteen labels from the real
+    pins recover every UPDATE and DELETE of every label from the real
     operations. One requires the plan step over the written table, under its
     name or its alias in that statement, to be a seek by the key the write was
     handed, so a scan, a walk, or an index added later fails alike. The other
@@ -942,6 +942,89 @@ One invocation executes one claimed run to its next suspension point:
     IF NOT EXISTS`, and its DDL commits on its own, so version 6 chooses its
     statement from the catalog and prepares it, which is safe to repeat after a
     migrator that died between the index and the version.
+  - The plan of every statement libSQL ships. The pins above hold statements
+    someone chose, and the two over writes plan no read and no SELECT of an
+    INSERT. `store-libsql`'s plan test also sends every batch the store builds,
+    from one scripted history of real operations, and the two checked
+    inventories hold it to "every": each statement of
+    `conformance/corpus/libsql.json`, in every variant, must be one the history
+    sent, by its exact text, and each label of `scripts/text-statements.json` is
+    sent or named with why it is not the store's. A statement is planned under
+    the binds it was sent with, because SQLite plans from bound values: of the
+    128 distinct statements the history sends, one plans through a partial index
+    that it cannot use while `state = 'running'` is unknown. The plan is read as
+    the tree `EXPLAIN QUERY PLAN` returns. Under one select the SCAN and SEARCH
+    lines are nested loops, outermost first. A step runs once for each row of
+    the loops listed before it, of the loops listed before a CORRELATED subquery
+    it sits under, and of the loops of an uncorrelated LIST subquery of its
+    select, because an IN seeks once for each row of its list, which is the
+    shape of every generated follow-on. An uncorrelated SCALAR subquery starts a
+    nest of its own, the step that reads a CO-ROUTINE or MATERIALIZE body is as
+    bounded as the loops that made its rows, and a MULTI-INDEX OR is one loop,
+    as wide as its widest leg. A plan carries no row counts, so a step's bound
+    is what its constrained columns mean, from two declared lists of column
+    names and no list of index spellings. A step is keyed when it has an
+    equality on a column that names one entity (`task_id`, `run_id`,
+    `event_name`, `wake_event`, `idempotency_key`, `driver_id`). It is a due
+    range when it has a range on a column an index hands work out in the order
+    of (`available_at_ms`, `claim_expires_at_ms`, `cancel_at_ms`). It is a walk
+    otherwise, every SCAN and every automatic index included. The rule is two
+    lines over every nest of every statement: a step that runs once for each row
+    of another must be keyed, and every step it runs once for each row of must
+    be keyed or a due range. A due range may drive because the literal sentence,
+    that no step reads a table once for each row of another, would refuse the
+    claim's two candidate legs and both sweep scans, which read `tasks` by key
+    once for each due run, under a LIMIT, by design. A plan line or a step name
+    the reader cannot read is a fault, so a plan it does not understand is not a
+    plan it has passed. Two statements of `claim` break the rule, the task
+    update and the delete of expired waits, whose IN list walks the running runs
+    of the queue. They are excused by name, as the pins over writes excuse them,
+    and BUILD.md records the open question under PR3.14b. A plan prints a range
+    the same way whichever way it points, and it never prints a LIMIT, so the
+    test also names every statement in which a due range drives another step,
+    with the limit that bounds it or with where the open question is recorded. A
+    statement nobody named fails, and so does a name that nothing needs. Four
+    are named: the claim's candidate legs, the two sweep scans, and the claim's
+    read of the runs it took. Beside 100,000 running runs of its queue each of
+    the claim's four statements took about 40 ms on libSQL, against 0.1 to 2 ms
+    beside 8, while a keyed `activate` stayed near 5 ms. What the rule cannot
+    see is below, each written as a statement and run against a real plan, where
+    it passes with its defect present:
+    - Both steps are keyed, and one entity's rows are many. `update runs set
+      claim_gen = (select count(*) from checkpoints c where c.task_id =
+      runs.task_id) where task_id = ?` reads every checkpoint of a task once for
+      each run of the task.
+    - A due range under no LIMIT. `select r.run_id, t.task_name from runs r join
+      tasks t on t.task_id = r.task_id where r.queue = ? and r.state = 'pending'
+      and r.available_at_ms <= ?` reads `tasks` once for every due run of the
+      queue, and its plan is the plan of a claim's candidate leg.
+    - A lone walk, which drives nothing and which nothing drives. `insert into
+      events (queue, event_name, payload, emitted_at_ms) select queue, run_id,
+      null, 0 from runs where queue = ? and state = ?` is one step. In an UPDATE
+      or a DELETE the pins over writes refuse it. A read, or an INSERT ...
+      SELECT, that walks a protocol table alone passes every plan test today.
+      The guard inside the claim's runs update is such a walk, and the pins over
+      writes excuse it by name.
+    - A statement inside a trigger is never planned. The driver's heartbeat
+      inserts into a view, and its plan is `SCAN CONSTANT ROW`. The `DELETE FROM
+      drivers WHERE expires_at_ms < ...` inside the view's trigger plans, by
+      hand, as `SCAN drivers`, a table of one row for each live driver.
+    - A range that points away from what is due prints as one that points at it.
+      `select r.run_id, t.task_name from runs r join tasks t on t.task_id =
+      r.task_id where r.queue = ? and r.state = 'running' and
+      r.claim_expires_at_ms > ?` reads every lease that has NOT expired, and its
+      plan is the plan of the sweep's read of the leases that have. The claim's
+      read of the runs it took is that statement in what ships, and only under
+      its real binds: with the state unknown SQLite walks the queue by state,
+      which the rule refuses.
+    The list of names is what holds the second and the fifth, by a reason a
+    person wrote and no plan can check, and a second such nest inside a
+    statement already named is not seen. One false positive is by construction:
+    a plan does not show which filter runs before a nested step, so a walk that
+    filters to a few rows before it probes is refused like one that probes for
+    every row, which is the claim's case. The same generated check is not built
+    for PostgreSQL or MySQL, whose plan tests hold chosen statements, and
+    BUILD.md records that as an option under PR3.14c.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and

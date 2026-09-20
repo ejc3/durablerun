@@ -258,6 +258,14 @@ a last docs PR gives a live owner to every open bullet that is left.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
+23. PR3.14c: a check generated from the corpus plans every statement of every
+    label the libSQL store ships, and fails on a statement that reads a protocol
+    table once for each row of another. This is met. `store-libsql`'s plan test
+    sends every batch the store builds from one history of real operations, the
+    generated corpus and the list of text statements hold that history to every
+    statement, and the loop nests of each plan are judged. One registered
+    mutation, a read that joins its task by the queue alone, fails it and passes
+    every older pin of the file.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1846,12 +1854,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and a port's event name to the durable string domain, each where it enters.
     A queue or a step name at the other ports is not checked at the port. One
     check for the whole port is its own change.
-  - A plan check over every write of the libSQL corpus. `query-plans.test.ts`
-    pins the statements someone chose, so the terminal wake had no pin when it
-    moved into six batches, and the keyed follow-ons below scan `tasks` today
-    with every test green. The property is that no write scans a table once
-    for each row of another, and a check generated from the corpus would hold
-    it for every statement. It is its own change.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -2464,6 +2466,63 @@ these three things; nothing else in the system does I/O, time, or randomness.
     this claim took has no index. The wake's follow-ons had the same shape and
     found their rows by `wake_event` through `runs_woken`. A claim has no such
     column, so this needs its own design.
+- **PR3.14c the plan check generated from the corpus**: `query-plans.test.ts`
+  pinned the statements someone chose, and its block over writes planned the
+  UPDATE and DELETE of fourteen labels listed by hand, so no test planned a read
+  or the SELECT of an INSERT, and a new label was planned only if someone listed
+  it. One scripted history of real operations now sends every batch the libSQL
+  store builds, in every variant, recorded once for the file. Every statement of
+  `conformance/corpus/libsql.json` must be one that history sent, by its exact
+  text, and every label of `scripts/text-statements.json` is sent or named with
+  why it is not the store's. The block over writes takes its statements from the
+  same history, so its hand list is gone and it plans the writes of every label.
+  Each statement is planned under the binds it was sent with, as the tree
+  `EXPLAIN QUERY PLAN` returns, and a reader beside the test judges its loop
+  nests: a step that runs once for each row of another must be keyed, and every
+  step it runs once for each row of must be keyed or a due range. DESIGN.md §3.4
+  has the reading, the two declared lists of column names, why a due range may
+  drive, and what the rule cannot see, as five statements that were run. A plan
+  line or a name the reader cannot read is a fault. Two statements of `claim`
+  break the rule and are excused by name, the task update and the delete of
+  expired waits. A plan prints a range the same way whichever way it points and
+  never prints a LIMIT, so every statement in which a due range drives another
+  step is named with the limit that bounds it. Four are: the claim's candidate
+  legs, the two sweep scans, and the claim's read of the runs it took, whose
+  range is every lease of its queue that has not expired, under no LIMIT. That
+  read is the first read any test has planned, and it shows that plan only under
+  its real binds, because SQLite plans from bound values. All four statements of
+  `claim` are PR3.14b's. One claim of one run on libSQL, median of 7, on a file
+  database, beside running runs of its queue that another worker holds, then
+  each of its statements alone in a transaction that is rolled back, with
+  `activate` as the keyed control:
+
+  | Running runs | Claim | Runs update | Task update | Waits delete | Read | `activate` |
+  |---|---|---|---|---|---|---|
+  | 8 | 7.3 ms | 2.1 ms | 0.2 ms | 0.1 ms | 0.8 ms | 4.9 ms |
+  | 10,008 | 25.5 ms | 5.8 ms | 4.2 ms | 3.8 ms | 4.6 ms | 5.9 ms |
+  | 100,008 | 206.9 ms | 38.2 ms | 41.0 ms | 39.1 ms | 40.9 ms | 4.6 ms |
+
+  One registered mutation owns the red: the sweep's read of expired leases,
+  joined to its task by the queue alone, scans `tasks` once for each lease it
+  reads. It fails the nest check by name and passes every older pin of the file,
+  the pin of that same read among them.
+  - Option, not a deferral of this PR: a clause that refuses a walk in any
+    statement, alone or not. A lone walk drives nothing and nothing drives it,
+    so the nest rule does not see it. In an UPDATE or a DELETE the two pins over
+    writes refuse it, and a read, or an INSERT ... SELECT, that walks a protocol
+    table alone passes every plan test today. On `main` the clause would find
+    exactly the four statements of `claim`, so it would sit beside
+    `EXCUSED_SOURCE_WALKS` and say the same thing. Its trigger is PR3.14b
+    merging. It then replaces the two pins over writes, and is not a second list
+    beside them.
+  - Option, not a deferral of this PR: the same generated check on PostgreSQL
+    and MySQL, whose plan tests hold chosen statements. Each needs its own
+    reading of its own plan format, and MySQL's test already measures rows
+    walked from inside the batch, which a plan cannot give. Its trigger is a
+    statement found to walk on a server that those chosen pins do not hold.
+  - Recorded, and not planned: a statement inside a trigger is never planned.
+    libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
+    scans `drivers`, a table of one row for each live driver.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It
