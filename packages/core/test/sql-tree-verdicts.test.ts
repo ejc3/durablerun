@@ -554,6 +554,15 @@ describe('the tree rules', () => {
       ).toMatch(BOUND)
     })
 
+    it('is refused with the bound value on the left of the test', () => {
+      // `? = state` reads the same to a partial index as `state = ?`, and the builder writes both.
+      const mirrored = (eb: Loose) => eb(eb.val('running'), '=', eb.ref('r.state'))
+      const underACall = (eb: Loose) =>
+        eb(eb.fn('coalesce', [eb.val('running'), eb.val('x')]), '=', eb.ref('r.state'))
+      expect(String(problem(runs().where(mirrored)))).toMatch(BOUND)
+      expect(String(problem(runs().where(underACall)))).toMatch(BOUND)
+    })
+
     it('is admitted with a subquery on the right, which is its own statement', () => {
       // The subquery binds a queue. That bind stands in another statement, beside no state.
       const queued = (eb: Loose) =>
