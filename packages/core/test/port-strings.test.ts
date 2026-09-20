@@ -294,6 +294,33 @@ describe('a store that extends the held port', () => {
     }
   })
 
+  it('refuses to construct a store whose class field replaces an entry, and the check with it', async () => {
+    // A field is defined on the instance after the base constructor has returned. Defined
+    // over the checked property it would replace the check without a word, and the
+    // compiler reports nothing for this shape, so the construction itself has to throw.
+    class Entry extends HeldPort {
+      claim(): Promise<unknown> {
+        return Promise.resolve('the entry')
+      }
+    }
+    for (const method of Object.keys(PORT_STRINGS)) {
+      if (method !== 'claim')
+        Object.defineProperty(Entry.prototype, method, { value: () => Promise.resolve() })
+    }
+    class FieldOverride extends Entry {
+      override claim = (): Promise<unknown> => Promise.resolve('the field answered a NUL')
+    }
+    const outcome = await Promise.resolve()
+      .then(() =>
+        (new FieldOverride() as FieldOverride & SchedulerStore).claim(NUL, 'w', {
+          leaseSeconds: 30,
+          limit: 1,
+        }),
+      )
+      .catch((error: unknown) => `threw ${error instanceof Error ? error.name : String(error)}`)
+    expect(outcome).toBe('threw TypeError')
+  })
+
   it('refuses to construct a store that lacks a method of the port', () => {
     class Lacking extends HeldPort {}
     expect(() => new Lacking()).toThrow(/must define spawn as a method/)
