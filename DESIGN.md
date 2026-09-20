@@ -980,8 +980,10 @@ One invocation executes one claimed run to its next suspension point:
     caller on libSQL. Measured before any hold: no fixture of the whole
     conformance suite met a victim on PostgreSQL or on MySQL, in one run of
     4311 fixtures on each, and none did in 20 runs of six real-concurrency
-    cases on each. On MySQL one contest of the surface is excused, by name and
-    with its reason, up to a bound, in that dialect's fixture (§3.4, MySQL).
+    cases on each. No contest is excused on any dialect. The claim by distinct
+    claimers runs twice, beside an empty `waits` and beside 50 waiters parked
+    through the port, because MySQL plans the claim's delete of expired waits by
+    what `waits` holds (§3.4, MySQL).
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the
@@ -1266,6 +1268,16 @@ are load-bearing):
      deadline on the failed run. A store passes the generation order with the
      expired claim, what it requires of the owner, and the relaunch backoff
      with its guard, where PostgreSQL says LEAST.
+     The generation is what makes anything else the scan read safe to act on.
+     The claim-timeout write takes everything it needs from the stored row
+     (still running, activated at its own generation, lease expired, owner
+     admissible), so without the comparison it admits only a sweep the stored
+     row justifies, and before the column no test failed when it was removed.
+     The lost-launch write reports the relaunch count its scan read, which
+     only the generation ties to the row, and the claim-timeout batch once
+     took its successor's attempt from the scan. Both keep the comparison,
+     and the stale-token column holds both to it: a sweep whose scan read
+     another generation acts on nothing.
    - The emit's wake is a shared UPDATE, `wakeRunsUpdate`. It reads the event
      the batch recorded through one node-built subquery in four places: the
      gate, the wake instant, the stored payload, and the provenance instant.
@@ -2166,7 +2178,11 @@ are load-bearing):
 
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
-   still at version 6 behaves as every build did before it. An older build
+   still at version 6 behaves as every build did before it. That is true of
+   version 7, which changes no statement the engine sends. It is not true of
+   MySQL's version 8: a newer build's keyed deletes name the index that
+   version adds, so there the database is migrated first, as the note on
+   version 8 among the MySQL notes says. An older build
    that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
    it does after every migration. From this change on, on every dialect, that
    message says a newer build migrated the database, that nothing needs
@@ -2389,6 +2405,89 @@ not depend on careful reading:
   observing that a label was called, or deriving authority from the
   after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
+- *The stale-token column* (`conformance/src/stale-token-column.ts`): a worker
+  write is fenced on the claim its caller presents (rules 4 and 5), and each
+  compare-and-set composes that comparison by its own choice. The rules that
+  read a batch read the fences between its statements, not which binds a
+  statement compares, so a statement that leaves the token out passes them.
+  Stale-caller tests were written by hand, one operation at a time, and
+  `failRollback` had none: with its token comparison removed a stale caller
+  ended a saga while the whole libSQL conformance file stayed green. The
+  column generates the cases. It calls the poison matrix's `invoke` for every
+  write label, over every shape of target `invoke` tells apart, on a store
+  that records the call, and it enrolls a call exactly when the call carries
+  the target's claim token or generation. A new label that presents a claim
+  gets its case unlisted, and a label that presents none cannot be listed.
+  Thirteen calls are enrolled. Activate and defer-launch present the token
+  and the generation of a claim receipt. Heartbeat, reschedule, suspend,
+  await-event, record-task-done, complete, fail, fail-rollback,
+  expire-lease-now, set-checkpoint, and the spawn of a child present the
+  token. `claim` presents a token of its own making and no claim it must
+  hold, so it is outside. A case seeds the call's healthy target from the
+  poison matrix's own seeds, makes the call as callers that do not hold the
+  claim, and requires the port's lost-lease answer and six unchanged tables.
+  The answer is `LeaseLostError`, or, where the method answers in band,
+  `null` from `activate`, `false` from `expireLeaseNow`, and a lease reported
+  lost from `heartbeat`. Then the same call under the claim itself must win.
+  That is what makes a refusal the lease's: with `fail-rollback` seeded
+  outside the rolling-back phase, the refusal and the unchanged rows held with
+  the token unfenced, and the case failed only at the holder's call. The
+  stale callers are chosen against what a statement can spell. The statement
+  grammar is closed over node kinds and lists one function, `coalesce`, so a
+  comparison that folds the token's case or reads part of it through a
+  function cannot be written: a call of `lower` is refused when the batch is
+  built. The grammar holds no list of operators, so an ordering comparison
+  and a pattern match can both be written. An ordering comparison admits
+  every value on one side of the claim's: with `<=` in place of `=` in the
+  shared claim predicate, a column that presented two arbitrary tokens stayed
+  green. So the token is presented with its last character dropped and with
+  one added. A pattern match reads the caller's token as a pattern: with
+  `like` in place of `=` the batch builds, and a column with no pattern
+  among its callers stayed green, 17 of 17, on all three dialects. So the
+  token is also presented as `%`, which matches every token, with its last
+  character as `_`, and in upper case, which SQLite's `like` folds. A
+  registered mutation makes that edit, and the `complete` case owns it.
+  Beside these stands the token of another live claim in the queue, which a
+  comparison that asks whether any run holds the token would admit. A
+  receipt's generation is presented from the claim before and from a claim
+  not yet made. The lease sweeps present no token and act on the claim their
+  scan read (the shared statements, above). Their two cases seed a run at its
+  second claim and run the sweep over a scan that reports the claim before,
+  which is what a real stale scan reads, because the run was claimed again
+  after it, and then over a scan that reports a claim not yet made. Each
+  must sweep nothing and move no row, and then the honest sweep must act.
+  With `>=` in place of `=` in the sweeps' shared predicate, which admits
+  exactly the real case, a column that presented only the later scan stayed
+  green. A typed record asks every `sweep:` label whether its scan hands it
+  a generation, and each case checks that answer against the scan the store
+  sends. Twenty registered mutations hold the column to this. Fifteen remove
+  the token comparison from a statement a call sends, one for each call and
+  one more for each server store's own `expire-lease-now` text. Two remove a
+  receipt's generation, two remove a sweep's scanned generation, and one
+  weakens the shared claim predicate to a pattern match. Each is owned by
+  the case of its call, and the enrollment case holds the marker tables
+  to the derived column, so a call that joins the column fails there until
+  its mutation is registered. What the column cannot see, written and run. It
+  sees the calls `invoke` makes. The spawn of a child was the one token-taking
+  call `invoke` did not make: with the parent's token comparison removed from
+  the spawn statement alone, the column without that call passed 16 of 16
+  while a hand-written case failed. `invoke` now makes that call, and an
+  inventory of target shapes, whose type asks every optional field of a target
+  for its shape, shows the column a new optional field. That is all the
+  inventory sees. The column finds a claim by the probes it places in a
+  target's `token` and `claimGen`, so a claim that reaches a call through a
+  branch on a required field's value, or through another field of the
+  target, arrives unseen, and so does a token-taking argument that `invoke`
+  never passes. It makes
+  each call once, with one set of arguments, from one seed: the immediate
+  chain, a `reschedule` with no delay, shares the park's statement and keeps
+  its hand-written case, and so does a `fail` that asks for a retry. It
+  samples the callers and does not prove equality: with the token compared
+  against a list that holds it and one token the column does not present,
+  every case passes. The lost-launch case reaches the sweep's reopen and not
+  its cap, so the cap's statement alone can lose its generation comparison
+  with every case green. The column costs about 0.5 s of test time on libSQL,
+  about 1.4 s on PostgreSQL and about 1.3 s on MySQL, on a shared machine.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.
@@ -2658,36 +2757,173 @@ realized in the store's compiler, executor, fragments, or schema:
   materialized, and deletes them by primary key with the expired rows first in
   the join. It waits on nothing, and measured 0 deadlocks of 200. The same
   read under `IN (...)` let the `DELETE` scan, and 22 of 200 still deadlocked.
-- **A keyed `UPDATE` whose keys come from a subquery is run as a scan when the
-  table is tiny, and then locks every row.** Open, and measured on MySQL 8.4.
-  While `runs` holds five rows or fewer, the claim's `UPDATE runs ... WHERE
-  run_id IN (candidates)` is planned as a scan of `runs` with the FirstMatch
-  semijoin strategy, and that one statement holds an X record lock on every
-  row of `runs`. From six rows the plan is the materialized candidates and
-  then `runs` by primary key, and it holds the claimed rows alone. It follows
-  the size of the table, not the number of due runs. A claimer already holds
-  the run its locking leg chose, so two claimers each wait for the other's row
-  and InnoDB rolls one back. With four claimers at limit 1 over four due runs,
-  one run of four was claimed in 20 runs of 20, and the executor counted
-  victims in 17 of the 20: one run met one, two met two, and fourteen met
-  three. In 300 more rounds, run by a review, 61 met none, 36 one, 30 two and
-  173 three, and none met more. No run is claimed twice or lost, and a
-  short claim is legal, so the cost is throughput and retries for a database's
-  first five runs, and for every table of the conformance suite. The
-  self-concurrency surface found it. Two fixes were measured to give the
-  production plan and one lock on a four-row table: `FORCE INDEX (PRIMARY)` on
-  the `UPDATE` target, and `/*+ SEMIJOIN(MATERIALIZATION) */` in the candidate
-  subquery, which core's rule against a comment in a SQL fragment refuses
-  today. The fix is planned (BUILD.md, PR4.4e). Until it lands, the MySQL
-  fixture excuses the deadlock count of that one contest, up to a bound, and
-  nothing else: the contest still holds its answers, its rows, and the
-  invariants. The bound is eight, four copies times the two attempts a copy can
-  lose without an outage, against a measured most of three. If
-  `conformance-mysql` ever fails on that contest with `outages` that is not
-  empty, a claimer was the victim on all three of its attempts, and that is
-  this same defect: it happened in none of the 320 rounds. PR4.4e deletes the
-  fixture's entry, the fixture member that holds it, and the special case that
-  reads it in the surface's final expectation.
+- **A write keyed by a subquery reads its keys first and its table second.**
+  Left to itself the server reads the written table first when that table is
+  tiny or the limit is a large part of it, and the statement then holds an X
+  record lock on every row it read. The claim's `UPDATE runs ... WHERE run_id
+  IN (candidates)` locked 2, 4 and 20 rows of a table of two, of four, and of
+  twenty at a limit of ten. A claimer already holds the run its locking leg
+  chose, so two claimers each waited for the other's row and InnoDB rolled one
+  back. Beside a claim held open, a second claimer waited for `runs.PRIMARY`
+  and took none of three due runs. With four claimers at limit 1 over four due
+  runs, 19 contests of 20 met victims, 55 in all, and none gave every claimer
+  its run. The self-concurrency surface found it. The MySQL compiler now writes
+  every `UPDATE` or `DELETE` whose WHERE requires `key IN (subquery)` one way.
+  The key source, a generated selection and a store's fragment alike, goes in a
+  query block of the compiler's own, `SELECT /*+ QB_NAME(keys) NO_MERGE(k) */ *
+  FROM (source) AS k`. One optimizer hint, `JOIN_PREFIX(k@keys, target)`, opens
+  the join order with the keys and then the written table, and `FORCE INDEX`
+  reaches that table through the index of its key, which the compiler looks up
+  by table and column and refuses to guess. The claim now locks 1, 1 and 10
+  rows, and the second claimer takes its run in about 20 ms and waits for
+  nothing. Two looser orders were measured and lost, which is why the rule says
+  second and not merely after. A statement's other subqueries, such as whether
+  a run's task is live, are turned into joins by the server, and they ask about
+  the written row. With the written table after every table (`JOIN_SUFFIX`) the
+  emit's update of `runs` reached `tasks` with no run in hand and walked the
+  live tasks of its queue, 2,009 rows beside 2,000. Inside a mix of claims,
+  events and reads that statement then took 50 ms beside 200,000 runs against
+  3, and its emit 66 ms against 21. With the keys merely ahead of the written
+  table (`JOIN_ORDER`) the server still read `tasks` first under statistics it
+  had not recalculated, and a completion's wake walked 1,204 rows beside 2,000
+  tasks. As built the emit's update walks 9 rows and the completion's 1, and an
+  emit in that mix takes 21 ms. The hint is a comment. The compiler writes it
+  around a fragment and no fragment may carry one, because core refuses a
+  comment in a fragment. `query-plans.test.ts` holds each of these from inside
+  the batch: the locks a claim holds, how every keyed write of a small database
+  reaches its table, the rows each statement of an emit and of a completion
+  walks, and what a second claimer waits for. PostgreSQL plans the same claim
+  over four rows as a hash semi join of a sequential scan of `runs` with the
+  candidates, whose rows come from a locking index scan of `runs_poll`. It is
+  unaffected, because it locks a row only when it updates it or selects it `FOR
+  UPDATE`. libSQL runs one writer at a time.
+- **A `DELETE` reads its subquery's table with shared locks, so a keyed delete
+  reads its keys through the index of their stamp.** Under READ COMMITTED
+  InnoDB reads another table without locks for a single-table `UPDATE` and for
+  `INSERT ... SELECT`, and with shared locks for a `DELETE`. Every generated
+  delete finds the runs its batch stamped by queue, state and stamp, and the
+  server plans that read by what `waits` holds. Beside an empty `waits` it read
+  `waits` first and never touched `runs`. From a few dozen waits it read the
+  runs first, through `runs_poll`, whose range covers every running run of the
+  queue, and each of those is another claimer's row until that claimer commits.
+  So the delete waited, and two claimers deadlocked. This needs no small table,
+  and main had it. With the first defect fixed and the delete as it was, four
+  claimers met no victim in 20 contests beside 0, 1 and 10 waits, 76 victims
+  beside 100 with a claim that failed in 3 contests of 20, and 94 beside 1,000
+  with a failed claim in 9. A failed claim is a claimer that lost all three of
+  its attempts. The surface's contest ran beside an empty `waits`, where this
+  was hidden. It now runs a second time beside 50 waiters parked through the
+  port, where the older statements met a victim in 20 contests of 20, and no
+  contest is excused on any dialect. Version 8 gives `runs` an index of its
+  statement stamp on MySQL, `runs_stamp`, and the compiler reads a keyed
+  delete's keys through it. Every stamping write changes the stamp, so a
+  stamped run's entry in that index is its own transaction's, and a search of
+  the index for one batch's stamp touches no other entry. It waits for nothing.
+  The read is forced, because the server left alone picks the index of the
+  keys by its estimates. With the index there and the hint removed it read the
+  keys through `runs_poll` in three idle arrangements, 4 runs due beside no
+  waits, 4 beside 50 parked waiters and 40 beside 200, and yet every plan case
+  and both claim contests passed, the contests 5 times of 5, because under
+  contention its estimates tip to the stamp's index. So no behavioural case
+  fails without the hint. The compiler's text cases are its only holders, and
+  it stays because it closes the window between planning and reading.
+  By itself the compiler refuses a keyed `DELETE` whose keys are not a
+  selection, or come from a table read under no alias, a derived table, more
+  than one table, a join, or the table the delete writes, or whose fence is not
+  an equality on the `fence_stamp` of the table the keys come from, or whose
+  table declares no index of its stamp. Keys from the written table are refused
+  because MySQL reads that table through a derived table, which takes no index
+  hint: such a delete was sent, and the server answered with error 1064. A
+  delete that no subquery keys, or that is keyed in a way the compiler does not
+  read, by `EXISTS` for one, is refused too, so the rule reaches every delete a
+  tree sends. Each condition has a case and a registered mutation. The rule
+  does not read the rest of the key selection. Compiled by the dialect alone, a
+  second `UNION ALL` arm, `FOR SHARE SKIP LOCKED` and a second selected column
+  all pass it, and core refuses each of them ahead of the compiler: as a set
+  operation, as an end modifier, and as a gate not tied to the rows written.
+  One shape passes both and is sent, a subquery nested inside the key
+  selection. The stamp's index is forced on the keys' table only, and the
+  nested table is read as the server plans it, under the shared locks a
+  `DELETE` takes. No statement has that shape today. That the stamp
+  compared is the batch's own is not the compiler's to know, because it reads
+  one statement. Keys fenced on another batch's stamp compile, and core's
+  gating rule refuses the batch that holds them, which a case shows both ways.
+  `SKIP LOCKED` in the key source held the same contests at zero and was not
+  taken, because InnoDB skips by index record and not by row. One transaction
+  stamped a run by its primary key. Another locked that run's
+  `runs_task_attempt` entry and blocked on the row. The first transaction's
+  delete, reading its keys through that index with `FOR SHARE SKIP LOCKED`,
+  deleted 0 of 1 waits: it skipped a row it had stamped itself, and reported
+  nothing. With no `SKIP LOCKED` it deleted 1 of 1 and the other transaction
+  was the deadlock victim. Through the stamp's index it deleted 1 of 1 and
+  nothing waited, also when the other transaction locked through the stamp's
+  index itself. The stamp is a LONGTEXT, so the index is a prefix, and a search
+  touches every entry that shares the prefix. The prefix is 768 characters, all
+  an InnoDB index holds, because it has to hold what tells two calls' stamps
+  apart. A stamp opens with its call's token. Production's token is 32
+  characters, and a test's id source draws longer ones that differ at their
+  end: at 64 characters the four claimers of one conformance fixture shared
+  every entry and deadlocked on each other's rows, and the older native claim
+  case failed 5 times of 5. An entry is as long as its stamp, so the width
+  costs a short stamp nothing, and a server case reads the width from the
+  server and holds the production token inside it. Measured on MySQL 8.4 with
+  four claimers at limit 1 over 20 contests, main's statements against these:
+  beside an empty `waits`, victims in 19 contests and 55 in all against none,
+  and beside 1,000 waits with 40 runs due, victims in all 20 and 86 in all with
+  a failed claim in 5, against none. Beside 10,000 runs in memory the index
+  cost a claim and a heartbeat nothing that could be measured, 3.39 ms against
+  3.57 and 0.61 ms against 0.62 at the median of 300 calls each, and it held
+  0.43 MB for the 10,000 runs. libSQL and PostgreSQL hold an empty version 8,
+  so the three dialects keep one numbering. Neither has the defect. On
+  PostgreSQL an indexed `fence_stamp` would end heap-only updates for every
+  stamped write, so it needs a measurement before anyone adds it. A fresh
+  database pays for version 8 once: at the median of 80 fresh databases a
+  tree, `migrate()` took 3.1 ms against 3.0 on libSQL, 46.0 against 44.7 on
+  PostgreSQL, where the empty version is one more batch under the runner's
+  lock, and 35.6 against 29.5 on MySQL, where it builds the index.
+- **Version 8 on a live MySQL database.** Migrate first: version 8 is the first
+  MySQL version a newer build's statements require. Every keyed delete names
+  `runs_stamp`, so a database that has not reached version 8 answers each
+  batch that holds one, a claim among them, with error 1176, the key does not
+  exist. The executor answers that as `SchemaMismatchError` and not as an
+  outage, because no retry repairs it, and a server case holds the answer. The
+  two host programs call `migrate()` when they start. An embedder that
+  migrates as a separate deploy step runs that step to its end before the
+  first process of the newer build takes traffic. Processes of the older build
+  keep running against version 8 meanwhile, as measured below. The version is
+  one `CREATE INDEX`, in the form
+  that is safe to repeat, under the named lock every MySQL migration takes, so
+  racing migrators run one after another and the second finds the index there.
+  InnoDB builds it online and holds an exclusive metadata lock on `runs` only
+  to start and to finish. It takes no other lock, so there is no lock order to
+  get wrong. Measured twice on a million runs, with workers of the older build
+  running claims, activations, heartbeats, completions, spawns, awaits, emits
+  and three kinds of read throughout: the build took 2.3 s and 2.8 s, no call
+  of any kind failed, no read lost a deadlock, and the slowest read during a
+  build took 17 ms, as before it. A metadata lock was pending in 2 of 101
+  samples taken 40 ms apart. So the executor's rule that only a write batch is
+  run again stands for this version. A process of the older build keeps running
+  against version 8 unchanged: it does not read through the index, and its
+  writes maintain it. One that starts afterwards fails in `migrate()` with
+  `SchemaMismatchError`, as after every migration, and its store still reads
+  and writes. In that mix the older build's executor counted 119 and 131
+  deadlock victims in about half a minute, and the newer build's counted none.
+- **A keyed delete's keys are one plain table that declares an index of its
+  stamp, which today is `runs`.** That is a limit of this dialect on a shared
+  primitive, and core does not know it. Core's generator can build two deletes
+  that the MySQL compiler refuses and the other two dialects accept: one over
+  a self relation, whose keys core reads through a derived table, and one
+  whose keys come from `tasks`, `waits` or `events`, which declare no index of
+  their stamp. Nothing sends either. The first statement that does fails when
+  its batch is built in the MySQL conformance leg, so it cannot ship silently.
+  BUILD.md records the option and its trigger.
+- **The keyed write rule assumes the server's default `optimizer_switch`.** The
+  keys block is a semijoin's. In a session with `semijoin=off` the server
+  builds none, raises warning 3128, an unresolved name for the `JOIN_PREFIX`
+  hint, and plans the claim's update as a scan of the written table. Nothing
+  reads that warning at run time, and the executor does not pin the switch.
+  Main's statement scans the written table in the same session too, so the
+  rule is no worse there than what it replaced.
 - **`MIN()` is not answered from an index once another predicate stands beside
   it.** The next-wake read walked 1207 rows of a 1200-row queue. Each wake
   source is now the first row in index order of one state, with the index

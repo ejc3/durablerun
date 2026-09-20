@@ -62,6 +62,25 @@ export const META_TABLE_SQL = `CREATE TABLE IF NOT EXISTS meta (
 export const META_BOOTSTRAP_SQL = `${META_TABLE_SQL} AS SELECT 'schema_version' AS \`key\`, '0' AS value`
 
 /**
+ * How much of a statement stamp `runs_stamp` holds, which is all an InnoDB index can: 768
+ * characters of `utf8mb4`. A search of the index for one call's stamp touches every entry
+ * that shares the prefix, so the prefix has to hold what tells two calls apart. A call's
+ * stamp opens with its token. The production token is 32 characters, and a test's id source
+ * draws longer ones that differ only at their end: at 64 the claimers of one conformance
+ * fixture shared every entry and deadlocked on each other's rows. An entry is as long as
+ * its stamp, so the width costs a short stamp nothing.
+ */
+const STAMP_INDEX_PREFIX = 768
+
+/**
+ * The indexes this package's statements name. The schema declares them, and the compiler
+ * and the plan tests read their names from here, so a rename moves a frozen schema hash
+ * before it can reach a server.
+ */
+export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
+export const RUNS_STAMP_INDEX = 'runs_stamp'
+
+/**
  * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
  * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
  * index and before the version would fail its rerun on a duplicate key name. The
@@ -142,7 +161,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         CONSTRAINT runs_state CHECK (state IN ${LIVE_OR_TERMINAL}),
         KEY runs_poll (queue, state, available_at_ms),
         KEY runs_lease (queue, state, claim_expires_at_ms),
-        UNIQUE KEY runs_task_attempt (task_id, attempt)
+        UNIQUE KEY ${RUNS_TASK_ATTEMPT_INDEX} (task_id, attempt)
       )`,
 
       `CREATE TABLE IF NOT EXISTS checkpoints (
@@ -211,6 +230,23 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
   // PostgreSQL's version 7 declares a byte collation on every text column. Version 1
   // above already declares one on every string column.
   { version: 7, statements: [] },
+  {
+    // A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
+    // where a single-table UPDATE reads it with none. A batch that deletes the waits of
+    // the runs it stamped finds those runs by their stamp, and through an index of the
+    // queue and the state that search covers other transactions' runs, waits for each one
+    // still held, and two such batches deadlock. Every stamping write changes the stamp, so
+    // a stamped run's entry in this index is its own transaction's, and a search of it for
+    // one batch's stamp touches no other entry. The stamp is a LONGTEXT, so the index is a
+    // prefix, as wide as InnoDB allows. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 8,
+    statements: createIndexIfMissing(
+      'runs',
+      RUNS_STAMP_INDEX,
+      `(fence_stamp(${STAMP_INDEX_PREFIX}))`,
+    ),
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

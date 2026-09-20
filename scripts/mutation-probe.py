@@ -7513,6 +7513,188 @@ MUTATION_SPECS.extend(
             "        FROM runs r\n",
             "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
         ),
+        (
+            "mysql-keyed-write-reads-its-keys-first",
+            "packages/store-mysql/src/tree.ts",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  ''\n",
+            "nothing orders a keyed write, so over a small table the server reads the written table first, a claim locks every run of it, and two claimers deadlock",
+        ),
+        (
+            "mysql-keyed-write-orders-only-its-keys",
+            "packages/store-mysql/src/tree.ts",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  `/*+ JOIN_SUFFIX(\\`${target}\\`) */`\n",
+            "the written table is read after every table, so a subquery that asks about the written row is reached with no row in hand, and an emit walks the live tasks of its queue",
+        ),
+        (
+            "mysql-keyed-write-reads-its-table-second",
+            "packages/store-mysql/src/tree.ts",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  `/*+ JOIN_ORDER(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "the keys come ahead of the written table and the server may still read another table first, as it did under stale statistics, where a completion walked the tasks of its queue",
+        ),
+        (
+            "mysql-keyed-write-keys-block-is-named",
+            "packages/store-mysql/src/tree.ts",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "        ` in (select /*+ NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "the block of the keys has no name, so the order hint names a block the statement does not have",
+        ),
+        (
+            "mysql-keyed-write-keys-block-is-kept-whole",
+            "packages/store-mysql/src/tree.ts",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) */ * from `,\n",
+            "the server may merge the block of the keys away, and then the order hint names a table the statement does not have",
+        ),
+        (
+            "mysql-keyed-write-names-its-key-index",
+            "packages/store-mysql/src/tree.ts",
+            "    this.append(` force index (${index})`)\n",
+            "    // MUTATION: the written table is reached through no named index\n",
+            "a keyed write's keys are read first and its table may still be scanned, as one update of a one-row table was",
+        ),
+        (
+            "mysql-keyed-write-takes-its-key",
+            "packages/store-mysql/src/tree.ts",
+            "      this.append(`delete ${keysFirst(target)} `)\n",
+            "      return super.visitDeleteQuery(node) // MUTATION: a keyed delete is written as any other\n",
+            "a keyed delete is planned by the server alone, which scans a small waits table and locks every wait in it",
+        ),
+        (
+            "mysql-unkeyed-delete-refused",
+            "packages/store-mysql/src/tree.ts",
+            "    if (keyed === null || target === null || table === undefined) throw unkeyedDelete(target)\n",
+            "    if (keyed === null || target === null || table === undefined) return super.visitDeleteQuery(node) // MUTATION\n",
+            "a delete keyed in a way the compiler does not read is written as the server plans it, with no index of the stamp and no refusal, so its keys are read with shared locks through any index",
+        ),
+        (
+            "mysql-keyed-write-key-stands-anywhere",
+            "packages/store-mysql/src/tree.ts",
+            "    ? [...requiredConditions(node.left), ...requiredConditions(node.right)]\n",
+            "    ? requiredConditions(node.left)\n",
+            "a write whose key is not its first condition, as a wake's is, is not known for a keyed write and is left to the server's own plan",
+        ),
+        (
+            "mysql-keyed-write-key-is-a-subquery",
+            "packages/store-mysql/src/tree.ts",
+            "    const subquery =\n      SelectQueryNode.is(condition.rightOperand) || RawNode.is(condition.rightOperand)\n",
+            "    const subquery = true // MUTATION\n",
+            "a list of values is taken for a key, so a write that filters on a list is refused for naming no index",
+        ),
+        (
+            "mysql-keyed-write-undeclared-key-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (index === undefined) {\n",
+            "  if (index === null) { // MUTATION: a key with no declared index is let through\n",
+            "a write keyed by a column with no declared index compiles, and the server plans it alone",
+        ),
+        (
+            "mysql-keyed-delete-reads-its-keys-by-their-stamp",
+            "packages/store-mysql/src/tree.ts",
+            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }\n",
+            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_poll' }\n",
+            "a delete reads its keys through the queue's poll index, takes shared locks on the runs other claimers hold, and a second claimer waits for the first",
+        ),
+        (
+            "mysql-stamp-index-holds-the-token",
+            "packages/store-mysql/src/schema.ts",
+            "const STAMP_INDEX_PREFIX = 768\n",
+            "const STAMP_INDEX_PREFIX = 16\n",
+            "the stamp's index holds half a token, so the entries of two calls can share a key and a search for one call's stamp touches another's",
+        ),
+        (
+            "mysql-keyed-delete-names-the-stamp-index",
+            "packages/store-mysql/src/tree.ts",
+            "    if (node === this.#keysFrom?.from) this.append(` force index (${this.#keysFrom.index})`)\n",
+            "    if (node === this.#keysFrom?.from) this.append('') // MUTATION: the table of the keys is read through whatever index the server picks\n",
+            "with the index of the stamp there and no hint, the server picks the index of a delete's keys by its estimates, which was the queue's poll index in every idle arrangement measured, so nothing closes the window between planning and reading; no behavioural case fails without the hint, and the text cases are its only holders",
+        ),
+        (
+            "mysql-keyed-delete-keys-table-is-aliased",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (table === null || more.length > 0 || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys come from a table read under no alias is not refused where the rule stands",
+        ),
+        (
+            "mysql-keyed-delete-keys-table-is-plain",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || more.length > 0 || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys come from a derived table is refused for a missing index and not for its shape",
+        ),
+        (
+            "mysql-keyed-delete-keys-name-one-table",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || table === null || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys are selected from two tables is compiled, and the second is read with shared locks through any index",
+        ),
+        (
+            "mysql-keyed-delete-keys-join-nothing",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 99) { // MUTATION\n",
+            "a delete whose keys join a second table is compiled, and that table is read with shared locks through any index",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-the-stamp",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return operator === '=' && table === alias // MUTATION: any column stands for the stamp\n",
+            "an equality on any column of the keys' table counts as its fence, so keys that are not this batch's are read through the stamp's index",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-the-sources",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return operator === '=' && name === 'fence_stamp' // MUTATION: any table's stamp stands for the keys'\n",
+            "the written table's stamp counts as the fence of the keys, which are then not fenced at all",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-an-equality",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return table === alias && name === 'fence_stamp' // MUTATION: any comparison stands for the equality\n",
+            "an inequality on the stamp counts as the fence, and it selects every other batch's rows",
+        ),
+        (
+            "mysql-keyed-delete-unfenced-keys-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (!fenced) {\n",
+            "  if (fenced === null) { // MUTATION: keys with no fence are let through\n",
+            "a delete whose keys are not fenced is compiled, and reads every run of the table with shared locks",
+        ),
+        (
+            "mysql-keyed-delete-unindexed-stamp-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (through === undefined) {\n",
+            "  if (through === null) { // MUTATION: a table with no index of its stamp is let through\n",
+            "a delete whose keys come from a table with no index of its stamp is compiled with an index hint that names nothing",
+        ),
+        (
+            "mysql-keyed-write-key-stands-under-parentheses",
+            "packages/store-mysql/src/tree.ts",
+            "  if (ParensNode.is(node)) return requiredConditions(node.node)\n",
+            "  // MUTATION: a condition under parentheses is not read\n",
+            "a write keyed under parentheses is compiled as any other, so the server plans it and a delete of that shape slips past the rule for its keys",
+        ),
+        (
+            "mysql-missing-forced-index-is-a-schema-mismatch",
+            "packages/store-mysql/src/executor.ts",
+            "  1176, // ER_KEY_DOES_NOT_EXITS, as MySQL spells it: a statement forces an index that is not there\n",
+            "  // MUTATION: a forced index that is not there is no schema mismatch\n",
+            "a database that has not reached the version whose index a statement forces answers as an outage, which callers retry and no retry repairs",
+        ),
+        (
+            "mysql-keyed-delete-own-table-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (table === target) {\n",
+            "  if (table === null) { // MUTATION: keys that come from the written table are compiled\n",
+            "a delete keyed by the table it writes is sent with an index hint on a derived table, which the server answers with a syntax error when the batch runs",
+        ),
     )
 )
 
@@ -11685,6 +11867,162 @@ VERDICTS.update(
             "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
             "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
         ),
+        "mysql-keyed-write-reads-its-keys-first": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL locks the runs a claim takes and no other run, over two rows, over four, and at a limit of half the table",
+            "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
+        ),
+        "mysql-keyed-write-orders-only-its-keys": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL orders only its keys ahead of the table it writes, so an emit walks none of the live tasks of its queue",
+            "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
+        ),
+        "mysql-keyed-write-reads-its-table-second": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the hot path beside a history of tasks, on MySQL claims, activates, and completes without walking the tasks of the database",
+            "mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second",
+        ),
+        "mysql-keyed-write-keys-block-is-named": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees puts a keyed write's keys in a block of its own, named and kept whole",
+            "mutation-verdict:construction:mysql-keyed-write-keys-block-is-named",
+        ),
+        "mysql-keyed-write-keys-block-is-kept-whole": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees puts a keyed write's keys in a block of its own, named and kept whole",
+            "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
+        ),
+        "mysql-keyed-write-names-its-key-index": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees reads a keyed update's keys first, and its table through the index of its key",
+            "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
+        ),
+        "mysql-keyed-write-takes-its-key": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL reaches its target through its key in every keyed write a small database sends",
+            "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
+        ),
+        "mysql-unkeyed-delete-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete that no subquery keys",
+            "mutation-verdict:construction:mysql-unkeyed-delete-refused",
+        ),
+        "mysql-keyed-write-key-stands-anywhere": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees finds the key of a write wherever it stands among the conditions",
+            "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
+        ),
+        "mysql-keyed-write-key-is-a-subquery": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes no list of values for a key",
+            "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
+        ),
+        "mysql-keyed-write-undeclared-key-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a write keyed by a column that names no index",
+            "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
+        ),
+        "mysql-keyed-delete-reads-its-keys-by-their-stamp": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL lets a second claimer take its run beside a claim still open, waiting for no lock, beside an empty waits table and beside parked waiters",
+            "mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp",
+        ),
+        "mysql-stamp-index-holds-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL indexes a run's statement stamp by a prefix that holds what tells one call's stamp from another's",
+            "mutation-verdict:behavior:mysql-stamp-index-holds-the-token",
+        ),
+        "mysql-keyed-delete-names-the-stamp-index": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees writes a keyed delete in the form that takes an index, and reads its keys through the index of their stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index",
+        ),
+        "mysql-keyed-delete-keys-table-is-aliased": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased",
+        ),
+        "mysql-keyed-delete-keys-table-is-plain": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain",
+        ),
+        "mysql-keyed-delete-keys-name-one-table": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table",
+        ),
+        "mysql-keyed-delete-keys-join-nothing": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing",
+        ),
+        "mysql-keyed-delete-fence-is-the-stamp": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp",
+        ),
+        "mysql-keyed-delete-fence-is-the-sources": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources",
+        ),
+        "mysql-keyed-delete-fence-is-an-equality": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality",
+        ),
+        "mysql-keyed-delete-unfenced-keys-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are not fenced on the stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
+        ),
+        "mysql-keyed-delete-unindexed-stamp-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose fenced keys come from a table that declares no index of its stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
+        ),
+        "mysql-keyed-write-key-stands-under-parentheses": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees finds the key of a write wherever it stands among the conditions",
+            "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
+        ),
+        "mysql-missing-forced-index-is-a-schema-mismatch": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs",
+            "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
+        ),
+        "mysql-keyed-delete-own-table-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys come from the table it writes",
+            "mutation-verdict:construction:mysql-keyed-delete-own-table-refused",
+        ),
     }
 )
 
@@ -13905,6 +14243,447 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
+# The stale-token column (DESIGN.md S3.4 rules 4 and 5, packages/conformance/src/stale-token-column.ts).
+# Each mutation but the last removes one comparison the column holds, the claim token, the claim's
+# generation, or the generation a sweep's scan read, from a statement one call sends, and the
+# case generated for that call owns it. Calls that share a statement share an edit, so an edit
+# appears once for each call it unfences, because each call's own case has to fail.
+# `expire-lease-now` is each store's own text, so its edit appears once for each store, and the
+# case of that store's dialect owns it.
+# One more removes nothing: it weakens the shared claim predicate to a pattern match, which the
+# statement grammar can spell, and the column's complete case owns it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "stale-token-spawn-of-a-child",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the parent's claim spawns a child under it",
+        ),
+        (
+            "stale-token-activate",
+            "packages/core/src/statements/claim-receipt.ts",
+            "    whereClaimedRun(binds)(update)\n",
+            "    update // MUTATION: the claim token is not compared\n"
+            "      .where('run_id', '=', binds.runId)\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim activates the run",
+        ),
+        (
+            "stale-token-defer-launch",
+            "packages/core/src/statements/claim-receipt.ts",
+            "    whereClaimedRun(binds)(update)\n",
+            "    update // MUTATION: the claim token is not compared\n"
+            "      .where('run_id', '=', binds.runId)\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks a run it was never handed",
+        ),
+        (
+            "stale-token-heartbeat",
+            "packages/core/src/statements/lease.ts",
+            "      .where('claimed_by', '=', binds.claimToken)\n",
+            "      // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim extends the lease",
+        ),
+        (
+            "stale-token-reschedule",
+            "packages/core/src/statements/suspend.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks the run",
+        ),
+        (
+            "stale-token-suspend",
+            "packages/core/src/statements/suspend.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks the run and commits its marker",
+        ),
+        (
+            "stale-token-await-event",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim registers a wait on the run",
+        ),
+        (
+            "stale-token-record-task-done",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim records a child's completion event",
+        ),
+        (
+            "stale-token-complete",
+            "packages/core/src/statements/complete.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim completes the run and its task",
+        ),
+        (
+            "stale-token-fail",
+            "packages/core/src/statements/fail.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim fails the run",
+        ),
+        (
+            "stale-token-fail-rollback",
+            "packages/core/src/statements/fail.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim fails a rollback and ends the saga",
+        ),
+        (
+            "stale-token-expire-lease-now",
+            "packages/store-libsql/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease",
+        ),
+        (
+            "stale-token-set-checkpoint",
+            "packages/core/src/statements/checkpoint.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim writes a checkpoint and extends the lease",
+        ),
+        (
+            "stale-generation-activate",
+            "packages/core/src/statements/claim-receipt.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "the claim before this one activates the run",
+        ),
+        (
+            "stale-generation-defer-launch",
+            "packages/core/src/statements/claim-receipt.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "the claim before this one parks the run",
+        ),
+        (
+            "stale-scan-sweep-lost-launch",
+            "packages/core/src/statements/sweep.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "a lost-launch sweep acts on a claim its scan did not read",
+        ),
+        (
+            "stale-scan-sweep-claim-timeout",
+            "packages/core/src/statements/sweep.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "a claim-timeout sweep acts on a claim its scan did not read",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+            "packages/store-postgres/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on PostgreSQL",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+            "packages/store-mysql/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on MySQL",
+        ),
+        (
+            "stale-token-read-as-a-pattern",
+            "packages/core/src/statements/claimed-run.ts",
+            "      .where('claimed_by', '=', binds.claimToken)\n",
+            "      .where('claimed_by', 'like', binds.claimToken) // MUTATION: the caller's token is read as a pattern\n",
+            "a caller whose token is a pattern that matches the claim's completes the run",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) spawn of a child refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-spawn-of-a-child",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-spawn-of-a-child",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) activate refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-activate",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-activate",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) defer-launch refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-defer-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-defer-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) heartbeat refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-heartbeat",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-heartbeat",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) reschedule refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-reschedule",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-reschedule",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) suspend refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-suspend",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-suspend",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) await-event refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-await-event",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-await-event",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) record-task-done refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-record-task-done",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-record-task-done",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) complete refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-complete",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-complete",
+            "stale-token-read-as-a-pattern",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) fail refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-fail",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-fail",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) fail-rollback refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-fail-rollback",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-fail-rollback",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) set-checkpoint refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-set-checkpoint",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-set-checkpoint",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) activate refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-generation-activate",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-generation-activate",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) defer-launch refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-generation-defer-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-generation-defer-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) sweep:lost-launch acts on nothing when its scan read another generation",
+            "mutation-verdict:behavior:stale-scan-sweep-lost-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-scan-sweep-lost-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) sweep:claim-timeout acts on nothing when its scan read another generation",
+            "mutation-verdict:behavior:stale-scan-sweep-claim-timeout",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-scan-sweep-claim-timeout",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [postgres] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [mysql] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -13987,6 +14766,15 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "tree-read-state-reads-a-subquery-selection": (
         "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
+    "stale-token-expire-lease-now": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-postgres": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-mysql": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
     ),
     "tree-reads-run-in-read-mode": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
@@ -18525,7 +19313,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 961:
+        if len(MUTATIONS) != 1007:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
