@@ -1478,6 +1478,44 @@ def side_ledger_with(before: str, after: str) -> dict[str, str]:
     return replaced(side_model_ledger(), "specs/Side.tla", before, after)
 
 
+
+def side_ledger_borrowed(action: str) -> dict[str, str]:
+    """That fixture, with the main ledger mapping 'sweep:cancel' to `action`, and a Next of its own."""
+    mapped = replaced(
+        side_model_ledger(),
+        "specs/Scheduler.tla",
+        "\\* 'sweep:cancel' [read] -- excluded\n",
+        f"\\*   'sweep:cancel' -> {action}  [read]\n",
+    )
+    return replaced(mapped, "specs/Scheduler.tla", "====\n", "Next ==\n  \\/ TimeAdvance\n\n====\n")
+
+
+MAIN_LEDGER_ENTRIES = (
+    "\\*   'cancel-task' -> CancelExplicit  [cas-fenced]\n"
+    "\\*   'sweep:cancel' -> CancelSweep  [receipt]\n"
+)
+
+
+def main_ledger(
+    entries: str = MAIN_LEDGER_ENTRIES, markers: str = "fenceTwin('CancelExplicit')"
+) -> dict[str, str]:
+    """Two batches of a store, a Scheduler.tla whose Next holds two actions, the main
+    ledger that maps them, and a test file that carries `markers`."""
+    store_source = "packages/store-libsql/src/probe.ts"
+    return {
+        store_source: side_model_ledger()[store_source],
+        "packages/store-libsql/test/probe.test.ts": f"// {markers}\n",
+        "specs/Scheduler.tla": (
+            "---- MODULE Scheduler ----\n"
+            "\\* BATCH-LABEL LEDGER\n"
+            f"{entries}"
+            "\\* --------------------\n\n"
+            "Next ==\n"
+            "  \\/ \\E t \\in Tasks : CancelExplicit(t) \\/ CancelSweep(t)\n\n"
+            "====\n"
+        ),
+    }
+
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
     (
@@ -2748,6 +2786,32 @@ export class S {
         ),
         "is not an entry, and only an entry's own line holds",
         "an entry written one space in must not pass as prose",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(MAIN_LEDGER_ENTRIES.replace("CancelSweep", "CancelGone")),
+        "maps 'sweep:cancel' to 'CancelGone', which is not an action of",
+        "a name the main ledger maps a label to must be an action of Scheduler's next-state relation",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(
+            MAIN_LEDGER_ENTRIES.replace("CancelExplicit", "CancelRun"), "fenceTwin('CancelRun')"
+        ),
+        "maps 'cancel-task' to 'CancelRun', which is not an action of",
+        "a twin carried under a name that is no action proves nothing about the actions behind it",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(main_ledger(), "specs/Scheduler.tla", "Next ==\n", "Step ==\n"),
+        "cannot read Scheduler.tla's next-state relation",
+        "a main ledger that maps actions needs a Next to hold them to, and a missing one must not pass",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_borrowed("LateEmit"),
+        "maps 'sweep:cancel' to 'LateEmit', which is not an action of",
+        "the main ledger borrows a side model's action only from the label that side block maps to it",
     ),
     (
         "batch-lint.py",
@@ -4542,6 +4606,16 @@ const pattern = /this\.db\.batch\(/
             "\n\\* a comment at the margin\n  \\* and a comment inside\n  \\/ LateEmit\n",
         ),
         "blank lines and comments inside Next are passed over, and the actions after them are read",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(),
+        "a main ledger whose every name is an action of Scheduler's next-state relation, its fenced one marked",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_borrowed("WakeParent"),
+        "the main ledger names a side model's action from the label that side block maps to it",
     ),
 ]
 
