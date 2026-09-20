@@ -195,8 +195,16 @@ async function runWalk(
         )
       })
       if (failed) saga.tries.set(step, tries)
-      // The store says whether the failure ended the task. A pass it could not place ends
-      // the task as a failure with no retry does, whatever this walk asked for.
+      // The walk knows what it asked for, and the store says what it did. A pass that does
+      // not fit ends the task whatever was asked, and no delay of this walk fails to fit. So
+      // an answer other than what was asked for is the store's error: a saga it ended that
+      // was owed a retry, or one it kept rolling back that asked for none.
+      if (failed && answered.outcome?.rollingBack !== !halts) {
+        throw new Error(
+          `fuzz seed ${seed}: a failed rollback that asked for ${halts ? 'no retry' : 'a retry that fits'} was answered ${JSON.stringify(answered.outcome)}`,
+        )
+      }
+      // The store's answer says whether this failure ended the task.
       if (failed && answered.outcome?.rollingBack === false) {
         stats.sagasEnded++
         rolling.delete(run.taskId)
