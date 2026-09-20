@@ -184,7 +184,7 @@ jobs:
   base-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Three to five and a half minutes across recent runs. Its longest step is main's registry self-test over the head tree.
+    # Three to six minutes across recent runs. Its longest step is main's registry self-test over the head tree.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -294,7 +294,7 @@ jobs:
                   raise SystemExit('pinned pairs control: the pinned head file was not installed.')
           print('pinned pairs controls: skipped twice, refused, and installed as pinned.')
           PY
-      - name: Bridge re-aimed mutation targets in the older base registry
+      - name: Bridge the older base registry to this tree
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
         # find strings were legitimately re-aimed, and some markers are newer than
@@ -345,7 +345,7 @@ jobs:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
           base.write_text(repaired)
-          print('Re-aimed registered mutation text; all other base registry bytes are unchanged.')
+          print('Bridged the base registry as its arm says; all other base registry bytes are unchanged.')
           PY
       - name: The base branch's checkers, applied to this tree
         env:
