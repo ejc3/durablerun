@@ -633,8 +633,10 @@ describe('a keyed write on MySQL', () => {
             seen.push({
               write: `${label}[${i}] ${table}`,
               key: `${table}.${key}`,
-              // A target the server read ahead of the statement has no row of its own.
-              target: target === undefined ? 'read ahead' : `${target.type} on ${target.key}`,
+              // Every keyed write has a row for its target. One without would go unchecked,
+              // so it is named here and fails below.
+              target:
+                target === undefined ? 'no row of its own' : `${target.type} on ${target.key}`,
               // 1003 is the rewritten statement, and 1276 a correlated reference resolved.
               warnings: (all[explainAt + 1]?.rows ?? [])
                 .filter((warning) => ![1003, 1276].includes(Number(warning.Code)))
@@ -674,7 +676,6 @@ describe('a keyed write on MySQL', () => {
         Object.keys(KEY_OF).sort(),
       )
       const keyed = (write: (typeof seen)[number]) =>
-        write.target === 'read ahead' ||
         ['const', 'eq_ref', 'ref'].some(
           (type) => write.target === `${type} on ${KEY_OF[write.key]}`,
         )
@@ -748,9 +749,9 @@ describe('a keyed write on MySQL', () => {
     // those two questions into joins, and looks each up by the run it has in hand. Made to
     // read the written table after every other, it had no run in hand when it reached
     // `tasks`, and walked the live tasks of the queue: 2,009 rows beside 2,000 of them, and
-    // inside a mix of claims, events and reads the statement took 50 ms beside 200,000 runs
-    // and 258 ms beside a million, against 3 ms before any of this. With only the keys
-    // ordered ahead of the written table it walked 9.
+    // inside a mix of claims, events and reads the statement took 50 ms beside 200,000 runs,
+    // against 3 ms before any of this, and the emit that holds it 66 ms against 21. With only
+    // the keys ordered ahead of the written table it walked 9.
     const db = await openMysqlTestDb({ idNamespace: 'plan-keyed-emit', nowMs: 1_000_000 })
     try {
       const store = new MysqlSchedulerStore(db.raw, db.ids)

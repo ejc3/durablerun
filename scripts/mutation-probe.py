@@ -7546,7 +7546,7 @@ MUTATION_SPECS.extend(
             "packages/store-mysql/src/tree.ts",
             "    if (node === this.#keysFrom?.from) this.append(` force index (${this.#keysFrom.index})`)\n",
             "    if (node === this.#keysFrom?.from) this.append('') // MUTATION: the table of the keys is read through whatever index the server picks\n",
-            "the server reads a delete's keys through the index it picks, which is the queue's poll index once waits holds a few dozen rows",
+            "with the index of the stamp there and no hint, the server picks the index of a delete's keys by its estimates, which was the queue's poll index in every idle arrangement measured, so nothing closes the window between planning and reading; no behavioural case fails without the hint, and the text cases are its only holders",
         ),
         (
             "mysql-keyed-delete-keys-table-is-aliased",
