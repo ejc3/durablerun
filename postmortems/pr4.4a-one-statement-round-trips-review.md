@@ -71,8 +71,8 @@ failed with 25P01 where main accepted it.
 ## Detection ledger
 
 The branch had passed every local gate before the review read it: the
-unfiltered audit at 884 of 884, conformance on three dialects, the corpus, the
-round-trip pins and the fuzz run. Every counted finding came from the review.
+unfiltered audit with every mutant caught, conformance on three dialects, the
+corpus, the round-trip pins and the fuzz run. Every counted finding came from the review.
 
 Our machinery did catch one break of this PR before the review. The final
 gates' run of the whole conformance directory failed the bootstrap window test,
@@ -162,24 +162,25 @@ deleted.
 
 ## Evidence
 
-- Red tests: the commit "Red: a statement sent alone commits what its
-  transaction would have refused", run and seen failing (3 cases) against the
-  head the review read. "refuses a single write whose key ends in a tab and
+- Red tests: commit `acb393e`, "Red: a statement sent alone commits what its
+  transaction would have refused", run and seen failing (3 cases) against
+  `78f238a`, the head the review read.
+  "refuses a single write whose key ends in a tab and
   would be cut to fit, and writes nothing": expected { refused: true, stored:
   1 } to deeply equal { refused: true, stored: 0 }. "refuses a delete sent
   behind a select in one read, and keeps the row": the row gone, and "Cannot
   read properties of undefined (reading 'map')" for an answer. "rolls back a
   single write whose result it refuses": value 'after' where 'before' was
   expected.
-- Fixes: the commits "Send alone only a read the executor knows to be a read",
-  "Say in DESIGN.md and BUILD.md which statements go alone, and why no write
-  does", and "Freeze what core brands as a read". Commits are named by subject
-  because this branch is rebased before it merges. Checked before this file was
-  committed: the suites of core, the SDK, the driver and the three stores at
-  79 files and 1,055 tests, the registry at 884 by import of a copy, and the
-  filtered probes of the ten mutants the fold changed or added, all caught by
-  their own verdicts with no collateral failure. The full gates of the final
-  head are in the pull request's body.
+- Fixes: commit `812b2d1`, "Send alone only a read the executor knows to be a
+  read", which turns the three cases green, with `9323e96`, "Say in DESIGN.md
+  and BUILD.md which statements go alone, and why no write does", and
+  `8eded7c`, "Freeze what core brands as a read". Checked before this file was
+  committed: the suites of core, the SDK, the driver and the three stores, the
+  registry's count by import of a copy, and the filtered probes of the ten
+  mutants the fold changed or added, all caught by their own verdicts with no
+  collateral failure. The full gates of the final head, with their counts, are
+  in the pull request's body.
 - Finder: the one full review of PR #64. Quoted verdict: "No HIGH findings on
   PR #64, but two MEDIUM ones: in both, main refused the write and wrote
   nothing, and this branch commits it. Both were reproduced on a server and sit
