@@ -1802,7 +1802,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     holds that over every history the suite builds. What an operator loses is
     the last failed attempt's error in the result of a saga that something
     else halted. It stays readable through `getCheckpoints`, in the
-    `$rollback-tries:<step>` record.
+    `$rollback-tries:<step>` record. The walk counts the results that named a
+    halt, and the shard runner holds that count above zero only from 20,000
+    walked steps in a shard. A halt is one pass move in ten. Measured with a
+    correct store, a shard of twenty walks of 50 steps names none two times in
+    five, and a shard of the size `verify:fuzz` runs names none about once in
+    nine hundred, which the common floor would have turned into a false
+    failure in one run of thirty.
   - A saga's start markers and attempt records were found by a test of each
     name, which the checkpoints key cannot serve, so the failure of any task
     and every read of a result walked all the checkpoints the task has. libSQL
