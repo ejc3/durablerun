@@ -160,6 +160,18 @@ export interface CheckpointWrite {
   stateJson: string
 }
 
+/**
+ * A rollback that failed, as `failRollback` takes it (DESIGN.md §3.10): the step, and the
+ * failure of this attempt. The store names the attempt record and counts the attempt, so
+ * a caller hands over neither.
+ */
+export interface FailedRollback {
+  /** The storage key of the step whose rollback failed. */
+  readonly stepKey: string
+  /** The failure of this attempt. */
+  readonly errorJson: string
+}
+
 export interface Checkpoint {
   checkpointName: string
   stateJson: string

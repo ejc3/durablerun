@@ -1,15 +1,18 @@
 import { IDENTIFIER_CHARACTERS } from './contract.js'
 import { InvalidDurableStringError } from './errors.js'
+import { type FencedBatch, type FencedResult, prepareRead, readRows } from './fenced-batch.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlRow } from './primitives.js'
 import type { SqlFragment } from './sql-tree.js'
-import type { RollbackOutcome } from './types.js'
+import { rollbackTriesRead } from './statements/reads.js'
+import type { CheckpointWrite, FailedRollback, RollbackOutcome } from './types.js'
 import { fitsCharacters, parseTaskValueJson, serializeTaskValue } from './validate.js'
 
 const {
   NumberIsSafeInteger: isSafeInteger,
   RangeError: TrustedRangeError,
   StringFrom: stringFrom,
+  TypeError: TrustedTypeError,
   StringStartsWith: startsWith,
 } = TASK_INTRINSICS
 
@@ -26,7 +29,8 @@ const {
  *   phase records its own reason.
  * - `$rollback:<step>` is a rollback that ran, an ordinary memoized step.
  * - `$rollback-tries:<step>` records a rollback's failed attempts, written in the batch
- *   that fails the pass, so a failed attempt is counted or the pass did not fail.
+ *   that fails the pass, so a failed attempt is counted or the pass did not fail. The
+ *   store names it and counts it (`failedRollbackRecord`), and no caller hands it over.
  */
 /**
  * What the saga phase requires of a statement it can freeze: a predicate, or `'open'`
@@ -115,6 +119,81 @@ export function decodeRollbackTry(stateJson: string): RollbackTry | null {
   if (typeof tries !== 'number' || !isSafeInteger(tries) || tries < 1) return null
   if (typeof errorJson !== 'string') return null
   return { tries, errorJson }
+}
+
+/** The name a rollback's attempt record is stored under. No store and no worker spells it. */
+export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`
+
+/**
+ * What `failRollback` was handed, held to its shape where it crosses the port, and read
+ * once. The port used to take the attempt record itself from its caller, as
+ * `{ key, stateJson }`. A caller of that shape is refused here, before anything is read or
+ * sent, and told what the port takes.
+ */
+export function requireFailedRollback(value: unknown): FailedRollback {
+  const { stepKey, errorJson } = (typeof value === 'object' && value !== null ? value : {}) as {
+    stepKey?: unknown
+    errorJson?: unknown
+  }
+  if (typeof stepKey !== 'string' || typeof errorJson !== 'string') {
+    throw new TrustedTypeError(
+      'failRollback takes the failed rollback as { stepKey, errorJson }: the step whose rollback failed, and the failure of that attempt. The store names the attempt record and counts the attempt itself, so a record handed over as { key, stateJson } is refused',
+    )
+  }
+  return { stepKey, errorJson }
+}
+
+/**
+ * The attempt record a failed rollback commits: its name, and its state one attempt past
+ * the last one stored (specs/Sagas.tla's RollbackRetry and TriesOnlyGrow). `lastStateJson`
+ * is what is stored under that name, or null when nothing is. A record that cannot be read
+ * counts as none, as it does for the SDK, which halts the saga on one and writes over it.
+ */
+export function nextRollbackTry(
+  failed: FailedRollback,
+  lastStateJson: string | null,
+): CheckpointWrite {
+  const last = lastStateJson === null ? null : decodeRollbackTry(lastStateJson)
+  return {
+    key: rollbackTriesName(failed.stepKey),
+    stateJson: encodeRollbackTry({
+      tries: (last?.tries ?? 0) + 1,
+      errorJson: failed.errorJson,
+    }),
+  }
+}
+
+/** What a dialect supplies to the read of a rollback's last attempt record. */
+export interface RollbackTriesDialect {
+  /** `rollback-tries`, a batch of one read. */
+  open(): FencedBatch
+  /** Run a batch this dialect opened against its executor. */
+  run(batch: FencedBatch): Promise<FencedResult>
+}
+
+const ROLLBACK_TRIES = prepareRead(
+  { taskId: 'string', name: 'string' },
+  (binds: { taskId: string; name: string }) => rollbackTriesRead(binds),
+)
+
+/**
+ * The attempt record `fail-rollback` commits for a failed rollback of `taskId`, named and
+ * counted here for every dialect. The last record is read before the batch, and the count
+ * cannot go stale in between: only `fail-rollback` writes an attempt record, it wins only
+ * while its caller's run is running under its claim, and a live task has one live run. So
+ * nothing can write that record between this read and a batch that wins, and a copy or a
+ * replay of the same call reads a count that is stale and loses the compare-and-set
+ * (DESIGN.md §3.10).
+ */
+export async function failedRollbackRecord(
+  dialect: RollbackTriesDialect,
+  taskId: string,
+  failed: FailedRollback,
+): Promise<CheckpointWrite> {
+  const b = dialect.open()
+  b.readPrepared('record', ROLLBACK_TRIES, { taskId, name: rollbackTriesName(failed.stepKey) })
+  const state = readRows(b, await dialect.run(b), 'record')[0]?.state
+  return nextRollbackTry(failed, typeof state === 'string' ? state : null)
 }
 
 /**

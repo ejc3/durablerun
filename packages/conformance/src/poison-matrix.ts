@@ -16,7 +16,6 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
-  encodeRollbackTry,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -1621,7 +1620,8 @@ function endedChild(taskId: string): SqlStatement {
 }
 
 /** The attempt record a `fail-rollback` invocation writes. */
-const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}probe`
+const ROLLBACK_STEP = 'probe'
+const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}${ROLLBACK_STEP}`
 
 /** The saga checkpoints of a task that is rolling back with one rollback owed. */
 const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
@@ -1843,8 +1843,8 @@ async function invoke(
       return store.fail(Q, target.runId, target.token, target.failure, null)
     case 'fail-rollback':
       return store.failRollback(Q, target.runId, target.token, target.failure, null, {
-        key: ROLLBACK_TRIED,
-        stateJson: encodeRollbackTry({ tries: 1, errorJson: target.failure }),
+        stepKey: ROLLBACK_STEP,
+        errorJson: target.failure,
       })
     case 'cancel-task':
       return store.cancelTask(Q, target.taskId)

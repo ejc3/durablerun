@@ -1,7 +1,6 @@
 import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -509,10 +508,7 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
           pass.claimToken,
           '{}',
           { delaySeconds: 5 },
-          {
-            key: `${SAGA_TRIES_PREFIX}charge`,
-            stateJson: '{"tries":1,"errorJson":"{}"}',
-          },
+          { stepKey: 'charge', errorJson: '{}' },
         ),
       ).toEqual({ rollingBack: true })
       for (const label of ['set-checkpoint', 'fail', 'fail-rollback']) {

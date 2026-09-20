@@ -40,6 +40,20 @@ export const runTaskRead = defineStatement('run-task', (binds: { queue: string; 
 )
 
 /**
+ * `rollback-tries`: the attempt record of one rollback, which is one row of the checkpoints
+ * key, read before the batch that fails the rollback so the store can count the attempt.
+ */
+export const rollbackTriesRead = defineStatement(
+  'rollback-tries',
+  (binds: { taskId: string; name: string }) =>
+    treeBuilder
+      .selectFrom('checkpoints')
+      .select('state')
+      .where('task_id', '=', binds.taskId)
+      .where('checkpoint_name', '=', binds.name),
+)
+
+/**
  * `task-result`: exactly the columns `decodeTaskResult` reads, of one task of one queue,
  * and the two values `decodeRollbackOutcome` reads. A rollback outcome is stored nowhere:
  * the store derives both values from the saga's checkpoints, so they are its fragments,

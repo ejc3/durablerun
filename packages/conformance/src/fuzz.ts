@@ -7,7 +7,7 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
-  encodeRollbackTry,
+  decodeRollbackTry,
   isRefusedWrite,
   taskDoneEventName,
 } from '@durablerun/core'
@@ -193,10 +193,7 @@ async function runWalk(
           run.claimToken,
           SAGA_CAUSE,
           halts ? null : { delaySeconds: rng.int(5) + frac() },
-          {
-            key: `${SAGA_TRIES_PREFIX}${step}`,
-            stateJson: encodeRollbackTry({ tries, errorJson }),
-          },
+          { stepKey: step, errorJson },
         )
       })
       if (failed) saga.tries.set(step, tries)
@@ -581,6 +578,28 @@ async function runWalk(
   const violations = await violationsNow()
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
+  }
+  // TriesOnlyGrow, over every walk: the store counts a rollback's failed attempts itself,
+  // so the count it stored is the number of failed attempts the walk saw it record.
+  for (const [taskId, saga] of sagas) {
+    for (const [step, tries] of saga.tries) {
+      const [record] = await f.raw.batch(
+        'fuzz:the-stored-count',
+        [
+          {
+            sql: 'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+            args: [taskId, `${SAGA_TRIES_PREFIX}${step}`],
+          },
+        ],
+        'read',
+      )
+      const stored = decodeRollbackTry(String(record?.rows[0]?.state))?.tries
+      if (stored !== tries) {
+        throw new Error(
+          `fuzz seed ${seed} final: task ${taskId} stores ${stored} failed attempts of the rollback of ${step}, and the walk saw ${tries} recorded`,
+        )
+      }
+    }
   }
   // FailedOutcomeHonest, for the error beside the outcome: a result names a rollback error
   // exactly when a rollback's failure ended the task, and the error is that rollback's. An

@@ -6,6 +6,7 @@ import {
   DERIVED_INTEGER_BOUNDS,
   EventName,
   type FailOutcome,
+  type FailedRollback,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -62,6 +63,7 @@ import {
   emitEventCas,
   emittedEventRead,
   endingTask,
+  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
@@ -81,8 +83,10 @@ import {
   reopenLostLaunchCas,
   requireDerivedInteger,
   requireDurableString,
+  requireFailedRollback,
   requireIdentifiersFit,
   requireSagaStepFits,
+  rollbackTriesName,
   requireEpochMs,
   requirePositiveClaimGeneration,
   requirePositiveInt,
@@ -114,7 +118,6 @@ import {
   QUEUED,
   cancelDue,
   checkpointInItsPhase,
-  checkpointIsAnAttemptRecord,
   checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -1881,14 +1884,30 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId, 'rollbackTry.key': rollbackTry.key })
-    requireSagaStepFits('rollbackTry.key', rollbackTry.key)
+    const failed = requireFailedRollback(rollback)
+    requireIdentifiersFit({
+      queue,
+      runId,
+      "rollback.stepKey, as the attempt record's name, which also holds its reserved prefix,":
+        rollbackTriesName(failed.stepKey),
+    })
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
     const taskId = await this.endingTask('failRollback', queue, runId)
+    // The store names the attempt record and counts the attempt, one past the last one
+    // stored, which core reads here and the claim's fence keeps current (DESIGN.md §3.10).
+    const tried = await failedRollbackRecord(
+      {
+        open: () =>
+          new FencedBatch('rollback-tries', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        run: (batch: FencedBatch) => batch.run(this.db),
+      },
+      taskId,
+      failed,
+    )
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1903,7 +1922,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       successorId: null,
       retryDelayMs: null,
       passId,
-      rollback: { tried: rollbackTry, passDelayMs },
+      rollback: { tried, passDelayMs },
     })
   }
 
@@ -1956,21 +1975,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
-          [
-            ...(retryDelayMs === null ? [] : [retryDelayMs]),
-            // The attempt record is the caller's checkpoint, and it may carry no other name.
-            ...(rollback === undefined ? [] : [rollback.tried.key]),
-          ],
+         )`,
+          retryDelayMs === null ? [] : [retryDelayMs],
         ),
       }),
     )
     // The saga arms (DESIGN.md §3.10, specs/Sagas.tla). Outside the phase, a failure no
     // retry follows is the task's terminal decision. When a registered step started and
     // is not rolled back, this batch enters the phase in place of ending the task. A
-    // retry the user budget refuses is that same decision. Inside the phase the caller
-    // hands over the failed rollback's attempt record, which lands behind the failure
-    // itself, so a failed attempt is counted or the pass did not fail. A retry there is
+    // retry the user budget refuses is that same decision. Inside the phase the entry
+    // hands over the failed rollback's attempt record, which the store named and counted
+    // and which lands behind the failure itself, so a failed attempt is counted or the
+    // pass did not fail. A retry there is
     // a pass the user budget does not cap, and a failure without the record is capped
     // like any other, which halts the saga.
     if (rollback !== undefined) {

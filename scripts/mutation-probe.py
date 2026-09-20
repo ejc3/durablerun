@@ -12258,11 +12258,25 @@ MUTATION_SPECS.extend(
             "a suspension commits a marker named as the phase marker and forges a saga",
         ),
         (
-            "saga-attempt-record-name-is-checked",
-            "packages/store-libsql/src/store.ts",
-            "         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,\n",
-            "         )${rollback === undefined ? '' : ` AND ? IS NOT NULL`}`,\n",
-            "a failed rollback commits its record over the phase marker and replaces the saga's cause",
+            "saga-store-counts-failed-attempts",
+            "packages/core/src/sagas.ts",
+            "      tries: (last?.tries ?? 0) + 1,\n",
+            "      tries: (last?.tries ?? 0) * 0 + 1,\n",
+            "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "packages/core/src/sagas.ts",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`\n",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_ROLLBACK_PREFIX}${stepKey}`\n",
+            "a failed rollback is stored under the name that says the rollback ran, so the step is owed nothing",
+        ),
+        (
+            "saga-failed-rollback-shape-is-checked",
+            "packages/core/src/sagas.ts",
+            "  if (typeof stepKey !== 'string' || typeof errorJson !== 'string') {\n",
+            "  if (false) {\n",
+            "a caller of the older port is not told what the port takes, and its record is read as a step named undefined",
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
@@ -13147,12 +13161,25 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "saga conformance [libsql] refuses a failed rollback whose attempt record carries any other name",
-            "mutation-verdict:behavior:saga-attempt-record-name-is-checked",
+            "saga conformance [libsql] counts a rollback's failed attempts itself, one more than the last one stored",
+            "mutation-verdict:behavior:saga-store-counts-failed-attempts",
             "packages/conformance/src/sagas.ts",
         ),
         (
-            "saga-attempt-record-name-is-checked",
+            "saga-store-counts-failed-attempts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names a failed rollback's attempt record itself, and refuses the record an older caller hands over",
+            "mutation-verdict:behavior:saga-store-names-the-attempt-record",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "saga-failed-rollback-shape-is-checked",
         ),
     ),
     (
@@ -18062,7 +18089,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 940:
+        if len(MUTATIONS) != 942:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

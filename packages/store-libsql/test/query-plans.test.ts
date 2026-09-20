@@ -2,9 +2,7 @@ import {
   INFRA_RETRY_CAP,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
-  encodeRollbackTry,
 } from '@durablerun/core'
 import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -444,10 +442,7 @@ describe('every batch a saga touches', () => {
     type Held = { taskId: string; runId: string; claimToken: string }
     const mark = (run: Held, name: string, state: string) =>
       store.setCheckpoint('q', run.taskId, run.runId, run.claimToken, name, state, 60)
-    const tried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
-    })
+    const tried = { stepKey: 'a', errorJson: '{"name":"R"}' }
     const E = '{"name":"E"}'
     const saga = await store.spawn('q', 'saga', '{}')
     const forward = await claimed('w1')
@@ -469,9 +464,9 @@ describe('every batch a saga touches', () => {
     })
     const pass = await claimed('w2')
     await mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null')
-    await store.failRollback('q', pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried(1))
+    await store.failRollback('q', pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried)
     const last = await claimed('w3')
-    await store.failRollback('q', last.runId, last.claimToken, E, null, tried(2))
+    await store.failRollback('q', last.runId, last.claimToken, E, null, tried)
     expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
     expect(await store.retryTask('q', saga.taskId)).toBeNull()
     await store.spawn('q', 'retrying', '{}', { maxAttempts: 2 })
@@ -776,10 +771,7 @@ describe('every write a store ships, by the table it writes', () => {
     )
     const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
     if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
-    const sagaTried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
-    })
+    const sagaTried = { stepKey: 'a', errorJson: '{}' }
     const passOf = async () => {
       claims += 1
       const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
@@ -794,11 +786,11 @@ describe('every write a store ships, by the table it writes', () => {
       firstPass.claimToken,
       '{}',
       { delaySeconds: 0 },
-      sagaTried(1),
+      sagaTried,
     )
     if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
     const lastPass = await passOf()
-    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried)
     await store.retryTask('q', failed.taskId)
     await store.cancelTask('q', failed.taskId)
     // One run whose launch is lost and one whose worker dies, then the clock passes both leases.

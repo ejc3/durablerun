@@ -1,9 +1,4 @@
-import {
-  InvalidDurableStringError,
-  SchemaMismatchError,
-  encodeRollbackTry,
-  taskDoneEventName,
-} from '@durablerun/core'
+import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
@@ -398,10 +393,7 @@ describe('MysqlExecutor against a real server', () => {
           pass.claimToken,
           '{"why":"boom"}',
           null,
-          {
-            key: '$rollback-tries:charge',
-            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"why":"refund failed"}' }),
-          },
+          { stepKey: 'charge', errorJson: '{"why":"refund failed"}' },
         )
         expect(halted).toEqual({ rollingBack: false })
         expect(await store.getTaskResult(queue, task.taskId)).toMatchObject({

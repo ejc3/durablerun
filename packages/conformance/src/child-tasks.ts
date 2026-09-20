@@ -7,11 +7,9 @@ import {
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SqlExecutor,
   type TaskOutcome,
   decodeTaskOutcome,
-  encodeRollbackTry,
   encodeTaskOutcome,
   isTerminalState,
   taskDoneEventName,
@@ -212,8 +210,8 @@ export const TERMINAL_BATCHES: readonly TerminalBatch[] = [
         advanceMs: 0,
         end: async (store) => {
           await store.failRollback(queue, pass.runId, pass.claimToken, FAILURE, null, {
-            key: `${SAGA_TRIES_PREFIX}a`,
-            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+            stepKey: 'a',
+            errorJson: '{"name":"RollbackBoom"}',
           })
         },
       }
