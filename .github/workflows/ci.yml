@@ -326,19 +326,26 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8ff5869b24a87aed0ee73017957fd5d7fe52380d5fd60faa12365d0749627b2f':
-              # The saga reads changed shape. A rollback error is the record the task's last
-              # run wrote, the names under a prefix are a range of the checkpoints key on
-              # libSQL and MySQL, and on PostgreSQL the attempt records are read only for a
-              # failed task whose saga began. No base entry's text moved. Eight mutations
-              # hold the new lines. Seven of them answer to five verdict markers that are
-              # newer than the base, and the eighth joins a marker the base already has.
+          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+              # The local HTTP transport's lifecycle gained thirteen mutations, under twelve verdict
+              # markers that are newer than this registry: the launch deadline's abort through
+              # the Launcher port, the deadline of the wake ping, the limits of both local
+              # servers, and the order in which each closes. Nothing is re-aimed: every find of
+              # this registry still occurs exactly once in this tree. The arm is keyed on main's
+              # registry as of the merge of pull request 66, whose own arm it replaces.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
-                  "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
-                  "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
-                  "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
-                  "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
+                  'mutation-verdict:behavior:launch-deadline-tells-the-launcher',
+                  'mutation-verdict:behavior:aborted-launch-answer-is-never-read',
+                  'mutation-verdict:behavior:http-launch-ends-at-the-callers-deadline',
+                  'mutation-verdict:behavior:wake-ping-ends-at-its-deadline',
+                  'mutation-verdict:behavior:answered-wake-ping-leaves-no-timer',
+                  'mutation-verdict:behavior:worker-close-answers-a-launch-on-the-wire',
+                  'mutation-verdict:behavior:closing-worker-answer-ends-its-connection',
+                  'mutation-verdict:behavior:worker-close-is-bounded',
+                  'mutation-verdict:behavior:wake-server-close-ends-every-connection',
+                  'mutation-verdict:behavior:local-servers-carry-their-limits',
+                  'mutation-verdict:behavior:worker-close-ends-with-its-last-connection',
+                  'mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
