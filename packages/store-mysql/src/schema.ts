@@ -61,6 +61,9 @@ export const META_TABLE_SQL = `CREATE TABLE IF NOT EXISTS meta (
  */
 export const META_BOOTSTRAP_SQL = `${META_TABLE_SQL} AS SELECT 'schema_version' AS \`key\`, '0' AS value`
 
+/** How much of a statement stamp `runs_stamp` holds: twice the token a call's stamp opens with. */
+const STAMP_INDEX_PREFIX = 64
+
 /**
  * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
  * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
@@ -207,6 +210,20 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     // and nothing else: a build that predates it runs against this schema unchanged.
     version: 6,
     statements: createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
+  },
+  {
+    // A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
+    // where a single-table UPDATE reads it with none. A batch that deletes the waits of
+    // the runs it stamped finds those runs by their stamp, and through an index of the
+    // queue and the state that search covers other transactions' runs, waits for each one
+    // still held, and two such batches deadlock. Every stamping write changes the stamp, so
+    // a stamped run's entry in this index is its own transaction's, and a search of it for
+    // one batch's stamp touches no other entry. The stamp is a LONGTEXT, so the index is a
+    // prefix: a call's stamp opens with its token, which is 32 characters and is what
+    // differs between calls. It is an index and nothing else: a build that predates it
+    // runs against this schema unchanged.
+    version: 7,
+    statements: createIndexIfMissing('runs', 'runs_stamp', `(fence_stamp(${STAMP_INDEX_PREFIX}))`),
   },
 ]
 

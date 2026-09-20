@@ -287,7 +287,9 @@ describe('MySQL spelling of the shared statement trees', () => {
     ).toThrow('a delete of waits takes its keys from tasks, which declares no index of its stamp')
   })
 
-  it('refuses a delete whose keys are a fragment', () => {
+  it('refuses a delete whose keys are anything but a selection of one plain table', () => {
+    const refused =
+      'a delete of waits takes its keys from something other than a selection of one table'
     expect(
       () =>
         compiled(
@@ -302,7 +304,98 @@ describe('MySQL spelling of the shared statement trees', () => {
             ),
         ),
       'mutation-verdict:construction:mysql-keyed-delete-keys-are-a-selection',
-    ).toThrow('a delete of waits takes its keys from something other than a selection of one table')
+    ).toThrow(refused)
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                eb
+                  .selectFrom(['runs as f', 'tasks as t'])
+                  .select('f.run_id')
+                  .where('f.fence_stamp', '=', 'stamp'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table',
+    ).toThrow(refused)
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                eb
+                  .selectFrom('runs as f')
+                  .innerJoin('tasks as t', 't.task_id', 'f.task_id')
+                  .select('f.run_id')
+                  .where('f.fence_stamp', '=', 'stamp'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing',
+    ).toThrow(refused)
+    expect(
+      () =>
+        compiled(
+          treeBuilder.deleteFrom('waits').where((eb) =>
+            eb(
+              'run_id',
+              'in',
+              eb
+                .selectFrom(
+                  eb.selectFrom('runs as r').select(['r.run_id', 'r.fence_stamp']).as('f'),
+                )
+                .select('f.run_id')
+                .where('f.fence_stamp', '=', 'stamp'),
+            ),
+          ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain',
+    ).toThrow(refused)
+  })
+
+  it('takes for a fence of the keys only an equality on the stamp of the table they come from', () => {
+    const refused = 'a delete of waits takes its keys from runs unfenced'
+    // The written table is in reach of the subquery, and its stamp is not the stamp of the keys.
+    const theWrittenTablesStamp = treeBuilder.dynamic.ref<'f.fence_stamp'>('waits.fence_stamp')
+    const keyedBy = (
+      column: 'f.fence_stamp' | 'f.claim_token' | typeof theWrittenTablesStamp,
+      operator: '=' | '!=',
+    ) =>
+      compiled(
+        treeBuilder.deleteFrom('waits').where((eb) =>
+          eb(
+            'run_id',
+            'in',
+            eb
+              .selectFrom('runs as f')
+              .select('f.run_id')
+              // One overload takes a column's name and another a built reference.
+              .where(column as 'f.fence_stamp', operator, 'stamp'),
+          ),
+        ),
+      )
+    expect(
+      () => keyedBy('f.claim_token', '='),
+      'mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp',
+    ).toThrow(refused)
+    expect(
+      () => keyedBy(theWrittenTablesStamp, '='),
+      'mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources',
+    ).toThrow(refused)
+    expect(
+      () => keyedBy('f.fence_stamp', '!='),
+      'mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality',
+    ).toThrow(refused)
+    expect(() => keyedBy('f.fence_stamp', '=')).not.toThrow()
   })
 
   it('finds the key of a write wherever it stands among the conditions', () => {

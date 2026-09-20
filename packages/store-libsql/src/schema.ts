@@ -233,6 +233,10 @@ export const MIGRATIONS: Migration[] = [
        WHERE wake_event IS NOT NULL AND state = 'pending'`,
     ],
   },
+  // Version 7 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. SQLite runs one writer at a time, so a delete's read of its keys waits for no other transaction.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 7, statements: [] },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

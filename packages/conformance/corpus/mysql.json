@@ -40,7 +40,7 @@
         "bindArity": 9
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.state = 'running') and `f`.`fence_stamp` = ?) and (status = 'waiting'\n            AND ((timeout_at_ms) IS NOT NULL AND timeout_at_ms BETWEEN 0 AND 253402300799000)\n            AND timeout_at_ms <= (SELECT f.fence_at_ms FROM runs f WHERE f.run_id = waits.run_id AND f.fence_stamp = ?))",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.state = 'running') and `f`.`fence_stamp` = ?) and (status = 'waiting'\n            AND ((timeout_at_ms) IS NOT NULL AND timeout_at_ms BETWEEN 0 AND 253402300799000)\n            AND timeout_at_ms <= (SELECT f.fence_at_ms FROM runs f WHERE f.run_id = waits.run_id AND f.fence_stamp = ?))",
         "bindArity": 3
       },
       {
@@ -88,7 +88,7 @@
         "bindArity": 14
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -104,7 +104,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -124,7 +124,7 @@
         "bindArity": 10
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       }
     ]
@@ -140,7 +140,7 @@
         "bindArity": 10
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       }
     ]
@@ -160,7 +160,7 @@
         "bindArity": 10
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       }
     ]
@@ -230,7 +230,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -286,7 +286,7 @@
         "bindArity": 13
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -302,7 +302,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -332,7 +332,7 @@
         "bindArity": 13
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -348,7 +348,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -380,7 +380,7 @@
         "bindArity": 13
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -396,7 +396,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -418,7 +418,7 @@
         "bindArity": 13
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -434,7 +434,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -470,7 +470,7 @@
         "bindArity": 9
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.task_id = ? AND f.state = 'cancelled') and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.task_id = ? AND f.state = 'cancelled') and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -486,7 +486,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -506,7 +506,7 @@
         "bindArity": 9
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.task_id = ? AND f.state = 'cancelled') and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.task_id = ? AND f.state = 'cancelled') and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -522,7 +522,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -562,7 +562,7 @@
         "bindArity": 12
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -578,7 +578,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {
@@ -618,7 +618,7 @@
         "bindArity": 11
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
         "bindArity": 2
       },
       {
@@ -634,7 +634,7 @@
         "bindArity": 8
       },
       {
-        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
+        "sql": "delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where (f.queue = ? AND f.wake_event = ? AND f.state = 'pending') and `f`.`fence_stamp` = ?) and (event_name = ? AND status = 'waiting')",
         "bindArity": 4
       },
       {

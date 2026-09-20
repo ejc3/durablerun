@@ -169,8 +169,11 @@ function requiredConditions(node: OperationNode | undefined): readonly Operation
  * fragment in a subquery's place arrives bare, where a value or a predicate arrives in
  * parentheses.
  */
-function keyColumn(where: OperationNode | undefined, target: string): string | null {
-  const keys = requiredConditions(where).flatMap((condition) => {
+function keyOf(
+  where: OperationNode | undefined,
+  target: string,
+): { readonly column: string; readonly keys: OperationNode } | null {
+  const found = requiredConditions(where).flatMap((condition) => {
     if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return []
     const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
     const subquery =
@@ -178,27 +181,98 @@ function keyColumn(where: OperationNode | undefined, target: string): string | n
     if (operator !== 'in' || !subquery) return []
     const table = condition.leftOperand.table?.table.identifier.name
     const name = (condition.leftOperand.column as { column?: { name?: unknown } }).column?.name
-    return typeof name === 'string' && (table === undefined || table === target) ? [name] : []
+    return typeof name === 'string' && (table === undefined || table === target)
+      ? [{ column: name, keys: condition.rightOperand }]
+      : []
   })
-  if (keys.length > 1) {
+  if (found.length > 1) {
     throw new Error(
-      `store-mysql: a write of ${target} is keyed by ${keys.join(' and by ')}, and one index reaches it`,
+      `store-mysql: a write of ${target} is keyed by ${found.map((key) => key.column).join(' and by ')}, and one index reaches it`,
     )
   }
-  return keys[0] ?? null
+  return found[0] ?? null
 }
 
-/** The index a write reaches its table through, or null for a write no subquery keys. */
-function keyIndex(target: string | null, where: OperationNode | undefined): string | null {
-  const key = target === null ? null : keyColumn(where, target)
-  if (target === null || key === null) return null
-  const index = KEY_INDEXES[target]?.[key]
+/** The index a write reaches its table through, with its keys, or null for a write no subquery keys. */
+function keyIndex(
+  target: string | null,
+  where: OperationNode | undefined,
+): { readonly index: string; readonly keys: OperationNode } | null {
+  if (target === null) return null
+  const key = keyOf(where, target)
+  if (key === null) return null
+  const index = KEY_INDEXES[target]?.[key.column]
   if (index === undefined) {
     throw new Error(
-      `store-mysql: a write of ${target} keyed by ${key} names no index to reach it through`,
+      `store-mysql: a write of ${target} keyed by ${key.column} names no index to reach it through`,
     )
   }
-  return index
+  return { index, keys: key.keys }
+}
+
+/**
+ * The index of a table's statement stamp, for each table a keyed delete takes its keys
+ * from. A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
+ * where a single-table UPDATE reads it with none. Through an index of the queue and the
+ * state, the search for the rows this batch stamped covers other transactions' rows, waits
+ * for each one still held, and two such batches deadlock: the claim's delete of expired
+ * waits did, between claimers, once `waits` held a few dozen rows. Every stamping write
+ * changes the stamp, so a stamped row's entry in the stamp's index is its own
+ * transaction's, and a search of that index for one batch's stamp touches no other entry.
+ * It waits for nothing, so it needs no SKIP LOCKED, which was measured and not taken:
+ * InnoDB skips by index record, and it skipped a row its own transaction had stamped while
+ * another transaction held that row's entry in the index the keys were read through.
+ */
+const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }
+
+/** Whether a condition is `alias.fence_stamp = …`, the stamp of the table read as `alias`. */
+function requiresStampOf(alias: string, condition: OperationNode): boolean {
+  if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return false
+  const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
+  const table = condition.leftOperand.table?.table.identifier.name
+  const name = (condition.leftOperand.column as { column?: { name?: unknown } }).column?.name
+  return operator === '=' && table === alias && name === 'fence_stamp'
+}
+
+/**
+ * The table a delete of `target` takes its keys from, and the index of that table's stamp.
+ * The keys are a selection of one plain table, read under an alias, that requires the
+ * table's stamp: what core generates for every delete that follows a fence. Anything else
+ * is refused, because nothing else is known to touch this transaction's rows alone. That
+ * the stamp compared is this batch's own is core's gating rule, which no single statement
+ * can show.
+ */
+function stampedKeys(
+  target: string,
+  keys: OperationNode | undefined,
+): { readonly from: AliasNode; readonly index: string } {
+  const selection = keys !== undefined && SelectQueryNode.is(keys) ? keys : null
+  const [from, ...more] = selection?.from?.froms ?? []
+  const table = tableName(from)
+  const alias =
+    from !== undefined && AliasNode.is(from) && IdentifierNode.is(from.alias) ? from : null
+  if (
+    selection === null ||
+    alias === null ||
+    table === null ||
+    more.length > 0 ||
+    (selection.joins ?? []).length > 0
+  ) {
+    throw new Error(
+      `store-mysql: a delete of ${target} takes its keys from something other than a selection of one table`,
+    )
+  }
+  const named = (alias.alias as IdentifierNode).name
+  if (!requiredConditions(selection.where?.where).some((c) => requiresStampOf(named, c))) {
+    throw new Error(`store-mysql: a delete of ${target} takes its keys from ${table} unfenced`)
+  }
+  const through = STAMP_INDEXES[table]
+  if (through === undefined) {
+    throw new Error(
+      `store-mysql: a delete of ${target} takes its keys from ${table}, which declares no index of its stamp`,
+    )
+  }
+  return { from: alias, index: through }
 }
 
 /**
@@ -228,6 +302,7 @@ function keyIndex(target: string | null, where: OperationNode | undefined): stri
 class MysqlTreeCompiler extends MysqlQueryCompiler {
   #insertTarget: TableNode | null = null
   #writeTarget: string | null = null
+  #keysFrom: { readonly from: AliasNode; readonly index: string } | null = null
 
   protected override visitInsertQuery(node: InsertQueryNode): void {
     if (node.onConflict === undefined) {
@@ -377,7 +452,7 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
       target === null || node.updates === undefined
         ? node.updates
         : readersBeforeWriters(node.updates, target)
-    const index = keyIndex(target, node.where?.where)
+    const index = keyIndex(target, node.where?.where)?.index ?? null
     this.writing(target, () => {
       if (index === null || target === null || node.table === undefined) {
         super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
@@ -399,7 +474,8 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
   protected override visitDeleteQuery(node: DeleteQueryNode): void {
     const [table] = node.from.froms
     const target = tableName(table)
-    const index = keyIndex(target, node.where?.where)
+    const keyed = keyIndex(target, node.where?.where)
+    const index = keyed?.index ?? null
     this.writing(target, () => {
       if (index === null || target === null || table === undefined) {
         super.visitDeleteQuery(node)
@@ -418,12 +494,24 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         explain,
         node.endModifiers,
       ])
+      const keysFrom = stampedKeys(target, keyed?.keys)
       this.append(`delete ${targetLast(target)} `)
       this.visitNode(table)
       this.append(' from ')
       this.visitKeyedTarget(table, index)
-      this.visitKeyedWhere(node.where)
+      this.#keysFrom = keysFrom
+      try {
+        this.visitKeyedWhere(node.where)
+      } finally {
+        this.#keysFrom = null
+      }
     })
+  }
+
+  /** The table a keyed delete takes its keys from is read through the index of its stamp. */
+  protected override visitAlias(node: AliasNode): void {
+    super.visitAlias(node)
+    if (node === this.#keysFrom?.from) this.append(` force index (${this.#keysFrom.index})`)
   }
 
   /** A keyed write is one plain table, its assignments, and its WHERE. Anything more is refused. */

@@ -270,32 +270,39 @@ describe('MysqlExecutor against a real server', () => {
     // A migrator that died after the index and before the version runs the version again.
     const db = await openMysqlTestDb({ idNamespace: 'index-repeat' })
     try {
-      const columns = async () => {
-        const [index] = await db.raw.batch(
-          'fixture:read',
-          [
-            {
-              sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
-                    FROM information_schema.statistics
-                    WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_woken'`,
-              args: [],
-            },
-          ],
-          'read',
-        )
-        return index?.rows[0]?.columns
+      const indexes = [
+        ['runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
+        ['runs_stamp', '(fence_stamp(64))', 'fence_stamp'],
+      ] as const
+      for (const [name, definition, expected] of indexes) {
+        const columns = async () => {
+          const [index] = await db.raw.batch(
+            'fixture:read',
+            [
+              {
+                sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
+                      FROM information_schema.statistics
+                      WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = ?`,
+                args: [name],
+              },
+            ],
+            'read',
+          )
+          return index?.rows[0]?.columns
+        }
+        const version = createIndexIfMissing('runs', name, definition).map((sql) => ({
+          sql,
+          args: [],
+        }))
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('migrate:index', version)
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
+        expect(await columns()).toBeNull()
+        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version)
+        expect(await columns()).toBe(expected)
       }
-      const version6 = createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)').map(
-        (sql) => ({ sql, args: [] }),
-      )
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('fixture:drop', [{ sql: 'DROP INDEX runs_woken ON runs', args: [] }])
-      expect(await columns()).toBeNull()
-      await db.raw.batch('migrate:v6', version6)
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
     } finally {
       await db.close()
     }
