@@ -3067,6 +3067,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     stores have an owner, it is a store text fragment, and a hoist re-aims the
     two store-anchored mutations this PR registers. Trigger: the next change to
     `taken`.
+  - Option, not built, with its trigger: a check that reads each dialect's
+    catalog for every indexed text column and requires each to be declared with
+    the bound on what enters it. The identifier surface holds what its table
+    names, and nothing ties a column that gains an index to that table, which is
+    how `runs_held` indexed a claim token that no entry held to a width: on
+    PostgreSQL a btree row may not pass about 2,700 bytes, and a claim under a
+    longer token answered as an outage until `claim` held its token. The same
+    shape is open for any text column no entry bounds, a task name for one: with
+    an index on it, a spawn under 3,000 characters that do not compress fails on
+    PostgreSQL with SQLSTATE 54000 and the identifier surface passes. Every
+    indexed text column a caller feeds today is an identifier held to the width.
+    Trigger: the next index over a text column.
+  - Option, not built, with its trigger: renaming the plan check's test `reads
+    no table once for each row of a backlog, but for the claim it names`. The
+    exception it names is empty since this PR, so the title is loose and not
+    false. A registered verdict names that title, so the rename re-aims a base
+    registry entry and needs a helper in the base gate's bridge step. Trigger:
+    the next pull request that re-aims that entry for another reason.
   - Option, not built, with its trigger: `store-postgres`'s saga plan test
     judges plans over tiny tables that have no statistics, so a database-wide
     ANALYZE from any other session can flip them. Alone it passed 4 times of 4,
