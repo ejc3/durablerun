@@ -2669,6 +2669,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     second table and sees the read hold its first, for each read that names
     two store tables. Their trigger is the next version that locks tables:
     version 7's text is frozen once it is on main.
+  - An option, not built: run a deadlocked read batch again on MySQL. Its
+    executor runs only a write batch again, which is safe today: a consistent
+    read takes no InnoDB lock, and MySQL commits each DDL statement on its own,
+    so no MySQL version holds a lock on one table while it waits for another.
+    Its trigger is a MySQL version that takes locks on more than one table at
+    once, and `store-postgres/test/deadlocked-read.test.ts` is the shape to
+    port.
   - An option, not built: one definition of the refusal for a schema newer than
     the build. Each of the three stores builds that message and has a case for
     it, where main already had the older message three times. A helper in core

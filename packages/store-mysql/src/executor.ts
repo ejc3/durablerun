@@ -593,10 +593,13 @@ export class MysqlExecutor implements SqlExecutor {
           // InnoDB ends a deadlock by rolling one transaction back. That batch committed
           // nothing, so running it again is a first delivery, and the other transaction
           // has its locks by now. Reported as an outage, a finished run would be left for
-          // the sweep to charge an infrastructure retry. Only a write batch is run again:
-          // a read batch takes no row lock, so a deadlock there is not this engine's lock
-          // order. The named lock is held across the attempts, because it was taken before
-          // the transaction and a rollback does not release it.
+          // the sweep to charge an infrastructure retry. Only a write batch is run again.
+          // A read batch cannot be a victim here today: a consistent read takes no InnoDB
+          // lock, and MySQL commits each DDL statement on its own, so no version holds a lock
+          // on one table while it waits for another, which is what aborted reads on
+          // PostgreSQL (DESIGN.md §3.4 rule 11). A version that does is the trigger to run a
+          // read again here as well. The named lock is held across the attempts, because it
+          // was taken before the transaction and a rollback does not release it.
           const runAgain =
             mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)
           if (!runAgain) throw error
