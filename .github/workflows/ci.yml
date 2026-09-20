@@ -292,6 +292,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
@@ -310,21 +311,30 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_spec(repaired, candidate, name):
-              # Replace one spec entry of the base registry with this tree's entry of the same
-              # name, for a mutation whose target line this tree rewrote. The entry opens with
-              # its name, which stands, so only the file, the find, the replacement and the
-              # description move.
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a store's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
               def span(text):
-                  key = f'            "{name}",\n'
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one spec entry.')
-                  start = text.rindex('        (\n', 0, text.index(key))
-                  if text[start:text.index(key)] != '        (\n':
-                      raise SystemExit(f'{name}: the bridge re-aims only an entry that opens with its name.')
-                  return start, text.index('        ),\n', start) + len('        ),\n')
-              start, end = span(repaired)
-              new_start, new_end = span(candidate)
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def list_conditions(repaired, candidate, file, lines):
               # List condition lines of a tree rule whose mutations this tree registers and the
@@ -342,35 +352,79 @@ jobs:
                   for line in lines
               )
               return repaired[:at] + entries + repaired[at:]
-          if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
-              # One read the executor knows to be a read is sent alone on MySQL and PostgreSQL.
-              # The MySQL executor's own transaction for the schema-version read is gone with that,
-              # because one statement sent alone under the session's READ COMMITTED is what
-              # the read needed. The base entry that mutated the line choosing that
-              # transaction is re-aimed at the rule, and its mutant is the one it was: the
-              # version read runs under a snapshot again. The rule's conditions and the
-              # claim's plan tests register mutations the base predates, so their verdict
-              # markers are exempted. Core brands what it compiled as a read where it adds a
-              # tree, which is one new condition of a tree rule. Its mutation is one the base
-              # predates, so the base's derived coverage check is given the line as held.
-              repaired = reaim_spec(previous, candidate, 'mysql-version-read-is-read-committed')
+          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
+              # The event lock is named where core defines a statement, and core holds it on one
+              # line, so the nine store lines nine base entries quoted are gone. Each is re-aimed at
+              # that one line for its own batch label, and is the mutant it was. The child await's
+              # rounds and its recording batch moved from the libSQL store into core, and three
+              # entries follow their text there. The two new tree rules hold conditions whose
+              # mutations the base predates, so their lines are listed and their markers exempted.
+              repaired = previous
+              for name in (
+                  'postgres-lost-launch-takes-the-event-lock',
+                  'postgres-claim-timeout-takes-the-event-lock',
+                  'postgres-cancel-takes-the-event-lock',
+                  'postgres-complete-takes-the-event-lock',
+                  'postgres-fail-takes-the-event-lock',
+                  'postgres-recording-await-takes-the-event-lock',
+                  'postgres-emit-takes-the-event-lock',
+                  'postgres-await-takes-the-event-lock',
+                  'saga-postgres-fail-rollback-takes-the-event-lock',
+                  'child-await-raises-its-refusal',
+                  'child-await-registers-on-a-revived-child',
+                  'child-await-recording-error-names-the-task',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  'named === null',
+                  "if (statementTable(tree) !== 'tasks') return []",
+                  ".filter((update) => assignedColumn(update) === 'state')",
+                  "const inserted = InsertQueryNode.is(tree) ? insertedValue(tree, 'state') : undefined",
+                  'return [...assigned, inserted].filter((value) => value !== undefined)',
+                  'return taskStateValues(tree).some((value) => someNode(value, (node) => RawNode.is(node)))',
+                  'return taskStateValues(tree).some((value) =>',
+                  "if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null",
+                  'if (lock === null) {',
+                  'if (eventName !== lock.eventName) {',
+                  'if (CaseNode.is(value)) {',
+                  'return results.filter((result) => result !== undefined).flatMap(receivedNodes)',
+                  'if (SelectQueryNode.is(value)) {',
+                  'receivedNodes(value).some((node) => isTerminalState(boundValue(node))),',
+              ))
               repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
-                  "if (reading) brandRead(held.compiled)",
+                  'if (unreadState !== null) throw new Error(`${at} ${unreadState}`)',
+                  "following !== null && written === 'events'",
+                  'if (ended !== null) recordsEndOf = gateName',
+                  'if (unserialized !== null) throw new Error(`${at} ${unserialized}`)',
               ))
               repaired = exempt(repaired, candidate, (
-                  "mutation-verdict:construction:core-read-brand-is-frozen",
-                  "mutation-verdict:construction:core-read-brand-marks-reads-alone",
-                  "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
-                  "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
-                  "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
-                  "mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy",
-                  "mutation-verdict:construction:mysql-session-autocommit-on",
-                  "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
-                  "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
-                  "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
-                  "mutation-verdict:behavior:postgres-lone-statement-is-a-read",
-                  "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
-                  "mutation-verdict:behavior:postgres-lone-read-is-one-statement",
+                  'mutation-verdict:construction:batch-holds-one-lock',
+                  'mutation-verdict:construction:batch-holds-the-lock-its-statement-names',
+                  'mutation-verdict:construction:batch-lock-may-be-named-again',
+                  'mutation-verdict:construction:completion-event-is-an-event',
+                  'mutation-verdict:construction:completion-event-is-an-insert',
+                  'mutation-verdict:construction:completion-event-names-the-ending-statement',
+                  'mutation-verdict:construction:statement-carries-the-lock-it-names',
+                  'mutation-verdict:construction:task-state-takes-no-fragment',
+                  'mutation-verdict:construction:terminal-task-state-as-a-value',
+                  'mutation-verdict:construction:terminal-task-state-in-any-arm',
+                  'mutation-verdict:construction:terminal-task-state-is-of-tasks',
+                  'mutation-verdict:construction:terminal-task-state-of-an-insert',
+                  'mutation-verdict:construction:terminal-task-state-owes-its-completion-event',
+                  'mutation-verdict:construction:terminal-task-state-reads-a-case-with-no-else',
+                  'mutation-verdict:construction:terminal-task-state-reads-a-derived-table',
+                  'mutation-verdict:construction:terminal-task-state-reads-a-joined-table',
+                  'mutation-verdict:construction:terminal-task-state-reads-a-selection',
+                  'mutation-verdict:construction:terminal-task-state-reads-an-assigned-value',
+                  'mutation-verdict:construction:terminal-task-state-reads-the-state-column',
+                  'mutation-verdict:construction:terminal-task-state-reads-the-value',
+                  'mutation-verdict:construction:terminal-task-state-skips-a-condition',
+                  'mutation-verdict:construction:terminal-task-state-skips-a-filter',
+                  'mutation-verdict:construction:tree-event-lock-events',
+                  'mutation-verdict:construction:tree-event-lock-inserts-only',
+                  'mutation-verdict:construction:tree-event-lock-missing',
+                  'mutation-verdict:construction:tree-event-lock-names-the-row',
+                  'mutation-verdict:construction:tree-event-lock-waits',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

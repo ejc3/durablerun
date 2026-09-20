@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
-  EventName,
+  type EventName,
   FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlBatchControl,
@@ -10,17 +10,21 @@ import {
   type SqlResult,
   type SqlStatement,
   type SqlTransactionLock,
+  defineStatement,
   fenceValue,
   sqlBatchMode,
   sqlTransactionLock,
   stampValue,
+  taskStateValue,
 } from '../src/index.js'
 import {
   type Loose,
+  accepts,
   batch,
   batchWithClock,
   fenced,
   loose,
+  onEvent,
   refuses,
   statement,
   taskFollowOn,
@@ -52,6 +56,11 @@ const taskCas = () =>
 const fencedWaits = () =>
   loose.deleteFrom('waits').where((eb: Loose) => eb('run_id', 'in', fenced(eb).select('f.run_id')))
 const anyRun = () => loose.selectFrom('runs').select('run_id')
+/** The event, and the run, that this batch's compare-and-set stamped, as a fenced tail reads each. */
+const fencedEvent = () =>
+  loose.selectFrom('events').select('payload').where('fence_stamp', '=', fenceValue('win'))
+const fencedRun = () =>
+  loose.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win'))
 
 describe('execution identity', () => {
   it('cannot be replaced through instance or prototype reflection', () => {
@@ -112,12 +121,10 @@ describe('closed transaction lock prelude', () => {
 
     const sqlShapedCoordinate = `q'; DELETE FROM events; --`
     const db = new FakeDb([1])
-    const b = batch('emit-event')
-      .lockEvent({
-        queue: sqlShapedCoordinate,
-        eventName: EventName.fromPort('test', sqlShapedCoordinate),
-      })
-      .casTree('win', statement(eventCas()))
+    const b = batch('emit-event').casTree(
+      'win',
+      onEvent(eventCas(), sqlShapedCoordinate, sqlShapedCoordinate),
+    )
     await b.run(db)
 
     const call = db.calls[0]
@@ -136,34 +143,57 @@ describe('closed transaction lock prelude', () => {
     expect(call?.statements[0]?.args).not.toContain(sqlShapedCoordinate)
   })
 
-  it('must be declared once, before SQL, and followed immediately by a CAS', () => {
-    expect(() =>
-      withCas().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') }),
-    ).toThrow(/before every SQL statement/)
-
-    const duplicate = batch().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
-    expect(() => duplicate.lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(/already has/)
-
-    const readFirst = batch().lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
-    expect(() => readFirst.openTailTree('probe', 'diagnostic read', statement(anyRun()))).toThrow(
+  it('takes a claim lock declared once, before SQL, and followed immediately by a CAS', () => {
+    expect(() => withCas().lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(
+      /before every SQL statement/,
+    )
+    const claimed = () => batch().lockClaim({ queue: 'q', claimToken: 'token' })
+    expect(() => claimed().lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(/already has/)
+    expect(() => claimed().openTailTree('probe', 'diagnostic read', statement(anyRun()))).toThrow(
       /followed immediately by a CAS/,
     )
   })
 
+  it('holds one lock, which a second statement may name again', () => {
+    const held = () => batch().casTree('win', onEvent(eventCas()))
+    accepts('mutation-verdict:construction:batch-lock-may-be-named-again', () =>
+      held().tailTree('again', onEvent(fencedEvent())),
+    )
+    refuses('mutation-verdict:construction:batch-holds-one-lock', /already has/, () =>
+      held().tailTree('other', onEvent(fencedEvent(), 'q', 'another')),
+    )
+    // The same name in another queue is another event, and a claim lock is another lock.
+    expect(() => held().tailTree('other', onEvent(fencedEvent(), 'another', 'e'))).toThrow(
+      /already has/,
+    )
+    const claimed = batch().lockClaim({ queue: 'q', claimToken: 'token' })
+    expect(() => claimed.casTree('win', onEvent(eventCas()))).toThrow(/already has/)
+  })
+
+  it('takes the lock a statement names wherever in the batch the statement stands', async () => {
+    const db = new FakeDb([1, 0])
+    await withCas().tailTree('read', onEvent(fencedRun())).run(db)
+    expect(
+      db.calls[0]?.transactionLock,
+      'mutation-verdict:construction:batch-holds-the-lock-its-statement-names',
+    ).toEqual({ kind: 'event', queue: 'q', eventName: 'e' })
+  })
+
   it('is available only to a write transaction', async () => {
-    const b = batch()
-      .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
-      .casTree('win', statement(eventCas()))
+    const b = batch().casTree('win', onEvent(eventCas()))
     await expect(b.run(new FakeDb([1]), 'read')).rejects.toThrow(/requires a write batch/)
   })
 
   it('rejects a non-string coordinate for either closed lock kind', () => {
-    expect(() =>
-      batch().lockEvent({
-        queue: undefined as unknown as string,
-        eventName: EventName.fromPort('test', 'e'),
-      }),
-    ).toThrow(/coordinates must be strings/)
+    expect(() => batch().casTree('win', onEvent(eventCas(), null as unknown as string))).toThrow(
+      /coordinates must be strings/,
+    )
+    const unminted = defineStatement(
+      'test',
+      () => eventCas() as never,
+      () => ({ queue: 'q', eventName: 'e' as unknown as EventName }),
+    )({})
+    expect(() => batch().casTree('win', unminted)).toThrow(/coordinates must be strings/)
     expect(() =>
       batch().lockClaim({ queue: 'q', claimToken: undefined as unknown as string }),
     ).toThrow(/coordinates must be strings/)
@@ -214,7 +244,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('mirror', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'one',
     })
     expect(() => b.fence('mirror')).not.toThrow()
@@ -229,7 +259,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
         b.derived('mirror', {
           relation: 'runs-to-tasks',
           fence: 'win',
-          set: { state: `'pending'`, '[fence_stamp]': `'forged'` } as never,
+          set: { failure_reason: `'x'`, '[fence_stamp]': `'forged'` } as never,
           rows: 'one',
         }),
     )
@@ -238,7 +268,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       withCas().derived('rhs-escape', {
         relation: 'runs-to-tasks',
         fence: 'win',
-        set: { state: `'pending', [fence_stamp] = 'forged'` },
+        set: { failure_reason: `'pending', [fence_stamp] = 'forged'` },
         rows: 'one',
       }),
     ).toThrow(/escapes its generated assignment/)
@@ -261,7 +291,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
           withCas().derived(name, {
             relation: 'runs-to-tasks',
             fence: 'win',
-            set: { state: value },
+            set: { failure_reason: value },
             rows: 'one',
           }),
         name,
@@ -277,7 +307,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
           withCas().derived(name, {
             relation: 'runs-to-tasks',
             fence: 'win',
-            set: { state: value },
+            set: { failure_reason: value },
             rows: 'one',
           }),
         name,
@@ -288,7 +318,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       withCas().derived('mysql-comment-escape', {
         relation: 'runs-to-tasks',
         fence: 'win',
-        set: { state: `'pending' # provenance would be commented out` },
+        set: { failure_reason: `'pending' # provenance would be commented out` },
         rows: 'one',
       }),
     ).toThrow(/contains a SQL comment/)
@@ -354,7 +384,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
         b.derived('too-late', {
           relation: 'runs-to-tasks',
           fence: 'win',
-          set: { state: `'pending'` },
+          set: { state: taskStateValue('pending') },
           rows: 'one',
         }),
     )
@@ -366,7 +396,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       b.derived('wrong-pair', {
         relation: 'runs.task_id-to-runs.run_id' as never,
         fence: 'win',
-        set: { state: `'pending'` },
+        set: { state: taskStateValue('pending') },
         rows: 'one',
       }),
     ).toThrow(/unknown fence relation/)
@@ -399,7 +429,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('mirror', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'one',
     })
     expect(() =>
@@ -474,7 +504,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     b.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       rows: 'source-keys',
     })
 

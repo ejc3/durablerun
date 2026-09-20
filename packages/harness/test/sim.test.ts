@@ -89,12 +89,15 @@ describe('batch control forwarding', () => {
     }
     const world = new SimWorld(real, 'locked-batch')
     world.actor('a', async (db) => {
-      const stampEvents = defineStatement('stamp-events', () =>
-        treeBuilder.updateTable('events').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q'),
+      const stampEvents = defineStatement(
+        'stamp-events',
+        () => treeBuilder.updateTable('events').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q'),
+        () => ({ queue: 'q', eventName: EventName.fromPort('test', 'e') }),
       )({})
-      const batch = new FencedBatch('emit-event', 'seed', { now: '1', tree: TREE_DIALECT })
-        .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
-        .casTree('event', stampEvents)
+      const batch = new FencedBatch('emit-event', 'seed', {
+        now: '1',
+        tree: TREE_DIALECT,
+      }).casTree('event', stampEvents)
       await batch.run(db)
     })
 
