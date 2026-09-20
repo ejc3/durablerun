@@ -259,6 +259,44 @@ export const MIGRATIONS: Migration[] = [
        WHERE state = 'running'`,
     ],
   },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the schema refuses it too, for every writer
+    // there is, a port in another language included.
+    //
+    // SQLite cannot add NOT NULL to a column that exists. Rebuilding the table would declare
+    // it, and costs a copy of every stored byte inside one write transaction: measured on a
+    // million events of 1 KB, 48 and 56 seconds, a 4.5 GB file doubled, and the calls of
+    // every other connection failing once their busy timeout ran out. Two triggers refuse
+    // the same writes, by an insert, an update or either arm of an upsert, under any
+    // conflict clause, and cost nothing to install. They read no table. What they do not
+    // give: the catalog still calls the column nullable, so on this dialect nothing can hold
+    // the rule by a catalog read, and a refusal carries SQLITE_CONSTRAINT_TRIGGER and not
+    // the code of a declared NOT NULL.
+    //
+    // The third statement is the constraint checking its own past. It touches only rows
+    // that hold NULL, so it writes nothing when there is none. When there is one, the update
+    // trigger installed two statements before refuses it, the batch fails, and the database
+    // stays at the version before with the row as it was. The rows are found with
+    // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: [
+      `CREATE TRIGGER events_payload_not_null_update
+       BEFORE UPDATE OF payload ON events
+       WHEN NEW.payload IS NULL
+       BEGIN
+         SELECT RAISE(ABORT, 'NOT NULL constraint failed: events.payload');
+       END`,
+      `CREATE TRIGGER events_payload_not_null_insert
+       BEFORE INSERT ON events
+       WHEN NEW.payload IS NULL
+       BEGIN
+         SELECT RAISE(ABORT, 'NOT NULL constraint failed: events.payload');
+       END`,
+      'UPDATE events SET payload = payload WHERE payload IS NULL',
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

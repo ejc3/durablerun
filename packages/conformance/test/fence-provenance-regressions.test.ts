@@ -1466,6 +1466,11 @@ describe('fence provenance', () => {
         'go',
         null,
       )
+      // The schema refuses this write, so the test opens the door the way tampering would,
+      // by dropping the two triggers that hold the payload. What is held here is the port's
+      // own refusal, which has to stand behind a schema that no longer does.
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_insert')
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_update')
       await exec(
         f.raw,
         `INSERT INTO events (queue, event_name, payload, emitted_at_ms)

@@ -691,12 +691,25 @@ function temporalStorageCorruption(field: PersistedTemporalFieldDescriptor): Sto
   }
 }
 
-const event = (payload: string | null): SqlStatement =>
+const event = (payload: string): SqlStatement =>
   sql(
     `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
      VALUES (?, ?, ?, ?)`,
     [Q, EVENT, payload, NOW],
   )
+
+/**
+ * SQL NULL over the stored payload of the poison event. Every dialect's schema refuses the
+ * write, so it goes through the fixture's storage-corruption door, which credits a refusal
+ * it saw and injects where a schema would still accept it.
+ */
+const NULL_EVENT_PAYLOAD: StorageCorruption = {
+  table: 'events',
+  queue: Q,
+  eventName: EVENT,
+  column: 'payload',
+  invalidRepresentation: 'null',
+}
 
 /**
  * Atomic witnesses, not one happy-path example per checker. OR arms and
@@ -963,8 +976,16 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
          WHERE run_id = ?`,
         [NOW, EVENT, RUN],
       ),
-      event(null),
+      event('{"got":1}'),
     ],
+    storageCorruption: NULL_EVENT_PAYLOAD,
+  },
+  {
+    // The same stored NULL with no run that reads it: the row alone is the violation.
+    id: 'event/payload-null',
+    covers: ['event/payload-null'],
+    statements: [event('{"got":1}')],
+    storageCorruption: NULL_EVENT_PAYLOAD,
   },
   {
     id: 'payload/stored-payload-different',

@@ -6,6 +6,7 @@ import {
   META_TABLE_SQL,
   MIGRATIONS,
   createIndexIfMissing,
+  setNotNullWhileNullable,
 } from '../src/schema.js'
 
 function escapeRegExp(value: string): string {
@@ -28,8 +29,8 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('MySQL schema', () => {
   it('keeps the logical version numbers of the other dialects', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
-    expect(CURRENT_SCHEMA_VERSION).toBe(9)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(CURRENT_SCHEMA_VERSION).toBe(10)
   })
 
   it('writes only statements that are safe to repeat', () => {
@@ -40,16 +41,26 @@ describe('MySQL schema', () => {
     // it only keeps the version out of the table check. That the form is safe to repeat
     // is carried by the real-server test, which runs it again over an index that exists
     // and twice over one that was dropped, and by the frozen hashes of versions 6, 8 and 9.
+    // A column that becomes NOT NULL has no IF form either and goes through a guarded form
+    // of its own, which the real-server test repeats the same way, under version 10's hash.
     // Every other statement creates a table if missing.
     const guardedIndexes = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
       createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
       createIndexIfMissing('runs', 'runs_held', '(queue, claimed_by(255), state)'),
     ]
+    const guardedForms = [
+      ...guardedIndexes,
+      setNotNullWhileNullable(
+        'events',
+        'payload',
+        'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin',
+      ),
+    ]
     const statements = [
       META_TABLE_SQL,
       ...MIGRATIONS.flatMap((migration) =>
-        guardedIndexes.some((guarded) => guarded.join('\n') === migration.statements.join('\n'))
+        guardedForms.some((guarded) => guarded.join('\n') === migration.statements.join('\n'))
           ? []
           : migration.statements,
       ),
@@ -57,7 +68,7 @@ describe('MySQL schema', () => {
     expect(statements.length).toBeGreaterThan(1)
     expect(
       MIGRATIONS.filter(({ statements: s }) => /^SET @durablerun_ddl/.test(s[0] ?? '')),
-    ).toHaveLength(guardedIndexes.length)
+    ).toHaveLength(guardedForms.length)
     for (const statement of statements) {
       expect(statement, 'mutation-verdict:construction:mysql-migration-statements-repeat').toMatch(
         /^CREATE TABLE IF NOT EXISTS /,
@@ -131,6 +142,7 @@ describe('MySQL migrations are append-only', () => {
     7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     8: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
     9: 'dcf5d703193f6bf5e8b5ba2f8cf06110f51b238b99b40c193b8f503b728f3275',
+    10: '1434956c5819c537766506da6c41c037b2d7dc56f8521adda2d98853bb0051c2',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

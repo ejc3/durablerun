@@ -58,6 +58,7 @@ const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'wait/untimed-wait-timed-run': 'wait-timeout-availability-mismatch',
   'wait/timed-wait-untimed-run': 'wait-timeout-availability-mismatch',
   'wait/deadlines-differ': 'wait-timeout-availability-mismatch',
+  'event/payload-null': 'event-payload-null',
   'payload/event-missing': 'wake-payload-mismatch',
   'payload/stored-payload-null': 'wake-payload-mismatch',
   'payload/stored-payload-different': 'wake-payload-mismatch',
@@ -426,6 +427,16 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   const events = new Map(
     rows.events.map((row) => [eventKey(text(row, 'queue'), text(row, 'event_name')), row]),
   )
+  for (const event of rows.events) {
+    // An await that timed out answers with no payload, so an event that held SQL NULL would
+    // read as a timeout. Every dialect's schema refuses the write, and this is its twin for
+    // a database whose schema was tampered with or never reached that version.
+    if (event.payload === null) {
+      const queue = text(event, 'queue')
+      const eventName = text(event, 'event_name')
+      add('event/payload-null', `events/${queue}/${eventName}`, ['events', queue, eventName])
+    }
+  }
   const runsByTask = new Map<string, SqlRow[]>()
   for (const run of rows.runs) {
     const taskId = text(run, 'task_id')
