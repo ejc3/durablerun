@@ -1308,12 +1308,15 @@ are load-bearing):
      still sees the literal it was declared with. A state a shared read
      compares from nodes is written inline (`literalValue`), and a batch of
      reads refuses a state or status column compared with a bound value, whose
-     placeholder no partial index can match. The bound value is read where the
-     builder puts one: alone on the right of a comparison, in parentheses, or
-     as a member of a list under IN or NOT IN, where the builder binds every
-     plain value. A list of inline literals is admitted, because that is the
-     form a partial index matches. A state bound inside a store fragment is
-     not read, because a tree carries a fragment as text. MySQL builds its own `next-wake`,
+     placeholder no partial index can match. The bound value is found wherever
+     it stands below the right side of the test, as the column is found below
+     the left: alone, in parentheses, in a list under IN or NOT IN, where the
+     builder binds every plain value, or under a cast, a call, a CASE or a
+     value fragment that carries a bind. A subquery on the right is its own
+     statement and is not read into. A list of inline literals is admitted,
+     because that is the form a partial index matches. A comparison written
+     whole inside a store fragment is not read, because a tree carries a
+     fragment as text. MySQL builds its own `next-wake`,
      because it does not answer MIN from an index: each leg is a store fragment
      holding a scalar subquery and its index hint, so the grammar lists no
      hint, as for the claim. The libSQL and MySQL query-plan suites pin these

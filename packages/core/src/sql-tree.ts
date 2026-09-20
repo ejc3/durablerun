@@ -1300,17 +1300,20 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
 /** The columns a partial index is declared on by value: a run's or a task's state, and a checkpoint's status. */
 const STATE_COLUMNS = ['state', 'status']
 const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true
-/** Whether a list under IN or NOT IN holds a bound value. The builder binds every member of a list of plain values. */
-const listHoldsBind = (node: OperationNode): boolean =>
-  PrimitiveValueListNode.is(node) || (ValueListNode.is(node) && node.values.some(isBind))
 
 /**
- * Whether a test holds a state column on its left and a bound value on its right, the way
- * the builder writes one: alone, in parentheses, or as a member of a list.
+ * Whether an operand holds a bound value: the value itself, or parentheses, a list, a cast, a
+ * call, a CASE or a fragment around it, found the way `namesColumn` finds a column. The
+ * builder binds every member of a list of plain values. A subquery is its own statement.
  */
+function holdsBind(node: OperationNode): boolean {
+  if (SelectQueryNode.is(node)) return false
+  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)
+}
+
+/** Whether a test holds a state column on its left and a bound value on its right. */
 function comparesStateWithBind(node: BinaryOperationNode): boolean {
-  const right = unwrapParens(node.rightOperand)
-  if (!isBind(right) && !listHoldsBind(right)) return false
+  if (!holdsBind(node.rightOperand)) return false
   return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))
 }
 
@@ -1327,8 +1330,8 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
  * the root, and no schema-qualified table. It lists one set operation, UNION ALL, and
  * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
  * write, so a set operation there is a form nobody considered. A read may not compare a
- * state or status column with a bound value, alone, in parentheses, or in a list under IN,
- * because a partial index is matched by the literal. A transition finds its row by key, so
+ * state or status column with a bound value, wherever it stands below the right side of the
+ * test, because a partial index is matched by the literal. A transition finds its row by key, so
  * it may. An INSERT takes one row of values or one SELECT, with a conflict clause that names
  * its columns (`insertShapeProblem`). It binds what is built from nodes. A store fragment is
  * opaque text, reviewed through the generated corpus.

@@ -522,10 +522,7 @@ describe('the tree rules', () => {
     })
 
     it('is refused in a one-state list under IN', () => {
-      expect(
-        String(problem(runs().where('r.state', 'in', ['running']))),
-        'mutation-verdict:construction:tree-read-state-list-is-read',
-      ).toMatch(BOUND)
+      expect(String(problem(runs().where('r.state', 'in', ['running'])))).toMatch(BOUND)
     })
 
     it('is refused in a list of plain values, every one of which the builder binds', () => {
@@ -546,10 +543,7 @@ describe('the tree rules', () => {
     it('is admitted in a list of inline literals', () => {
       const inline = (eb: Loose) =>
         eb('r.state', 'in', [literalValue('pending'), literalValue('running')])
-      expect(
-        problem(runs().where(inline)),
-        'mutation-verdict:construction:tree-read-state-inline-list-admitted',
-      ).toBeNull()
+      expect(problem(runs().where(inline))).toBeNull()
     })
 
     it('is refused when the bound value stands in parentheses', () => {
@@ -558,6 +552,20 @@ describe('the tree rules', () => {
         String(problem(runs().where(wrapped))),
         'mutation-verdict:construction:tree-read-state-bind-in-parentheses',
       ).toMatch(BOUND)
+    })
+
+    it('is admitted with a subquery on the right, which is its own statement', () => {
+      // The subquery binds a queue. That bind stands in another statement, beside no state.
+      const queued = (eb: Loose) =>
+        eb(
+          'r.state',
+          'in',
+          eb.selectFrom('tasks as t').select('t.state').where('t.queue', '=', 'q'),
+        )
+      expect(
+        problem(runs().where(queued)),
+        'mutation-verdict:construction:tree-read-state-stops-at-a-subquery',
+      ).toBeNull()
     })
 
     it('is refused under a cast, a call, a CASE or a fragment on the right', () => {

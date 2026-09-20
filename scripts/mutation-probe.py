@@ -2448,7 +2448,7 @@ MUTATION_SPECS = [
     (
         "tree-read-state-literal-admitted",
         "packages/core/src/sql-tree.ts",
-        "  if (!isBind(right) && !listHoldsBind(right)) return false\n",
+        "  if (!holdsBind(node.rightOperand)) return false\n",
         "  if (false) return false\n",
         "a read is refused a state written inline, the one form a partial index matches",
     ),
@@ -2481,39 +2481,32 @@ MUTATION_SPECS = [
         "a read may bind the status it compares, which the checkpoints' partial index cannot match",
     ),
     (
-        "tree-read-state-list-is-read",
+        "tree-read-state-stops-at-a-subquery",
         "packages/core/src/sql-tree.ts",
-        "  if (!isBind(right) && !listHoldsBind(right)) return false\n",
-        "  if (!isBind(right)) return false\n",
-        "a read may bind the state it compares inside a list under IN, which no partial index matches",
+        "  if (SelectQueryNode.is(node)) return false\n  return isBind(node)",
+        "  return isBind(node)",
+        "a bind inside a subquery on the right, which stands beside no state, refuses the read",
     ),
     (
         "tree-read-state-plain-list-is-bound",
         "packages/core/src/sql-tree.ts",
-        "  PrimitiveValueListNode.is(node) || (ValueListNode.is(node) && node.values.some(isBind))\n",
-        "  ValueListNode.is(node) && node.values.some(isBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || children(node).some(holdsBind)\n",
         "a list of plain values, every one of which the builder binds, passes for a list that binds nothing",
     ),
     (
         "tree-read-state-list-holds-a-bind",
         "packages/core/src/sql-tree.ts",
-        "  PrimitiveValueListNode.is(node) || (ValueListNode.is(node) && node.values.some(isBind))\n",
-        "  PrimitiveValueListNode.is(node) || (ValueListNode.is(node) && node.values.every(isBind))\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || (children(node).length > 0 && children(node).every(holdsBind))\n",
         "a list passes when one inline member stands beside the bound one",
-    ),
-    (
-        "tree-read-state-inline-list-admitted",
-        "packages/core/src/sql-tree.ts",
-        "  PrimitiveValueListNode.is(node) || (ValueListNode.is(node) && node.values.some(isBind))\n",
-        "  PrimitiveValueListNode.is(node) || ValueListNode.is(node)\n",
-        "a read is refused a list of states written inline, the one form of a list a partial index matches",
     ),
     (
         "tree-read-state-bind-in-parentheses",
         "packages/core/src/sql-tree.ts",
-        "  const right = unwrapParens(node.rightOperand)\n",
-        "  const right = node.rightOperand\n",
-        "a read may bind the state it compares by standing the value in parentheses",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || false\n",
+        "a read may bind the state it compares by standing the value in parentheses, or under a cast or a call",
     ),
     (
         "tree-raw-fragment-unminted-message",
@@ -9026,11 +9019,11 @@ VERDICTS = {
         "the tree rules a state a read compares holds a checkpoint status to a literal as well",
         "mutation-verdict:construction:tree-read-status-is-a-state",
     ),
-    "tree-read-state-list-is-read": ExpectedVerdict(
+    "tree-read-state-stops-at-a-subquery": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules a state a read compares is refused in a one-state list under IN",
-        "mutation-verdict:construction:tree-read-state-list-is-read",
+        "the tree rules a state a read compares is admitted with a subquery on the right, which is its own statement",
+        "mutation-verdict:construction:tree-read-state-stops-at-a-subquery",
     ),
     "tree-read-state-plain-list-is-bound": ExpectedVerdict(
         "construction",
@@ -9043,12 +9036,6 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules a state a read compares is refused in a list that holds one bound value among inline ones",
         "mutation-verdict:construction:tree-read-state-list-holds-a-bind",
-    ),
-    "tree-read-state-inline-list-admitted": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules a state a read compares is admitted in a list of inline literals",
-        "mutation-verdict:construction:tree-read-state-inline-list-admitted",
     ),
     "tree-read-state-bind-in-parentheses": ExpectedVerdict(
         "construction",
@@ -18112,7 +18099,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 937:
+        if len(MUTATIONS) != 936:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
