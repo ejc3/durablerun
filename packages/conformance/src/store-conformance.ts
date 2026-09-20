@@ -1,3 +1,4 @@
+import { SAGA_PHASE_CHECKPOINT } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { childTaskConformance } from './child-tasks.js'
@@ -12,16 +13,21 @@ import type { StoreFixtureFactory } from './fixture.js'
 import { identifierBoundConformance } from './identifier-bound.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
 import {
+  POISON_ADDRESSED_PROFILES,
   POISON_AGGREGATE_WITNESSES,
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
   POISON_WITNESS_COUNT,
   POISON_WRITE_LABELS,
+  PROBE_STEP_STARTED,
+  type PoisonAddressedProfile,
   type PoisonRelationalTargetRecord,
   type PoisonTargetCase,
   type PoisonTargetProfile,
+  ROLLBACK_TRIED,
   duplicatePoisonWitnessIds,
+  observeCleanAddressedProfile,
   observePoisonAggregateAmbientCase,
   observePoisonAggregateTargetCase,
   runPoisonMatrixCase,
@@ -226,8 +232,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(POISON_WITNESS_COUNT).toBe(146)
       expect(POISON_WRITE_LABELS).toHaveLength(21)
       expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_066)
-      expect(POISON_TARGET_CASES).toHaveLength(50)
-      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
+      expect(POISON_TARGET_CASES).toHaveLength(98)
+      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(83)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
         POISON_TARGET_CASES.length,
       )
@@ -507,6 +513,50 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             observation: {
               label: 'sweep:claim-timeout',
               profile: 'sweep-claim-timeout',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/activate-unactivated',
+            kind: 'observed',
+            observation: {
+              label: 'activate',
+              profile: 'activate-unactivated',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/defer-launch-unactivated',
+            kind: 'observed',
+            observation: {
+              label: 'defer-launch',
+              profile: 'defer-launch-unactivated',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/fail-started-step',
+            kind: 'observed',
+            observation: {
+              label: 'fail',
+              profile: 'fail-started-step',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/fail-rollback-rolling-back',
+            kind: 'observed',
+            observation: {
+              label: 'fail-rollback',
+              profile: 'fail-rollback-rolling-back',
               witness: 'accounting/live-run-not-next',
               conditionIds: ['accounting/live-run-not-next'],
               corruptionDisposition: 'injected',
@@ -1121,6 +1171,42 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
                 profile: 'sweep-claim-timeout',
               },
             },
+            {
+              profile: 'activate-unactivated',
+              kind: 'resolved',
+              result: {
+                label: 'activate',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'activate-unactivated',
+              },
+            },
+            {
+              profile: 'defer-launch-unactivated',
+              kind: 'resolved',
+              result: {
+                label: 'defer-launch',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'defer-launch-unactivated',
+              },
+            },
+            {
+              profile: 'fail-started-step',
+              kind: 'resolved',
+              result: {
+                label: 'fail',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'fail-started-step',
+              },
+            },
+            {
+              profile: 'fail-rollback-rolling-back',
+              kind: 'resolved',
+              result: {
+                label: 'fail-rollback',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'fail-rollback-rolling-back',
+              },
+            },
           ],
           receipt: { result: [], after: receiptBefore },
         })
@@ -1188,22 +1274,86 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         })
       })
 
-      for (const target of POISON_TARGET_CASES) {
-        if (
-          highestOwnedOrdinalTargets.includes(target) ||
-          exhaustedBudgetTargets.includes(target) ||
-          sweepTargets.includes(target) ||
-          fractionalClaimTargets.includes(target) ||
-          relaunchClaimTargets.includes(target)
-        ) {
-          continue
-        }
-        it(`${target.profile} contains ${target.witness.id}`, async () => {
-          await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
-            label: target.label,
-            witness: target.witness.id,
-            profile: target.profile,
+      // A targeted refusal is the corruption's only if the same call acts on the same
+      // profile with nothing corrupt. An arm that names its target shows that here. An arm
+      // that scans has no such control: its cell shows the one call acting on the healthy
+      // trigger, and not on the profile.
+      // Where each clean call leaves the poisoned task: its state, its runs in order, and its
+      // checkpoints. The type asks a new profile for its answer.
+      const cleanEffects = {
+        'activate-unactivated': { task: 'running', runs: ['1 running'], checkpoints: [] },
+        'defer-launch-unactivated': { task: 'sleeping', runs: ['1 sleeping'], checkpoints: [] },
+        'retry-task-failed': { task: 'pending', runs: ['1 failed', '2 pending'], checkpoints: [] },
+        // The failure entered the rolling-back phase where it would have ended the task: the
+        // rollback pass is the task's second run, and the phase marker stands beside the step.
+        'fail-started-step': {
+          task: 'pending',
+          runs: ['1 failed', '2 pending'],
+          checkpoints: [SAGA_PHASE_CHECKPOINT, PROBE_STEP_STARTED],
+        },
+        // The failed rollback ended the task, with its attempt recorded.
+        'fail-rollback-rolling-back': {
+          task: 'failed',
+          runs: ['1 failed'],
+          checkpoints: [ROLLBACK_TRIED, SAGA_PHASE_CHECKPOINT, PROBE_STEP_STARTED],
+        },
+      } as const satisfies Record<
+        PoisonAddressedProfile,
+        { task: string; runs: readonly string[]; checkpoints: readonly string[] }
+      >
+      for (const addressed of POISON_ADDRESSED_PROFILES) {
+        it(`${addressed.profile} admits ${addressed.arm} when nothing is corrupt`, async () => {
+          expect(await observeCleanAddressedProfile(makeFixture, addressed)).toMatchObject({
+            invocation: { status: 'fulfilled' },
+            poisonSubjectUnchanged: false,
+            effect: cleanEffects[addressed.profile],
           })
+        })
+      }
+
+      // One registered mutation for each profile of an arm that names its target removes a
+      // guard its cells reach, and the cell named here owns it, so the audit keeps showing
+      // that the profile's cells can fail. A marker is a literal because the audit reads it
+      // from this source.
+      const targetVerdicts: Readonly<Record<string, string>> = {
+        'counter-bound/run-relaunch-count/activate-unactivated':
+          'mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound',
+        'counter-bound/run-relaunch-count/defer-launch-unactivated':
+          'mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission',
+        'counter-bound/task-infra-retries/retry-task-failed':
+          'mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound',
+        'accounting/below-top-minus-one/fail-started-step':
+          'mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal',
+        'accounting/below-top-minus-one/fail-rollback-rolling-back':
+          'mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal',
+      }
+      const generatedTargets = POISON_TARGET_CASES.filter(
+        (target) =>
+          !highestOwnedOrdinalTargets.includes(target) &&
+          !exhaustedBudgetTargets.includes(target) &&
+          !sweepTargets.includes(target) &&
+          !fractionalClaimTargets.includes(target) &&
+          !relaunchClaimTargets.includes(target),
+      )
+      const strandedVerdicts = Object.keys(targetVerdicts).filter(
+        (id) => !generatedTargets.some((target) => target.id === id),
+      )
+      if (strandedVerdicts.length > 0) {
+        throw new Error(`no generated poison target case owns ${strandedVerdicts.join(', ')}`)
+      }
+      for (const target of generatedTargets) {
+        it(`${target.profile} contains ${target.witness.id}`, async () => {
+          const { id, label, profile, witness } = target
+          expect(await captureTargetObservations([target]), targetVerdicts[id]).toEqual([
+            {
+              id,
+              label,
+              profile,
+              witness: witness.id,
+              kind: 'resolved',
+              result: { label, profile, witness: witness.id },
+            },
+          ])
         })
       }
     })

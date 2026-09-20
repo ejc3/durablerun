@@ -9516,7 +9516,7 @@ VERDICTS = {
     "successor-carries-every-column": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule fail: every run it inserts carries what its parent carried",
         "mutation-verdict:behavior:successor-carries-every-column",
         "packages/conformance/src/suite.ts",
     ),
@@ -14918,6 +14918,120 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The poison matrix's target profiles for the arms that name their target (DESIGN.md, the
+# poison matrix; packages/conformance/src/poison-matrix.ts). A profile seeds the poisoned
+# target in the state in which its label acts on a target with nothing corrupt, so its cells
+# reach the guards behind the label's state condition. One mutation for each profile removes
+# a guard its cells reach, and one generated cell of that profile owns it, so the audit keeps
+# showing that the profile's cells can fail. The first two edits are the ones
+# `activate-requires-relaunch-bound` and `defer-launch-requires-claim-receipt-admission` make,
+# which hand-written cases own. The third is narrower than `retry-task-requires-counters-in-range`,
+# which removes three conjuncts at once where this removes the one on infrastructure retries.
+# The last two are one edit, which each failure label's own cell owns.
+MUTATION_SPECS.extend(
+    (
+        (
+            "poison-target-activate-holds-relaunch-bound",
+            "packages/store-libsql/src/store.ts",
+            "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n",
+            "    AND 1 = 1\n",
+            "the poison matrix's activate target activates a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+            "packages/store-libsql/src/store.ts",
+            "        admission: sqlFragment(claimReceiptAdmission()),",
+            "        admission: sqlFragment('1 = 1'),",
+            "the poison matrix's defer-launch target parks a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+            "packages/store-libsql/src/store.ts",
+            "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n",
+            "         AND 1 = 1\n",
+            "the poison matrix's retry-task target revives a failed task whose infrastructure retries are out of range",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail target places a rollback pass for a run below a higher owned ordinal",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail-rollback target ends a task for a run below a higher owned ordinal",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment activate-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-activate-holds-relaunch-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment defer-launch-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment retry-task-failed contains counter-bound/task-infra-retries",
+            "mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-started-step contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-rollback-rolling-back contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -19562,7 +19676,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1022:
+        if len(MUTATIONS) != 1027:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

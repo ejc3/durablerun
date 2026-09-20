@@ -326,57 +326,17 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def retire(repaired, candidate, names, inventory):
-              # Remove each named entry, and its name from the verdict group that lists it, for a
-              # mutation whose code this tree deleted. A group left with no name goes with its
-              # verdict. The entry sits one level inside a block, which is the indentation matched
-              # here. This tree must no longer register the name, and the inventory assertion
-              # drops by the number removed.
-              for name in names:
-                  if f'"{name}"' in candidate:
-                      raise SystemExit(f'{name}: the bridge retires only an entry this tree no longer registers.')
-                  opening = f'        (\n            "{name}",\n            "packages/'
-                  if repaired.count(opening) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  start = repaired.index(opening)
-                  closing = '\n        ),\n'
-                  repaired = repaired[:start] + repaired[repaired.index(closing, start) + len(closing):]
-                  listed = f'            "{name}",\n'
-                  if repaired.count(listed) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one verdict group that lists the entry.')
-                  at = repaired.index(listed)
-                  repaired = repaired[:at] + repaired[at + len(listed):]
-                  names_open = at - len('        (\n')
-                  emptied = '        (\n        ),\n    ),\n'
-                  if repaired.startswith(emptied, names_open):
-                      group = repaired.rindex('    (\n        ExpectedVerdict(\n', 0, names_open)
-                      repaired = repaired[:group] + repaired[names_open + len(emptied):]
-                  if f'"{name}"' in repaired:
-                      raise SystemExit(f'{name}: the base registry still names the retired entry.')
-              size = f'        if len(MUTATIONS) != {inventory}:\n'
-              if repaired.count(size) != 1:
-                  raise SystemExit('the bridge requires the base inventory size assertion.')
-              return repaired.replace(size, f'        if len(MUTATIONS) != {inventory - len(names)}:\n')
-          if digest == '404f2a49092d87011af7bd216da83c559f83a14e4db62005e37d2c5a79d20373':
-              # `failRollback` takes the step, and the store names and counts a rollback's
-              # attempt record. The SQL check of a caller's name went with the name, so the one
-              # base entry that mutated that check is retired with its verdict group. No other
-              # base entry's text moved. Eleven mutations hold the new lines, and they answer to
-              # seven verdict markers that are newer than the base. The SDK's count of its own
-              # attempts decides only a rollback's budget now, so this tree lists that base
-              # mutation under the case where a budget is spent, and the base's listing of it
-              # still names a case and a marker this tree has.
-              repaired = retire(previous, candidate, (
-                  'saga-attempt-record-name-is-checked',
-              ), 1012)
-              repaired = exempt(repaired, candidate, (
-                  "mutation-verdict:behavior:saga-child-spawn-is-frozen",
-                  "mutation-verdict:behavior:saga-store-counts-failed-attempts",
-                  "mutation-verdict:behavior:saga-store-names-the-attempt-record",
-                  "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
-                  "mutation-verdict:behavior:saga-sdk-budget-is-counted",
-                  "mutation-verdict:behavior:saga-store-count-saturates",
-                  "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+          if digest == '2ebefc182f8944fc304c6366c5f75acec1c24ebe723e92556a06f110749b6b57':
+              # The poison matrix's target profiles for the arms that name their target
+              # register one mutation each, owned by a generated cell of the profile. The
+              # base predates them, so their verdict markers are exempted. No base entry is
+              # re-aimed, because this tree changes no line a base mutation quotes.
+              repaired = exempt(previous, candidate, (
+                  'mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound',
+                  'mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission',
+                  'mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound',
+                  'mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal',
+                  'mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
