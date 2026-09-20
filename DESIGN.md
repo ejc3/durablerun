@@ -2491,8 +2491,26 @@ Dialect implementations:
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
+| names | TEXT is BINARY: a name compares and orders by its bytes | `utf8mb4_0900_bin`: a name compares and orders by its code points, which is the order of its bytes | TEXT under the database's collation: equal names are the same bytes, and their order is the collation's |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |
 | scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
+
+**A name's equality is portable, and its order is not.** A durable name, which
+is a checkpoint name, an id or a queue, is equal on all three dialects exactly
+when its bytes are: libSQL's TEXT is BINARY, MySQL's indexed strings are
+`utf8mb4_0900_bin`, and a PostgreSQL database's collation is deterministic,
+under which equal strings are the same bytes. Order differs. libSQL and MySQL
+order a name by its bytes. PostgreSQL compares and orders it under the
+database's collation, which the engine does not choose. So a range over a
+name, or an ORDER BY on one, does not mean on PostgreSQL what it means on the
+other two. Measured on PostgreSQL 17: under `COLLATE "und-x-icu"` neither
+`$started:` nor `$started:a` lies in the range from `$started:` up to
+`$started;`, because that collation sorts `;` before `:` and the range is
+empty, and under `COLLATE "C"` both do. A server whose C library sorts by
+bytes whatever the locale is named, as the musl build that the local and CI
+servers run does, cannot show the difference. That is why a saga's reads find
+the names under a prefix as a range of the key on libSQL and MySQL, and by a
+test of each name on PostgreSQL (§3.10).
 
 **What MySQL 8 makes a store do (measured against 8.4 by `store-mysql`).** Every
 shared statement tree and every labeled batch runs on MySQL from the same tree.
@@ -2861,7 +2879,20 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   and idempotency keys outside the portable durable-string domain return 400
   before store I/O. Emit accepts
   `{eventName, payload?}`. Inspection returns the state plus the canonically
-  decoded result/failure when present. Every response is stable JSON with
+  decoded result/failure when present, and for a task whose saga began, how it
+  ended: `rollback.outcome`, with `rollback.error` decoded the same way when a
+  rollback's failure ended the task (§3.10). The SDK stores JSON, and the
+  store's port takes any text, so a stored value that is not JSON is answered
+  as its text under a key of its own, `resultText`, `failureText` or
+  `rollback.errorText`, in place of the decoded key. A value can also parse
+  and still not serialize, as JSON nested deeper than the serializer can walk,
+  and the answer is then sent with every stored value in it as its text. The
+  route returns a stored text whole and sets no bound of its own on its size.
+  An older client that reads a decoded key finds it absent for such a value,
+  where it found a 500, and a client tells such a value from no value by its
+  text key. No value of a task that ended ever changes, so a route that threw
+  on one would answer 500 for that task for good. Every response is stable
+  JSON with
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
@@ -3422,9 +3453,30 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 - **The rollback outcome is derived, and stored nowhere.** When a task result
   is read, the outcome is `failed` exactly when a step that started has no
   `$rollback:` checkpoint, and `complete` otherwise, for an ended task whose
-  saga began. `errorJson` is the attempt record of a rollback that did not
-  run. It cannot disagree with the checkpoints, and no checkpoint of an ended
-  task changes.
+  saga began. `errorJson` is the failure of the rollback that ended the task:
+  the attempt record the task's last run wrote. An attempt record is written
+  only by the batch that fails its run, and a failure with budget left places
+  a pass, which becomes the task's last run. So an attempt that ended nothing
+  is never named, and a saga that a cancellation or a cap halts after such an
+  attempt names no rollback error. What an operator loses is that attempt's
+  error in the task's result. It is still in the `$rollback-tries:<step>`
+  record, which `getCheckpoints` reads. The outcome cannot disagree with the
+  checkpoints, and no checkpoint of an ended task changes.
+- **Who sees the rollback outcome.** `getTaskResult` reads it, and the hosted
+  inspect route shows it beside the state. A parent that awaits the child does
+  not see it, and the completion event is why. The wire is not the obstacle. A
+  build that predates the field reads the payload's state and the two fields
+  it knows, and ignores any other, so an added field would ride through a
+  rolling deploy, and a core test holds that. The writer is the obstacle. A
+  terminal batch binds a payload that was built before the batch ran, and the
+  rollback outcome is a fact only that batch's SQL knows: whether the saga
+  began, and whether a rollback is still owed, are read from the checkpoints
+  inside the batch, in a cancellation and a sweep as much as in a failure.
+  Choosing among bound payloads in SQL would need the saga predicates in the
+  select list of the event's follow-on insert, which the statement tree
+  refuses as raw fragments, or a second representation of those predicates as
+  tree nodes. Until the predicates are nodes, the outcome is read from the
+  child's task result, and the parent's view stays open in BUILD.md.
 - **A saga with nothing to roll back skips the phase.** The task fails as it
   did before sagas, and its result carries no rollback field. The model calls
   that saga complete at entry and allows the skip. The engine records nothing
@@ -3476,8 +3528,27 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   decides whether a rollback is owed from its own rows. A caller's hint that
   none is would be a second account of those rows, which a worker of an older
   build could not give. A test pins the count for each batch a saga touches.
-  Every saga read reaches the checkpoints by primary key with the task bound,
-  and query plan pins hold that over every statement of those batches.
+  A saga read reaches its checkpoints by their key, the task and the name. One
+  name is one row of it. The names under a prefix, which are the start markers
+  and the attempt records, are one range of it on libSQL and MySQL, where a
+  name compares by its bytes, so the failure of a task and a read of its
+  result cost the same whatever the task has checkpointed. On PostgreSQL a
+  name orders under the database's collation and that range is not sound
+  (§3.4), so there the names are tested one by one among the task's own
+  checkpoints: a walk keyed by the task, which grows with what the task has
+  checkpointed. There the attempt record is read only for a failed task whose
+  saga began, which spares every other result read that walk, and the plan pin
+  holds the guard. libSQL and MySQL carry no such guard: their read is one
+  seek into a range of the key, empty for a task with no attempt record, so a
+  guard would change no result of a history the store can reach and spare no
+  walk, and nothing could hold it. On rows no history builds the three
+  differ. A task row set to `cancelled` by hand under a running pass, whose
+  rollback then fails for good, names that rollback's error on libSQL and
+  MySQL and none on PostgreSQL. The engine's invariants name those rows while
+  the pass runs, as a terminal task with a live run, and nothing names them
+  after it.
+  A plan pin on each dialect holds what that dialect does, over the statements
+  the real operations send.
 - **A known limit.** The store records the attempt count the SDK hands it and
   does not check it against the last one, and nothing caps how many passes a
   task may take. Rollback budgets are the SDK's to keep.
