@@ -182,13 +182,18 @@ describe('the fault matrix judges the rows a cell leaves by every checker', () =
     const lost = judgedAtClose(losingTheEventOf('ended-child'))
     const outcome = await cellOutcome(lost.makeFixture, 'cancel-task', 'crash-before')
     const another = await cellOutcome(losingTheEventOf('child'), 'cancel-task', 'crash-before')
-    expect({
-      theOlderBuildsChild: outcome.includes(missingCompletionEvent(lost.judged().olderBuildsChild))
-        ? 'rejected, naming the child'
-        : outcome,
-      anotherTask: another.includes('terminal-task-without-completion-event')
-        ? 'rejected'
-        : another,
-    }).toEqual({ theOlderBuildsChild: 'rejected, naming the child', anotherTask: 'rejected' })
+    expect(
+      {
+        theOlderBuildsChild: outcome.includes(
+          missingCompletionEvent(lost.judged().olderBuildsChild),
+        )
+          ? 'rejected, naming the child'
+          : outcome,
+        anotherTask: another.includes('terminal-task-without-completion-event')
+          ? 'rejected'
+          : another,
+      },
+      'mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled',
+    ).toEqual({ theOlderBuildsChild: 'rejected, naming the child', anotherTask: 'rejected' })
   })
 })

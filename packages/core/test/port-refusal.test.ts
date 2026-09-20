@@ -61,15 +61,18 @@ describe("a port's refusal of what its caller passed", () => {
   })
 
   it('names its whole family in one predicate, and no other error', () => {
-    expect({
-      refusal: isPortRefusal(new PortRefusalError('a reserved key')),
-      durableString: isPortRefusal(new InvalidDurableStringError('a NUL')),
-      childAwait: isPortRefusal(new ChildAwaitRefusedError('child', 'other-queue')),
-      bareRangeError: isPortRefusal(new RangeError('a stored row that cannot be read')),
-      bareTypeError: isPortRefusal(new TypeError('a defect')),
-      plainError: isPortRefusal(new Error('anything')),
-      notAnError: isPortRefusal({ name: 'PortRefusalError' }),
-    }).toEqual({
+    expect(
+      {
+        refusal: isPortRefusal(new PortRefusalError('a reserved key')),
+        durableString: isPortRefusal(new InvalidDurableStringError('a NUL')),
+        childAwait: isPortRefusal(new ChildAwaitRefusedError('child', 'other-queue')),
+        bareRangeError: isPortRefusal(new RangeError('a stored row that cannot be read')),
+        bareTypeError: isPortRefusal(new TypeError('a defect')),
+        plainError: isPortRefusal(new Error('anything')),
+        notAnError: isPortRefusal({ name: 'PortRefusalError' }),
+      },
+      'mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal',
+    ).toEqual({
       refusal: true,
       durableString: true,
       childAwait: true,

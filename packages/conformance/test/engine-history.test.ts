@@ -36,7 +36,10 @@ describe('the one helper that judges the rows of a history', () => {
           args: [NOW],
         },
       ])
-      expect(await engineHistoryViolations(f.raw)).toEqual(
+      expect(
+        await engineHistoryViolations(f.raw),
+        'mutation-verdict:behavior:history-helper-runs-the-child-task-checker',
+      ).toEqual(
         expect.arrayContaining([
           'run-owner-missing: orphan',
           'terminal-task-without-completion-event: ended',

@@ -80,15 +80,18 @@ describe('the completion event contract', () => {
       childStamp: null,
       liveTask: sqlFragment("t.state IN ('pending')"),
     }
-    expect({
-      aCallersEvent: refusal(() =>
-        // @ts-expect-error a caller's event carries no task, so it is not a completion event's name
-        materializeTaskDoneCas({ ...binds, eventName: EventName.fromPort('emitEvent', 'paid') }),
-      ),
-      aCompletionEvent: refusal(() =>
-        materializeTaskDoneCas({ ...binds, eventName: EventName.taskDone('child') }),
-      ),
-    }).toEqual({ aCallersEvent: 'Error', aCompletionEvent: 'accepted' })
+    expect(
+      {
+        aCallersEvent: refusal(() =>
+          // @ts-expect-error a caller's event carries no task, so it is not a completion event's name
+          materializeTaskDoneCas({ ...binds, eventName: EventName.fromPort('emitEvent', 'paid') }),
+        ),
+        aCompletionEvent: refusal(() =>
+          materializeTaskDoneCas({ ...binds, eventName: EventName.taskDone('child') }),
+        ),
+      },
+      'mutation-verdict:behavior:recording-statement-takes-a-completion-event-only',
+    ).toEqual({ aCallersEvent: 'Error', aCompletionEvent: 'accepted' })
   })
 
   it('refuses an event name that is not a string as invalid input, not as a crash', () => {

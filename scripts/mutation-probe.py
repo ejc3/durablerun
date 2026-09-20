@@ -6792,6 +6792,41 @@ MUTATION_SPECS.extend(
             "a run activated again keeps its old place in line and is let go before an older run",
         ),
         (
+            "recording-statement-takes-a-completion-event-only",
+            "packages/core/src/statements/events.ts",
+            "    if (childTaskId === null) {\n",
+            "    if (childTaskId === undefined) { // MUTATION\n",
+            "a recording batch that is handed a caller's event is sent keyed on no task, writes nothing, and says nothing",
+        ),
+        (
+            "port-refusal-family-holds-the-durable-string-refusal",
+            "packages/core/src/port-refusal.ts",
+            "    error instanceof InvalidDurableStringError ||\n",
+            "",
+            "a host answers a string no store can keep, or a name wider than an identifier, as a fault of its own",
+        ),
+        (
+            "history-helper-runs-the-child-task-checker",
+            "packages/conformance/src/engine-history.ts",
+            "    ...(await childTaskViolations(raw)),\n",
+            "",
+            "every surface that judges its rows through the one helper stops seeing a terminal task with no completion event",
+        ),
+        (
+            "libsql-won-fail-forgets-the-run",
+            "packages/store-libsql/src/store.ts",
+            "    if (won !== 'fail') throw await this.refusal(failure.operation, runId)\n    this.runTasks.forget(runId)\n",
+            "    if (won !== 'fail') throw await this.refusal(failure.operation, runId)\n",
+            "a store keeps the task of every run it failed until 1,024 newer activations push it out",
+        ),
+        (
+            "fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
+            "packages/conformance/src/fault-matrix.ts",
+            "      .filter((task) => task.state === 'cancelled' && endedByOlderBuild.has(String(task.task_id)))\n",
+            "      .filter((task) => endedByOlderBuild.has(String(task.task_id)))\n",
+            "the fault matrix cannot see an ordinary batch lose the completion event of the child the older build never ended",
+        ),
+        (
             "task-done-event-first-write-wins",
             "packages/core/src/statements/events.ts",
             "                  .where('e.event_name', '=', eventName),\n",
@@ -11765,6 +11800,62 @@ for _verdict, _names in (
         (
             "run-task-memo-is-bounded",
             "run-task-memo-refreshes-a-told-run",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/child-tasks.test.ts",
+            "the completion event contract records a completion event only: the recording statement takes no other name, by type and when built",
+            "mutation-verdict:behavior:recording-statement-takes-a-completion-event-only",
+        ),
+        (
+            "recording-statement-takes-a-completion-event-only",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-refusal.test.ts",
+            "a port's refusal of what its caller passed names its whole family in one predicate, and no other error",
+            "mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal",
+        ),
+        (
+            "port-refusal-family-holds-the-durable-string-refusal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/engine-history.test.ts",
+            "the one helper that judges the rows of a history names a defect of each of its three checkers",
+            "mutation-verdict:behavior:history-helper-runs-the-child-task-checker",
+        ),
+        (
+            "history-helper-runs-the-child-task-checker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "child task conformance [libsql] forgets the task of a run once its terminal batch has ended the run",
+            "mutation-verdict:behavior:a-won-terminal-write-forgets-its-run",
+            "packages/conformance/src/child-tasks.ts",
+        ),
+        (
+            "libsql-won-fail-forgets-the-run",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/fault-matrix-history-checkers.test.ts",
+            "the fault matrix judges the rows a cell leaves by every checker holds the child to the rule in a cell where the older build never ended it",
+            "mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
+        ),
+        (
+            "fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
         ),
     ),
     (
@@ -18287,7 +18378,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 952:
+        if len(MUTATIONS) != 957:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

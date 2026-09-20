@@ -526,7 +526,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
         recorded.labels.length = 0
         askedAgain[name] = { refusal: await refusalName(end(run)), labels: [...recorded.labels] }
       }
-      expect(askedAgain).toEqual({
+      expect(askedAgain, 'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run').toEqual({
         complete: { refusal: 'LeaseLostError', labels: ['run-task', 'complete', 'refusal-state'] },
         fail: { refusal: 'LeaseLostError', labels: ['run-task', 'fail', 'refusal-state'] },
         'fail with a retry': {
