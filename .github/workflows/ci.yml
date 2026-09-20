@@ -310,18 +310,30 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
-              # The invariant library gained a width condition, and the replay-equivalence
-              # harness and a fuzz walk each own one mutation of a hold: five mutations, under
-              # four verdict markers that are newer than this registry. Nothing is re-aimed:
-              # every find of this registry still occurs exactly once in this tree. The arm is
-              # keyed on main's registry as of the merge of PR4.4c, whose own arm it
-              # replaces.
+          if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
+              # The stale-token column registers a mutation for each comparison it holds:
+              # the claim token of every call that presents one, the generation of a claim
+              # receipt, and the generation a lease sweep's scan read. The base predates
+              # them all, so their verdict markers are exempted. No base entry is re-aimed,
+              # because this tree changes no line a base mutation quotes.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:identifier-over-width-read-in-every-column',
-                  'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
-                  'mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call',
-                  'mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width',
+                  "mutation-verdict:behavior:stale-token-spawn-of-a-child",
+                  "mutation-verdict:behavior:stale-token-activate",
+                  "mutation-verdict:behavior:stale-token-defer-launch",
+                  "mutation-verdict:behavior:stale-token-heartbeat",
+                  "mutation-verdict:behavior:stale-token-reschedule",
+                  "mutation-verdict:behavior:stale-token-suspend",
+                  "mutation-verdict:behavior:stale-token-await-event",
+                  "mutation-verdict:behavior:stale-token-record-task-done",
+                  "mutation-verdict:behavior:stale-token-complete",
+                  "mutation-verdict:behavior:stale-token-fail",
+                  "mutation-verdict:behavior:stale-token-fail-rollback",
+                  "mutation-verdict:behavior:stale-token-expire-lease-now",
+                  "mutation-verdict:behavior:stale-token-set-checkpoint",
+                  "mutation-verdict:behavior:stale-generation-activate",
+                  "mutation-verdict:behavior:stale-generation-defer-launch",
+                  "mutation-verdict:behavior:stale-scan-sweep-lost-launch",
+                  "mutation-verdict:behavior:stale-scan-sweep-claim-timeout",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

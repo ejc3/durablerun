@@ -119,6 +119,34 @@ export const STALE_CALLER_CASES: readonly CallForm[] = CALL_FORMS.filter(
   ({ parts }) => parts.length > 0,
 )
 
+/**
+ * The registered mutation that removes each comparison, by the call it removes it from.
+ * A marker is a literal because the mutation audit reads it from this source. The
+ * enrollment case holds both tables to the derived column, so a call that joins the
+ * column fails there until the mutation that unfences it is registered.
+ */
+const VERDICTS: Record<ClaimPart, Readonly<Record<string, string>>> = {
+  token: {
+    'spawn of a child': 'mutation-verdict:behavior:stale-token-spawn-of-a-child',
+    activate: 'mutation-verdict:behavior:stale-token-activate',
+    'defer-launch': 'mutation-verdict:behavior:stale-token-defer-launch',
+    heartbeat: 'mutation-verdict:behavior:stale-token-heartbeat',
+    reschedule: 'mutation-verdict:behavior:stale-token-reschedule',
+    suspend: 'mutation-verdict:behavior:stale-token-suspend',
+    'await-event': 'mutation-verdict:behavior:stale-token-await-event',
+    'record-task-done': 'mutation-verdict:behavior:stale-token-record-task-done',
+    complete: 'mutation-verdict:behavior:stale-token-complete',
+    fail: 'mutation-verdict:behavior:stale-token-fail',
+    'fail-rollback': 'mutation-verdict:behavior:stale-token-fail-rollback',
+    'expire-lease-now': 'mutation-verdict:behavior:stale-token-expire-lease-now',
+    'set-checkpoint': 'mutation-verdict:behavior:stale-token-set-checkpoint',
+  },
+  generation: {
+    activate: 'mutation-verdict:behavior:stale-generation-activate',
+    'defer-launch': 'mutation-verdict:behavior:stale-generation-defer-launch',
+  },
+}
+
 type Outcome = { kind: 'resolved'; value: unknown } | { kind: 'rejected'; error: string }
 
 const outcomeOf = (call: Promise<unknown>): Promise<Outcome> =>
@@ -195,6 +223,11 @@ const SCAN_READS_A_GENERATION = {
   'sweep:claim-timeout': true,
 } as const satisfies Record<SweepLabel, boolean>
 
+const SCAN_VERDICTS: Partial<Record<SweepLabel, string>> = {
+  'sweep:lost-launch': 'mutation-verdict:behavior:stale-scan-sweep-lost-launch',
+  'sweep:claim-timeout': 'mutation-verdict:behavior:stale-scan-sweep-claim-timeout',
+}
+
 /** An executor whose sweep scan reports `runId` one claim later than the run stands. */
 function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
   let rewritten = 0
@@ -226,6 +259,10 @@ const fixtureName = (kind: string, name: string) => `${kind}-${name.replaceAll('
 export function staleTokenConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`stale-token column [${dialect}] (write label x caller that does not hold the claim)`, () => {
     it('enrolls exactly the calls that present a claim', () => {
+      const presenting = (part: ClaimPart) =>
+        STALE_CALLER_CASES.filter(({ parts }) => parts.includes(part))
+          .map(({ name }) => name)
+          .sort()
       expect(
         Object.fromEntries(STALE_CALLER_CASES.map(({ name, parts }) => [name, parts])),
       ).toEqual({
@@ -245,15 +282,24 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       })
       expect(STALE_CALLER_CASES).toHaveLength(13)
       expect({
+        token: Object.keys(VERDICTS.token).sort(),
+        generation: Object.keys(VERDICTS.generation).sort(),
         answeredRefusalsOutsideTheColumn: Object.keys(ANSWERED_REFUSALS).filter(
           (name) => !STALE_CALLER_CASES.some((form) => form.name === name),
         ),
         sweeps: CALL_FORMS.filter(({ method }) => method === 'sweep')
           .map(({ name }) => name)
           .sort(),
+        scanVerdicts: Object.keys(SCAN_VERDICTS).sort(),
       }).toEqual({
+        token: presenting('token'),
+        generation: presenting('generation'),
         answeredRefusalsOutsideTheColumn: [],
         sweeps: Object.keys(SCAN_READS_A_GENERATION).sort(),
+        scanVerdicts: Object.entries(SCAN_READS_A_GENERATION)
+          .filter(([, reads]) => reads)
+          .map(([label]) => label)
+          .sort(),
       })
     })
 
@@ -268,7 +314,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
             for (const [who, caller] of Object.entries(STALE_CALLERS[part](holder))) {
               answers[who] = await outcomeOf(invoke(form.label, f.store, caller))
             }
-            expect({ answers, rows: await snapshot(f.raw) }).toEqual({
+            expect({ answers, rows: await snapshot(f.raw) }, VERDICTS[part][form.name]).toEqual({
               answers: Object.fromEntries(
                 Object.keys(answers).map((who) => [who, refusalOf(form)]),
               ),
@@ -309,7 +355,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
           )
           expect(scan.rewritten() > 0, 'whether the scan handed the write a generation').toBe(reads)
           if (!reads) return
-          expect({ swept, rows: await snapshot(f.raw) }).toEqual({
+          expect({ swept, rows: await snapshot(f.raw) }, SCAN_VERDICTS[label]).toEqual({
             swept: { kind: 'resolved', value: [] },
             rows: before,
           })
