@@ -27,6 +27,13 @@
  * all the same. Over every nest: a step that runs once for each row of another must be
  * keyed, and the step it runs once for each row of must be keyed or due.
  *
+ * An UPDATE or a DELETE is held to two lines more, over the table it writes, which its
+ * text names. Its plan must have a step over that table: a DELETE with no WHERE takes
+ * SQLite's truncate path and plans as no rows at all, so no line above has a step to judge.
+ * And that step may not be a due range, because a write carries no LIMIT, so a range over
+ * what is due takes all of it at once. An INSERT of values also plans as no rows, which is
+ * why the two lines go by the statement's kind.
+ *
  * No table is excused, so there is no list of tables to keep. `meta`, which holds the
  * clock, is read by its key, and `key` stands in the first list. A step that reads no
  * table is not a walk of one: `json_each` reads a value of the row that drives it, and a
@@ -97,6 +104,8 @@ const BODY = /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/
 const SELECTS =
   /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY|(?:UNION|INTERSECT|EXCEPT)(?: ALL| USING TEMP B-TREE)?)$/
 const SORTS = /^USE TEMP B-TREE FOR /
+/** An UPDATE or a DELETE, by its first words: the table it writes, and its alias there. */
+const WRITE = /^\s*(?:update|delete\s+from)\s+(?:"?\w+"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
 const EQUALITY = /^([a-z_]+)=\?$/
 const RANGE = /^([a-z_]+)[<>]\?$/
 
@@ -137,7 +146,46 @@ function tableCalled(name: string, sql: string): string {
   return tables.size > 0 ? [...tables].join(' or ') : name
 }
 
-/** The steps and the nests of one statement's plan, judged. The text only words a fault. */
+/** The table an UPDATE or a DELETE writes, as its text names it. No other statement has one. */
+export function writtenTable(sql: string): string | undefined {
+  return WRITE.exec(sql)?.[1]?.toLowerCase()
+}
+
+/** The steps of a statement's own select: the lines under no subquery, an OR's legs too. */
+function ownSteps(children: readonly Node[]): RegExpExecArray[] {
+  return children.flatMap((node) => {
+    if (node.detail === 'MULTI-INDEX OR') {
+      return node.children.flatMap((leg) => ownSteps(leg.children))
+    }
+    const step = STEP.exec(node.detail)
+    return step ? [step] : []
+  })
+}
+
+/** What is wrong with how a write reaches the table it writes, which no step or nest shows. */
+function writeFaults(own: readonly Node[], sql: string): string[] {
+  const write = WRITE.exec(sql)
+  if (!write) {
+    // A write under a WITH names its table after bodies this does not read, so it is refused.
+    const hidden = /^\s*with\b/i.test(sql) && /\b(?:update|delete)\b/i.test(sql)
+    return hidden ? ['cannot tell which table a write that begins with WITH writes'] : []
+  }
+  const [, table = '', alias = table] = write
+  const names = [table.toLowerCase(), alias.toLowerCase()]
+  const over = ownSteps(own).filter((step) => names.includes((step[2] ?? '').toLowerCase()))
+  if (over.length === 0) {
+    return [`no step of the plan is over ${table}, the table the statement writes`]
+  }
+  const written = `the table the statement writes, and a write carries no LIMIT`
+  return over
+    .filter(([, kind, , access = '']) => kind === 'SEARCH' && reachOf(access) === 'due')
+    .map(([line]) => `${line} :: is a due range over ${table}, ${written}`)
+}
+
+/**
+ * The steps and the nests of one statement's plan, judged, and a write's reach of its table.
+ * The text says what kind of statement it is and words a fault.
+ */
 export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
@@ -236,6 +284,8 @@ export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
     }
     return loops
   }
-  loopsOf(nodes.get(0)?.children ?? [], [])
+  const own = nodes.get(0)?.children ?? []
+  loopsOf(own, [])
+  faults.push(...writeFaults(own, sql))
   return { faults, dueDrivers: [...dueDrivers] }
 }

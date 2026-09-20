@@ -14,7 +14,7 @@ import {
   LibsqlStoreAdmin,
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
-import { type PlanRow, readNests } from './plan-nests.js'
+import { type PlanRow, readNests, writtenTable } from './plan-nests.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -1033,8 +1033,14 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const excused = new Set<string>()
     const drivenByADueRange: Record<string, string[]> = {}
     const textOf = new Map<string, string>()
+    const writes = { read: 0, unread: [] as string[] }
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
+      // The two lines over a write hold only a statement the reader reads as one.
+      if (/^\s*(?:update|delete)\b/i.test(st.sql)) {
+        if (writtenTable(st.sql) === undefined) writes.unread.push(name)
+        else writes.read += 1
+      }
       const reading = await nestsOf(st)
       if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
       textOf.set(name, st.sql)
@@ -1045,6 +1051,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
     // Compared as text, so a failure prints every fault and not a count of them.
     expect(faults.join('\n'), 'mutation-verdict:behavior:plan-nests').toBe('')
+    // Every UPDATE and DELETE a store ships is read as a write, and there are some.
+    expect({ ...writes, read: writes.read > 0 }).toEqual({ read: true, unread: [] })
     // An excuse that nothing needs any more is removed, not kept.
     expect(Object.keys(EXCUSED_NESTS).filter((name) => !excused.has(name))).toEqual([])
     // Named line for line, in both directions: a due range that drives in a statement nobody
@@ -1149,6 +1157,19 @@ describe('every statement a store ships, by the nests of its plan', () => {
         `${expired} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`,
       ],
     ])
+    // A generated statement quotes its table, and is read the same.
+    expect((await read('delete from "waits"')).faults).toEqual([
+      'no step of the plan is over waits, the table the statement writes',
+    ])
+    // A write under a WITH names its table after bodies the reader does not read, so the
+    // reader cannot hold it to either line, and refuses it.
+    const underAWith = await read(
+      `with gone as (select run_id from runs where run_id = ?)
+       delete from waits where run_id in (select run_id from gone)`,
+    )
+    expect(underAWith.faults).toContain(
+      'cannot tell which table a write that begins with WITH writes',
+    )
     // What is no such write: a DELETE by its key, an UPDATE whose OR finds its table through
     // two keys, and an INSERT of values, which also plans as no rows and writes one.
     for (const sql of [
@@ -1161,20 +1182,23 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
-    // A due range that stands alone is no walk, and the list of due ranges names only one
-    // that drives another step. Under no LIMIT it reads everything due at once, as an UPDATE
-    // always does. Pointed the other way it reads the backlog.
-    const everyExpiredLease = await read(
-      `update runs set state = 'failed'
-       where queue = ? and state = 'running' and claim_expires_at_ms <= ?`,
-    )
+    // In a read, a due range that stands alone is no walk, and the list of due ranges names
+    // only one that drives another step. Under no LIMIT it reads everything due at once, and
+    // pointed the other way, as here, it reads the backlog. Over a written table it is refused.
     const everyRunNotYetDue = await read(
       `select run_id from runs where queue = ? and state = 'pending' and available_at_ms > ?`,
     )
-    expect([everyExpiredLease, everyRunNotYetDue]).toEqual([
-      { faults: [], dueDrivers: [] },
-      { faults: [], dueDrivers: [] },
-    ])
+    expect(everyRunNotYetDue).toEqual({ faults: [], dueDrivers: [] })
+    // A write that reaches its table by another entity's key passes: it is bounded by that
+    // entity's rows, the waiters of one event or the checkpoints of one task, as a keyed
+    // read is. One of the two pins this check replaced refused both, because it held each
+    // table to a list of its own keys, and `checkpoints` had none.
+    for (const sql of [
+      'delete from waits where queue = ? and event_name = ?',
+      'delete from checkpoints where task_id = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
     // A statement is planned under the binds its sends carried, and SQLite plans from bound
     // values. Sent with a state the history never sends it with, this one walks.
     expect((await nestsOf(leasesUnder('running'))).faults).toEqual([])
