@@ -335,7 +335,11 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   containing every template section, placeholders filled, findings table
   non-empty, citing only commits on the PR's branch (an id in prose that
   names no commit of the repository is printed as not judged), its red and
-  fix commits the PR's own, real, distinct, and ordered. Run
+  fix commits the PR's own, real, and ordered, a red before some fix. A
+  commit under both labels is what the label it comes first after says, and
+  first after both, or after neither, it is refused. A red line may cite no
+  commit when the round has no red test of its own, and a fixes line always
+  cites one. Run
   `scripts/review-attest.sh --check-postmortem <path>` before every push of
   a branch that has a postmortem, because a rebase re-hashes every commit it
   cites, and add `--prove-reds` to run the probe each red names. The
