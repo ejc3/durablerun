@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
+          if digest == 'd7d085bc42e168e15c6203ab9f8e5a12904a114a5a942b0a51baebd89c8c1d0e':
               # The plan check over every statement the libSQL store ships registers one
               # mutation, a read that joins its task by the queue alone, and the base
               # predates its verdict marker, which is exempted. No base entry is re-aimed,

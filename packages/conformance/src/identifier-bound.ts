@@ -8,11 +8,10 @@ import {
   type SqlExecutor,
   TERMINAL_STATES,
   childSpawnKey,
-  encodeRollbackTry,
 } from '@durablerun/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
+import { engineHistoryViolations } from './engine-history.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
 /**
@@ -72,9 +71,9 @@ const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
   ],
   fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
   failRollback: (s, id) => [
-    s.failRollback(id, 'r', 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', id, 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', 'r', 'c', '{}', null, { key: id, stateJson: '{}' }),
+    s.failRollback(id, 'r', 'c', '{}', null, { stepKey: 'k', errorJson: '{}' }),
+    s.failRollback('q', id, 'c', '{}', null, { stepKey: 'k', errorJson: '{}' }),
+    s.failRollback('q', 'r', 'c', '{}', null, { stepKey: id, errorJson: '{}' }),
   ],
   sweep: (s, id) => [s.sweep(id, 10)],
   expireLeaseNow: (s, id) => [s.expireLeaseNow(id, 'r', 'c'), s.expireLeaseNow('q', id, 'c')],
@@ -232,11 +231,10 @@ export function identifierBoundConformance(
             key: `${SAGA_STARTED_PREFIX}${key}`,
             stateJson: '0',
           }),
-        'rollbackTry.key': (s, key) =>
-          s.failRollback('q', 'r', 'c', '{}', null, {
-            key: `${SAGA_TRIES_PREFIX}${key}`,
-            stateJson: '{}',
-          }),
+        // The store builds the attempt record's name from the step, so the step is held to
+        // the room that name leaves, and the refusal names the step the caller passed.
+        'rollback.stepKey': (s, key) =>
+          s.failRollback('q', 'r', 'c', '{}', null, { stepKey: key, errorJson: '{}' }),
       }
       const saga = async (key: string) => {
         const outcomes: Record<string, { refused: boolean; namesIt: boolean; sent: boolean }> = {}
@@ -301,7 +299,7 @@ export function identifierBoundConformance(
           'checkpointName, as a rollback record': { ...fits, namesIt: false },
           'checkpoint.key': refusedNamingIt,
           // `$rollback-tries:` and 240 characters are 256, which the plain width refuses.
-          'rollbackTry.key': refusedNamingIt,
+          'rollback.stepKey': refusedNamingIt,
         },
         plainCheckpoint: fits,
       })
@@ -323,7 +321,7 @@ export function identifierBoundConformance(
           Object.fromEntries(Object.keys(answers).map((word) => [word, ordinary])),
         )
         expect(Object.keys(answers)).toHaveLength(6)
-        expect(await engineInvariantViolations(live.raw)).toEqual([])
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
       }))
 
     it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', () =>
@@ -380,8 +378,8 @@ export function identifierBoundConformance(
         await live.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
         const pass = await claimActivated(live.store, queue, 'w-pass')
         await live.store.failRollback(queue, pass.runId, pass.claimToken, CAUSE, null, {
-          key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-          stateJson: encodeRollbackTry({ tries: 1, errorJson: CAUSE }),
+          stepKey,
+          errorJson: CAUSE,
         })
 
         const [tasks, events, checkpoints] = await live.raw.batch(
@@ -437,7 +435,7 @@ export function identifierBoundConformance(
           readThroughThePort: storedNames,
         })
         expect([...childSpawnKey(spawned.taskId, 'r'.repeat(room))]).toHaveLength(WIDTH)
-        expect(await engineInvariantViolations(live.raw)).toEqual([])
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
       }))
   })
 }

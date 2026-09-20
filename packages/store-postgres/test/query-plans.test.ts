@@ -1,10 +1,4 @@
-import {
-  SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
-  type SqlExecutor,
-  type SqlStatement,
-  encodeRollbackTry,
-} from '@durablerun/core'
+import { SAGA_STARTED_PREFIX, type SqlExecutor, type SqlStatement } from '@durablerun/core'
 import { Client } from 'pg'
 import { expect, it } from 'vitest'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
@@ -97,11 +91,8 @@ function driving(db: TestDb, record: (label: string, statement: SqlStatement) =>
     await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
     return pass
   }
-  /** The attempt record of a failed rollback of step a. */
-  const tried = (tries: number, errorJson = '{}') => ({
-    key: `${SAGA_TRIES_PREFIX}a`,
-    stateJson: encodeRollbackTry({ tries, errorJson }),
-  })
+  /** A failed rollback of step a, as the port takes it. */
+  const tried = (errorJson = '{}') => ({ stepKey: 'a', errorJson })
   return { store, claimed, started, rollingBack, passOf, tried }
 }
 
@@ -152,11 +143,11 @@ it('reaches tasks by an index condition in every shipped task update', async () 
       firstPass.claimToken,
       '{}',
       { delaySeconds: 0 },
-      tried(1),
+      tried(),
     )
     if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
     const lastPass = await passOf(saga.taskId)
-    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, tried(2))
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, tried())
     await store.cancelTask('q', waiting.taskId)
     const labels = reached
     expect(
@@ -223,9 +214,22 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     await store.complete('q', completed.runId, completed.claimToken, '{}')
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    // A child spawn tests its parent's phase, under the parent's live claim. The child lives
+    // in a queue of its own, so no claim below takes it.
+    const parent = await started('spawns-a-child')
+    await store.spawn('kids', 'child', '{}', {
+      childOf: {
+        parentQueue: 'q',
+        parentTaskId: parent.taskId,
+        runId: parent.runId,
+        claimToken: parent.claimToken,
+        replayKey: '$spawn:child',
+      },
+    })
+    await store.complete('q', parent.runId, parent.claimToken, '{}')
     const saga = await rollingBack('rolls-back')
     const pass = await passOf(saga.taskId)
-    await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, tried(1, '{"name":"R"}'))
+    await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, tried('{"name":"R"}'))
     const cancelled = await rollingBack('cancelled-in-the-phase')
     expect(await store.cancelTask('q', cancelled.taskId)).toBe(true)
     const resultReadOf = async (taskId: string) => {
@@ -345,7 +349,7 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
     }
     expect(faults.join('\n')).toBe('')
     expect(
-      ['complete', 'fail', 'fail-rollback', 'task-result'].filter((l) => !reached.has(l)),
+      ['complete', 'fail', 'fail-rollback', 'spawn', 'task-result'].filter((l) => !reached.has(l)),
     ).toEqual([])
     // The attempt records are read for the saga that halted, and for no task whose saga
     // never began.

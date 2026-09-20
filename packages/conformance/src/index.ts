@@ -8,6 +8,7 @@ export type {
   StoreFixtureOptions,
 } from './fixture.js'
 export {
+  corruptionTarget,
   executeStorageCorruption,
   overWidthWrite,
   unboundedOverWidthAttempt,
@@ -22,7 +23,8 @@ export {
   type EngineInvariantConditionId,
   type EngineInvariantFinding,
 } from './invariants.js'
-export { childTaskViolations } from './child-tasks.js'
+export { childTaskViolations, missingCompletionEvent } from './child-task-rows.js'
+export { engineHistoryViolations } from './engine-history.js'
 export { sagaViolations } from './saga-rows.js'
 export { storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'

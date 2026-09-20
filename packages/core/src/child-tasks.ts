@@ -5,6 +5,7 @@
  * payload, and refusals from this one file.
  */
 
+import { PortRefusalError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
 import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
@@ -40,14 +41,15 @@ export function taskIdOfDoneEvent(eventName: string): string | null {
 /**
  * Refuse a reserved event name at the store's port. A caller that could emit a
  * completion event's name would win first-write-wins and forge a child's result, and
- * one that could await it would skip the queue rule.
+ * one that could await it would skip the queue rule. The refusal is the caller's
+ * mistake, so it is a `PortRefusalError`.
  */
 export function refuseReservedEventName(operation: string, eventName: string): void {
   if (typeof eventName !== 'string') {
-    throw new TrustedRangeError(`${operation} eventName must be a string`)
+    throw new PortRefusalError(`${operation} eventName must be a string`)
   }
   if (startsWith(eventName, RESERVED_EVENT_PREFIX)) {
-    throw new TrustedRangeError(
+    throw new PortRefusalError(
       `${operation} eventName '${eventName}' is reserved: names that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
@@ -60,19 +62,25 @@ export function refuseReservedEventName(operation: string, eventName: string): v
  * the engine reaches. Every
  * event statement and the event lock take this and not a string, so a store method
  * cannot forget the refusal, and nothing outside this file can mint a reserved name.
+ * It carries the task of a completion event, so nothing that holds one parses the
+ * reserved name or is handed the task's id beside it.
  */
 export class EventName {
   private declare readonly eventNameBrand: undefined
 
-  private constructor(readonly value: string) {}
+  private constructor(
+    readonly value: string,
+    /** The task whose completion event this is, or null for an event a caller named. */
+    readonly taskId: string | null,
+  ) {}
 
   static fromPort(operation: string, raw: string): EventName {
     refuseReservedEventName(operation, raw)
-    return new EventName(requireDurableString(`${operation} eventName`, raw))
+    return new EventName(requireDurableString(`${operation} eventName`, raw), null)
   }
 
-  static taskDone(taskId: string): EventName {
-    return new EventName(taskDoneEventName(taskId))
+  static taskDone(taskId: string): TaskDoneEventName {
+    return new EventName(taskDoneEventName(taskId), taskId) as TaskDoneEventName
   }
 
   /**
@@ -82,15 +90,30 @@ export class EventName {
    * terminal batch names the event of a task it read from its own rows, through
    * `taskDone`, and is never refused.
    */
-  static awaitedTaskDone(childTaskId: string): EventName {
+  static awaitedTaskDone(childTaskId: string): TaskDoneEventName {
     const name = taskDoneEventName(childTaskId)
     requireIdentifiersFit({
       childTaskId,
       'childTaskId, as the name of its completion event,': name,
     })
-    return new EventName(name)
+    return new EventName(name, childTaskId) as TaskDoneEventName
+  }
+
+  /**
+   * The event as a message names it to a person: a caller's event by its name, and a
+   * completion event by its task. The engine's reserved name never reaches task code,
+   * and the error of an await does, so a message is built from this and not from `value`.
+   */
+  get display(): string {
+    return this.taskId === null ? this.value : `task ${this.taskId}`
   }
 }
+
+/**
+ * The name of a completion event: an `EventName` known to carry its task. A statement
+ * that records a completion event takes this, so typed code cannot hand it a caller's.
+ */
+export type TaskDoneEventName = EventName & { readonly taskId: string }
 
 /**
  * The first outcome a task reached, as its completion event carries it. It is
@@ -183,7 +206,7 @@ export function childSpawnKey(parentTaskId: string, replayKey: string): string {
  */
 export function refuseReservedIdempotencyKey(operation: string, key: string): void {
   if (startsWith(key, RESERVED_EVENT_PREFIX)) {
-    throw new TrustedRangeError(
+    throw new PortRefusalError(
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
@@ -198,7 +221,7 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
   const childOf = opts.childOf
   if (childOf !== undefined) {
     if (callerKey !== undefined) {
-      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')
+      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')
     }
     requireDurableString('childOf.parentQueue', childOf.parentQueue)
     requireDurableString('childOf.runId', childOf.runId)
@@ -230,7 +253,10 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
  * its task's completion event without a read. `complete` and `fail` are handed only
  * the run, and the worker that calls them activated the run through the same store a
  * moment earlier. A run's task never changes and run ids are never reused, so an entry
- * cannot go stale, and a miss only costs the read. The oldest entry leaves first.
+ * cannot go stale, and a miss only costs the read. A store lets a run go once its own
+ * terminal write has won, so a run it has ended itself takes no room. A run that ended
+ * any other way, by a refused write, a cancel, a sweep, or another process, stays
+ * until newer activations push it out. The oldest leaves first.
  */
 export class RunTaskMemo {
   readonly #tasks = new Map<string, string>()
@@ -247,6 +273,11 @@ export class RunTaskMemo {
       const oldest = this.#tasks.keys().next()
       if (!oldest.done) this.#tasks.delete(oldest.value)
     }
+  }
+
+  /** Let a run go. Its terminal batch has ended it, so its own worker asks no more. */
+  forget(runId: string): void {
+    this.#tasks.delete(runId)
   }
 
   /** The run's task, if this store handed the run out and has not yet let the entry go. */

@@ -1,14 +1,13 @@
 import {
   MAX_EPOCH_MS,
-  SchemaMismatchError,
-  SchemaNotInitializedError,
   type SqlExecutor,
-  type SqlResult,
   type SqlStatement,
   type StoreAdmin,
+  applyVersionedWrite,
   decodeBoundedInteger,
+  readSchemaVersion,
+  requireCurrentSchemaVersion,
   requireEpochMs,
-  storageValueKind,
 } from '@durablerun/core'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -53,72 +52,24 @@ export class PostgresStoreAdmin implements StoreAdmin {
       )
     }
 
-    const version = await this.schemaVersion()
-    if (version !== CURRENT_SCHEMA_VERSION) {
-      // A recorded version past this build's newest is a healthy schema that a newer build
-      // migrated. It is refused like any other mismatch, with the advice that fits it.
-      throw new SchemaMismatchError(
-        version > CURRENT_SCHEMA_VERSION
-          ? `the schema is recorded at version ${version} and this build knows versions up to ${CURRENT_SCHEMA_VERSION}: a newer build migrated this database, which needs no repair. Run that build or a later one`
-          : `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
-      )
-    }
+    requireCurrentSchemaVersion(await this.schemaVersion(), CURRENT_SCHEMA_VERSION)
   }
 
-  /**
-   * A concurrent migrator can win either the fresh-catalog bootstrap or a
-   * version sentinel. PostgreSQL may report the losing CREATE as a catalog
-   * uniqueness error even with IF NOT EXISTS, so the authoritative version —
-   * not the error code — decides whether the write already completed.
-   */
-  private async applyVersionedWrite(
+  private applyVersionedWrite(
     write: () => Promise<unknown>,
     minimumVersion: number,
   ): Promise<void> {
-    try {
-      await write()
-    } catch (error) {
-      const version = await this.readSchemaVersion()
-      if (version !== null && version >= minimumVersion) return
-      throw error
-    }
+    return applyVersionedWrite(write, minimumVersion, () => this.readSchemaVersion())
   }
 
   async schemaVersion(): Promise<number> {
     return (await this.readSchemaVersion()) ?? 0
   }
 
-  private async readSchemaVersion(): Promise<number | null> {
-    let results: SqlResult[]
-    try {
-      results = await this.db.batch(
-        'migrate:version',
-        [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
-        'read',
-      )
-    } catch (error) {
-      if (error instanceof SchemaNotInitializedError) return null
-      throw error
-    }
-
-    const result = results.length === 1 ? results[0] : undefined
-    const row = result?.rows.length === 1 ? result.rows[0] : undefined
-    if (!row) {
-      throw new SchemaMismatchError(
-        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,
-      )
-    }
-    const stored = row.value
-    if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
-      throw new SchemaMismatchError(
-        `schema_version must be a canonical nonnegative integer, got ${storageValueKind(stored)}`,
-      )
-    }
-    const version = Number(stored)
-    if (!Number.isSafeInteger(version)) {
-      throw new SchemaMismatchError(`schema_version is outside the safe integer range: ${stored}`)
-    }
-    return version
+  private readSchemaVersion(): Promise<number | null> {
+    return readSchemaVersion(() =>
+      this.db.batch('migrate:version', [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }], 'read'),
+    )
   }
 
   async setFakeNowEpochMs(epochMs: number | null): Promise<void> {
