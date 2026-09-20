@@ -2591,6 +2591,19 @@ export class S {
     ),
     (
         "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' -> excluded [read]\n"
+            "\\* 'sweep:cancel' -> excluded [read]\n",
+            "\\* prose that names the BATCH-LABEL LEDGER and quotes 'sweep:cancel' [read]\n"
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' -> excluded [read]\n",
+        ),
+        "batch label 'sweep:cancel' is not in the ledger block",
+        "prose that names the block must not start it, or a label that prose quotes counts as mapped",
+    ),
+    (
+        "spec-ledger.py",
         side_ledger_with("\\* No batch", "\\*   'renamed-away' -> EndChild\n\\* No batch"),
         "'renamed-away', which is not a batch label of any store",
         "a label renamed or deleted in the stores must not leave a side model's mapping reading as current",
