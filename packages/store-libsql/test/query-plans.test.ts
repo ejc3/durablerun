@@ -685,14 +685,18 @@ interface Shipped {
  * what ships. The history reaches every batch in every variant it compiles to, and what
  * holds it to that is the corpus: a statement of `corpus/libsql.json` that this history
  * never sent fails the last block of this file. It runs once for the file, because a plan
- * needs a statement and one send's binds, not the rows it touched.
+ * needs a statement and its binds, not the rows it touched. A statement is kept with the
+ * binds of one of its sends, and the last block holds that every send of it plans alike.
  */
 const keyOf = (label: string, sql: string) => `${label}\n${sql}`
+let sends: Promise<Shipped[]> | undefined
+function everySend(): Promise<Shipped[]> {
+  sends ??= sendEveryStatement()
+  return sends
+}
 let shipped: Promise<Map<string, Shipped>> | undefined
 function shippedStatements(): Promise<Map<string, Shipped>> {
-  shipped ??= sendEveryStatement().then(
-    (sent) => new Map(sent.map((st) => [keyOf(st.label, st.sql), st])),
-  )
+  shipped ??= everySend().then((sent) => new Map(sent.map((st) => [keyOf(st.label, st.sql), st])))
   return shipped
 }
 
@@ -925,10 +929,11 @@ describe('every write a store ships, by the table it writes', () => {
 
 describe('every statement a store ships, by the nests of its plan', () => {
   /**
-   * The pins above hold the statements someone chose, and the block before this one holds
-   * the table each write writes. Neither plans a read or the SELECT of an INSERT, and
-   * neither sees a step that runs once for each row of a backlog unless it spells the one
-   * failure it was written against. Here every statement of every batch is planned and its
+   * The pins above hold the statements someone chose, three reads among them, and the block
+   * before this one holds the table each write writes. Neither is generated, so a read added
+   * later, or the SELECT of an INSERT, is planned only if someone chooses it, and neither
+   * sees a step that runs once for each row of a backlog unless it spells the one failure it
+   * was written against. Here every statement of every batch is planned and its
    * loop nests are judged by `readNests` in `plan-nests.ts`, whose header says what a nest
    * is and what the rule is. "Every" is held by the two checked inventories of what a store
    * sends: the generated corpus of statement trees, and the list of the statements that
@@ -945,8 +950,10 @@ describe('every statement a store ships, by the nests of its plan', () => {
 
   /** A text statement no operation of the store sends, with why it has no nest to judge. */
   const NOT_THE_STORES: Readonly<Record<string, string>> = {
-    'migrate:bootstrap': 'the migration runner sends it, and it is DDL, which has no plan',
-    'migrate:v*': 'the migration runner sends it, and it is DDL, which has no plan',
+    'migrate:bootstrap':
+      'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
+    'migrate:v*':
+      'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
     'migrate:version': 'the migration runner sends it, and it reads meta alone',
     'admin:set-fake-now': 'the test clock sends it, and it writes meta alone',
     'admin:clear-fake-now': 'the test clock sends it, and it writes meta alone',
@@ -969,15 +976,27 @@ describe('every statement a store ships, by the nests of its plan', () => {
   /**
    * A due range is what is due only if it points that way, and it is bounded only by a
    * LIMIT, and a plan shows neither. So every statement in which a due range drives another
-   * step is named here, with the limit that bounds what it takes or with where the open
-   * question is recorded. The reason is the part no plan can check.
+   * step is named here with the lines that drive, and with what bounds them: the
+   * statement's own LIMIT, which its text must then hold, or where the open question is
+   * recorded. A range that drives in a statement nobody named fails, and so does another
+   * line in a statement that is named, and so does a name nothing needs.
    */
-  const DRIVEN_BY_A_DUE_RANGE: Readonly<Record<string, string>> = {
-    'claim/claimed#0': 'each candidate leg takes the runs that are due, under its own LIMIT',
-    'claim/claimed#3':
-      'BUILD.md PR3.14b, the range is every lease of the queue that has NOT expired, with no LIMIT',
-    'sweep:scan/read#0': 'it takes the tasks past their start deadline, under the LIMIT of a sweep',
-    'sweep:scan/read#1': 'it takes the leases that have expired, under the LIMIT of a sweep',
+  const RUNS_DUE =
+    'SEARCH r USING INDEX runs_poll (queue=? AND state=? AND available_at_ms>? AND available_at_ms<?)'
+  const LEASES =
+    'SEARCH r USING INDEX runs_lease (queue=? AND claim_expires_at_ms>? AND claim_expires_at_ms<?)'
+  const TASKS_PAST_THEIR_DEADLINE =
+    'SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>? AND cancel_at_ms<?)'
+  const DRIVEN_BY_A_DUE_RANGE: Readonly<
+    Record<string, { drivers: readonly string[]; boundedBy: string }>
+  > = {
+    // Each candidate leg takes the runs that are due, and the claim takes the legs' rows.
+    'claim/claimed#0': { drivers: [RUNS_DUE, 'SCAN c'], boundedBy: 'LIMIT' },
+    // The range is every lease of the queue that has NOT expired: the backlog, not what is due.
+    'claim/claimed#3': { drivers: [LEASES], boundedBy: 'BUILD.md PR3.14b' },
+    'sweep:scan/read#0': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
+    // The leases that have expired.
+    'sweep:scan/read#1': { drivers: [LEASES], boundedBy: 'LIMIT' },
   }
 
   /** A statement's name: where the corpus holds it, or for text its place in its batch. */
@@ -1016,11 +1035,13 @@ describe('every statement a store ships, by the nests of its plan', () => {
   it('reads no table once for each row of a backlog, but for the claim it names', async () => {
     const faults: string[] = []
     const excused = new Set<string>()
-    const drivenByADueRange = new Set<string>()
+    const drivenByADueRange: Record<string, string[]> = {}
+    const textOf = new Map<string, string>()
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
       const reading = readNests(await planTree(st.sql, st.args))
-      if (reading.dueDrivers.length > 0) drivenByADueRange.add(name)
+      if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
+      textOf.set(name, st.sql)
       const excuse = EXCUSED_NESTS[name]
       const unexcused = reading.faults.filter((fault) => !excuse?.fault.test(fault))
       if (unexcused.length < reading.faults.length) excused.add(name)
@@ -1030,9 +1051,50 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(faults.join('\n'), 'mutation-verdict:behavior:plan-nests').toBe('')
     // An excuse that nothing needs any more is removed, not kept.
     expect(Object.keys(EXCUSED_NESTS).filter((name) => !excused.has(name))).toEqual([])
-    // Named in both directions: a due range that drives in a statement nobody named, and a
-    // name whose statement no due range drives any more.
-    expect([...drivenByADueRange].sort()).toEqual(Object.keys(DRIVEN_BY_A_DUE_RANGE).sort())
+    // Named line for line, in both directions: a due range that drives in a statement nobody
+    // named, another line in one that is named, and a name no due range needs any more.
+    expect(drivenByADueRange).toEqual(
+      Object.fromEntries(
+        Object.entries(DRIVEN_BY_A_DUE_RANGE).map(([name, { drivers }]) => [
+          name,
+          [...drivers].sort(),
+        ]),
+      ),
+    )
+    // What bounds each: a LIMIT the statement's own text holds, or a recorded open question.
+    expect(
+      Object.entries(DRIVEN_BY_A_DUE_RANGE)
+        .filter(([name, { boundedBy }]) =>
+          boundedBy === 'LIMIT'
+            ? !/\blimit\b/i.test(textOf.get(name) ?? '')
+            : !/^BUILD\.md PR\d/.test(boundedBy),
+        )
+        .map(([name]) => name),
+    ).toEqual([])
+  })
+
+  it('plans every send of a statement alike, so the binds of one send stand for all', async () => {
+    const planUnder = async (st: { sql: string; args: unknown[] }) =>
+      JSON.stringify((await planTree(st.sql, st.args)).map((row) => [row.parent, row.detail]))
+    // A plan does depend on its binds. SQLite reads a bound value when it plans, and the
+    // partial index of the running leases serves only a statement sent with that state.
+    const underState = (state: string) =>
+      planUnder({
+        sql: 'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?',
+        args: ['q', state, 0],
+      })
+    expect(await underState('running')).not.toBe(await underState('pending'))
+    const kept = await shippedStatements()
+    const keptPlans = new Map<string, string>()
+    const differing = new Set<string>()
+    for (const st of await everySend()) {
+      const key = keyOf(st.label, st.sql)
+      const keptSend = kept.get(key)
+      if (!keptSend || st === keptSend) continue
+      if (!keptPlans.has(key)) keptPlans.set(key, await planUnder(keptSend))
+      if ((await planUnder(st)) !== keptPlans.get(key)) differing.add(nameOf(st))
+    }
+    expect([...differing]).toEqual([])
   })
 
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
