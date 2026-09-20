@@ -115,10 +115,14 @@ export function createIndexIfMissing(table: string, index: string, columns: stri
  * column. Guarded by the catalog, a replay finds the column not nullable and does nothing.
  * The statement is chosen by what the catalog holds and then prepared, as an index is.
  *
- * MySQL refuses the change over a row that holds NULL only under a strict `sql_mode`, with
- * error 1138. Without one the change succeeds and stores an empty string where the NULL was.
- * The executor sets a strict mode on every connection it takes, which is what makes this
- * statement refuse.
+ * The change is asked for in place and with no lock, and that clause carries the refusal of
+ * a NULL. Under a strict `sql_mode` it is how InnoDB makes the change anyway, and a row that
+ * holds NULL refuses it with error 1138. Outside a strict mode MySQL makes the bare change
+ * by storing an empty string where a NULL was. It cannot do that in place, so with the clause
+ * it refuses with error 1846 whatever the rows hold. The executor sets a strict mode on every
+ * connection it takes, but that is session state kept in another file, and a port in another
+ * language replays this text and not that setup. The clause also stops the server from
+ * falling back in silence to a copying change that blocks writes.
  */
 export function setNotNullWhileNullable(
   table: string,
@@ -129,7 +133,7 @@ export function setNotNullWhileNullable(
     `SET @durablerun_ddl = IF(
        (SELECT is_nullable FROM information_schema.columns
         WHERE table_schema = DATABASE() AND table_name = '${table}' AND column_name = '${column}') = 'YES',
-       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL',
+       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',
        'DO 0')`,
     'PREPARE durablerun_ddl FROM @durablerun_ddl',
     'EXECUTE durablerun_ddl',
@@ -309,7 +313,8 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     // there is, a port in another language included. This is the first version that alters
     // a table, and it goes through the guarded form above. A row that holds NULL makes the
     // change fail with error 1138, which leaves the column nullable, the version at 9 and
-    // the row as it was. The rows are found with
+    // the row as it was. A session with no strict mode is refused with error 1846 whatever
+    // the rows hold. The rows are found with
     // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
     version: 10,
     statements: setNotNullWhileNullable('events', 'payload', BODY),

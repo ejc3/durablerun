@@ -471,8 +471,9 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
   }
 
   it('stops at the version before, and leaves the column nullable and the row as it was', async () => {
-    // The server refuses the change with error 1138, and only because the executor sets a
-    // strict mode on every connection it takes: the next case is the same change without one.
+    // Under the strict mode the executor sets on every connection it takes, the server
+    // refuses the change with error 1138. The next case is the same change in a session
+    // with no strict mode, where the version's own text has to refuse.
     const db = await databaseAt(9, 'null-payload-refused')
     try {
       await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
@@ -486,10 +487,7 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
       ])
       await new MysqlStoreAdmin(db.raw).migrate()
 
-      expect(
-        { refusal, stopped, repaired: await observed(db) },
-        'mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload',
-      ).toEqual({
+      expect({ refusal, stopped, repaired: await observed(db) }).toEqual({
         refusal: 'MySQL error 1138',
         stopped: { version: '9', column: 'YES', held: null },
         repaired: {
@@ -525,7 +523,10 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
       } finally {
         await session.end()
       }
-      expect({ refusal, ...(await observed(db)) }).toEqual({
+      expect(
+        { refusal, ...(await observed(db)) },
+        'mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode',
+      ).toEqual({
         refusal: 'MySQL error 1846',
         version: '9',
         column: 'YES',

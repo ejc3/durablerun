@@ -4288,8 +4288,8 @@ MUTATION_SPECS = [
     (
         "mysql-payload-is-not-null",
         "packages/store-mysql/src/schema.ts",
-        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL',\n",
-        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL',\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
         "MySQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
     ),
     (
@@ -4302,13 +4302,14 @@ MUTATION_SPECS = [
         "a replayed version 10 restates the payload column over what a later version made of it",
     ),
     (
-        # Outside a strict mode MySQL does not refuse that change. It stores the column type's
-        # default where the NULL was, and migrate() reports success.
-        "mysql-strict-mode-refuses-a-null-payload",
-        "packages/store-mysql/src/executor.ts",
-        "  sql_mode = 'STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,",
-        "  sql_mode = 'ERROR_FOR_DIVISION_BY_ZERO,",
-        "MySQL makes the payload NOT NULL over a row that holds NULL and stores an empty string there",
+        # The refusal of a NULL has to travel in the version's text, which a port in another
+        # language replays, and not in the executor's session setup. Without the clause a
+        # session with no strict mode makes the change and stores an empty string.
+        "mysql-column-change-refuses-outside-a-strict-mode",
+        "packages/store-mysql/src/schema.ts",
+        " NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
+        " NOT NULL',\n",
+        "a MySQL session with no strict mode makes the payload NOT NULL over a NULL and stores an empty string there",
     ),
     (
         "event-payload-null-is-an-invariant-violation",
@@ -10769,11 +10770,11 @@ VERDICTS = {
         "MysqlExecutor against a real server makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone",
         "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
     ),
-    "mysql-strict-mode-refuses-a-null-payload": ExpectedVerdict(
+    "mysql-column-change-refuses-outside-a-strict-mode": ExpectedVerdict(
         "behavior",
         "packages/store-mysql/test/migration.test.ts",
-        "a MySQL database where an event already holds SQL NULL stops at the version before, and leaves the column nullable and the row as it was",
-        "mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload",
+        "a MySQL database where an event already holds SQL NULL is refused by the version itself in a session with no strict mode, with the row as it was",
+        "mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode",
     ),
     "event-payload-null-is-an-invariant-violation": ExpectedVerdict(
         "behavior",

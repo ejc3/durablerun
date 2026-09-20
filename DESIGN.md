@@ -2418,14 +2418,24 @@ are load-bearing):
    1 KB (2 GB). Between 700 and 1,750 calls overlapped it, the longest took 19
    and 122 ms, none failed, and a metadata lock was pending in at most 3 of 64
    samples taken 40 ms apart.
-   MySQL refuses the change over a row that holds NULL only under a strict
-   `sql_mode`. Without one it succeeds, stores an empty string where the NULL
-   was, and raises warning 1265, and a waiter would then read a delivered event
-   whose payload is not JSON. The executor sets a strict mode on every
-   connection it takes, which is what makes the version refuse, and
-   `store-mysql/test/migration.test.ts` holds both halves: `migrate()` through
-   the executor is refused, and the version's own statements over a session
-   with no strict mode are not.
+   The statement asks for the change in place and with no lock
+   (`ALGORITHM=INPLACE, LOCK=NONE`), and that clause carries the refusal of a
+   NULL. Without it MySQL refuses the change over a row that holds NULL only
+   under a strict `sql_mode`: outside one the bare change succeeds, stores an
+   empty string where the NULL was and raises warning 1265, and a waiter would
+   then read a delivered event whose payload is not JSON. The executor sets a
+   strict mode on every connection it takes, but that is session state kept in
+   another file, and a port in another language replays the version's text and
+   not that setup. With the clause the text refuses by itself. Under a strict
+   mode nothing changes: error 1138 over a row that holds NULL, success without
+   one, through PREPARE as before. In a session with no strict mode the
+   statement is refused with error 1846 whatever the rows hold, because MySQL
+   cannot convert a NULL in place, and the row and the column stay as they
+   were. The server can also no longer fall back in silence to a copying change
+   that blocks writes. `store-mysql/test/migration.test.ts` holds both
+   sessions: `migrate()` through the executor is refused with 1138, and the
+   version's own statements over a session with no strict mode are refused with
+   1846.
 
    libSQL cannot declare it. SQLite cannot add NOT NULL to a column that
    exists, and the rebuild that would declare it (a new table, a copy of every

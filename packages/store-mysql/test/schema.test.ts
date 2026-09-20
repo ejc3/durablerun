@@ -135,7 +135,7 @@ describe('MySQL migrations are append-only', () => {
     7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     8: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
     9: 'dcf5d703193f6bf5e8b5ba2f8cf06110f51b238b99b40c193b8f503b728f3275',
-    10: '1434956c5819c537766506da6c41c037b2d7dc56f8521adda2d98853bb0051c2',
+    10: '8480e3f5a1e282db5137d0832ed64a361dbf0b0d0ec514a970d0560207f9099c',
   }
 
   it('matches every migration to an independently frozen content hash', () => {
