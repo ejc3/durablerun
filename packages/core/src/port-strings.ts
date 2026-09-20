@@ -166,7 +166,7 @@ export const PORT_STRINGS = freeze({
 } as const satisfies PortStrings)
 
 /** The table as the check walks it, without the port's types. */
-export type NamedStrings = PortStringName | null | { readonly [property: string]: NamedStrings }
+type NamedStrings = PortStringName | null | { readonly [property: string]: NamedStrings }
 
 /**
  * Hold one named string to its rule. A value that is not a string is refused with the
@@ -179,11 +179,9 @@ export function requirePortString(name: PortStringName, raw: unknown): void {
   if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })
 }
 
-function requireNamed(named: NamedStrings | undefined, value: unknown, inside: boolean): void {
+function requireNamed(named: NamedStrings | undefined, value: unknown): void {
   if (named === null || named === undefined) return
   if (typeof named === 'string') {
-    // A member of an options object that was left out is not a string the port was passed.
-    if (inside && value === undefined) return
     requirePortString(named, value)
     return
   }
@@ -193,7 +191,11 @@ function requireNamed(named: NamedStrings | undefined, value: unknown, inside: b
   for (let index = 0; index < properties.length; index++) {
     const property = properties[index]
     if (property === undefined) continue
-    requireNamed(named[property], reflectGet(value, property), true)
+    // A member that was left out is not a string the port was passed. The entry that
+    // reads the object owns a member it requires.
+    const member: unknown = reflectGet(value, property)
+    if (member === undefined) continue
+    requireNamed(named[property], member)
   }
 }
 
@@ -205,7 +207,7 @@ function requireNamed(named: NamedStrings | undefined, value: unknown, inside: b
 export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
   const named: readonly NamedStrings[] = PORT_STRINGS[method]
   for (let index = 0; index < named.length; index++) {
-    requireNamed(named[index], args[index], false)
+    requireNamed(named[index], args[index])
   }
 }
 

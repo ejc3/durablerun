@@ -358,14 +358,21 @@ jobs:
               # strings, so each mutant moved to what holds its property now: the spawn queue's
               # to the table's first place, the emitted name's to the width half of the check's
               # rule, and the loop's to the line that asks the port's check of its driver id.
-              # Each keeps its owner, and each owner still fails under it. Six mutations are
-              # new, and they answer to two verdict markers that are newer than the base. No
-              # entry was retired.
+              # Each keeps its owner, and each owner still fails under it. Three more named a
+              # second copy of a check that stood behind the one check in core, where no
+              # mutant of it could be seen through the port once the one check answered first.
+              # The copies are deleted, and each of the three moved to the table's place for
+              # its string: an emitted event name, a parent's queue and a parent's run id. Six
+              # mutations are new, and they answer to two verdict markers that are newer than
+              # the base. No entry was retired.
               repaired = previous
               for name in (
                   'spawn-queue-is-a-durable-string',
                   'libsql-emitted-name-held-at-the-entry',
                   'driver-identifiers-held-at-construction',
+                  'event-name-is-a-durable-string',
+                  'parent-queue-held-to-the-width',
+                  'parent-run-id-held-to-the-width',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
               repaired = exempt(repaired, candidate, (

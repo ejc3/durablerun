@@ -9,7 +9,7 @@ import { PortRefusalError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
 import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
-import { requireDurableString, requireIdentifiersFit } from './validate.js'
+import { requireIdentifiersFit } from './validate.js'
 
 // Task code shares this process, and this file decodes what task code will read, so it
 // calls captured operations and reads own properties only, as `task-result.ts` does.
@@ -76,7 +76,9 @@ export class EventName {
 
   static fromPort(operation: string, raw: string): EventName {
     refuseReservedEventName(operation, raw)
-    return new EventName(requireDurableString(`${operation} eventName`, raw), null)
+    // The port's one check has held the name to the durable string domain and to the
+    // width before a store's entry runs, and a store's entry is the only caller of this.
+    return new EventName(raw, null)
   }
 
   static taskDone(taskId: string): TaskDoneEventName {
@@ -223,29 +225,20 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
     if (callerKey !== undefined) {
       throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')
     }
-    requireDurableString('childOf.parentQueue', childOf.parentQueue)
-    requireDurableString('childOf.runId', childOf.runId)
-    requireDurableString('childOf.claimToken', childOf.claimToken)
-    const childKey = childSpawnKey(
-      requireDurableString('childOf.parentTaskId', childOf.parentTaskId),
-      requireDurableString('childOf.replayKey', childOf.replayKey),
-    )
-    // The key is built from the parent's task and the call site, so the width is held to
-    // the key as it will be stored, which holds the parent's task id with it, and to the
-    // parent's queue and run. A child spawn passes no idempotency key, so its refusal
-    // names the replay key it did pass.
+    const childKey = childSpawnKey(childOf.parentTaskId, childOf.replayKey)
+    // The port's one check has held each member of the parent to the domain, and each
+    // identifier among them to the width. What is left is the name built here: the key is
+    // made of the parent's task and the call site, so the width is held to the key as it
+    // will be stored. A child spawn passes no idempotency key, so its refusal names the
+    // replay key it did pass.
     requireIdentifiersFit({
-      'childOf.parentQueue': childOf.parentQueue,
-      'childOf.runId': childOf.runId,
       'childOf.replayKey, as the stored child key, which also holds the parent task id,': childKey,
     })
     return childKey
   }
   if (callerKey === undefined) return null
-  const key = requireDurableString('idempotencyKey', callerKey)
-  refuseReservedIdempotencyKey('spawn', key)
-  requireIdentifiersFit({ idempotencyKey: key })
-  return key
+  refuseReservedIdempotencyKey('spawn', callerKey)
+  return callerKey
 }
 
 /**

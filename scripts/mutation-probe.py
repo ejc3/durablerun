@@ -7171,9 +7171,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "event-name-is-a-durable-string",
-            "packages/core/src/child-tasks.ts",
-            "    return new EventName(requireDurableString(`${operation} eventName`, raw), null)\n",
-            "    return new EventName(raw, null) // MUTATION\n",
+            "packages/core/src/port-strings.ts",
+            "  emitEvent: ['queue', 'eventName', 'payloadJson'],\n",
+            "  emitEvent: ['queue', 'resultJson', 'payloadJson'],\n",
             "an emit or an await with a NUL in its event name is stored as a shorter name on one dialect and reported as an outage on another",
         ),
         (
@@ -13857,16 +13857,16 @@ MUTATION_SPECS.extend(
         ),
         (
             "parent-queue-held-to-the-width",
-            "packages/core/src/child-tasks.ts",
-            "      'childOf.parentQueue': childOf.parentQueue,\n",
-            "      // MUTATION: the parent's queue is not held\n",
+            "packages/core/src/port-strings.ts",
+            "        parentQueue: 'childOf.parentQueue',\n",
+            "        parentQueue: 'resultJson',\n",
             "a child spawn is accepted with a parent queue past the width, so an identifier is refused at every entry of the port but this one",
         ),
         (
             "parent-run-id-held-to-the-width",
-            "packages/core/src/child-tasks.ts",
-            "      'childOf.runId': childOf.runId,\n",
-            "      // MUTATION: the parent's run id is not held\n",
+            "packages/core/src/port-strings.ts",
+            "        runId: 'childOf.runId',\n",
+            "        runId: 'resultJson',\n",
             "a child spawn is accepted with a parent run id past the width, so an identifier is refused at every entry of the port but this one",
         ),
         (
@@ -13917,8 +13917,6 @@ for _verdict, _names in (
         ),
         (
             "identifier-past-the-width-refused",
-            "parent-queue-held-to-the-width",
-            "parent-run-id-held-to-the-width",
         ),
     ),
     (
@@ -14137,9 +14135,9 @@ MUTATION_SPECS.extend(
         (
             "port-table-holds-an-event-name",
             "packages/core/src/port-strings.ts",
-            "  emitEvent: ['queue', 'eventName', 'payloadJson'],\n",
-            "  emitEvent: ['queue', 'payloadJson', 'payloadJson'],\n",
-            "an event is emitted under a name past the width or outside the domain, which no await can name again",
+            "  awaitEvent: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'eventName', null],\n",
+            "  awaitEvent: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'resultJson', null],\n",
+            "a run parks on an event name past the width or outside the domain, which no emit can name, so it sleeps until its timeout",
         ),
         (
             "port-table-holds-a-claim-token",
@@ -14177,6 +14175,8 @@ for _verdict, _names in (
             "port-table-holds-a-step-key",
             "port-table-holds-an-event-name",
             "port-table-holds-a-claim-token",
+            "parent-queue-held-to-the-width",
+            "parent-run-id-held-to-the-width",
         ),
     ),
 ):
