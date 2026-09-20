@@ -243,6 +243,11 @@ const DEADLOCK_DETECTED = '40P01'
 /** How many times a batch runs before a deadlock is reported as an outage. */
 const DEADLOCK_VICTIM_ATTEMPTS = 3
 
+/** One definition of a deadlock victim, for the count and for the decision to run it again. */
+function isDeadlockVictim(error: unknown): boolean {
+  return error instanceof DatabaseError && error.code === DEADLOCK_DETECTED
+}
+
 function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof PostgresResultContractError ||
@@ -282,11 +287,23 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
  */
 export class PgExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
+  private deadlockVictims = 0
 
   private constructor(
     private readonly pool: PoolPort,
     private readonly ownsPool: boolean,
   ) {}
+
+  /**
+   * How many times PostgreSQL has chosen a batch of this executor as a deadlock victim,
+   * counting a batch that was then run again and one that was reported. Running the victim
+   * again hides a lock-order inversion from every caller, so a test holds this at zero.
+   * The server's own count, `pg_stat_database.deadlocks`, is shared by everything connected
+   * to the database and cannot say whose transaction it was.
+   */
+  get deadlocks(): number {
+    return this.deadlockVictims
+  }
 
   static open(config: string | PoolConfig = {}): PgExecutor {
     return new PgExecutor(createOwnedPostgresPool(config), true)
@@ -378,13 +395,13 @@ export class PgExecutor implements SqlExecutor {
           // a read batch takes no row lock, so a deadlock there is not this engine's lock
           // order. It is run again at once, because PostgreSQL chose the victim only
           // after `deadlock_timeout`, and a store source has no timer to wait on.
+          if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
             mode !== 'read' &&
             attempt < DEADLOCK_VICTIM_ATTEMPTS &&
             releaseError === undefined &&
             clientError === undefined &&
-            error instanceof DatabaseError &&
-            error.code === DEADLOCK_DETECTED
+            isDeadlockVictim(error)
           if (!runAgain) throw classifyError(error, label, failedSchemaVersionRead)
         }
       }

@@ -8,6 +8,7 @@ import type {
   SqlStatement,
   StoreAdmin,
 } from '@durablerun/core'
+import type { SelfRaceName } from './self-concurrency.js'
 
 type PersistedNumericField = PersistedCounterFieldDescriptor | PersistedTemporalFieldDescriptor
 export type PersistedNumericTable = PersistedNumericField['table']
@@ -136,6 +137,24 @@ export interface StoreFixture {
    * actors against one database.
    */
   storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
+  /**
+   * How many times the server has chosen one of this fixture's batches as a deadlock
+   * victim, read from the fixture's own executor. The executor runs a victim again, which
+   * hides a lock-order inversion from every caller, and the server's own count is shared
+   * by every test worker connected to it. A dialect whose executor never meets a deadlock
+   * victim answers zero.
+   */
+  deadlocks(): number
+  /**
+   * The contests of the self-concurrency surface in which this dialect's server may pick a
+   * deadlock victim today, by name, each with what was measured and why. An entry excuses
+   * that one count, up to what the copies' attempts allow, and nothing else: the contest
+   * still holds its answers, its rows, and the invariants, and every other contest holds
+   * the count at zero. An entry records a defect that is deferred, never a convenience,
+   * and it goes when the defect does. The type admits only the name of a contest that
+   * exists.
+   */
+  selfRaceDeadlocksExcused: Readonly<Partial<Record<SelfRaceName, string>>>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

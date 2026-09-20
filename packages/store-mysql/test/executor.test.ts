@@ -234,6 +234,7 @@ describe('MysqlExecutor transactions', () => {
       errno: 1213,
     })
     const WRITE = 'UPDATE t SET a = 1'
+    const READ = 'SELECT a AS value FROM t'
     const shape = (connection: FakeConnection) =>
       afterSessionSetup(connection).map((sql) =>
         sql.includes('GET_LOCK') ? 'lock' : sql.includes('RELEASE_LOCK') ? 'unlock' : sql,
@@ -281,9 +282,56 @@ describe('MysqlExecutor transactions', () => {
       expect(connection.released).toBe(1)
     })
 
+    it('counts every deadlock victim, the one it runs again and the one it reports', async () => {
+      const DUPLICATE = Object.assign(new Error('Duplicate entry'), { errno: 1062 })
+      const counted = async (
+        batches: readonly {
+          times: number
+          mode?: 'read' | 'write'
+          error?: unknown
+          rollbackFails?: true
+        }[],
+      ) => {
+        const connection = new FakeConnection()
+        const executor = executorOver(connection)
+        for (const batch of batches) {
+          const sql = batch.mode === 'read' ? READ : WRITE
+          connection.failures.set(sql, { error: batch.error ?? DEADLOCK, times: batch.times })
+          if (batch.rollbackFails) {
+            connection.failures.set('ROLLBACK', { error: new Error('connection lost'), times: 1 })
+          }
+          await executor
+            .batch('fixture:write', [{ sql, args: [] }], batch.mode ?? 'write')
+            .catch(() => undefined)
+        }
+        return executor.deadlocks
+      }
+      expect(
+        {
+          none: await counted([{ times: 0 }]),
+          runAgain: await counted([{ times: 2 }]),
+          reported: await counted([{ times: 99 }]),
+          // A read batch is never run again, and its victim is counted all the same.
+          inAReadBatch: await counted([{ times: 1, mode: 'read' }]),
+          anotherError: await counted([{ times: 1, error: DUPLICATE }]),
+          acrossBatches: await counted([{ times: 2 }, { times: 0 }, { times: 1 }]),
+          // A victim whose rollback then fails is reported, and it is a victim all the same.
+          rollbackFails: await counted([{ times: 1, rollbackFails: true }]),
+        },
+        'mutation-verdict:behavior:mysql-deadlock-victims-are-counted',
+      ).toEqual({
+        none: 0,
+        runAgain: 2,
+        reported: 3,
+        inAReadBatch: 1,
+        anotherError: 0,
+        acrossBatches: 3,
+        rollbackFails: 1,
+      })
+    })
+
     it('does not run a read batch again', async () => {
       const connection = new FakeConnection()
-      const READ = 'SELECT a AS value FROM t'
       connection.failures.set(READ, { error: DEADLOCK, times: 1 })
       const outcome = await executorOver(connection)
         .batch('next-wake', [{ sql: READ, args: [] }], 'read')

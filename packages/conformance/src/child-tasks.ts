@@ -29,6 +29,7 @@ import {
   claimOne,
   readOne,
   refusalName,
+  warmConnections,
   withFixture,
 } from './scenario.js'
 
@@ -940,15 +941,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           }
           const advanceMs = Math.max(...races.map(({ ready }) => ready.advanceMs))
           if (advanceMs > 0) await fx.admin.setFakeNowEpochMs(START_MS + advanceMs)
-          await Promise.all(
-            Array.from({ length: RACES }, (_, index) =>
-              fx.raw.batch(
-                `native-child:warm-${index}`,
-                [{ sql: 'SELECT 1 AS ready', args: [] }],
-                'read',
-              ),
-            ),
-          )
+          await warmConnections(fx.raw, 'native-child', RACES)
           const outcomes = await Promise.all(
             races.map(async ({ queue, parent, ready }) => {
               const [awaited] = await Promise.all([
@@ -974,8 +967,16 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
               ...(await engineInvariantViolations(fx.raw)),
               ...(await childTaskViolations(fx.raw)),
             ],
+            // The executor runs a deadlock victim again, so every wakeup can be delivered
+            // while the await and the batch take their locks in opposite orders.
+            deadlocks: fx.deadlocks(),
           }
-          expected[batch.label] = { delivered: RACES, strandedWaits: 0, violations: [] }
+          expected[batch.label] = {
+            delivered: RACES,
+            strandedWaits: 0,
+            violations: [],
+            deadlocks: 0,
+          }
         })
       }
       // A smoke of real concurrency on every dialect. Whether an unlocked batch loses a

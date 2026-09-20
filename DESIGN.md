@@ -885,6 +885,30 @@ One invocation executes one claimed run to its next suspension point:
     when InnoDB rolls it back as a deadlock victim (error 1213), up to three
     times in all and under the named lock it already holds, and a read batch
     never.
+  - The executors' deadlock count. A victim that is run again is invisible to
+    its caller and to every test of that caller, so a wrong lock order can
+    pass. Each of the two executors counts the victims it meets, the ones it
+    runs again and the ones it reports, and one function in each says what a
+    victim is, for the count and for the decision to run the batch again. A
+    conformance fixture reads the count (`deadlocks()`). The server's own
+    count cannot serve: `pg_stat_database.deadlocks` and InnoDB's counter are
+    shared by every test worker connected to the server. libSQL has one writer
+    at a time and never picks a victim, so its fixture answers zero. The suite
+    holds the count at zero where a hold can fail, which is where real callers
+    overlap on connections that are already open: the self-concurrency surface
+    (§3.4), four cases of the shared suite (an await beside its emit, the beats
+    of distinct drivers, one claim token sent sixteen times, and a child's
+    await beside every terminal batch), and the PostgreSQL lock-order test. It
+    is held on PostgreSQL and on MySQL alike, because both executors run a
+    victim again. It is not held where it could not fail. The seeded scenarios
+    run through the simulator, one batch at a time. The native claim case and
+    the eight-migrator case open their connections inside their race, and on
+    MySQL every migration write takes one named lock. The fuzz walk is one
+    caller on libSQL. Measured before any hold: no fixture of the whole
+    conformance suite met a victim on PostgreSQL or on MySQL, in one run of
+    4311 fixtures on each, and none did in 20 runs of six real-concurrency
+    cases on each. On MySQL one contest of the surface is excused, by name and
+    with its reason, up to a bound, in that dialect's fixture (§3.4, MySQL).
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the
@@ -1876,6 +1900,63 @@ not depend on careful reading:
   starts from both current and genuinely uninitialized fixtures, injects the
   dialect's real admin over hostile result/error executors, and executes the
   dialect's catalog statements through the fixture's real raw executor.
+- *The self-concurrency surface* (`conformance/src/self-concurrency.ts`): every
+  call of the store's two ports raced against copies of itself, on every
+  dialect. A call that is safe alone can be unsafe beside itself under a
+  server's locking. Two such defects were found by hand, a migrator that read a
+  concurrent bootstrap half done and driver heartbeats that deadlocked on each
+  other's rows, and each got a case for its one transition, so the class stayed
+  open. The contests are generated from two tables typed by `SchedulerStore`
+  and `StoreAdmin`, `migrate()` included, so a port method without an entry,
+  or with an entry that holds no state, does not compile. An entry arranges a
+  state in which its call is legal. The contest runs four copies one at a time
+  and then four at once, from the same state on two fixtures of one seed, with
+  a connection opened for each copy before the race, because a handshake inside
+  it puts the copies one after another. It holds that the race answered what
+  this build's own serial order answered, left the rows it left, violated no
+  invariant, met no outage, and met no deadlock victim (§3.2, the executors'
+  deadlock count). That serial order is the only oracle. The contract is not
+  consulted, so an answer that is wrong in both orders passes: a review made
+  libSQL's `cancelTask` answer true every time, and its contest stayed green.
+  The scheduler suite's own cases hold the answers. Ids and tokens drawn during
+  the contest are set aside, because which copy wins is not decided. That also
+  sets aside a link between two rows the contest itself wrote, which the
+  invariant checkers hold, because they read the rows as they are. A contest in
+  which no copy answers anything and nothing the store holds changes fails.
+  That floor reads the six tables, the schema version and the engine's clock,
+  because nine calls of the ports answer nothing when they succeed. A claim may
+  come back short of what is due, so the claimers' contest holds that no run is
+  claimed twice and that one more claimer can take what the others did not, and
+  not how the runs were split. With the heartbeat's fix reverted the surface
+  fails 10 runs of 10 on MySQL. It does not reach the migrator's race: with
+  that fix reverted
+  it passed 300 rounds at four migrators and 200 at eight on PostgreSQL, and
+  150 each on MySQL and libSQL with their own fixes reverted. Ordering that
+  race takes a lock held inside one server, which
+  `postgres-bootstrap-window.test.ts` does for PostgreSQL and a shared surface
+  cannot. A race cannot own a mutation's verdict, so the surface owns none.
+  The property held is each call beside ITSELF. The wider one, that a call is
+  safe beside its neighbours, is not held here. Both lock-order inversions
+  found on PostgreSQL were pairs of different calls, a cancel beside a child's
+  `complete` and a cancel beside a worker write that ends nothing, and
+  `postgres-lock-order.test.ts` holds those two by holding the window open
+  inside the server, under a registered mutation. Other pairs of different
+  calls stay with the fuzz and the fault matrix. On libSQL two calls interleave
+  only between batches, because one connection runs a batch to its end.
+  Measured there: in 24 of the 37 contests every copy sends one batch, so both
+  orders send the same batches in the same order, and on libSQL those contests
+  can fail only on an invariant, an outage or the idle floor, and never on a
+  race. In 10 the only second batch is a loser's read of why it was refused.
+  In three a writer sends several batches, and a race can change the outcome:
+  `sweep`, `awaitTaskDone` of a child that has not ended, and `migrate`. The
+  surface costs 1.8 s of test time on libSQL, 6.6 s on PostgreSQL and 6.0 s on
+  MySQL on a shared machine, and 1.8, 8.5 and 7.1 s at a load average of 45 to
+  58, about half of it the two fixtures each contest migrates. CI's `verify`
+  job, which runs the libSQL and PostgreSQL legs, took 1,482 s on this work's
+  first head, with the surface in it. Against the rule for that job's 90 minute
+  limit the figure is a recorded 1,767 s, the slowest run the PR3.13 entry
+  records, plus a projected 21 s, which is twice the larger local figure: three
+  times 1,788 s is 5,364 s of the limit's 5,400.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
   one dialect-neutral read batch whose result cardinality is exact and every
@@ -2129,6 +2210,36 @@ realized in the store's compiler, executor, fragments, or schema:
   materialized, and deletes them by primary key with the expired rows first in
   the join. It waits on nothing, and measured 0 deadlocks of 200. The same
   read under `IN (...)` let the `DELETE` scan, and 22 of 200 still deadlocked.
+- **A keyed `UPDATE` whose keys come from a subquery is run as a scan when the
+  table is tiny, and then locks every row.** Open, and measured on MySQL 8.4.
+  While `runs` holds five rows or fewer, the claim's `UPDATE runs ... WHERE
+  run_id IN (candidates)` is planned as a scan of `runs` with the FirstMatch
+  semijoin strategy, and that one statement holds an X record lock on every
+  row of `runs`. From six rows the plan is the materialized candidates and
+  then `runs` by primary key, and it holds the claimed rows alone. It follows
+  the size of the table, not the number of due runs. A claimer already holds
+  the run its locking leg chose, so two claimers each wait for the other's row
+  and InnoDB rolls one back. With four claimers at limit 1 over four due runs,
+  one run of four was claimed in 20 runs of 20, and the executor counted
+  victims in 17 of the 20: one run met one, two met two, and fourteen met
+  three. In 300 more rounds, run by a review, 61 met none, 36 one, 30 two and
+  173 three, and none met more. No run is claimed twice or lost, and a
+  short claim is legal, so the cost is throughput and retries for a database's
+  first five runs, and for every table of the conformance suite. The
+  self-concurrency surface found it. Two fixes were measured to give the
+  production plan and one lock on a four-row table: `FORCE INDEX (PRIMARY)` on
+  the `UPDATE` target, and `/*+ SEMIJOIN(MATERIALIZATION) */` in the candidate
+  subquery, which core's rule against a comment in a SQL fragment refuses
+  today. The fix is planned (BUILD.md, PR4.4e). Until it lands, the MySQL
+  fixture excuses the deadlock count of that one contest, up to a bound, and
+  nothing else: the contest still holds its answers, its rows, and the
+  invariants. The bound is eight, four copies times the two attempts a copy can
+  lose without an outage, against a measured most of three. If
+  `conformance-mysql` ever fails on that contest with `outages` that is not
+  empty, a claimer was the victim on all three of its attempts, and that is
+  this same defect: it happened in none of the 320 rounds. PR4.4e deletes the
+  fixture's entry, the fixture member that holds it, and the special case that
+  reads it in the surface's final expectation.
 - **`MIN()` is not answered from an index once another predicate stands beside
   it.** The next-wake read walked 1207 rows of a 1200-row queue. Each wake
   source is now the first row in index order of one state, with the index
