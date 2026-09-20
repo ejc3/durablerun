@@ -1,43 +1,10 @@
 import { createHash } from 'node:crypto'
 import type { IdSource, SqlStatement } from '@durablerun/core'
+import { testIdSource } from '@durablerun/core/testing'
 import { MysqlStoreAdmin } from './admin.js'
 import { MysqlExecutor, createOwnedMysqlPool } from './executor.js'
 
 let fixtureSerial = 0
-
-const nextMonotoneSerial = (previous: number): number => previous + 1
-
-/** Deterministic IDs for stores built over one isolated MySQL fixture. */
-export function mysqlTestIdSource(
-  namespace = 'test',
-  options: { readonly nextTokenSerial?: (previous: number) => number } = {},
-): IdSource {
-  if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
-    throw new Error(
-      `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
-    )
-  }
-  let ids = 0
-  let tokens = 0
-  const proposeTokenSerial = options.nextTokenSerial ?? nextMonotoneSerial
-  const serial = (value: number) => String(value).padStart(6, '0')
-  return {
-    uuidv7: () => `${namespace}-id-${serial(++ids)}`,
-    token: () => {
-      const proposed = proposeTokenSerial(tokens)
-      if (!Number.isSafeInteger(proposed)) {
-        throw new RangeError(`test token serial must be a safe integer: ${proposed}`)
-      }
-      if (proposed <= tokens) {
-        throw new RangeError(
-          `test token serial must strictly increase: proposed ${proposed} after ${tokens}`,
-        )
-      }
-      tokens = proposed
-      return `${namespace}-token-${serial(tokens)}`
-    },
-  }
-}
 
 /**
  * MySQL catalog projection consumed by the shared schema/admin surface. It returns
@@ -125,7 +92,7 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     )
     raw = MysqlExecutor.open({ uri: connectionString, database: databaseName })
     const admin = new MysqlStoreAdmin(raw)
-    const ids = mysqlTestIdSource(idNamespace)
+    const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
     return { raw, admin, ids, databaseName, close: cleanup }

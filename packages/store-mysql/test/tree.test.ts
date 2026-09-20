@@ -179,7 +179,6 @@ describe('MySQL spelling of the shared statement trees', () => {
         claimToken: 'tok',
         stepName: 's',
         eventName: EventName.fromPort('test', 'e'),
-        awaitedTaskId: null,
         timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
         timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
         taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),

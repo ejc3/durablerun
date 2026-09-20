@@ -92,7 +92,10 @@ export class LibsqlExecutor implements SqlExecutor {
   ): Promise<SqlResult[]> {
     // A lock-bearing write remains an ordinary libSQL write batch: its single
     // writer already provides the mutual exclusion the explicit lock requests
-    // from multi-writer dialects.
+    // from multi-writer dialects. That holds for a lock of every kind, a kind of
+    // a later build included, because keeping two write batches apart is all a
+    // lock asks. So this executor implements every kind by taking nothing, where
+    // a server executor refuses a kind it does not know.
     const mode = sqlBatchMode(control)
     // An `undefined` bind is a programming error, not an outage. Letting it
     // reach the driver put its TypeError inside the catch below, where every

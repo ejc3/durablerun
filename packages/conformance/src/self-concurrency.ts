@@ -6,11 +6,9 @@ import {
   StoreUnavailableError,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { childTaskViolations } from './child-tasks.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory, StoreFixtureOptions } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
-import { rollingBack, startStep, triesOf } from './sagas.js'
+import { failedRollback, rollingBack, startStep } from './sagas.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -118,7 +116,7 @@ async function runWithAStartedStep(f: StoreFixture): Promise<ClaimedRun> {
 /** The first rollback pass of a task that is rolling back, claimed and started. */
 const rollbackPass = async (f: StoreFixture): Promise<ClaimedRun> => (await rollingBack(f)).pass
 
-const FAILED_ROLLBACK = triesOf('a', 1)
+const FAILED_ROLLBACK = failedRollback('a')
 
 /** A parent that is running, and a child in its queue that has not ended. */
 async function parentAndLiveChild(f: StoreFixture) {
@@ -570,11 +568,7 @@ async function contest(
         rows: Object.fromEntries(
           Object.entries(after.rows).map(([table, lines]) => [table, lines.map(setAside).sort()]),
         ),
-        violations: [
-          ...(await engineInvariantViolations(f.raw)),
-          ...(await childTaskViolations(f.raw)),
-          ...(await sagaViolations(f.raw)),
-        ],
+        violations: await engineHistoryViolations(f.raw),
         outages: settled.flatMap((one) => (one.kind === 'outage' ? [one.why] : [])),
         deadlocks: f.deadlocks() - deadlocksBefore,
         idle: copies.every(didNothing) && JSON.stringify(before) === JSON.stringify(after),

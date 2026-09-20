@@ -279,7 +279,7 @@ export async function runClaimedRun(
                 claimToken,
                 causeJson,
                 failure.retry,
-                failure.record,
+                failure.failed,
               )
               // The store says whether a pass follows. It can end the task where the retry
               // decision asked for a pass, when the pass does not fit the budget bound.
@@ -293,7 +293,7 @@ export async function runClaimedRun(
           // The task ends `failed` with the failure that began the saga either way. The
           // rollback outcome is derived from what ran, and stored nowhere.
           if (next.kind === 'halt') {
-            await store.failRollback(queue, runId, claimToken, causeJson, null, next.record)
+            await store.failRollback(queue, runId, claimToken, causeJson, null, next.failed)
           } else {
             await store.fail(queue, runId, claimToken, causeJson, null)
           }

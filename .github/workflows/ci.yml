@@ -313,6 +313,31 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a store's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
+              def span(text):
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -326,7 +351,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '24f997ed9c45ead6ff0e18733d1c1570e28bbbd5aaa9fb63261fc5b991ac1a02':
+          if digest == '3f3eab4e27ee25dd6f7f28382bb108406677eb3f119d762fe06495e64c5875f5':
               # Each store's executor types a permanent SQL error apart from an outage, from
               # the driver's error code, a worker pass ends on the new type as on an outage,
               # and a contest of the self-concurrency surface books it with the outages.

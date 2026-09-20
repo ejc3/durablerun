@@ -2,6 +2,7 @@ import {
   DERIVED_INTEGER_BOUNDS,
   PERSISTED_INTEGER_BOUNDS,
   type PersistedCounterFieldRecord,
+  persistedRowInteger,
   requireDerivedInteger,
 } from '@durablerun/core'
 import { expect, it } from 'vitest'
@@ -11,7 +12,6 @@ import {
   storedIntegerWithin,
   storedPositiveClaimGeneration,
 } from '../src/fragments.js'
-import { persistedRowInteger } from '../src/store.js'
 
 it('binds a persisted SQL column to its own nominal integer domain', () => {
   expect(storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.tasks.infra_retries, 't')).toContain(

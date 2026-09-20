@@ -306,6 +306,10 @@
 \*   'run-task' [read] -- the task of the run a terminal batch is about to end,
 \*     read only when this store did not activate the run; a run's task never
 \*     changes, and the batch names that task's completion event (ChildTasks.tla)
+\*   'rollback-tries' [read] -- the last attempt record of the rollback that a
+\*     'fail-rollback' batch is about to count, one row of the checkpoints key;
+\*     no transition, and that batch's claim fence keeps the count current
+\*     (Sagas.tla's RollbackRetry and RollbackHalts)
 \*   'task-done-state' [read] -- a task as a child await sees it: its queue,
 \*     its outcome, and the stamp its row carries. Read only by
 \*     a child await that neither registered nor hit, to say why (ChildTasks.tla's
