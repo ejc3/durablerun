@@ -221,20 +221,36 @@ QUOTED = re.compile(r"'([^'\s]+)'")
 BRACKETED = re.compile(r"\[[^\]\s]*\]")
 
 
-def next_state_actions(module_text: str) -> set[str] | None:
-    """The actions Next is a disjunction of, or None when it is anything else."""
-    body = re.search(r"^Next ==(.*(?:\n .*)*)", module_text, re.M)
-    if not body:
-        return None
-    flat = re.sub(r"\\\*.*", "", body.group(1))
+DEFINITION = re.compile(r"[A-Za-z_]\w*(?:\([^)]*\))? *==")
+RULE = re.compile(r"-{4,}|={4,}")
+
+
+def next_state_actions(module_text: str) -> tuple[set[str], str | None]:
+    """The actions Next is a disjunction of, and why the reading stopped, when it did.
+
+    Next runs to the next definition or to a rule of the module. Blank lines and comments
+    inside it are passed over. Whatever else stands there is a disjunct, a named action
+    under its quantifiers, or the reading stops and says what it met.
+    """
+    lines = module_text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("Next ==")), None)
+    if start is None:
+        return set(), "the module defines no Next"
+    body = [lines[start][len("Next ==") :]]
+    for ln in lines[start + 1 :]:
+        if DEFINITION.match(ln) or RULE.match(ln):
+            break
+        body.append(ln)
+    flat = " ".join(re.sub(r"\\\*.*", "", ln) for ln in body)
     actions = set()
     for disjunct in re.sub(r"\\E[^:]*:", " ", flat).split("\\/"):
         named = re.fullmatch(rf"\s*({ACTION})(?:\([^()]*\))?\s*", disjunct)
         if named:
             actions.add(named.group(1))
         elif disjunct.strip():
-            return None
-    return actions or None
+            met = " ".join(disjunct.split())[:80]
+            return set(), f"this part of Next is not a named action under its quantifiers: {met}"
+    return actions, None if actions else "Next names no action"
 
 
 problems: list[str] = []
@@ -256,11 +272,10 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
             f"stores' batches must be written where this script reads it"
         )
         continue
-    next_actions = next_state_actions(module_text)
-    if next_actions is None:
+    next_actions, unreadable = next_state_actions(module_text)
+    if unreadable:
         problems.append(
-            f"spec-ledger: cannot read {model}.tla's next-state relation: Next must be a "
-            f"disjunction of named actions, each under its quantifiers"
+            f"spec-ledger: cannot read {model}.tla's next-state relation: {unreadable}"
         )
         continue
     side_block = found.group(0)
