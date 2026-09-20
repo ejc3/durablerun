@@ -206,10 +206,14 @@ a last docs PR gives a live owner to every open bullet that is left.
     a list under IN that holds a bound value. The registry self-test fails when
     one spelling of a list written on one line has no mutation of its own.
     This is met. A verdict case and two bad inputs of the lint self-test were
-    committed failing for `age`, and four verdict cases were committed failing
+    committed failing for `age`, and five verdict cases were committed failing
     for the read rule: a one-state list, a list of plain values, a list with
-    one bound member, and a bound value in parentheses. Six registered
-    mutations are each caught by one of those cases. `clock-lint` holds no list
+    one bound member, a bound value in parentheses, and one case with a cast,
+    a call, a CASE and a fragment on the right. A sixth case was committed
+    failing for a refusal that spoke of a subtraction to a follow-on that had
+    spelled no clock. Six registered mutations are each caught by one case:
+    one for `age`, four for the conditions of the read rule's predicate, and
+    one for the advice. `clock-lint` holds no list
     of its own, and its self-test refuses a tree with no list. Removing the
     mutation of any one clock keyword, date function, counting operator or
     deadline test from a copy of the registry gives one problem that names it,
@@ -1298,21 +1302,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     list PostgreSQL's `age`, which measures from the current date when it is
     given one argument. Every call is refused, the form with two arguments
     too, which reads no clock: no store statement calls `age`, telling one
-    argument from two would mean reading SQL, and the refusal says that a span
-    between two stored instants is a subtraction. The spellings have one
+    argument from two would mean reading SQL, and a refusal that found a clock
+    spelled says that a span between two stored instants is a subtraction. A
+    follow-on refused for holding the batch clock's token spelled nothing and
+    is told nothing of it. The spellings have one
     definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
     `packages/core/src/sql-tree.ts`. `scripts/clock-lint.py` kept a second
-    list by hand. It now reads that one from the checkout it stands in, leaves
-    out the one arm a store's admin statements would trip, and refuses to run
-    when it cannot read the list. Before the change the pattern read from the
+    list by hand. It now reads that one from the tree it audits, leaves out
+    the one arm a store's admin statements would trip, and refuses to run on a
+    tree whose list it cannot read. Before the change the pattern read from the
     tree's list was compared with the hand-kept one and was the same string.
     The lint is exactly as strong as the tree's list, which its self-test
     keeps as a case: a tree whose list lacks `sysdate` accepts `SYSDATE()`.
     A batch of reads also refuses a state or status column tested against a
-    list under IN or NOT IN that holds a bound value, and a bound value in
-    parentheses, both of which passed the rule that read only a bare bound
-    value. A list of inline literals is admitted, because that is the form a
-    partial index matches. No statement a store sends changed: the generated
+    bound value wherever it stands below the right side of the test: in a list
+    under IN or NOT IN, in parentheses, or under a cast, a call, a CASE or a
+    value fragment that carries a bind. All of those passed the rule that read
+    only a bare bound value. One predicate walks the right side as
+    `namesColumn` walks the left, and stops at a subquery, which is its own
+    statement. A list of inline literals is admitted, because that is the form
+    a partial index matches. No statement a store sends changed: the generated
     corpus is the same on three dialects. The registry self-test holds each
     spelling of a one-line list to a mutation of its own. Counting the
     mutations on the line would not: eight clock keywords stand on a line that

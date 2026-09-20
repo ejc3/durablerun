@@ -1382,17 +1382,21 @@ def red_pair_corpus(rule_body: str, synopsis: str) -> dict[str, str]:
     )
 
 
+# clock-lint reads its spellings from the tree it audits, so a fixture of it carries these rules.
+TREE_RULES = "packages/core/src/sql-tree.ts"
+TREE_RULES_TEXT = (SCRIPTS.parent / TREE_RULES).read_text()
+
+
 def tree_rules_without_spelling(name: str) -> str:
     """The repository's tree rules with one clock function taken off the list.
 
     It fails when the name is not on the list. A replace that finds nothing returns the
     text as it was, and the case built from it would pass while showing nothing.
     """
-    text = (SCRIPTS.parent / "packages/core/src/sql-tree.ts").read_text()
     entry = f"  '{name}',\n"
-    if text.count(entry) != 1:
+    if TREE_RULES_TEXT.count(entry) != 1:
         raise SystemExit(f"lint-selftest: the clock function list does not hold {name!r} exactly once")
-    return text.replace(entry, "")
+    return TREE_RULES_TEXT.replace(entry, "")
 
 
 CLEAN_STORE = store(
@@ -3422,7 +3426,7 @@ export class Store {
         "clock-lint.py",
         {
             **CLEAN_STORE,
-            "packages/core/src/sql-tree.ts": "export const CLOCK_SPELLING = /now/\n",
+            TREE_RULES: "export const CLOCK_SPELLING = /now/\n",
         },
         "cannot read the clock spellings",
         "a tree whose rules define no list of spellings is refused, because a pattern built from nothing matches nothing",
@@ -4233,7 +4237,7 @@ const pattern = /this\.db\.batch\(/
         "clock-lint.py",
         {
             **store("const SQL = `SELECT SYSDATE() AS t`\n"),
-            "packages/core/src/sql-tree.ts": tree_rules_without_spelling("sysdate"),
+            TREE_RULES: tree_rules_without_spelling("sysdate"),
         },
         "a name the audited tree's list does not hold is not refused: the list has one definition",
     ),
@@ -5273,13 +5277,12 @@ def run(
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
-        # clock-lint reads the clock spellings from the checkout its script stands in, and
-        # this copies the script into the fixture. A fixture that brings no list of its own
-        # gets the repository's, as batch-lint's gets its list of text statements.
-        spellings = root / "packages" / "core" / "src" / "sql-tree.ts"
+        # clock-lint reads the clock spellings from the tree it audits. A fixture that brings
+        # no list of its own gets the repository's, as batch-lint's gets its list of text statements.
+        spellings = root / TREE_RULES
         if lint == "clock-lint.py" and not spellings.exists():
             spellings.parent.mkdir(parents=True, exist_ok=True)
-            spellings.write_text((SCRIPTS.parent / "packages/core/src/sql-tree.ts").read_text())
+            spellings.write_text(TREE_RULES_TEXT)
         listed = root / "scripts" / "text-statements.json"
         if lint == "batch-lint.py" and not listed.exists():
             listed.write_text((SCRIPTS / "text-statements.json").read_text())

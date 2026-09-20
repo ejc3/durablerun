@@ -41,10 +41,8 @@ except ValueError as error:
 # The spellings have ONE definition: `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in the tree
 # rules, where every entry has a registered mutation. This lint kept a second list by hand,
 # and a name added to one and not the other shipped in whichever scan lacked it. It reads
-# the list from the checkout this script stands in, so the two scans cannot differ. That
-# is the tree it audits wherever the gate runs it: the lint self-test and the base gate both
-# copy the scripts into the tree they audit. It refuses to run on a list it cannot read,
-# because a pattern built from nothing matches nothing.
+# the list of the tree it audits, so the two scans cannot differ, and it refuses to run on
+# a list it cannot read, because a pattern built from nothing matches nothing.
 #
 # What the list's shape holds, each learned from a lint that was blind without it. SQL is
 # case-insensitive, so the pattern is. Function names must appear AS CALLS: matched as bare
@@ -63,35 +61,42 @@ TREE_RULES = "packages/core/src/sql-tree.ts"
 TREE_ONLY_ARM = r"\bfake_now_ms\b"
 
 
+def list_lines(text: str, opening: str, closing: str, shape: str, what: str) -> list[str]:
+    """What each line of one list holds. A list that is missing, empty, or has a line of another shape is refused."""
+    found = re.search(rf"^{opening}\n(.*?)^{closing}\n", text, re.S | re.M)
+    lines = [] if found is None else found.group(1).splitlines()
+    held = [re.fullmatch(shape, line) for line in lines]
+    if not held or None in held:
+        raise ValueError(f"{TREE_RULES}: {what}")
+    return [line.group(1) for line in held]
+
+
 def tree_clock_spellings(text: str) -> str:
     """The tree rule's clock spellings as one pattern, read from the source that defines them."""
-    names = re.search(r"^const CLOCK_FUNCTIONS = \[\n(.*?)^\]\n", text, re.S | re.M)
-    block = re.search(
-        r"^export const CLOCK_SPELLING = new RegExp\(\n  \[\n(.*?)^  \]\.join\('\|'\),\n",
+    functions = list_lines(
         text,
-        re.S | re.M,
+        r"const CLOCK_FUNCTIONS = \[",
+        r"\]",
+        r"  '([a-z_]+)',",
+        "CLOCK_FUNCTIONS is not a list of one quoted name to a line",
     )
-    if names is None or block is None:
-        raise ValueError(f"{TREE_RULES} does not define CLOCK_FUNCTIONS and CLOCK_SPELLING as lists")
-    functions = re.findall(r"^  '([a-z_]+)',$", names.group(1), re.M)
-    if not functions or len(functions) != names.group(1).count("\n"):
-        raise ValueError(f"{TREE_RULES}: a line of CLOCK_FUNCTIONS is not one quoted name")
-    arms = []
-    for line in block.group(1).splitlines():
-        arm = re.fullmatch(r"    String\.raw`(.*)`,", line)
-        if arm is None:
-            raise ValueError(f"{TREE_RULES}: a line of CLOCK_SPELLING is not one String.raw arm")
-        arms.append(arm.group(1).replace("${CLOCK_FUNCTIONS.join('|')}", "|".join(functions)))
+    arms = [
+        arm.replace("${CLOCK_FUNCTIONS.join('|')}", "|".join(functions))
+        for arm in list_lines(
+            text,
+            r"export const CLOCK_SPELLING = new RegExp\(\n  \[",
+            r"  \]\.join\('\|'\),",
+            r"    String\.raw`(.*)`,",
+            "CLOCK_SPELLING is not a list of one String.raw arm to a line",
+        )
+    ]
     if arms.count(TREE_ONLY_ARM) != 1:
         raise ValueError(f"{TREE_RULES}: CLOCK_SPELLING no longer holds the arm {TREE_ONLY_ARM}")
     return "|".join(arm for arm in arms if arm != TREE_ONLY_ARM)
 
 
 try:
-    CLOCKS = re.compile(
-        tree_clock_spellings((Path(__file__).resolve().parent.parent / TREE_RULES).read_text()),
-        re.IGNORECASE,
-    )
+    CLOCKS = re.compile(tree_clock_spellings((root / TREE_RULES).read_text()), re.IGNORECASE)
 except (OSError, ValueError, re.error) as error:
     sys.exit(f"clock-lint.py: cannot read the clock spellings: {error}")
 META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"

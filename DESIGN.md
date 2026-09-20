@@ -1346,8 +1346,8 @@ are load-bearing):
      definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
      `packages/core/src/sql-tree.ts`, where each entry has a registered
      mutation. `scripts/clock-lint.py` keeps no list: it reads that one from
-     the checkout it stands in, applies it to store sources, and refuses to
-     run when it cannot read the list. One arm is the tree's alone,
+     the tree it audits, applies it to store sources, and refuses to run on a
+     tree whose list it cannot read. One arm is the tree's alone,
      `fake_now_ms`, the column a store's clock reads under test, which a
      fragment could read with no clock call at all. A store's admin
      statements write that row by name, so the lint refuses a read of it with

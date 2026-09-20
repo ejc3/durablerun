@@ -15758,7 +15758,6 @@ TREE_CONDITION_TOKEN = re.compile(
 TREE_STRING_LITERAL = re.compile(r"`[^`]*`|'[^']*'|\"[^\"]*\"")
 TREE_SPELLING_ARM = re.compile(r"String\.raw`(.*)`")
 TREE_SPELLING_GROUP = re.compile(r"\(\?:([^()]*)\)")
-TREE_QUOTED_ENTRY = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 
 
 def spelling_entries(line: str) -> list[str]:
@@ -15776,7 +15775,7 @@ def spelling_entries(line: str) -> list[str]:
     """
     arm = TREE_SPELLING_ARM.search(line)
     if arm is None:
-        return [first or second for first, second in TREE_QUOTED_ENTRY.findall(line)]
+        return [literal[1:-1] for literal in TREE_STRING_LITERAL.findall(line)]
     pattern = re.sub(r"\$\{[^}]*\}", "", arm.group(1))
     group = TREE_SPELLING_GROUP.search(pattern)
     return [pattern] if group is None else group.group(1).split("|")
@@ -15868,6 +15867,8 @@ def tree_rule_coverage_problems(
     of what has no mutation was read as complete when it was not.
     """
     lines = text.split("\n")
+    # The lines of the spelling lists, by the one reading of a block's span.
+    block_lines = set(tree_condition_lines(text, (), blocks))
     touching: dict[int, set[str]] = {}
     dropped: dict[int, set[str]] = {}
     for name, find, replace in finds:
@@ -15878,6 +15879,8 @@ def tree_rule_coverage_problems(
         found, replaced = find.rstrip("\n").split("\n"), replace.rstrip("\n").split("\n")
         for offset, line in enumerate(found):
             touching.setdefault(first + offset, set()).add(name)
+            if first + offset not in block_lines:
+                continue
             # The line as the mutant leaves it. A replacement of another length has
             # moved the line, and a line that is gone has dropped every entry.
             after = replaced[offset] if len(replaced) == len(found) else ""
@@ -15885,41 +15888,30 @@ def tree_rule_coverage_problems(
             if len(gone) == 1:
                 dropped.setdefault(first + offset, set()).update(gone)
     wanted = tree_condition_lines(text, regions, blocks)
-    block_lines = {
-        number
-        for first, second in blocks
-        for number in range(
-            text.count("\n", 0, text.index(first)) + 1,
-            text.count("\n", 0, text.index(second, text.index(first) + len(first))) + 2,
-        )
-    }
     problems: list[str] = []
     short: set[str] = set()
     for number in sorted(wanted):
         line = lines[number - 1].strip()
         entries = spelling_entries(line) if number in block_lines else []
-        if len(entries) > 1:
-            unheld = [entry for entry in entries if entry not in dropped.get(number, ())]
-            if not unheld:
-                continue
-            short.add(line)
-            if line not in listed:
-                problems.append(
-                    f"{file}:{number}: `{line}` holds {len(entries)} spellings and no "
-                    f"registered mutation drops {', '.join(repr(entry) for entry in unheld)} "
-                    "alone; register one for each entry, or list the line in "
-                    "TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
-                )
-            continue
+        unheld = [entry for entry in entries if entry not in dropped.get(number, ())]
         have = len(touching.get(number, ()))
-        if have >= wanted[number]:
+        if len(entries) > 1:
+            shortfall = unheld and (
+                f"holds {len(entries)} spellings and no registered mutation drops "
+                f"{', '.join(repr(entry) for entry in unheld)} alone; register one for each entry"
+            )
+        else:
+            shortfall = have < wanted[number] and (
+                f"holds {wanted[number]} condition(s) and {have} registered mutation(s) "
+                "touch it; register one for each"
+            )
+        if not shortfall:
             continue
         short.add(line)
         if line not in listed:
             problems.append(
-                f"{file}:{number}: `{line}` holds {wanted[number]} condition(s) and "
-                f"{have} registered mutation(s) touch it; register one for each, or list "
-                "the line in TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
+                f"{file}:{number}: `{line}` {shortfall}, or list the line in "
+                "TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
             )
     for line, reason in sorted(listed.items()):
         if not reason.strip():
@@ -17751,9 +17743,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             # The false negative, kept on purpose: spellings are read as quoted strings and
             # as the alternatives of a group. A character class that spells two operators
-            # is one entry, and one mutation holds it.
+            # is one entry, so the one mutant here, which drops `+` from the class, holds
+            # the line, and nothing asks for a mutant that drops `*`.
             "false negative: two spellings inside one character class",
-            held,
+            [find for find in held if find[0] != "class"]
+            + [("class-plus", "  String.raw`[+*]`,\n", "  String.raw`[*]`,\n")],
             (),
         ),
     )
