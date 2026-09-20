@@ -169,6 +169,14 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+16. PR3.5d: a released name whose declaration changed fails the package check
+    unless the snapshot lists the change with a reason. This is met.
+    `scripts/package-surface.mjs` compares the printed declarations of every
+    name v0.1.0-alpha.1 exported with the packed ones. With their entries
+    taken out of a copy of the snapshot, the two historical breaks are refused
+    by name: `TaskResult` without `completedPayloadJson`, the case PR3.5a's
+    postmortem wrote down, and `FencedBatch` without its text methods and with
+    a required `tree`. Main's check exits 0 on both.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1147,10 +1155,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     option because it is the dialect's compiler and not a flag. The alpha
     release exported `FENCE_SET`, `FENCE_COLS`, `FENCE_VALS`, and `fenceSetAt`,
     so the published-surface check now takes a withdrawal with a reason, and
-    refuses one of a name that is still exported. That check reads export
-    names, so it does not see the rest of the break to an alpha consumer:
-    `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
-    `openTail`, and its constructor requires `tree`.
+    refuses one of a name that is still exported.
     Fourteen registered mutations are retired, each with a successor. Twelve
     owned text that is gone: `followon-provenance-check`,
     `positive-fence-required`, `positive-fence-is-not`, `top-level-or-reach`,
@@ -2128,6 +2133,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `setCheckpoint` in place of three identifiers. That changes published port
     signatures, which belongs in a deliberate API change, and the owner-bound
     helpers already remove the repeated arguments from the tests.
+- **PR3.5d the published-surface check reads declarations**: DONE. PR3.5a's
+  check, `scripts/package-surface.mjs`, compared the names each published entry
+  point exports with the v0.1.0-alpha.1 release, and its postmortem recorded
+  what that misses: with `completedPayloadJson` deleted from `TaskResult` the
+  check exited 0. PR3.9e part 3b then made that kind of break for real.
+  `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
+  `openTail`, its constructor requires `tree`, and the check saw the four
+  withdrawn names and nothing else. The snapshot now holds every released
+  name's declarations as the compiler API prints them from the release
+  tarballs, whose sha256 it records: the lines of the name's own declarations
+  without their comments, then those of every name they reach inside the packed
+  packages that the release did not export, because a consumer's compiler reads
+  through such a name. A class's private members are left out, and one line
+  says that the class has some. The check does not judge whether a difference
+  breaks a consumer. Any difference in a released name's lines is refused
+  unless the snapshot's `changed` table lists the name with the reason, what a
+  consumer does about it, and the sha256 of the declaration as it is now, so a
+  second change to a listed name is refused until its entry is written again.
+  An entry is refused when its name was never released, is also withdrawn, has
+  no reason, or is declared as the release declared it. Nineteen released names
+  differ on main, each traced to the pull request that changed it, and the
+  table lists them. `--write <release> <tarball-dir> <snapshot>` writes the
+  snapshot of the next release, and over a snapshot of the same release it
+  refuses a tarball whose sha256 differs and keeps both tables.
+  `package-smoke.sh` holds twelve controls. Each of the check's eleven refusals
+  was deleted in a copy of the script, and the control that owns it went red.
+  Two controls are the historical false negative from both sides: a copy of the
+  packed packages in which `Checkpoint` lost a member, and a snapshot in which
+  that member was declared another way. What the check does not see: a
+  declaration that refers to a dependency's type changes with the dependency,
+  whose declarations are not packed, and a private member's name, which a
+  consumer's subclass can collide with. A rewrite that means the same, an
+  interface turned into an equal type alias for one, is refused until it is
+  listed, because the comparison is of printed lines.
 
 ## Phase 4 — dialect matrix
 
