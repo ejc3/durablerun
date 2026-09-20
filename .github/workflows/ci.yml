@@ -326,41 +326,19 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
-              # On MySQL a write keyed by a subquery reads its keys first and its table second,
-              # through the index of its key, and a delete reads its keys through the index of
-              # their stamp.
-              # The compiler's conditions, the index's width, the server cases and the
-              # executor's answer to a forced index that is not there register mutations
-              # the base predates, so their verdict markers are exempted. No base entry
-              # is re-aimed.
+          if digest == '24f997ed9c45ead6ff0e18733d1c1570e28bbbd5aaa9fb63261fc5b991ac1a02':
+              # Each store's executor types a permanent SQL error apart from an outage, from
+              # the driver's error code, a worker pass ends on the new type as on an outage,
+              # and a contest of the self-concurrency surface books it with the outages.
+              # Each new condition registers a mutation the base predates, so their verdict
+              # markers are exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
-                  "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
-                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second",
-                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-named",
-                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
-                  "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
-                  "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
-                  "mutation-verdict:construction:mysql-unkeyed-delete-refused",
-                  "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
-                  "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
-                  "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
-                  "mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp",
-                  "mutation-verdict:behavior:mysql-stamp-index-holds-the-token",
-                  "mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index",
-                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased",
-                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain",
-                  "mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table",
-                  "mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing",
-                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp",
-                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources",
-                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality",
-                  "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
-                  "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
-                  "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
-                  "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
-                  "mutation-verdict:construction:mysql-keyed-delete-own-table-refused",
+                  "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+                  "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+                  "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+                  "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+                  "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
+                  "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
