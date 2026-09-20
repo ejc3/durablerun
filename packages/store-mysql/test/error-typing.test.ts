@@ -120,9 +120,11 @@ describe('what a real MySQL server answers a refused statement', () => {
  * of those numbers was found late, one at a time, because the executor's cases ran on a fake
  * connection fed the numbers their author listed. The server knows its own list, so this
  * reads it: every error number it can send a client, with the name and the state it files it
- * under. A number whose NAME disagrees with what its CLASS makes the executor answer must be
- * in one of the executor's lists, or be explained here. A server version that adds such a
- * number fails the case until someone decides what it is.
+ * under. A number whose NAME disagrees with what the executor answers must be in one of the
+ * executor's lists, or be explained here. A server version that adds such a number fails the
+ * case until someone decides what it is. What a name can say bounds both rules: typed
+ * permanent by mistake, a limit whose name uses none of the first rule's words passes it, as
+ * 1040 `ER_CON_COUNT_ERROR`, the server's max_connections, and 1037 `ER_OUTOFMEMORY` do.
  */
 describe('the numbers MySQL files apart from what their names say', () => {
   type Filed = { readonly n: number; readonly name: string; readonly state: string }
@@ -172,22 +174,28 @@ describe('the numbers MySQL files apart from what their names say', () => {
     4163: "a named lock's name is too long, and the same call repeats it",
   }
 
-  it('types a number permanent by its class only when no retry lifts what its name says', async () => {
-    const underAPermanentClass = (await filedByTheServer()).filter(
-      (filed) => PERMANENT_CLASSES.has(filed.state.slice(0, 2)) && SAYS_A_LIMIT.test(filed.name),
+  it('types a number permanent, by its class or by hand, only when no retry lifts what its name says', async () => {
+    // Whatever class MySQL files it under: a class types most numbers permanent, and the
+    // list the executor keeps by hand must not name a limit either.
+    const saysALimit = (await filedByTheServer()).filter((filed) => SAYS_A_LIMIT.test(filed.name))
+    const underAPermanentClass = saysALimit.filter((filed) =>
+      PERMANENT_CLASSES.has(filed.state.slice(0, 2)),
     )
     expect(
-      underAPermanentClass.length,
-      'the selection found the limits it is about',
-    ).toBeGreaterThan(3)
+      {
+        underAPermanentClass: underAPermanentClass.length > 3,
+        outsideThem: saysALimit.length - underAPermanentClass.length > 3,
+      },
+      'the selection found the limits it is about, under the permanent classes and outside them',
+    ).toEqual({ underAPermanentClass: true, outsideThem: true })
     expect(
       {
-        typedPermanentWithNoReason: underAPermanentClass
+        typedPermanentWithNoReason: saysALimit
           .filter((filed) => typed(filed) === 'PermanentStoreError')
           .filter((filed) => A_LIMIT_NO_RETRY_LIFTS[filed.n] === undefined)
           .map(line),
         reasonsForNumbersNotSelected: Object.keys(A_LIMIT_NO_RETRY_LIFTS).filter(
-          (n) => !underAPermanentClass.some((filed) => filed.n === Number(n)),
+          (n) => !saysALimit.some((filed) => filed.n === Number(n)),
         ),
       },
       'mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class',

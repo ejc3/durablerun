@@ -15557,7 +15557,7 @@ VERDICTS.update(
         "mysql-error-list-holds-the-limits-under-a-permanent-class": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/error-typing.test.ts",
-            "the numbers MySQL files apart from what their names say types a number permanent by its class only when no retry lifts what its name says",
+            "the numbers MySQL files apart from what their names say types a number permanent, by its class or by hand, only when no retry lifts what its name says",
             "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
         ),
         "mysql-error-list-holds-the-refused-values-outside-the-classes": ExpectedVerdict(
