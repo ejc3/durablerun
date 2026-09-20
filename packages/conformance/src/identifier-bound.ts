@@ -21,15 +21,10 @@ import {
   PORT_STRING_PLACES,
   PORT_STRING_PROBLEMS,
   type PortStringPlace,
+  WIDTH,
 } from './port-strings.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
-/**
- * A durable identifier holds 255 characters, counted in Unicode code points, on every
- * dialect (DESIGN.md §3.4). The number is written here and not imported, so the suite
- * holds the contract and not whatever the constant happens to say.
- */
-const WIDTH = 255
 const REFUSED = 'InvalidDurableStringError'
 const CAUSE = '{"name":"Error","message":"boom"}'
 const wake = { inSeconds: 1 }
@@ -77,31 +72,31 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
 
 /** Every place the port does not hold as an identifier, written here by hand. */
 const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
-  'spawn(taskName)': 'durable',
-  'spawn(paramsJson)': 'payload',
-  'spawn(childOf.claimToken)': 'durable',
-  'spawn(headers)': 'payload',
-  'claim(claimToken)': 'durable',
-  'activate(claimToken)': 'durable',
-  'claimedTaskName(claimToken)': 'durable',
-  'deferLaunch(claimToken)': 'durable',
-  'heartbeat(claimToken)': 'durable',
-  'reschedule(claimToken)': 'durable',
-  'complete(claimToken)': 'durable',
-  'complete(resultJson)': 'payload',
-  'suspendRun(claimToken)': 'durable',
-  'suspendRun(checkpoint.stateJson)': 'payload',
-  'fail(claimToken)': 'durable',
-  'fail(failureJson)': 'payload',
-  'failRollback(claimToken)': 'durable',
-  'failRollback(failureJson)': 'payload',
-  'failRollback(rollbackTry.stateJson)': 'payload',
-  'expireLeaseNow(claimToken)': 'durable',
-  'setCheckpoint(claimToken)': 'durable',
-  'setCheckpoint(stateJson)': 'payload',
-  'emitEvent(payloadJson)': 'payload',
-  'awaitEvent(claimToken)': 'durable',
-  'awaitTaskDone(claimToken)': 'durable',
+  'spawn[1](taskName)': 'durable',
+  'spawn[2](paramsJson)': 'payload',
+  'spawn[3].childOf.claimToken(childOf.claimToken)': 'durable',
+  'spawn[3].headers(headers)': 'payload',
+  'claim[1](claimToken)': 'durable',
+  'activate[2](claimToken)': 'durable',
+  'claimedTaskName[2](claimToken)': 'durable',
+  'deferLaunch[2](claimToken)': 'durable',
+  'heartbeat[2](claimToken)': 'durable',
+  'reschedule[2](claimToken)': 'durable',
+  'complete[2](claimToken)': 'durable',
+  'complete[3](resultJson)': 'payload',
+  'suspendRun[2](claimToken)': 'durable',
+  'suspendRun[4].stateJson(checkpoint.stateJson)': 'payload',
+  'fail[2](claimToken)': 'durable',
+  'fail[3](failureJson)': 'payload',
+  'failRollback[2](claimToken)': 'durable',
+  'failRollback[3](failureJson)': 'payload',
+  'failRollback[5].stateJson(rollbackTry.stateJson)': 'payload',
+  'expireLeaseNow[2](claimToken)': 'durable',
+  'setCheckpoint[3](claimToken)': 'durable',
+  'setCheckpoint[5](stateJson)': 'payload',
+  'emitEvent[2](payloadJson)': 'payload',
+  'awaitEvent[3](claimToken)': 'durable',
+  'awaitTaskDone[3](claimToken)': 'durable',
 }
 
 export function identifierBoundConformance(

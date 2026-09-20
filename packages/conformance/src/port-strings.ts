@@ -1,4 +1,5 @@
 import {
+  PORT_METHODS,
   PORT_STRINGS,
   PORT_STRING_RULES,
   type PortMethod,
@@ -59,10 +60,8 @@ const EXAMPLE_CALLS: {
 
 /** One place a string enters the port. */
 export interface PortStringPlace {
-  /** The method and the name the caller knows the string by: `claim(queue)`. */
+  /** The method, where the string stands in the call, and its name: `claim[0](queue)`. */
   readonly place: string
-  readonly method: PortMethod
-  readonly name: PortStringName
   readonly rule: PortStringRule
   /** Make the example call with `value` at this place and every other argument valid. */
   call(store: SchedulerStore, value: unknown): Promise<unknown>
@@ -83,23 +82,22 @@ function withAt(value: unknown, path: Path, replacement: unknown): unknown {
   }
 }
 
-/** Every string the table names in `named`, with the path to it from the arguments. */
-function namedPaths(named: unknown, path: Path): { name: PortStringName; path: Path }[] {
-  if (typeof named === 'string') return [{ name: named as PortStringName, path }]
-  if (named === null || typeof named !== 'object') return []
-  return Object.entries(named).flatMap(([property, inner]) =>
-    namedPaths(inner, [...path, Array.isArray(named) ? Number(property) : property]),
+/**
+ * Every string under `value`, with the path to it from the arguments. The table and a
+ * call are walked by this one function, so a path means the same in both, which the
+ * comparison of the two relies on.
+ */
+function stringsIn(value: unknown, path: Path): { string: string; path: Path }[] {
+  if (typeof value === 'string') return [{ string: value, path }]
+  if (value === null || typeof value !== 'object') return []
+  return Object.entries(value).flatMap(([property, inner]) =>
+    stringsIn(inner, [...path, Array.isArray(value) ? Number(property) : property]),
   )
 }
 
-/** Every string in a value, with its path, whatever the table says about it. */
-function stringPaths(value: unknown, path: Path): Path[] {
-  if (typeof value === 'string') return [path]
-  if (value === null || typeof value !== 'object') return []
-  return Object.entries(value).flatMap(([property, inner]) =>
-    stringPaths(inner, [...path, Array.isArray(value) ? Number(property) : property]),
-  )
-}
+/** A path as a place shows it: the argument's position, then the members under it. */
+const shown = ([argument, ...members]: Path): string =>
+  `[${argument}]${members.map((member) => `.${member}`).join('')}`
 
 const valueAt = (value: unknown, path: Path): unknown =>
   path.reduce<unknown>(
@@ -109,22 +107,21 @@ const valueAt = (value: unknown, path: Path): unknown =>
   )
 
 /**
- * What is wrong with the table, or with the calls here, found while the places were
- * generated. It is data and not a throw, so that a table that is wrong fails a case by its
- * name, with its reason, and does not stop the whole suite from loading.
+ * The places, and what is wrong with the table or with the calls here. What is wrong is
+ * data and not a throw, so that a table that is wrong fails a case by its name, with its
+ * reason, and does not stop the whole suite from loading.
  */
-const problems: string[] = []
-
-function generatePlaces(): readonly PortStringPlace[] {
+function generatePlaces(): { places: readonly PortStringPlace[]; problems: readonly string[] } {
   const places: PortStringPlace[] = []
-  for (const method of Object.keys(PORT_STRINGS) as PortMethod[]) {
+  const problems: string[] = []
+  for (const method of PORT_METHODS) {
     const examples: readonly (readonly unknown[])[] = EXAMPLE_CALLS[method]
-    const named = namedPaths(PORT_STRINGS[method], [])
+    const named = stringsIn(PORT_STRINGS[method], [])
     // The table's type holds it to the port's types. This holds it to real calls: a
     // string an example passes that the table does not name was left out of the table.
     const unnamed = examples.flatMap((args) =>
-      stringPaths(args, []).filter(
-        (path) =>
+      stringsIn(args, []).filter(
+        ({ path }) =>
           !named.some(
             (known) =>
               known.path.length <= path.length && known.path.every((step, at) => step === path[at]),
@@ -132,26 +129,28 @@ function generatePlaces(): readonly PortStringPlace[] {
       ),
     )
     if (unnamed.length > 0) {
-      problems.push(`${method}: the table names no string at ${JSON.stringify(unnamed)}`)
+      problems.push(
+        `${method}: the table names no string at ${unnamed.map(({ path }) => shown(path))}`,
+      )
     }
-    // A place is known by its method and its name, so a method names each string once. A
-    // table that gave two arguments one name would fold two places into one, and the one
-    // that vanished would be asked nothing: an identifier renamed to a payload's name that
-    // its method already has is exactly that.
-    const twice = named.map(({ name }) => name).filter((name, at, all) => all.indexOf(name) !== at)
+    // A method names each string once. The place shows where the string stands as well, so
+    // two arguments of one name are two places, and this says so in words.
+    const names = named.map(({ string }) => string)
+    const twice = names.filter((name, at) => names.indexOf(name) !== at)
     if (twice.length > 0) {
       problems.push(`${method}: the table names ${JSON.stringify(twice)} at more than one argument`)
     }
-    for (const { name, path } of named) {
+    for (const { string, path } of named) {
+      const name = string as PortStringName
       const args = examples.find((example) => valueAt(example, path) !== undefined)
       if (args === undefined) {
-        problems.push(`${method}(${name}): no example call passes this string`)
+        problems.push(`${method}${shown(path)}(${name}): no example call passes this string`)
         continue
       }
       places.push({
-        place: `${method}(${name})`,
-        method,
-        name,
+        // Where the string stands, and the name the table gives it there. The position is
+        // part of the place, so two names that changed places are two other places.
+        place: `${method}${shown(path)}(${name})`,
         rule: PORT_STRING_RULES[name],
         call: (store, value) =>
           (Reflect.get(store, method) as (...made: unknown[]) => Promise<unknown>).apply(
@@ -161,14 +160,16 @@ function generatePlaces(): readonly PortStringPlace[] {
       })
     }
   }
-  return places
+  return { places, problems }
 }
 
+const generated = generatePlaces()
+
 /** Every place a string enters the port, in the table's order. */
-export const PORT_STRING_PLACES: readonly PortStringPlace[] = generatePlaces()
+export const PORT_STRING_PLACES: readonly PortStringPlace[] = generated.places
 
 /** What generating the places found wrong. The identifier surface holds it empty. */
-export const PORT_STRING_PROBLEMS: readonly string[] = problems
+export const PORT_STRING_PROBLEMS: readonly string[] = generated.problems
 
 /** The places the port holds to a rule: every place but a payload's. */
 export const HELD_PLACES = PORT_STRING_PLACES.filter(({ rule }) => rule !== 'payload')
@@ -192,7 +193,7 @@ export const OUTSIDE_THE_DOMAIN: Readonly<Record<string, unknown>> = {
 }
 
 /** The width of a durable identifier, written here and not imported, as the contract. */
-const WIDTH = 255
+export const WIDTH = 255
 
 /** Identifiers past the width. The last is 512 UTF-16 units and 256 characters. */
 export const PAST_THE_WIDTH: Readonly<Record<string, string>> = {

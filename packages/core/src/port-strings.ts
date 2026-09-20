@@ -209,7 +209,8 @@ export function requirePortStrings(method: PortMethod, args: readonly unknown[])
   }
 }
 
-const PORT_METHODS = freeze(objectKeys(PORT_STRINGS) as PortMethod[])
+/** Every method the table names, which is every method of the port. */
+export const PORT_METHODS: readonly PortMethod[] = freeze(objectKeys(PORT_STRINGS) as PortMethod[])
 
 /**
  * What every dialect's store extends, and the only place the port's strings are checked.
