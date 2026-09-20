@@ -68,11 +68,13 @@ const ER_DATA_TOO_LONG = 1406
 const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 /**
- * A value of the wrong type for its column. It is as permanent as the classes above, and
- * MySQL files it under HY000, its general state, which also holds a lock wait timeout, so
- * no class can name it.
+ * Answers as permanent as the classes above that MySQL files under HY000, its general
+ * state, which also holds a lock wait timeout, so no class can name them.
  */
-const ER_TRUNCATED_WRONG_VALUE_FOR_FIELD = 1366
+const PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE = new Set([
+  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column
+  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
+])
 
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
@@ -481,7 +483,7 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
     const stateClass = sqlStateClass(error)
     if (
       (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
-      errno === ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+      PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE.has(errno)
     ) {
       return new PermanentStoreError(
         `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,

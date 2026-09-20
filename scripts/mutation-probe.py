@@ -15337,8 +15337,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-wrong-value-for-field-is-permanent",
             "packages/store-mysql/src/executor.ts",
-            "      errno === ER_TRUNCATED_WRONG_VALUE_FOR_FIELD\n",
-            "      errno === -ER_TRUNCATED_WRONG_VALUE_FOR_FIELD // MUTATION\n",
+            "  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column\n",
+            "  // MUTATION: a value of the wrong type for its column is an outage\n",
             "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
         ),
         (
@@ -15380,7 +15380,7 @@ VERDICTS.update(
         "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/executor.test.ts",
-            "MysqlExecutor error typing, by the state and the number the server sends types a value of the wrong type for its column permanent by its number, because its state is the general one",
+            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files under its general state by their numbers",
             "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
         ),
         "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
@@ -15397,6 +15397,21 @@ VERDICTS.update(
         ),
     }
 )
+
+# MySQL files a broken CHECK constraint under its general state, as it files a value of the
+# wrong type, so both are typed by number, and the case that holds the one holds the other.
+MUTATION_SPECS.append(
+    (
+        "mysql-broken-check-constraint-is-permanent",
+        "packages/store-mysql/src/executor.ts",
+        "  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint\n",
+        "  // MUTATION: a broken CHECK constraint is an outage\n",
+        "a broken CHECK constraint is answered as an outage on MySQL and retried, where libSQL and PostgreSQL answer the same write as permanent",
+    )
+)
+VERDICTS["mysql-broken-check-constraint-is-permanent"] = VERDICTS[
+    "mysql-wrong-value-for-field-is-permanent"
+]
 
 MUTATIONS = [
     Mutation(
@@ -19164,7 +19179,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1004:
+        if len(MUTATIONS) != 1005:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
