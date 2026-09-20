@@ -2917,6 +2917,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     compiler alone refuses both, because its rule takes one plain table that
     declares an index of its stamp. Trigger: the first statement of either
     shape, which fails when its batch is built in `conformance-mysql`.
+  - Option for the MySQL executor, not built, with its trigger: classify the
+    server's permanent answers by SQLSTATE class in place of error numbers kept
+    by hand. A value too long for its column has a branch of its own by number,
+    error 1176 joined the schema mismatch set in PR4.4e's fold, and error 1064,
+    a statement the server will never accept, is still answered as an outage
+    that callers retry. Trigger: another number is added by hand.
+  - Option for the conformance surface, not built, with its trigger: run every
+    labeled batch against a database stopped at each earlier schema version and
+    expect a typed mismatch or success, never an outage. MySQL's version 8 is
+    the first version a newer build's statements require, and it has a server
+    case of its own. Trigger: the next schema version that a statement
+    requires.
 
 - **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
   item of PR4.3: the engine behaves identically on every dialect, so the 255
