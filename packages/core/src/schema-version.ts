@@ -1,6 +1,20 @@
 import { SchemaMismatchError, SchemaNotInitializedError } from './errors.js'
-import type { SqlResult } from './primitives.js'
+import type { SqlLockedBatch, SqlResult } from './primitives.js'
 import { storageValueKind } from './validate.js'
+
+/**
+ * The batch control of a migration write. The batch names the migration lock, as an event
+ * batch or a claim batch names its own, so the lock travels in the one value every executor
+ * wrapper forwards, and no executor chooses it from the batch's label.
+ *
+ * Every version's batch carries it. The bootstrap carries it wherever the dialect's lock
+ * does not live in the version table, which the bootstrap is what creates: a named lock can
+ * be taken before that table exists, and a lock on the table cannot.
+ */
+export const MIGRATION_WRITE: SqlLockedBatch = Object.freeze({
+  mode: 'write',
+  transactionLock: Object.freeze({ kind: 'migration' }),
+})
 
 /**
  * The recorded schema version, read through the dialect's own version read. `read` is the

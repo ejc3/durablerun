@@ -1,5 +1,6 @@
 import {
   InvalidDurableStringError,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   encodeRollbackTry,
   taskDoneEventName,
@@ -289,12 +290,12 @@ describe('MysqlExecutor against a real server', () => {
         (sql) => ({ sql, args: [] }),
       )
       expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('migrate:v6', version6)
+      await db.raw.batch('migrate:v6', version6, MIGRATION_WRITE)
       expect(await columns()).toBe('queue,wake_event,state')
       await db.raw.batch('fixture:drop', [{ sql: 'DROP INDEX runs_woken ON runs', args: [] }])
       expect(await columns()).toBeNull()
-      await db.raw.batch('migrate:v6', version6)
-      await db.raw.batch('migrate:v6', version6)
+      await db.raw.batch('migrate:v6', version6, MIGRATION_WRITE)
+      await db.raw.batch('migrate:v6', version6, MIGRATION_WRITE)
       expect(await columns()).toBe('queue,wake_event,state')
     } finally {
       await db.close()
@@ -486,13 +487,21 @@ describe('the version table on a real server', () => {
   it('is created with its row by one statement, which leaves a recorded version alone', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'bootstrap-once', migrate: false })
     try {
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(0)
       await db.raw.batch('fixture:set-schema-version', [
         { sql: "UPDATE meta SET value = '3' WHERE `key` = 'schema_version'", args: [] },
       ])
       // Over a table that is there, the statement inserts nothing.
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(3)
     } finally {
       await db.close()

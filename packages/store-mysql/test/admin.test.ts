@@ -1,8 +1,9 @@
 import {
   MAX_EPOCH_MS,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   SchemaNotInitializedError,
-  type SqlBatchMode,
+  type SqlBatchControl,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -14,16 +15,20 @@ import { CURRENT_SCHEMA_VERSION, META_BOOTSTRAP_SQL, MIGRATIONS } from '../src/s
 
 class MigrationExecutor implements SqlExecutor {
   version: number | null = null
-  readonly calls: { label: string; statements: readonly SqlStatement[]; mode?: SqlBatchMode }[] = []
+  readonly calls: {
+    label: string
+    statements: readonly SqlStatement[]
+    control?: SqlBatchControl
+  }[] = []
   /** What meets a version batch before it is applied: another migrator, a failure, or a write that is lost. */
   asAVersionBatchArrives?: () => undefined | 'reports success and writes nothing'
 
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode?: SqlBatchMode,
+    control?: SqlBatchControl,
   ): Promise<SqlResult[]> {
-    this.calls.push({ label, statements, ...(mode === undefined ? {} : { mode }) })
+    this.calls.push({ label, statements, ...(control === undefined ? {} : { control }) })
     if (label === 'migrate:version') {
       if (this.version === null) {
         throw new SchemaNotInitializedError('schema metadata has not been initialized')
@@ -72,6 +77,15 @@ describe('MysqlStoreAdmin', () => {
     await admin.migrate()
     const fresh = db.calls.find(({ label }) => label === `migrate:v${CURRENT_SCHEMA_VERSION}`)
     expect(fresh?.statements).toEqual(batchFrom(0))
+    // Every migration write names the migration lock in its control, the bootstrap too: the
+    // lock is a name, which can be taken before the version table exists.
+    expect(db.calls.map(({ label, control }) => [label, control])).toEqual([
+      ['migrate:version', 'read'],
+      ['migrate:bootstrap', MIGRATION_WRITE],
+      ['migrate:version', 'read'],
+      [`migrate:v${CURRENT_SCHEMA_VERSION}`, MIGRATION_WRITE],
+      ['migrate:version', 'read'],
+    ])
     expect(labels()).toEqual([
       'migrate:version',
       'migrate:bootstrap',
@@ -183,7 +197,7 @@ describe('MysqlStoreAdmin', () => {
     expect((refusal as Error).message).toMatch(/a newer build migrated this database/)
     expect((refusal as Error).message).not.toMatch(/repaired by hand/)
     // It wrote nothing on the way to saying so.
-    expect(db.calls.filter(({ mode }) => mode !== 'read')).toEqual([])
+    expect(db.calls.filter(({ control }) => control !== 'read')).toEqual([])
   })
 
   it('rejects malformed schema result shapes and noncanonical values', async () => {

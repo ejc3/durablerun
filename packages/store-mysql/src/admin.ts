@@ -1,5 +1,6 @@
 import {
   MAX_EPOCH_MS,
+  MIGRATION_WRITE,
   type SqlExecutor,
   type SqlStatement,
   type StoreAdmin,
@@ -29,11 +30,17 @@ export class MysqlStoreAdmin implements StoreAdmin {
     // and no sentinel row could roll one back. Three things stand in for that.
     // The bootstrap is one statement, so the version table never exists without
     // its row. Every later statement is safe to repeat, so a migrator that died
-    // halfway leaves work a rerun finishes. And the executor runs every
-    // `migrate:` write under one named lock, so migrators take turns.
+    // halfway leaves work a rerun finishes. And every migration write names the
+    // migration lock in its control, which the executor takes before the batch and
+    // refuses a migration write without, so migrators take turns.
     if ((await this.readSchemaVersion()) === null) {
       await this.applyVersionedWrite(
-        () => this.db.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }]),
+        () =>
+          this.db.batch(
+            'migrate:bootstrap',
+            [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+            MIGRATION_WRITE,
+          ),
         0,
       )
     }
@@ -60,7 +67,8 @@ export class MysqlStoreAdmin implements StoreAdmin {
       const last = pending[pending.length - 1]
       if (first === undefined || last === undefined) break
       await this.applyVersionedWrite(
-        () => this.db.batch(`migrate:v${last.version}`, pending.flatMap(versionBatch)),
+        () =>
+          this.db.batch(`migrate:v${last.version}`, pending.flatMap(versionBatch), MIGRATION_WRITE),
         first.version,
       )
       const plannedFrom = recorded

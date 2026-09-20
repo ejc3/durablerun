@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import {
   FencedBatch,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlTransactionLock,
@@ -483,6 +484,24 @@ describe('PgExecutor transactions', () => {
     ])
     expect(client.calls[1]?.args).toEqual(['q', `receipt'; SELECT 1; --`])
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it("takes the version table's lock ahead of a migration write's statements, as the released build sent it", async () => {
+    // The released build sent this lock as the first statement of each version's batch. It
+    // is the control's now, and what reaches the server is the same text in the same place,
+    // with no bind, so a migrator of either build waits for the other's.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await executor(new FakePool(client)).batch(
+      'migrate:v1',
+      [{ sql: "INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", args: [] }],
+      MIGRATION_WRITE,
+    )
+    expect(client.calls.map(({ text, args }) => [text, args ?? []])).toEqual([
+      ['BEGIN', []],
+      ['LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', []],
+      ["INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", []],
+      ['COMMIT', []],
+    ])
   })
 
   it('refuses a lock of a kind it does not implement, and sends nothing', async () => {

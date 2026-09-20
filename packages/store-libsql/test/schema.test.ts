@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import {
+  MIGRATION_WRITE,
   PERSISTED_COUNTER_FIELDS,
   PERSISTED_TEMPORAL_FIELDS,
   type SqlExecutor,
@@ -69,6 +70,26 @@ describe('migrations', () => {
       expected,
     )
     expect(observed).toHaveLength(31)
+  })
+})
+
+describe('a migration write', () => {
+  it('names the migration lock in its control, the bootstrap and every version', async () => {
+    // libSQL has one writer, and its executor takes nothing for a lock of any kind. The
+    // control is the same on every dialect all the same, so that a recorder, a wrapper, or
+    // a port in another language meets one rule: a migration write names the lock.
+    const controls: unknown[][] = []
+    const recording: SqlExecutor = {
+      batch: (label, statements, control) => {
+        if (label !== 'migrate:version') controls.push([label, control])
+        return db.batch(label, statements, control)
+      },
+    }
+    await new LibsqlStoreAdmin(recording).migrate()
+    expect(controls).toEqual([
+      ['migrate:bootstrap', MIGRATION_WRITE],
+      ...MIGRATIONS.map(({ version }) => [`migrate:v${version}`, MIGRATION_WRITE]),
+    ])
   })
 })
 

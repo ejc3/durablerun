@@ -1,5 +1,6 @@
 import {
   FencedBatch,
+  MIGRATION_WRITE,
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
@@ -204,9 +205,11 @@ describe('MysqlExecutor transactions', () => {
 
   it('holds the migration lock from before a migration transaction until after it', async () => {
     const connection = new FakeConnection()
-    await executorOver(connection).batch('migrate:v1', [
-      { sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] },
-    ])
+    await executorOver(connection).batch(
+      'migrate:v1',
+      [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+      MIGRATION_WRITE,
+    )
     const sent = afterSessionSetup(connection)
     expect(
       sent.map((sql) =>
@@ -318,7 +321,11 @@ describe('MysqlExecutor transactions', () => {
     const connection = new FakeConnection()
     connection.lockAnswer = 0
     const outcome = await executorOver(connection)
-      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .batch(
+        'migrate:v1',
+        [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+        MIGRATION_WRITE,
+      )
       .then(
         () => 'accepted',
         (error: unknown) => error,
@@ -381,7 +388,7 @@ describe('MysqlExecutor transactions', () => {
       // The outcome is taken first, so that a batch which is not run again fails the
       // assertion below and not the test's own await.
       const outcome = await executorOver(connection)
-        .batch('migrate:v1', [{ sql: WRITE, args: [] }])
+        .batch('migrate:v1', [{ sql: WRITE, args: [] }], MIGRATION_WRITE)
         .then(
           (results) => `answered ${results.length} statement`,
           (error: unknown) => error,
