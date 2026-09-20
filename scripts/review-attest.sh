@@ -45,6 +45,7 @@ set -euo pipefail
 usage() {
   echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|->" >&2
   echo "       review-attest.sh --check-postmortem <path> [<head> [<base>]] [--prove-reds]" >&2
+  echo "         (REVIEW_ATTEST_PROBE_SECONDS, 600 unless set, stops a probe that runs past it)" >&2
   echo "       review-attest.sh --check-codex-log <path> <head>" >&2
   echo "       review-attest.sh --check-journal <path> <head>" >&2
   echo "       review-attest.sh --check-pr-body <path>" >&2
@@ -684,6 +685,17 @@ cited_commits() {
   ' "$TEMPLATE" - <<<"$content"
 }
 
+# How many commits of the repository an abbreviated id begins. When it is more
+# than one, git resolves the id to none of them, and "does not resolve" would
+# send its author looking for a typo that is not there.
+commits_beginning_with() {
+  local object count=0
+  while read -r object; do
+    [[ "$(git -C "$REPO" cat-file -t "$object" 2>/dev/null)" != commit ]] || count=$((count + 1))
+  done < <(git -C "$REPO" rev-parse --disambiguate="$1" 2>/dev/null)
+  echo "$count"
+}
+
 # A rebase keeps a commit's subject and its patch and gives it a new id. When
 # exactly one commit of the branch is that twin, the refusal names it, because
 # the repair is to cite it.
@@ -726,20 +738,24 @@ refuse_postmortem() {
 # line also names commits older than the reds (the one a defect came in with),
 # and a later round's red comes after the first round's fixes. Anywhere else an
 # id that names no commit here is left alone, because a digest or an id of
-# another repository is written the same way. Every stale id is reported in one
-# run, because a moved branch makes all of them stale at once.
+# another repository is written the same way, and is printed as not judged,
+# because the pre-rebase copy of a commit looks the same in a clone that never
+# held it. Every stale id is reported in one run, because a moved branch makes
+# all of them stale at once.
 #
-# Sets CITED_REDS, CITED_PROBE_FILE, CITED_PROBE_NAME, CITED_HEAD and
-# CITED_SUMMARY for the caller.
+# Sets CITED_REDS, CITED_PROBE_FILE, CITED_PROBE_NAME, CITED_HEAD,
+# CITED_SUMMARY and CITED_UNREAD for the caller.
 CITED_REDS=()
 declare -A CITED_PROBE_FILE=() CITED_PROBE_NAME=()
 CITED_HEAD=""
 CITED_SUMMARY=""
+CITED_UNREAD=""
 check_postmortem_commits() {
   local path="$1" content="$2" head="$3" base="$4"
-  local head_id base_id cited record first second third id where red index last_red=""
+  local head_id base_id cited record first second third id where red index shared last_red=""
   local -a labels=() words=() problems=() reds=()
-  local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=()
+  local -A lines_on=() commits_on=() red_cited=() fix_cited=() red_first=() fix_first=() others=() unread=()
+  CITED_UNREAD=""
 
   head_id=$(git -C "$REPO" rev-parse --verify --quiet "${head}^{commit}" 2>/dev/null) || {
     echo "SEV rule: the commits postmortem $path cites cannot be judged: $head is not a commit in this repository." >&2
@@ -778,12 +794,19 @@ check_postmortem_commits() {
           commits_on[$first]=1
         fi
         id=$(git -C "$REPO" rev-parse --verify --quiet "${second}^{commit}" 2>/dev/null) || {
-          [[ "$first" -lt 0 ]] \
-            || problems+=("cites \`$second\` $where, which does not resolve to a commit in this repository.")
+          shared=$(commits_beginning_with "$second")
+          if [[ "$shared" -gt 1 ]]; then
+            problems+=("cites \`$second\` $where, which $shared commits of this repository begin with: cite more of it.")
+          elif [[ "$first" -lt 0 ]]; then
+            [[ -n "${unread[$second]:-}" ]] || CITED_UNREAD+=" $second"
+            unread[$second]=1
+          else
+            problems+=("cites \`$second\` $where, which does not resolve to a commit in this repository. Under a label every id is read as a commit: a run id, a digest or a gate's result goes on another line.")
+          fi
           continue
         }
         if ! git -C "$REPO" merge-base --is-ancestor "$id" "$head_id" 2>/dev/null; then
-          problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id")")
+          problems+=("cites \`$second\` $where, which is not an ancestor of the head ${head_id:0:7}.$(moved_hint "$id" "$head_id") A commit the branch does not hold is written without backticks, and one that reached main after the branch was cut is on the branch once it is rebased.")
           continue
         fi
         if [[ "$first" -ge 1 ]] && git -C "$REPO" merge-base --is-ancestor "$id" "$base_id" 2>/dev/null; then
@@ -895,17 +918,29 @@ scratch_copy() {
   }
 }
 
-# A scratch copy is gone once its directory is, and pruning forgets it.
+# Only the copies this run made are removed. `git worktree prune` would also
+# forget every other worktree of the repository whose directory is away for
+# the moment, and other work holds many worktrees here.
+SCRATCH=""
 remove_scratch_copies() {
-  rm -rf "$1"
-  git -C "$REPO" worktree prune || true
+  local copy
+  for copy in "$SCRATCH"/*/; do
+    [[ -e "$copy.git" ]] && git -C "$REPO" worktree remove --force "${copy%/}" >/dev/null 2>&1
+  done
+  rm -rf "$SCRATCH"
 }
 
-# Runs one probe in a scratch copy and prints "PASSED FAILED", or nothing when
-# the run left no report to read. A test the name filter skips is in vitest's
-# total and in neither count, so a name that matches nothing reads "0 0".
+# A probe is one test file, which runs in seconds. One that still runs after
+# ten minutes is hung, or is no single file, and a gate that waits on it for
+# ever is no gate. A slow machine may raise the limit.
+PROBE_SECONDS="${REVIEW_ATTEST_PROBE_SECONDS-600}"
+
+# Runs one probe in a scratch copy and prints "PASSED FAILED", "stopped" when it
+# ran past the limit, or nothing when the run left no report to read. A test
+# the name filter skips is in vitest's total and in neither count, so a name
+# that matches nothing reads "0 0".
 run_probe() {
-  local copy="$1" report="$2" file="$3" name="$4"
+  local copy="$1" report="$2" file="$3" name="$4" status=0
   local -a filter=()
   # vitest reads -t as a regular expression, and a title such as "[libsql] ..."
   # would open a character class that matches nothing. Each such character is
@@ -914,8 +949,12 @@ run_probe() {
   # bash 5.2.
   # shellcheck disable=SC2001
   [[ -z "$name" ]] || filter=(-t "$(sed 's,[][\\^$.*+?(){}|/],\\&,g' <<<"$name")")
-  (cd "$copy" && pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || true
-  jq -er '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || true
+  (cd "$copy" && timeout --kill-after=10 "$PROBE_SECONDS" pnpm exec vitest run "$file" "${filter[@]}" --reporter=json --outputFile="$report") >"$report.log" 2>&1 || status=$?
+  if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+    echo stopped
+  else
+    jq -er '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || true
+  fi
 }
 
 prove_reds() {
@@ -923,9 +962,13 @@ prove_reds() {
   local head_short="${CITED_HEAD:0:7}"
   local -a proven=() unnamed=() problems=()
 
-  work=$(mktemp -d "${TMPDIR:-/tmp}/review-attest-reds.XXXXXX")
-  # shellcheck disable=SC2064
-  trap "remove_scratch_copies '$work'" EXIT
+  [[ "$PROBE_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+    echo "REVIEW_ATTEST_PROBE_SECONDS must be a whole number of seconds above zero, not '$PROBE_SECONDS'." >&2
+    return 1
+  }
+  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/review-attest-reds.XXXXXX")
+  work="$SCRATCH"
+  trap remove_scratch_copies EXIT
   store=$(cd "$REPO" && pnpm store path) || {
     echo "SEV rule: postmortem $path cannot be proved: pnpm names no store for this checkout." >&2
     return 1
@@ -954,7 +997,9 @@ prove_reds() {
     }
     counts=$(run_probe "$copy" "$report" "$file" "$name")
     read -r passed failed <<<"$counts"
-    if [[ -z "$counts" ]]; then
+    if [[ "$counts" == stopped ]]; then
+      problems+=("red \`$short\`: its probe $probe ran past ${PROBE_SECONDS}s at that commit and was stopped.")
+    elif [[ -z "$counts" ]]; then
       tail -5 "$report.log" >&2
       problems+=("red \`$short\`: the run of $probe at that commit left no report to read.")
     elif [[ "$failed" -gt 0 ]]; then
@@ -983,10 +1028,13 @@ prove_reds() {
       report="$work/head-for-$short.json"
       counts=$(run_probe "$copy" "$report" "$file" "$name")
       read -r passed failed <<<"$counts"
-      if [[ -z "$counts" ]]; then
+      if [[ "$counts" == stopped ]]; then
+        problems+=("red \`$short\`: its probe $probe ran past ${PROBE_SECONDS}s at the head $head_short and was stopped.")
+      elif [[ -z "$counts" ]]; then
         tail -5 "$report.log" >&2
         problems+=("red \`$short\`: the run of $probe at the head $head_short left no report to read.")
       elif [[ "$failed" -gt 0 ]]; then
+        jq -r '[.testResults[].assertionResults[]? | select(.status == "failed") | .fullName] | .[:20][] | "    " + .' "$report" >&2
         problems+=("red \`$short\`: its probe $probe also fails at the head $head_short ($failed failed), so the failure is not the defect's: no fix removed it.")
       elif [[ "$passed" -eq 0 ]]; then
         problems+=("red \`$short\`: its probe $probe ran no test at the head $head_short, so nothing shows a fix removed the failure.")
@@ -1018,8 +1066,9 @@ if [[ "${1:-}" == "--check-postmortem" ]]; then
   CONTENT=$(<"$2")
   ROWS=$(check_postmortem_tables "$2" "$CONTENT")
   check_postmortem_commits "$2" "$CONTENT" "${3:-HEAD}" "${4:-origin/main}"
-  echo "SEV rule satisfied: $ROWS findings accounted for in $2; commits $CITED_SUMMARY"
   [[ "$PROVE_REDS" -eq 0 ]] || prove_reds "$2"
+  echo "SEV rule satisfied: $ROWS findings accounted for in $2; commits $CITED_SUMMARY"
+  [[ -z "$CITED_UNREAD" ]] || echo "  not judged, naming no commit of this repository:$CITED_UNREAD"
   exit 0
 fi
 
@@ -1117,6 +1166,7 @@ if [[ "$DECLARED" -gt 0 ]]; then
     TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
     check_postmortem_commits "$f" "$CONTENT" "$SHA" "$BASE_SHA"
     PM_FILES="$PM_FILES  commits $CITED_SUMMARY"$'\n'
+    [[ -z "$CITED_UNREAD" ]] || PM_FILES="$PM_FILES  not judged, naming no commit of this repository:$CITED_UNREAD"$'\n'
   done <<<"$ADDED"
 
   if [[ -z "$PM_FILES" ]]; then

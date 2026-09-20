@@ -4443,6 +4443,20 @@ def cited_history() -> tuple[Path, dict[str, str]]:
     )
     ids["later_red"] = commit("Red: a later case fails", "packages/a/test/later.test.ts")
     ids["later_fix"] = commit("Fix the later case", "later.fix")
+    # Two commits that no branch holds and whose ids begin with the same seven digits, so an id of
+    # seven digits names neither. The pair was found once, by hashing this message over this
+    # history's last tree for each number from 0 up, and it holds while the history above does.
+    last_tree = git("rev-parse", "HEAD^{tree}")
+    shared = {
+        git("commit-tree", last_tree, "-m", f"A commit no branch holds, number {number}")[:7]
+        for number in (6722, 22937)
+    }
+    if shared != {"552caf1"}:
+        raise SystemExit(
+            "lint-selftest: the fixture history of the cited-commit cases changed, so its two "
+            f"loose commits no longer share the first seven digits of their ids: {sorted(shared)}"
+        )
+    ids["shared"] = "552caf1"
     return root, ids
 
 
@@ -4477,15 +4491,18 @@ def fixture_postmortem(evidence: str, findings: int, ledger: str, severity: str)
     )
 
 
-# Shell functions that stand in for the two tools review-attest.sh calls and a fixture cannot run.
-# `gh` answers for a pull request whose head is the fixture history's and which adds the fixture's
+# One script, installed as bin/gh and as bin/pnpm at the front of PATH, that stands in for the two
+# tools review-attest.sh calls and a fixture cannot run. They are programs and not shell functions,
+# because the script runs a probe under `timeout`, which starts a program. `gh` answers for a pull request whose head is the fixture history's and which adds the fixture's
 # postmortem. `pnpm` names a store and installs offline only from that one, as on a machine whose
 # scratch directory sits on another mount than the checkout: pnpm picks a store by mount point,
 # and the one it would pick for the copy was filled by nothing. It installs by making the one link
 # a workspace install makes, inside the copy unless the fixture holds `link-outside`, and runs a
 # test file by looking for its fix in the tree it is run in, so a run passes or fails by the
-# commit that is checked out, as a real one does.
-FAKE_TOOLS = r"""FIXTURE_ROOT="${BASH_SOURCE[0]%/*}"
+# commit that is checked out, as a real one does. A fixture that holds `slow` has a probe that
+# runs for five seconds.
+FAKE_TOOLS = r"""#!/usr/bin/env bash
+FIXTURE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 gh() {
   if [[ "$1" == pr && "$2" == view ]]; then
     case "$5" in
@@ -4545,17 +4562,21 @@ pnpm() {
         ;;
     esac
   done
-  # vitest reads -t as a regular expression: a bracket that is not escaped opens a character
-  # class, and a title that holds one is then matched by nothing.
-  if [[ "$pattern" == *'['* && "$pattern" != *'\['* ]]; then
+  # vitest reads -t as a regular expression, so a title is matched as it is written only when
+  # every character that means something there is escaped. One left bare matches nothing.
+  if grep -q '[][\\^$.*+?(){}|/]' <<<"$(sed 's/\\.//g' <<<"$pattern")"; then
     passed=0
     failed=0
   fi
+  [[ ! -e "$FIXTURE_ROOT/slow" ]] || sleep 5
   printf '{"numTotalTests": %d, "numFailedTests": %d, "numPassedTests": %d, "testResults": []}\n' \
     "$((passed + failed))" "$failed" "$passed" >"$report"
   [[ "$failed" -eq 0 ]]
 }
+"$(basename "$0")" "$@"
 """
+# The stand-ins come first on PATH, so the script finds them where it would find the real tools.
+STAND_INS_FIRST = {"PATH": "{root}/bin" + os.pathsep + os.environ.get("PATH", "")}
 
 FIXTURE_POSTMORTEM = "postmortems/fixture-review.md"
 CHECK_POSTMORTEM = ("--check-postmortem", "{root}/" + FIXTURE_POSTMORTEM)
@@ -4581,7 +4602,9 @@ def with_commit_ids(text: str) -> str:
 class CitedCommitsCase:
     """One postmortem over the fixture history. `refusal` is the text the refusal must carry, or
     None when the postmortem must be accepted, and then `says` is text the output must carry.
-    `{name}` in any of them is a commit of the history, and the head is `{later_fix}`."""
+    `never` is text the output must not carry. `{name}` in any of them is a commit of the history,
+    and the head is `{later_fix}`. `away` registers a worktree whose directory is gone, which the
+    run must leave registered."""
 
     why: str
     evidence: str
@@ -4592,13 +4615,17 @@ class CitedCommitsCase:
     ledger: str = "| outside review | 1 | no |\n"
     severity: str = FILLED_IN
     says: str = ""
+    never: str = ""
+    environment: tuple[tuple[str, str], ...] = ()
+    away: bool = False
 
     def files(self) -> dict[str, str]:
         """The fixture's whole tree. What a case adds comes last, so it may replace the template."""
         text = fixture_postmortem(self.evidence, self.findings, self.ledger, self.severity)
         return {
             "postmortems/TEMPLATE.md": POSTMORTEM_TEMPLATE,
-            "fake-tools.sh": FAKE_TOOLS,
+            "bin/gh": FAKE_TOOLS,
+            "bin/pnpm": FAKE_TOOLS,
             FIXTURE_POSTMORTEM: with_commit_ids(text),
             **dict(self.also),
         }
@@ -4606,6 +4633,21 @@ class CitedCommitsCase:
 
 def place_cited_history(root: Path) -> None:
     shutil.copytree(cited_history()[0] / ".git", root / ".git")
+    for tool in (root / "bin").iterdir():
+        tool.chmod(0o755)
+
+
+def place_cited_history_beside_a_worktree_that_is_away(root: Path) -> None:
+    place_cited_history(root)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "--detach", str(root / "away"), "HEAD"],
+        cwd=root,
+        env=hermetic_git(dict(os.environ)),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    shutil.rmtree(root / "away")
 
 
 CITED_COMMIT_CASES = (
@@ -4730,6 +4772,14 @@ CITED_COMMIT_CASES = (
         says=": 1 red, 1 fix, 2 other cited; each red is before a fix",
     ),
     CitedCommitsCase(
+        "an id in prose that names no commit is left alone, and printed as not judged, because the "
+        "copy of a commit from before a rebase reads the same in a clone that never held it",
+        ONE_RED_AND_ITS_FIX
+        + "- Finder: one review, of the tree whose registry digest begins `9f60ddc6`.\n",
+        None,
+        says="not judged, naming no commit of this repository: 9f60ddc6",
+    ),
+    CitedCommitsCase(
         "the whole attestation accepts a pull request whose added postmortem cites its branch",
         ONE_RED_AND_ITS_FIX,
         None,
@@ -4751,7 +4801,7 @@ CITED_COMMIT_CASES = (
 - Red tests: commit `{red}`, run and seen failing (1 test).
 - Fixes: commit `{side_fix}`; gate after fix: the suite passed.
 """,
-        "under '- Fixes:', which is not an ancestor of the head {later_fix}.\n",
+        "under '- Fixes:', which is not an ancestor of the head {later_fix}. A commit the branch",
     ),
     CitedCommitsCase(
         "the copy of a red test that a rebase left behind has the same subject and the same "
@@ -4819,6 +4869,22 @@ CITED_COMMIT_CASES = (
         args=WHOLE_ATTESTATION,
     ),
     CitedCommitsCase(
+        "an id that two commits begin with names neither, and the refusal says so where it would "
+        "have said the id does not resolve",
+        """
+- Red tests: commit `{shared}`, run and seen failing (1 test).
+- Fixes: commit `{fix}`; gate after fix: the suite passed.
+""",
+        "which 2 commits of this repository begin with: cite more of it",
+    ),
+    CitedCommitsCase(
+        "an id in prose that two commits begin with is a commit for certain, and is refused where "
+        "one that names nothing is left alone",
+        ONE_RED_AND_ITS_FIX,
+        "under ## Severity, which 2 commits of this repository begin with",
+        severity="The defect came in with `{shared}`.\n",
+    ),
+    CitedCommitsCase(
         "a base that is not a commit bounds nothing, which is refused",
         ONE_RED_AND_ITS_FIX,
         "the base 0123abc is not a commit in this repository",
@@ -4884,10 +4950,11 @@ CITED_COMMIT_CASES = (
     ),
     CitedCommitsCase(
         "each red test fails at its own commit and passes at the head, with a test name that is "
-        "matched as it is written and without one",
+        "matched as it is written, whatever a regular expression would make of it, and without one",
         """
-- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts` `the case [libsql]`, run and
-  seen failing (1 test). Commit `{later_red}`, probe `packages/a/test/later.test.ts`, 1 test.
+- Red tests: commit `{red}`, probe `packages/a/test/case.test.ts`
+  `the case [libsql] (a|b) a.b* c+d? {e} ^f$ g/h i\\j`, run and seen failing (1 test).
+  Commit `{later_red}`, probe `packages/a/test/later.test.ts`, 1 test.
 - Fixes: commit `{fix}` and commit `{later_fix}`; gate after fix: the suite passed.
 """,
         None,
@@ -4919,6 +4986,31 @@ CITED_COMMIT_CASES = (
 """,
         "and nothing failed at that commit, so it is not a red test",
         args=PROVE_REDS,
+        never="SEV rule satisfied",
+    ),
+    CitedCommitsCase(
+        "a run removes the copies it made and nothing else: a worktree of the repository whose "
+        "directory is away stays registered",
+        ONE_PROBED_RED,
+        None,
+        args=PROVE_REDS,
+        away=True,
+        says="proved 1 of 1 cited reds",
+    ),
+    CitedCommitsCase(
+        "a probe that runs past the limit is stopped, and the run is refused and not left waiting",
+        ONE_PROBED_RED,
+        "ran past 1s at that commit and was stopped",
+        args=PROVE_REDS,
+        also=(("slow", ""),),
+        environment=(("REVIEW_ATTEST_PROBE_SECONDS", "1"),),
+    ),
+    CitedCommitsCase(
+        "a limit that is set and empty is refused, not read as no limit",
+        ONE_PROBED_RED,
+        "must be a whole number of seconds above zero",
+        args=PROVE_REDS,
+        environment=(("REVIEW_ATTEST_PROBE_SECONDS", ""),),
     ),
     CitedCommitsCase(
         "a probe that the red commit does not hold cannot show it red",
@@ -4954,8 +5046,13 @@ def cited_commit_problems() -> list[str]:
             "review-attest.sh",
             case.files(),
             case.args,
-            environment={"BASH_ENV": "{root}/fake-tools.sh"},
-            prepare=place_cited_history,
+            environment={**STAND_INS_FIRST, **dict(case.environment)},
+            prepare=(
+                place_cited_history_beside_a_worktree_that_is_away
+                if case.away
+                else place_cited_history
+            ),
+            must_remain=".git/worktrees/away" if case.away else None,
         )
         output = result.stdout + result.stderr
         if case.refusal is not None:
@@ -4966,6 +5063,8 @@ def cited_commit_problems() -> list[str]:
             problem = f"ACCEPTED a good invocation without saying {case.says!r}"
         else:
             problem = None
+        if problem is None and case.never and case.never in output:
+            problem = f"said {case.never!r}, which this run must not"
         if problem:
             problems.append(
                 f"review-attest.sh {problem}: {case.why}\n"
@@ -4983,6 +5082,7 @@ def run(
     environment: dict[str, str] | None = None,
     forbidden_artifact: str | None = None,
     prepare: Callable[[Path], None] | None = None,
+    must_remain: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `lint` against a throwaway tree that looks like the repo.
 
@@ -5074,6 +5174,13 @@ def run(
                 stdout=result.stdout,
                 stderr=result.stderr
                 + f"\ncreated forbidden artifact: {forbidden_artifact}\n",
+            )
+        if must_remain is not None and not (root / must_remain).exists():
+            return subprocess.CompletedProcess(
+                args=result.args,
+                returncode=1,
+                stdout=result.stdout,
+                stderr=result.stderr + f"\nremoved what it did not make: {must_remain}\n",
             )
         return result
 
