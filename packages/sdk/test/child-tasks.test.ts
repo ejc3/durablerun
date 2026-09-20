@@ -1,4 +1,4 @@
-import { childTaskViolations, engineInvariantViolations } from '@durablerun/conformance'
+import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   type SchedulerStore,
@@ -28,8 +28,7 @@ async function resultOf(f: Fixture, taskId: string): Promise<unknown> {
 }
 
 async function expectCleanRows(f: Fixture): Promise<void> {
-  expect(await engineInvariantViolations(f.raw)).toEqual([])
-  expect(await childTaskViolations(f.raw)).toEqual([])
+  expect(await engineHistoryViolations(f.raw)).toEqual([])
 }
 
 /** ctx.spawn and ctx.awaitTask (DESIGN.md §3.2, specs/ChildTasks.tla). */

@@ -12,9 +12,9 @@ import {
   taskDoneEventName,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
+import { missingCompletionEvent } from './child-task-rows.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
 import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
@@ -560,6 +560,10 @@ export async function runFaultMatrixCase(
       })
     }
 
+    // The tasks a cell may leave terminal with no completion event. There is one: the
+    // child an older build ends below, until an await of it has recorded its outcome.
+    const endedByOlderBuild = new Set<string>()
+
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
       const admin = f.adminOver(simDb)
@@ -723,13 +727,17 @@ export async function runFaultMatrixCase(
       })
       const endedTask = await go(() => store.spawn(Q, 'ended-child', '{}'))
       if (endedTask) {
+        endedByOlderBuild.add(endedTask.taskId)
         await go(() => olderBuild.cancelTask(Q, endedTask.taskId))
         const lateParent = await go(() => store.spawn(Q, 'late-parent', '{}'))
         const [late] =
           (await go(() => store.claim(Q, 'w-late-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
         if (lateParent && late?.taskId === lateParent.taskId) {
           await go(() => store.activate(Q, late.runId, late.claimToken, late.claimGen))
-          await go(() => awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null))
+          const recorded = await go(() =>
+            awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null),
+          )
+          if (recorded !== null) endedByOlderBuild.delete(endedTask.taskId)
           await go(() => store.complete(Q, late.runId, late.claimToken, '{"late":1}'))
         }
       }
@@ -840,12 +848,12 @@ export async function runFaultMatrixCase(
 
     await assertEdgePostcondition(f.raw, preState, world.trace, cell)
 
-    // (1) Nothing the fault did may have corrupted state, or let a saga's rows say
-    // something Sagas.tla forbids.
-    const violations = [
-      ...(await engineInvariantViolations(f.raw)),
-      ...(await sagaViolations(f.raw)),
-    ]
+    // (1) Nothing the fault did may have corrupted state, or left rows that
+    // ChildTasks.tla or Sagas.tla forbids.
+    const excused = new Set([...endedByOlderBuild].map(missingCompletionEvent))
+    const violationsNow = async (): Promise<string[]> =>
+      (await engineHistoryViolations(f.raw)).filter((violation) => !excused.has(violation))
+    const violations = await violationsNow()
     if (violations.length > 0) {
       throw new Error(`matrix ${cell}: ${violations.join('; ')}`)
     }
@@ -883,7 +891,7 @@ export async function runFaultMatrixCase(
     if (!done) {
       throw new Error(`matrix ${cell}: system wedged — probe task never completed`)
     }
-    const finalViolations = await engineInvariantViolations(f.raw)
+    const finalViolations = await violationsNow()
     if (finalViolations.length > 0) {
       throw new Error(`matrix ${cell} final: ${finalViolations.join('; ')}`)
     }

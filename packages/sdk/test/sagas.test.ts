@@ -1,8 +1,4 @@
-import {
-  childTaskViolations,
-  engineInvariantViolations,
-  sagaViolations,
-} from '@durablerun/conformance'
+import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   FatalTaskError,
   MAX_COUNT,
@@ -18,11 +14,7 @@ import { Q, registry } from './worker-harness.js'
 const NO_DELAY = { kind: 'fixed', baseSeconds: 0 } as const
 
 async function expectCleanRows(f: SagaFixture): Promise<void> {
-  expect({
-    engine: await engineInvariantViolations(f.raw),
-    childTasks: await childTaskViolations(f.raw),
-    saga: await sagaViolations(f.raw),
-  }).toEqual({ engine: [], childTasks: [], saga: [] })
+  expect(await engineHistoryViolations(f.raw)).toEqual([])
 }
 
 /** A step whose body and rollback each leave a line in `effects`. */

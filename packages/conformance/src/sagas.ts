@@ -18,10 +18,9 @@ import {
   encodeTaskOutcome,
 } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { childTaskViolations } from './child-tasks.js'
+import { engineHistoryViolations } from './engine-history.js'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
 import { sagaViolations } from './saga-rows.js'
 import {
   awaitOwned,
@@ -218,16 +217,12 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
     })
 
     afterEach(async ({ task }) => {
-      const violations = {
-        saga: await sagaViolations(f.raw),
-        childTasks: await childTaskViolations(f.raw),
-        engine: await engineInvariantViolations(f.raw),
-      }
+      const violations = await engineHistoryViolations(f.raw)
       await f.close()
       // A case that already failed says why in its own assertion. The rows it leaves are
       // the defect's, and a second failure here would blur which assertion caught it.
       if (task.result?.state !== 'pass') return
-      expect(violations).toEqual({ saga: [], childTasks: [], engine: [] })
+      expect(violations).toEqual([])
     })
 
     // UserTerminal with AtomicEnter: the decision and the phase marker are one batch.
