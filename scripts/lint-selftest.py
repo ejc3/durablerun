@@ -2814,6 +2814,18 @@ export class S {
         "the main ledger borrows a side model's action only from the label that side block maps to it",
     ),
     (
+        "spec-ledger.py",
+        main_ledger(markers="no marker"),
+        "fenced action 'CancelExplicit' has no executable twin",
+        "a fenced action of the main ledger with no marker on any test must fail",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(markers="fenceTwin('CancelExplicit') fenceTwin('Gone')"),
+        "fenceTwin('Gone') marks an action that is not a",
+        "a marker for an action the main ledger does not fence must fail",
+    ),
+    (
         "batch-lint.py",
         store(
             """
