@@ -15750,6 +15750,21 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-failed-attempts-accumulate": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
+    "saga-store-count-goes-on-from-the-record": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-step-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-spawn-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-await-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-sleep-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
     "saga-fatal-rollback-error-is-permanent": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
