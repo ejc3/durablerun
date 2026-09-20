@@ -465,7 +465,12 @@ function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
-function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
+/**
+ * The typed error a batch's failure becomes. Exported for the case that reads the server's
+ * own list of error numbers and asks this function about each: the package's index does not
+ * name it.
+ */
+export function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof MysqlResultContractError ||
     error instanceof InvalidDurableStringError ||
