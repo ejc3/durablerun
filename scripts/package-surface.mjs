@@ -57,6 +57,10 @@ import { fileURLToPath } from 'node:url'
 const ts = createRequire(import.meta.url)('typescript')
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
 const sha256 = (data) => createHash('sha256').update(data).digest('hex')
+const pinOf = (shape) => sha256(shape.join('\n'))
+const same = (was, now) => was.join('\n') === now.join('\n')
+const by = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
+const find = (table, { packageName, subpath, name }) => table?.[packageName]?.[subpath]?.[name]
 
 // A private constructor is not hidden: it says that a consumer cannot construct the class.
 const isPrivate = (member) =>
@@ -64,61 +68,50 @@ const isPrivate = (member) =>
   ((member.name !== undefined && ts.isPrivateIdentifier(member.name)) ||
     (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Private) !== 0)
 
+const HOW_EXPORTED = [
+  ts.SyntaxKind.ExportKeyword,
+  ts.SyntaxKind.DefaultKeyword,
+  ts.SyntaxKind.DeclareKeyword,
+]
+const unexported = (node) => node.modifiers?.filter(({ kind }) => !HOW_EXPORTED.includes(kind))
+
 // One declaration as lines, without the modifiers that say how it is exported.
 function declared(node) {
   const print = (shown) => printer.printNode(ts.EmitHint.Unspecified, shown, node.getSourceFile())
-  let text
-  let hides = false
   if (ts.isVariableDeclaration(node)) {
     const flags = node.parent.flags
     const keyword = flags & ts.NodeFlags.Const ? 'const' : flags & ts.NodeFlags.Let ? 'let' : 'var'
-    text = `${keyword} ${print(node)};`
-  } else if (ts.isClassDeclaration(node)) {
-    const members = node.members.filter((member) => !isPrivate(member))
-    hides = members.length < node.members.length
-    text = print(
-      ts.factory.updateClassDeclaration(
-        node,
-        node.modifiers,
-        node.name,
-        node.typeParameters,
-        node.heritageClauses,
-        members,
-      ),
-    )
-  } else text = print(node)
-  const lines = text.replace(/^(?:export\s+)?(?:default\s+)?(?:declare\s+)?/, '').split('\n')
-  if (hides) lines.splice(-1, 0, '    (private members)')
+    return `${keyword} ${print(node)};`.split('\n')
+  }
+  if (!ts.isClassDeclaration(node))
+    return print(ts.factory.replaceModifiers(node, unexported(node))).split('\n')
+  const members = node.members.filter((member) => !isPrivate(member))
+  const lines = print(
+    ts.factory.updateClassDeclaration(
+      node,
+      unexported(node),
+      node.name,
+      node.typeParameters,
+      node.heritageClauses,
+      members,
+    ),
+  ).split('\n')
+  if (members.length < node.members.length) lines.splice(-1, 0, '    (private members)')
   return lines
 }
 
-// The identifiers a declaration refers to other declarations by: a type reference, a heritage
-// clause, a `typeof` query, and an `import()` type. Both ends of a dotted name are read,
-// because `typeof a.b` reaches `a` and `ns.T` reaches `T`.
-function references(node, visit) {
-  const name = ts.isTypeReferenceNode(node)
-    ? node.typeName
-    : ts.isExpressionWithTypeArguments(node)
-      ? node.expression
-      : ts.isTypeQueryNode(node)
-        ? node.exprName
-        : ts.isImportTypeNode(node)
-          ? node.qualifier
-          : undefined
-  if (name !== undefined) {
-    let first = name
-    while (ts.isQualifiedName(first) || ts.isPropertyAccessExpression(first))
-      first = ts.isQualifiedName(first) ? first.left : first.expression
-    visit(first)
-    if (ts.isQualifiedName(name)) visit(name.right)
-    if (ts.isPropertyAccessExpression(name)) visit(name.name)
-  }
-  ts.forEachChild(node, (child) => references(child, visit))
+// Every identifier of a declaration is asked what it names, so a name is reached however the
+// declaration refers to it: a type reference, a heritage clause, a `typeof` query, a computed
+// key, an `import()` type. One that names no top-level declaration of the packed packages,
+// a member, a parameter, a type parameter, a library type, is dropped by the caller.
+function identifiers(node, visit) {
+  if (ts.isIdentifier(node)) visit(node)
+  ts.forEachChild(node, (child) => identifiers(child, visit))
 }
 
-// released(packageName, subpath, name) says whether the release exported the name. A released
-// name is compared under its own entry, so no other name's shape reaches into it.
-export function packedSurface(unpackedRoot, released = () => true) {
+// released({ packageName, subpath, name }) says whether the release exported the name. A
+// released name is compared under its own entry, so no other name's shape reaches into it.
+function packedSurface(unpackedRoot, released = () => true) {
   const roots = []
   const entries = []
   const paths = {}
@@ -142,6 +135,8 @@ export function packedSurface(unpackedRoot, released = () => true) {
     module: ts.ModuleKind.NodeNext,
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
     noEmit: true,
+    // No printed line comes from the compiler's own library, so it is not parsed.
+    noLib: true,
     skipLibCheck: true,
     baseUrl: '/',
     paths,
@@ -164,7 +159,7 @@ export function packedSurface(unpackedRoot, released = () => true) {
   const declarationsOf = (symbol) =>
     (symbol.declarations ?? [])
       .filter((node) => place(node) !== undefined && topLevel(node))
-      .sort((a, b) => (place(a) < place(b) ? -1 : place(a) > place(b) ? 1 : a.pos - b.pos))
+      .sort((a, b) => by(place)(a, b) || a.pos - b.pos)
   const exported = entries.map(({ packageName, subpath, file }) => {
     const source = program.getSourceFile(file)
     const symbol = source && checker.getSymbolAtLocation(source)
@@ -174,10 +169,10 @@ export function packedSurface(unpackedRoot, released = () => true) {
   const compared = new Set()
   for (const { packageName, subpath, symbols } of exported)
     for (const symbol of symbols)
-      if (released(packageName, subpath, symbol.getName())) compared.add(resolved(symbol))
+      if (released({ packageName, subpath, name: symbol.getName() })) compared.add(resolved(symbol))
   const reach = (symbol, reached) => {
     for (const declaration of declarationsOf(symbol))
-      references(declaration, (identifier) => {
+      identifiers(declaration, (identifier) => {
         const found = checker.getSymbolAtLocation(identifier)
         const target = found && resolved(found)
         if (!target || compared.has(target) || reached.has(target)) return
@@ -190,12 +185,12 @@ export function packedSurface(unpackedRoot, released = () => true) {
   const surface = {}
   for (const { packageName, subpath, symbols } of exported) {
     const shapes = {}
-    for (const symbol of symbols.sort((a, b) => (a.getName() < b.getName() ? -1 : 1))) {
+    for (const symbol of symbols.sort(by((each) => each.getName()))) {
       const own = resolved(symbol)
       const reached = new Set([own])
       reach(own, reached)
       reached.delete(own)
-      const beside = [...reached].sort((a, b) => (label(a) < label(b) ? -1 : 1))
+      const beside = [...reached].sort(by(label))
       shapes[symbol.getName()] = [own, ...beside].flatMap((each) =>
         declarationsOf(each).flatMap(declared),
       )
@@ -235,59 +230,54 @@ const entriesOf = (table) =>
 function check(unpackedRoot, snapshotPath) {
   const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'))
   const { release } = snapshot
-  const releasedShape = (packageName, subpath, name) =>
-    snapshot.surface[packageName]?.[subpath]?.[name]
-  const current = packedSurface(unpackedRoot, (...at) => releasedShape(...at) !== undefined)
+  const current = packedSurface(unpackedRoot, (at) => find(snapshot.surface, at) !== undefined)
   const refusals = []
   const blank = (reason) => typeof reason !== 'string' || reason.trim() === ''
   const withdrawn = entriesOf(snapshot.withdrawn)
-  for (const { packageName, subpath, name, entry, at } of withdrawn) {
-    if (releasedShape(packageName, subpath, name) === undefined)
+  for (const listed of withdrawn) {
+    const { entry, at } = listed
+    if (find(snapshot.surface, listed) === undefined)
       refusals.push([`${at} is withdrawn, but ${release} never exported it`])
     if (blank(entry)) refusals.push([`${at} is withdrawn with no reason`])
-    if (current[packageName]?.[subpath]?.[name] !== undefined)
+    if (find(current, listed) !== undefined)
       refusals.push([`${at} is withdrawn, but it is still exported`])
   }
   const changed = entriesOf(snapshot.changed)
-  for (const { packageName, subpath, name, entry, at } of changed) {
-    const was = releasedShape(packageName, subpath, name)
-    const now = current[packageName]?.[subpath]?.[name]
+  for (const listed of changed) {
+    const { entry, at } = listed
+    const was = find(snapshot.surface, listed)
+    const now = find(current, listed)
     if (blank(entry?.reason)) refusals.push([`${at} is listed as changed with no reason`])
     if (was === undefined)
       refusals.push([`${at} is listed as changed, but ${release} never exported it`])
-    else if (snapshot.withdrawn?.[packageName]?.[subpath]?.[name] !== undefined)
+    else if (find(snapshot.withdrawn, listed) !== undefined)
       refusals.push([`${at} is both withdrawn and listed as changed`])
     else if (now === undefined) continue
-    else if (was.join('\n') === now.join('\n'))
+    else if (same(was, now))
       refusals.push([`${at} is listed as changed, but it is declared as ${release} declared it`])
-    else if (entry?.declarationSha256 !== sha256(now.join('\n')))
+    else if (entry?.declarationSha256 !== pinOf(now))
       refusals.push([
-        `${at} is listed as changed, but the sha256 recorded is not the packed declaration's, which is ${sha256(now.join('\n'))}; against ${release} it differs by:`,
+        `${at} is listed as changed, but the sha256 recorded is not the packed declaration's, which is ${pinOf(now)}; against ${release} it differs by:`,
         ...difference(was, now),
       ])
   }
-  for (const [packageName, subpaths] of Object.entries(snapshot.surface)) {
-    for (const [subpath, shapes] of Object.entries(subpaths)) {
-      if (current[packageName]?.[subpath] === undefined) {
+  for (const [packageName, subpaths] of Object.entries(snapshot.surface))
+    for (const subpath of Object.keys(subpaths))
+      if (current[packageName]?.[subpath] === undefined)
         refusals.push([`${packageName} ${subpath}: the entry point itself is gone`])
-        continue
-      }
-      for (const [name, was] of Object.entries(shapes)) {
-        const at = `${packageName} ${subpath}: ${name}`
-        const now = current[packageName][subpath][name]
-        if (now === undefined) {
-          if (snapshot.withdrawn?.[packageName]?.[subpath]?.[name] === undefined)
-            refusals.push([`${at} is gone, and the withdrawn table does not list it`])
-        } else if (
-          was.join('\n') !== now.join('\n') &&
-          snapshot.changed?.[packageName]?.[subpath]?.[name] === undefined
-        )
-          refusals.push([
-            `${at} is declared differently, and the changed table does not list it with a reason and "declarationSha256": "${sha256(now.join('\n'))}"; it differs by:`,
-            ...difference(was, now),
-          ])
-      }
-    }
+  const released = entriesOf(snapshot.surface)
+  for (const exported of released) {
+    const { packageName, subpath, entry: was, at } = exported
+    if (current[packageName]?.[subpath] === undefined) continue
+    const now = find(current, exported)
+    if (now === undefined) {
+      if (find(snapshot.withdrawn, exported) === undefined)
+        refusals.push([`${at} is gone, and the withdrawn table does not list it`])
+    } else if (!same(was, now) && find(snapshot.changed, exported) === undefined)
+      refusals.push([
+        `${at} is declared differently, and the changed table does not list it with a reason and "declarationSha256": "${pinOf(now)}"; it differs by:`,
+        ...difference(was, now),
+      ])
   }
   if (refusals.length > 0) {
     console.error(`package-surface: ${refusals.length} refusal(s) against ${release}:`)
@@ -297,11 +287,8 @@ function check(unpackedRoot, snapshotPath) {
     }
     process.exit(1)
   }
-  const counted = Object.values(snapshot.surface).flatMap((s) =>
-    Object.values(s).flatMap(Object.keys),
-  )
   console.log(
-    `package-surface: every name ${release} exported is still exported and declared as it was, or is withdrawn or changed with a reason (${counted.length} names, ${withdrawn.length} withdrawn, ${changed.length} changed)`,
+    `package-surface: every name ${release} exported is still exported and declared as it was, or is withdrawn or changed with a reason (${released.length} names, ${withdrawn.length} withdrawn, ${changed.length} changed)`,
   )
 }
 
