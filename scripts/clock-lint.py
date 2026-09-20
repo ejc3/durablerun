@@ -56,6 +56,9 @@ CALLS = (
     "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
     "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
     "|localtime|localtimestamp|current_timestamp|curdate|curtime|unix_timestamp"
+    # PostgreSQL's age() with one argument measures from the current date. It is refused
+    # whatever it is given, as the tree's list refuses it: no store statement calls it.
+    "|age"
 )
 CLOCKS = re.compile(
     rf"\b(?:{CALLS})\s*\("

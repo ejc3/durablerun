@@ -780,6 +780,7 @@ describe('the tree rules', () => {
   describe('the spellings of a clock', () => {
     const READS = /reads the clock/
     // A name that is also a bare keyword below has no row: the keyword arm refuses its call too.
+    // `age` has a case of its own below, which shows what it is given.
     const CALLED = [
       ['unixepoch', 'mutation-verdict:construction:tree-clock-function-unixepoch'],
       ['julianday', 'mutation-verdict:construction:tree-clock-function-julianday'],
@@ -864,7 +865,9 @@ describe('the tree rules', () => {
       // PostgreSQL's age() with one argument measures from the current date, so it reads
       // the clock. With two it reads none and is refused all the same: no statement calls
       // it, and telling the two apart would mean reading SQL.
-      expect(() => startedAt('age(created_at)')).toThrow(READS)
+      refuses('mutation-verdict:construction:tree-clock-function-age', READS, () =>
+        startedAt('age(created_at)'),
+      )
       expect(() => startedAt('age(created_at, updated_at)')).toThrow(READS)
     })
 

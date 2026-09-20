@@ -1584,6 +1584,13 @@ MUTATION_SPECS = [
         "the clock function unix_timestamp goes unseen in a tree",
     ),
     (
+        "tree-clock-function-age",
+        "packages/core/src/sql-tree.ts",
+        "  'age',\n",
+        "",
+        "PostgreSQL's age, which measures from the current date when it is given one argument, goes unseen in a tree",
+    ),
+    (
         "tree-clock-keyword-current-timestamp",
         "packages/core/src/sql-tree.ts",
         "    String.raw`\\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\\b`,",
@@ -8245,6 +8252,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses unix_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-unix-timestamp",
+    ),
+    "tree-clock-function-age": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses age in a fragment, with one argument and with two",
+        "mutation-verdict:construction:tree-clock-function-age",
     ),
     "tree-clock-keyword-current-timestamp": ExpectedVerdict(
         "construction",
@@ -17914,7 +17927,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 931:
+        if len(MUTATIONS) != 932:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

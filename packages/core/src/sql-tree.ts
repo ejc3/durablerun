@@ -1151,6 +1151,7 @@ const CLOCK_FUNCTIONS = [
   'curdate',
   'curtime',
   'unix_timestamp',
+  'age',
 ]
 
 /**
@@ -1158,6 +1159,8 @@ const CLOCK_FUNCTIONS = [
  * `scripts/clock-lint.py` applies to store sources and one spelling more, because raw text
  * is the one place a tree cannot be read. A date function with no argument is on it, because SQLite reads
  * `datetime()` as the current time, and so is the literal 'now', whatever function takes it.
+ * PostgreSQL's `age` is on it whatever it is given: with one argument it measures from the
+ * current date, no statement calls it with two, and telling them apart would mean reading SQL.
  * The test clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read
  * the clock by a door no function names. The only clock a tree may hold is the clock token, and
  * a clock called as a function node is outside the grammar, which lists no clock.
