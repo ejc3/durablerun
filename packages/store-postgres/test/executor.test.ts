@@ -298,15 +298,17 @@ describe('PgExecutor transactions', () => {
       {
         victimOnce: await run(1),
         victimAlways: await run(99),
-        anotherError: await run(1, '23505'),
+        anotherError: await run(1, '40001'),
         victimOnceInARead: (await run(1, '40P01', 'read')).outcome,
       },
       'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
     ).toEqual({
       victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
-      // Only a deadlock is run again. Any other failure is reported the first time.
-      anotherError: { outcome: 'PermanentStoreError', texts: once },
+      // Only a deadlock is run again. Any other failure is reported the first time: here a
+      // serialization failure, which is an outage under any map of the classes, so this
+      // case does not move with that map.
+      anotherError: { outcome: 'StoreUnavailableError', texts: once },
       // A read is run again like a write. It takes table locks, so it can be the victim.
       victimOnceInARead: [1],
     })
