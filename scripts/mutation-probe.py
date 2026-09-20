@@ -2665,7 +2665,10 @@ MUTATION_SPECS = [
         # the nest rule has nothing to judge, and no pin of a chosen statement plans it.
         # Compared with LIKE, which no index serves under the column's collation, it
         # returns the row it returned and scans every run to find it. Only the refusal
-        # of a walk in every shipped statement's plan sees it.
+        # of a walk in every shipped statement's plan sees it: before that refusal, every
+        # test of the plan file that reads a plan passed with this in place, and the one
+        # failure was the inventory's tie to the corpus, which fails for any change to a
+        # shipped statement's text and reads no plan.
         "refused-run-state-read-seeks-its-run",
         "packages/core/src/statements/reads.ts",
         "  treeBuilder.selectFrom('runs').select('state').where('run_id', '=', binds.runId),\n",
@@ -2673,14 +2676,18 @@ MUTATION_SPECS = [
         "every refused write or heartbeat scans every run to read one run's state",
     ),
     (
-        # The same walk in the SELECT of an INSERT, which no plan test read before the
-        # refusal of a walk: the checkpoint write finds its fenced run by a comparison
-        # no index serves, in every batch that writes a checkpoint.
+        # The same walk in the SELECT of an INSERT. Six labels send the checkpoint write,
+        # and an older pin, over the batches a saga touches, plans it under three of them
+        # and fails when all six are bent. So only the write under a worker's lease is
+        # bent, the one `set-checkpoint` sends, which no older test of the plan file
+        # reads: it finds its fenced run by a comparison no index serves. Before the
+        # refusal of a walk, every test of that file that reads a plan passed with this in
+        # place, and the one failure was the inventory's tie to the corpus.
         "checkpoint-write-seeks-its-source-run",
         "packages/core/src/statements/checkpoint.ts",
         "          .where('f.run_id', '=', binds.runId)\n",
-        "          .where('f.run_id', 'like', binds.runId)\n",
-        "every checkpoint write scans every run to find the run that writes it",
+        "          .where('f.run_id', (binds.fence === 'lease' && 'like') || '=', binds.runId)\n",
+        "every checkpoint a worker writes scans every run to find the run that writes it",
     ),
     (
         "emit-wake-event-correlation",
