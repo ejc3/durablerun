@@ -76,6 +76,17 @@ describe('a write batch that fails busy on a file database', () => {
     expect(rows?.rows).toEqual([{ id: 2 }])
   })
 
+  it('is an outage for that call alone: a read made in the same tick, queued behind it, is answered', async () => {
+    // Two store calls made together on one executor is an ordinary shape: a task that starts
+    // two steps at once. The read is already waiting its turn when the write fails.
+    const [write, read] = await Promise.all([
+      outcome(victim.batch('write', [insert(1)])),
+      outcome(victim.batch('read', [count], 'read')),
+    ])
+    expect(write).toMatchObject({ name: 'StoreUnavailableError', code: 'SQLITE_BUSY' })
+    expect(read).toBe('answered')
+  })
+
   it('leaves a third executor answering reads, while the lock is held and after it is free', async () => {
     const third = LibsqlExecutor.open(url)
     try {
