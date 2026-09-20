@@ -60,19 +60,25 @@ export function refuseReservedEventName(operation: string, eventName: string): v
  * the engine reaches. Every
  * event statement and the event lock take this and not a string, so a store method
  * cannot forget the refusal, and nothing outside this file can mint a reserved name.
+ * It carries the task of a completion event, so nothing that holds one parses the
+ * reserved name or is handed the task's id beside it.
  */
 export class EventName {
   private declare readonly eventNameBrand: undefined
 
-  private constructor(readonly value: string) {}
+  private constructor(
+    readonly value: string,
+    /** The task whose completion event this is, or null for an event a caller named. */
+    readonly taskId: string | null,
+  ) {}
 
   static fromPort(operation: string, raw: string): EventName {
     refuseReservedEventName(operation, raw)
-    return new EventName(requireDurableString(`${operation} eventName`, raw))
+    return new EventName(requireDurableString(`${operation} eventName`, raw), null)
   }
 
   static taskDone(taskId: string): EventName {
-    return new EventName(taskDoneEventName(taskId))
+    return new EventName(taskDoneEventName(taskId), taskId)
   }
 
   /**
@@ -88,7 +94,16 @@ export class EventName {
       childTaskId,
       'childTaskId, as the name of its completion event,': name,
     })
-    return new EventName(name)
+    return new EventName(name, childTaskId)
+  }
+
+  /**
+   * The event as a message names it to a person: a caller's event by its name, and a
+   * completion event by its task. The engine's reserved name never reaches task code,
+   * and the error of an await does, so a message is built from this and not from `value`.
+   */
+  get display(): string {
+    return this.taskId === null ? this.value : `task ${this.taskId}`
   }
 }
 

@@ -692,7 +692,13 @@ One invocation executes one claimed run to its next suspension point:
     refuses a name that starts with `$` with `RangeError`, and a name no store
     can keep, one with a NUL or a lone surrogate, with
     `InvalidDurableStringError`, and `EventName.taskDone` is the completion
-    event of a task. So the `emitEvent`
+    event of a task. An `EventName` carries that task (`taskId`, null for a
+    caller's event) and the form a message shows a person (`display`): a
+    caller's event by its name, and a completion event as `task <id>`, because
+    the reserved name never reaches task code and the error of an await does.
+    The wait registration reads the awaited child from the name it is given,
+    so no caller passes a child's id beside its event, and no store parses or
+    formats the reserved name. So the `emitEvent`
     and `awaitEvent` ports cannot forget the refusal, and they write or
     register nothing for a reserved name. The hosted emit route and the SDK
     already refused one through `UserName.parse`. Any other caller of the emit

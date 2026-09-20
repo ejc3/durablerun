@@ -79,14 +79,6 @@ export const registerWaitCas = defineStatement(
     taskEligible: SqlFragment
     /** The forward phase is frozen once a saga began, so no wait registers then (§3.10). */
     phase: SagaPhasePredicate
-    /**
-     * The task whose completion event this is, for a child await, or null for any other
-     * event. A wait on a completion event registers only while that task is live and in
-     * this queue (specs/ChildTasks.tla's AwaitMiss). A task that has ended, in another
-     * queue, or that does not exist will never be ended by a batch that could wake the
-     * wait, so the wait would sleep forever.
-     */
-    awaitedTaskId: string | null
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
     const wait = {
@@ -119,7 +111,12 @@ export const registerWaitCas = defineStatement(
       .$if(binds.phase !== 'open', (query) =>
         query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
       )
-    const awaitedTaskId = binds.awaitedTaskId
+    // A wait on a completion event registers only while the event's task is live and in
+    // this queue (specs/ChildTasks.tla's AwaitMiss). A task that has ended, in another
+    // queue, or that does not exist will never be ended by a batch that could wake the
+    // wait, so the wait would sleep forever. The task is the one the name carries, so a
+    // caller cannot pass one child's event and another child's id.
+    const awaitedTaskId = binds.eventName.taskId
     if (awaitedTaskId !== null) {
       guarded = guarded.where((where) =>
         where.exists(

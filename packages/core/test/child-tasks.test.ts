@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  EventName,
   RunTaskMemo,
   type TaskOutcome,
   childSpawnKey,
@@ -39,6 +40,23 @@ describe('the completion event contract', () => {
       user: 'accepted',
       inner: 'accepted',
       empty: 'accepted',
+    })
+  })
+
+  it('carries the task of a completion event, and shows a person the task and never the reserved name', () => {
+    const shown = (name: EventName) => ({
+      value: name.value,
+      taskId: name.taskId,
+      display: name.display,
+    })
+    expect({
+      named: shown(EventName.fromPort('emitEvent', 'order-paid')),
+      done: shown(EventName.taskDone('t1')),
+      awaited: shown(EventName.awaitedTaskDone('t1')),
+    }).toEqual({
+      named: { value: 'order-paid', taskId: null, display: 'order-paid' },
+      done: { value: '$task-done:t1', taskId: 't1', display: 'task t1' },
+      awaited: { value: '$task-done:t1', taskId: 't1', display: 'task t1' },
     })
   })
 

@@ -7039,14 +7039,14 @@ MUTATION_SPECS.extend(
         (
             "child-await-hit-error-names-the-task",
             "packages/store-libsql/src/store.ts",
-            "            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`\n",
-            "            : `awaitEvent ${queue}/${eventName}`\n",
+            "          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,\n",
+            "          `${operation} ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that hits a corrupt stored payload hands the task the engine's event name",
         ),
         (
             "child-await-recording-error-names-the-task",
             "packages/core/src/task-done.ts",
-            "      `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
+            "      `awaitTaskDone ${queue}/${name.display} found a non-TEXT stored payload`,\n",
             "      `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that records an outcome and reads a corrupt stored payload hands the task the engine's event name",
         ),
