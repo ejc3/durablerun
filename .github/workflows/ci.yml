@@ -338,7 +338,7 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
               # Five base entries name text this tree rewrote, and each mutant bends the same
               # condition as before. An event name carries the task of a completion event, so
               # the two messages about a stored payload that is not text are built from its

@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { type Server, createServer } from 'node:http'
+import { type RequestListener, type Server, type ServerResponse, createServer } from 'node:http'
 import type { Clock, Launcher, SchedulerStore } from '@durablerun/core'
 import { LaunchOutcome, launchIdentity } from '@durablerun/core'
 import { type RunInvocation, type TaskRegistry, runClaimedRun } from '@durablerun/sdk'
@@ -54,10 +54,13 @@ async function readBody(req: NodeJS.ReadableStream): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** Fire-and-forget launcher over HTTP: a 202 ack is 'accepted'. */
+/**
+ * Fire-and-forget launcher over HTTP: a 202 ack is 'accepted'. The request carries the
+ * caller's signal, so it lives no longer than the caller waits for it.
+ */
 export function httpLauncher(opts: { url: string; secret: string }): Launcher {
   return {
-    async launch(invocation) {
+    async launch(invocation, options) {
       const body = JSON.stringify(invocation)
       try {
         const response = await fetch(`${opts.url}/launch`, {
@@ -67,6 +70,10 @@ export function httpLauncher(opts: { url: string; secret: string }): Launcher {
             [SIGNATURE_HEADER]: signBody(opts.secret, body),
           },
           body,
+          // A worker that accepts the connection and never answers would otherwise hold
+          // this socket long after the driver stopped waiting. The aborted request
+          // rejects into the failed launch below, which by then nobody reads.
+          signal: options?.signal ?? null,
         })
         if (response.status === 202) return LaunchOutcome.accepted()
         return LaunchOutcome.launchFailed()
@@ -77,11 +84,58 @@ export function httpLauncher(opts: { url: string; secret: string }): Launcher {
   }
 }
 
+/** Nobody waits for a wake ping, so nothing but a deadline of its own would ever end one. */
+const WAKE_PING_DEADLINE_MS = 5_000
+
+/**
+ * The unconditional ping after a pass: best-effort, never awaited by the pass. It ends at
+ * its deadline at the latest, so a driver address that accepts the connection and never
+ * answers holds no connection of this process for longer than that.
+ */
+function pingDriver(clock: Clock, driverUrl: string): void {
+  // One signal ends both halves: the deadline ends the request, and the request's end ends
+  // the deadline's sleep. Whichever comes second finds the signal already fired.
+  const over = new AbortController()
+  const end = () => over.abort()
+  fetch(`${driverUrl}/wake`, { method: 'POST', signal: over.signal })
+    .catch(() => {})
+    .finally(end)
+  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal).then(end)
+}
+
+/**
+ * What a connection to either local server is allowed: ten seconds to deliver its headers
+ * and thirty for its whole request, where the platform allows sixty seconds and five
+ * minutes. A launch is a few hundred bytes over loopback and a wake has no body, so a
+ * request that takes longer has stalled, and the limit is what ends it. The platform checks
+ * its connections every thirty seconds, so a stalled one ends within its limit plus that.
+ * The stall is usually the client's. It can be this process's own: a request that arrived
+ * whole is answered 408 when the event loop stalls past the limit between the accept and
+ * the first read, where the platform's sixty seconds tolerated a longer stall. That costs
+ * one failed launch, which the lease recovers.
+ */
+const HEADERS_TIMEOUT_MS = 10_000
+const REQUEST_TIMEOUT_MS = 30_000
+/** How long the worker server's close() lets a request that is on the wire finish. */
+const CLOSE_DRAIN_MS = 5_000
+
+/** Both local servers are built here, so both carry the same limits. */
+function localServer(handler: RequestListener): Server {
+  return createServer(
+    { headersTimeout: HEADERS_TIMEOUT_MS, requestTimeout: REQUEST_TIMEOUT_MS },
+    handler,
+  )
+}
+
 export interface WorkerServer {
   server: Server
   /** Resolves once listening; the bound port (0 requests an ephemeral one). */
   listen(port?: number): Promise<number>
-  /** Stop accepting; resolves when in-flight passes have finished. */
+  /**
+   * Stop accepting and end every connection, then resolve once in-flight passes have
+   * finished. The worker server first lets a request that is on the wire finish, within a
+   * bound. The wake server has nothing worth that wait.
+   */
   close(): Promise<void>
 }
 
@@ -99,10 +153,17 @@ export function createWorkerServer(deps: {
   driverUrl?: string
 }): WorkerServer {
   const inFlight = new Set<Promise<unknown>>()
-  const server = createServer((req, res) => {
+  let closing = false
+  // Every answer leaves through here. Once close() has begun, an answer ends its
+  // connection: the connection is closed after the answer is written, never before, and
+  // never kept alive for a request the server will not take.
+  const answer = (res: ServerResponse, status: number): void => {
+    res.writeHead(status, closing ? { connection: 'close' } : undefined).end()
+  }
+  const server = localServer((req, res) => {
     void (async () => {
       if (req.method !== 'POST' || req.url !== '/launch') {
-        res.writeHead(404).end()
+        answer(res, 404)
         return
       }
       let body: string
@@ -113,7 +174,7 @@ export function createWorkerServer(deps: {
         // become an unhandled rejection — that terminates the PROCESS and
         // every in-flight pass with it.
         try {
-          res.writeHead(error instanceof BodyTooLargeError ? 413 : 400).end()
+          answer(res, error instanceof BodyTooLargeError ? 413 : 400)
         } catch {
           // the socket may already be gone; nothing to answer
         }
@@ -124,23 +185,23 @@ export function createWorkerServer(deps: {
         return
       }
       if (!verifyBody(deps.secret, body, req.headers[SIGNATURE_HEADER] as string | undefined)) {
-        res.writeHead(401).end()
+        answer(res, 401)
         return
       }
       let invocation: RunInvocation
       try {
         const identity = launchIdentity(JSON.parse(body))
         if (identity === undefined) {
-          res.writeHead(400).end()
+          answer(res, 400)
           return
         }
         invocation = identity
       } catch {
-        res.writeHead(400).end()
+        answer(res, 400)
         return
       }
       // Ack FIRST (fire-and-forget contract), execute detached.
-      res.writeHead(202).end()
+      answer(res, 202)
       const pass = runClaimedRun(
         { store: deps.store, clock: deps.clock, registry: deps.registry },
         invocation,
@@ -150,10 +211,7 @@ export function createWorkerServer(deps: {
         })
         .finally(() => {
           inFlight.delete(pass)
-          if (deps.driverUrl) {
-            // Unconditional ping: best-effort, never awaited by the pass.
-            fetch(`${deps.driverUrl}/wake`, { method: 'POST' }).catch(() => {})
-          }
+          if (deps.driverUrl) pingDriver(deps.clock, deps.driverUrl)
         })
       inFlight.add(pass)
     })()
@@ -164,10 +222,21 @@ export function createWorkerServer(deps: {
       return listenLocal(server, 'worker server', port)
     },
     async close(): Promise<void> {
+      // Stop accepting. The platform ends the idle kept-alive connections with that call.
+      closing = true
       const closed = new Promise<void>((resolve) => server.close(() => resolve()))
-      // Rejected mid-uploads can leave stragglers; close() must not wait
-      // on a dead client's half-open socket.
-      server.closeIdleConnections()
+      // A launch that is on the wire is read, acked and run, and its answer ends its
+      // connection, so the shutdown never drops an ack: a dropped ack is a failed launch
+      // counted against a run that ran. The wait ends with the last connection, and at
+      // the bound at the latest. A closed server no longer enforces its header and
+      // request limits, so nothing else would ever end a client that stalls here.
+      // A connection that never sent a byte is waited for as well, because the platform
+      // counts a connection as active until it has been answered once, so it holds
+      // close() for the whole bound. The pool under fetch leaves such a connection for
+      // about four seconds after an aborted launch.
+      const drained = new AbortController()
+      void closed.then(() => drained.abort())
+      await deps.clock.sleep(CLOSE_DRAIN_MS, drained.signal)
       server.closeAllConnections()
       await closed
       await Promise.allSettled([...inFlight])
@@ -184,7 +253,7 @@ export function createWorkerServer(deps: {
  * reach it can keep the loop at its floor rate.
  */
 export function createWakeServer(loop: Pick<DriverLoop, 'wake'>): WorkerServer {
-  const server = createServer((req, res) => {
+  const server = localServer((req, res) => {
     if (req.method === 'POST' && req.url === '/wake') {
       loop.wake()
       res.writeHead(204).end()
@@ -198,7 +267,13 @@ export function createWakeServer(loop: Pick<DriverLoop, 'wake'>): WorkerServer {
       return listenLocal(server, 'wake server', port)
     },
     close(): Promise<void> {
-      return new Promise((resolve) => server.close(() => resolve()))
+      // Nothing here is worth a wait: a wake reaches the loop before its answer is
+      // written, and the answer tells the pinger nothing. So every connection is ended at
+      // once. Left alone, one that holds a request half sent, or that never sent a byte,
+      // would hold close() open for as long as its client liked.
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      server.closeAllConnections()
+      return closed
     },
   }
 }
