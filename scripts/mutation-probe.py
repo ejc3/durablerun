@@ -13479,30 +13479,72 @@ MUTATION_SPECS.extend(
         (
             "terminal-task-state-is-asked",
             "packages/core/src/sql-tree.ts",
-            "  return taskStateValues(tree).some((value) =>\n    someNode(value, (node) => isTerminalState(boundValue(node))),\n  )\n",
+            "  return taskStateValues(tree).some((value) =>\n    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n  )\n",
             "  return taskStateValues(tree).some(() => false)\n",
             "no statement is read as ending a task, so a terminal path that records no completion event runs",
         ),
         (
             "terminal-task-state-as-a-value",
             "packages/core/src/sql-tree.ts",
-            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
-            "    someNode(value, (node) => boundValue(node) === 'failed'),\n",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
+            "    receivedNodes(value).some((node) => boundValue(node) === 'failed'),\n",
             "one terminal state is read and the others are not, so a cancellation owes no completion event",
         ),
         (
             "terminal-task-state-in-any-arm",
             "packages/core/src/sql-tree.ts",
-            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
             "    isTerminalState(boundValue(value)),\n",
             "only a value that is itself a state is read, so an expression with a terminal arm owes no completion event",
         ),
         (
             "terminal-task-state-reads-the-value",
             "packages/core/src/sql-tree.ts",
-            "    someNode(value, (node) => isTerminalState(boundValue(node))),\n",
-            "    someNode(value, () => true),\n",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
+            "    receivedNodes(value).some(() => true),\n",
             "every statement that writes tasks.state is held to a completion event, a live state included",
+        ),
+        (
+            "terminal-task-state-skips-a-filter",
+            "packages/core/src/sql-tree.ts",
+            "  if (SelectQueryNode.is(value)) {\n",
+            "  if (false && SelectQueryNode.is(value)) {\n",
+            "the filter of a copied state is read as what the task receives, so a run id that spells a terminal state has its write refused as the end of a task",
+        ),
+        (
+            "terminal-task-state-skips-a-condition",
+            "packages/core/src/sql-tree.ts",
+            "  if (CaseNode.is(value)) {\n",
+            "  if (false && CaseNode.is(value)) {\n",
+            "the condition of a CASE arm is read as what the task receives, so a statement that compares against a terminal state owes an event no task needs",
+        ),
+        (
+            "terminal-task-state-reads-a-case-with-no-else",
+            "packages/core/src/sql-tree.ts",
+            "    return results.filter((result) => result !== undefined).flatMap(receivedNodes)\n",
+            "    return (results as OperationNode[]).flatMap(receivedNodes)\n",
+            "a CASE with no ELSE crashes the rule that reads the state a statement gives a task",
+        ),
+        (
+            "terminal-task-state-reads-a-selection",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.selections ?? []),\n",
+            "      ...(value.selections ?? []).slice(0, 0),\n",
+            "what a subquery selects is not read, so a terminal state a subquery names ends a task with no completion event",
+        ),
+        (
+            "terminal-task-state-reads-a-derived-table",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.from?.froms ?? []),\n",
+            "      ...(value.from?.froms ?? []).slice(0, 0),\n",
+            "what a subquery selects from is not read, so a terminal state named in a derived table ends a task with no completion event",
+        ),
+        (
+            "terminal-task-state-reads-a-joined-table",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.joins ?? []).map((join) => join.table),\n",
+            "      ...(value.joins ?? []).slice(0, 0).map((join) => join.table),\n",
+            "what a subquery joins is not read, so a terminal state named in a joined derived table ends a task with no completion event",
         ),
         (
             "task-state-fragment-refuses",
@@ -13778,6 +13820,72 @@ for _verdict, _names in (
         ),
         (
             "terminal-task-state-of-an-insert",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task does not read the filter of a copied state, where a run id is a caller's string",
+            "mutation-verdict:construction:terminal-task-state-skips-a-filter",
+        ),
+        (
+            "terminal-task-state-skips-a-filter",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task does not read the condition of an arm",
+            "mutation-verdict:construction:terminal-task-state-skips-a-condition",
+        ),
+        (
+            "terminal-task-state-skips-a-condition",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads an expression that has no ELSE",
+            "mutation-verdict:construction:terminal-task-state-reads-a-case-with-no-else",
+        ),
+        (
+            "terminal-task-state-reads-a-case-with-no-else",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads what a subquery selects",
+            "mutation-verdict:construction:terminal-task-state-reads-a-selection",
+        ),
+        (
+            "terminal-task-state-reads-a-selection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a state that reaches the column through a derived table",
+            "mutation-verdict:construction:terminal-task-state-reads-a-derived-table",
+        ),
+        (
+            "terminal-task-state-reads-a-derived-table",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a state that reaches the column through a joined table",
+            "mutation-verdict:construction:terminal-task-state-reads-a-joined-table",
+        ),
+        (
+            "terminal-task-state-reads-a-joined-table",
         ),
     ),
     (
@@ -17559,7 +17667,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 906:
+        if len(MUTATIONS) != 912:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

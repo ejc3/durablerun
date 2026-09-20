@@ -91,7 +91,7 @@ a last docs PR gives a live owner to every open bullet that is left.
    terminal-state rule reads value nodes (`taskStateValue`) and refuses a
    fragment in a task's state, `awaitTaskDone`, its decoder, and `endingTask`
    are core's, and what holds all of it is the conformance suite on three
-   dialects, the PostgreSQL case for each batch label, 26 registered
+   dialects, the PostgreSQL case for each batch label, 32 registered
    mutations, and an accepted exhibit of each mechanism's false negative.
 4. PR4.4c: a conformance surface generated from the store's two ports runs
    every call concurrently with itself on libSQL, PostgreSQL, and MySQL, the
@@ -1704,7 +1704,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (`taskStateValue`), the copy of a run's state is a subquery built from nodes
   (`stampedRunState`), and a fragment in a task's state is refused. On that, a
   batch that writes a terminal `tasks.state` and records no completion event
-  under that statement's stamp is refused when it runs. Five registered
+  under that statement's stamp is refused when it runs. The rule reads what
+  the column can receive, a CASE's results and what a subquery selects, and
+  never a condition or a filter: the copy's filter binds a caller's run id,
+  and while the rule read every node below the value a run id of `failed` had
+  `deferLaunch`, `reschedule` and `suspendRun` refused with a plain error where
+  a run nobody has is answered with `LeaseLostError`. The review found that
+  (`postmortems/pr3.3b-hoists-review.md`). Five registered
   mutants each deleted one terminal path's completion event, which that rule
   now refuses before the conformance case they are held by can see it, so
   each records another task's event instead, which the rule does not read.

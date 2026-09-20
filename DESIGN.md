@@ -734,7 +734,7 @@ One invocation executes one claimed run to its next suspension point:
     value is refused, whatever it holds, because text can spell a state in
     more ways than a reader of text closes, and a generated UPDATE's type takes
     no text there. A statement that writes `tasks` and gives `state` a value
-    that holds a terminal state's name, in any arm of an expression, owes the
+    that names a terminal state where the column can receive it owes the
     completion event, recorded under that statement's own stamp: a
     `FencedBatch` that holds such a statement and no follow-on that inserts a
     completion event gated by its stamp is refused when it runs, before
@@ -742,10 +742,21 @@ One invocation executes one claimed run to its next suspension point:
     event, or names another statement as the one that ended the task, does not
     run. Nothing is checked after the batch. A terminal write's answer is its
     batch's answer, and a read after the commit could only change that answer
-    for a transition that has happened. The rule reads declared nodes, so two
-    things are beyond it: a batch that names the wrong task, and a value that
-    produces a terminal state and names none, which is the copy of a run's
-    state. Every shipped copy reads a run the batch left live. An insert
+    for a transition that has happened. The rule reads what the column can
+    receive and nothing else: the value itself, each result of a CASE and never
+    a condition, and what a subquery selects, from a table or from another
+    subquery, and never what it filters, joins on, groups or orders by. A
+    filter chooses a row and a condition chooses an arm. A run id is a caller's
+    string and may spell a state, and `deferLaunch`, `reschedule` and
+    `suspendRun` bind it in the filter of the copy, so a run nobody has is
+    answered with `LeaseLostError` whatever its id spells. Anything else below
+    the value is read whole, as an operand of what the column receives. The
+    rule reads declared nodes, so three things are beyond it: a batch that
+    names the wrong task, a value that produces a terminal state and names
+    none, which is the copy of a stored state, even one whose own filter lets
+    a terminal run through alone, and a state the database assembles from
+    pieces that name none. Every shipped copy reads a run the batch left live,
+    and no shipped statement assembles a state. An insert
     that writes nothing passes every row-count audit, so what holds those is
     `childTaskViolations`, which runs after every case of the surface, over
     every terminal label, in the fuzz, and in the SDK harness.

@@ -1913,6 +1913,55 @@ describe('FencedBatch tree statements', () => {
     })
   })
 
+  describe('what reading only what a column receives still does not check', () => {
+    // Each exhibit is ACCEPTED and SENT, beside a control the rule refuses.
+    const ending = (state: (eb: Loose) => unknown) =>
+      withCas().followOnTree(
+        'task',
+        statement(
+          loose
+            .updateTable('tasks')
+            .set((eb: Loose) => ({ state: state(eb), fence_stamp: stampValue, fence_at_ms: 5 }))
+            .where((eb: Loose) => eb('task_id', 'in', fenced(eb).select('f.task_id'))),
+        ),
+        'one',
+      )
+    const OWES = /writes a terminal tasks\.state, and no follow-on of this batch records/
+    const sends = async (b: ReturnType<typeof ending>) => {
+      const { captured, executor } = capturingExecutor(1)
+      await b.run(executor)
+      return captured.map((sent) => sent.sql.slice(0, 14))
+    }
+
+    it('accepts a copied state whose filter pins a terminal state', async () => {
+      // The control: the subquery selects the state by name, so the column receives the name.
+      const named = (eb: Loose) =>
+        eb.selectFrom('runs as g').select(eb.val('failed').as('named')).where('g.run_id', '=', 'r1')
+      await expect(sends(ending(named))).rejects.toThrow(OWES)
+      // The exhibit: the column receives `g.state`, which names nothing, and the filter lets
+      // through a failed run alone, so the task can only become failed. A filter chooses a
+      // row and is not read, because a run id is a caller's string and may spell a state.
+      // Reading every node caught this one and refused a legal write with it. It is the
+      // copy of a stored state again, and what holds it is `childTaskViolations`.
+      const pinned = (eb: Loose) =>
+        eb
+          .selectFrom('runs as g')
+          .select('g.state')
+          .where('g.run_id', '=', 'r1')
+          .where('g.state', '=', 'failed')
+      expect(await sends(ending(pinned))).toEqual(['update "runs" ', 'update "tasks"'])
+    })
+
+    it('accepts a state the database assembles from pieces that name none', async () => {
+      // The control: the whole name, as one operand, is read.
+      const whole = (eb: Loose) => eb(eb.val('failed'), '||', eb.val(''))
+      await expect(sends(ending(whole))).rejects.toThrow(OWES)
+      // The exhibit: no node names a state, and the database joins two that do not.
+      const pieces = (eb: Loose) => eb(eb.val('fai'), '||', eb.val('led'))
+      expect(await sends(ending(pieces))).toEqual(['update "runs" ', 'update "tasks"'])
+    })
+  })
+
   it('refuses a tail that is not a SELECT, and allows a fenced SELECT', () => {
     expect(() => withCas().tailTree('payload', statement(taskFollowOn()))).toThrow(
       /must be a SELECT/,

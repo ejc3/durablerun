@@ -1521,7 +1521,22 @@ describe('the tree path', () => {
     // What a column receives is a result. A filter chooses a row and a condition chooses
     // an arm, and neither gives the task anything, whatever text it holds.
     it("does not read the filter of a copied state, where a run id is a caller's string", async () => {
-      await expect(run(ends({ state: stampedRunState('failed', 'win') }))).resolves.toBeDefined()
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-skips-a-filter' },
+        OWES,
+        () => run(ends({ state: stampedRunState('failed', 'win') })),
+      )
+      // The condition a subquery joins on is a filter as well.
+      const joinedOn = (eb: Loose) => ({
+        state: eb
+          .selectFrom('runs as g')
+          .innerJoin('tasks as t2', (join: Loose) =>
+            join.onRef('t2.task_id', '=', 'g.task_id').on('t2.failure_reason', '=', 'failed'),
+          )
+          .select('g.state')
+          .where('g.run_id', '=', 'r1'),
+      })
+      await expect(run(ends(joinedOn))).resolves.toBeDefined()
     })
 
     it('does not read the condition of an arm', async () => {
@@ -1533,7 +1548,86 @@ describe('the tree path', () => {
           .else('pending')
           .end(),
       })
-      await expect(run(ends(chosen))).resolves.toBeDefined()
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-skips-a-condition' },
+        OWES,
+        () => run(ends(chosen)),
+      )
+      // The other form of CASE compares an operand with each condition.
+      const compared = (eb: Loose) => ({
+        state: eb
+          .case(eb.ref('failure_reason'))
+          .when('failed')
+          .then('sleeping')
+          .else('pending')
+          .end(),
+      })
+      await expect(run(ends(compared))).resolves.toBeDefined()
+    })
+
+    it('reads an expression that has no ELSE', async () => {
+      const noElse = (eb: Loose) => ({
+        state: eb.case().when('attempts', '>', 3).then('sleeping').end(),
+      })
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-case-with-no-else' },
+        /TypeError/,
+        () => run(ends(noElse)),
+      )
+    })
+
+    /** A subquery over `runs` that names a state, the way a derived table would hold it. */
+    const naming = (eb: Loose, state: string) =>
+      eb
+        .selectFrom('runs as g')
+        .select(['g.run_id', eb.val(state).as('named')])
+        .where('g.run_id', '=', 'r1')
+
+    it('reads what a subquery selects', async () => {
+      const selected = (eb: Loose) => ({
+        state: eb.selectFrom('runs as g').select(eb.val('failed').as('named')),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-selection' },
+        OWES,
+        () => run(ends(selected)),
+      )
+      // An arm may be such a subquery.
+      const arm = (eb: Loose) => ({
+        state: eb
+          .case()
+          .when('attempts', '>', 3)
+          .then(eb.selectFrom('runs as g').select(eb.val('cancelled').as('named')))
+          .else('pending')
+          .end(),
+      })
+      await expect(run(ends(arm))).rejects.toThrow(OWES)
+    })
+
+    it('reads a state that reaches the column through a derived table', async () => {
+      const derived = (eb: Loose) => ({
+        state: eb.selectFrom(naming(eb, 'failed').as('d')).select('d.named'),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-derived-table' },
+        OWES,
+        () => run(ends(derived)),
+      )
+    })
+
+    it('reads a state that reaches the column through a joined table', async () => {
+      const joined = (eb: Loose) => ({
+        state: eb
+          .selectFrom('runs as h')
+          .innerJoin(naming(eb, 'failed').as('d'), 'd.run_id', 'h.run_id')
+          .select('d.named')
+          .where('h.run_id', '=', 'r1'),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-joined-table' },
+        OWES,
+        () => run(ends(joined)),
+      )
     })
 
     it('takes no fragment, whatever the fragment holds', () => {

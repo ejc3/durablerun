@@ -1,11 +1,13 @@
 import {
   AggregateFunctionNode,
-  AliasNode,
   type AliasedExpression,
+  AliasNode,
   AndNode,
   BinaryOperationNode,
+  CaseNode,
   ColumnNode,
   ColumnUpdateNode,
+  createQueryId,
   type DatabaseConnection,
   DeleteQueryNode,
   DummyDriver,
@@ -19,8 +21,8 @@ import {
   type OperationNode,
   OperationNodeTransformer,
   OperatorNode,
-  OrNode,
   OrderByItemNode,
+  OrNode,
   ParensNode,
   PrimitiveValueListNode,
   type QueryCompiler,
@@ -43,7 +45,6 @@ import {
   ValuesNode,
   WhenNode,
   WhereNode,
-  createQueryId,
 } from 'kysely'
 import type { EventName } from './child-tasks.js'
 import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
@@ -1420,16 +1421,40 @@ export function taskStateProblem(tree: OperationNode): string | null {
 }
 
 /**
+ * The nodes below a value that can be what its column receives. A CASE gives one of its
+ * results and never the condition that chose it. A subquery gives what it selects, from a
+ * table or from another subquery, and never what it filters, joins on, groups or orders
+ * by. Anything else is read whole, as an operand of what the column receives.
+ */
+function receivedNodes(value: OperationNode): OperationNode[] {
+  if (CaseNode.is(value)) {
+    const results = [...(value.when ?? []).map((when) => when.result), value.else]
+    return results.filter((result) => result !== undefined).flatMap(receivedNodes)
+  }
+  if (SelectQueryNode.is(value)) {
+    const sources = [
+      ...(value.selections ?? []),
+      ...(value.from?.froms ?? []),
+      ...(value.joins ?? []).map((join) => join.table),
+    ]
+    return sources.flatMap(receivedNodes)
+  }
+  return [value, ...children(value).flatMap(receivedNodes)]
+}
+
+/**
  * Whether a statement can end a task, as far as its tree says: it writes `tasks`, and the
- * value it gives `state` holds a value node that names a terminal state, anywhere inside
- * it, so one arm of a CASE counts. A batch that holds such a statement owes the task's
- * parent its completion event (DESIGN.md §3.2). A value that produces a terminal state
- * and names none is not seen: the copy of a run's state, which every shipped statement
- * takes from a run this batch left live.
+ * value it gives `state` names a terminal state where the column can receive it
+ * (`receivedNodes`), so one arm of a CASE counts and its condition does not. A run id is a
+ * caller's string, and in the filter of a copied state it chooses a row and names nothing.
+ * A batch that holds such a statement owes the task's parent its completion event
+ * (DESIGN.md §3.2). A value that produces a terminal state and names none is not seen:
+ * the copy of a run's state, which every shipped statement takes from a run this batch
+ * left live.
  */
 export function writesTerminalTaskState(tree: OperationNode): boolean {
   return taskStateValues(tree).some((value) =>
-    someNode(value, (node) => isTerminalState(boundValue(node))),
+    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),
   )
 }
 
