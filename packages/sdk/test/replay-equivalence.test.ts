@@ -7,6 +7,7 @@ import {
   EventTimeoutError,
   FatalTaskError,
   type IdSource,
+  SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
@@ -177,6 +178,35 @@ const group = (...members: ProgramOp[]): ProgramOp => ({
   members,
 })
 
+/**
+ * A step of a refused group has a name no other op has, so that its key is its name and the
+ * comparison can name its row.
+ */
+const FIRST_OF_A_REFUSED_GROUP = 'the first of a refused group'
+const LATER_IN_A_REFUSED_GROUP = 'the later of a refused group'
+
+/** A group whose first call is a step, so that the engine refuses the call made after it. */
+const refusedAfterAStep = (d: Drawing, later: ProgramOp): ProgramOp[] => [
+  group(drawn(d, { kind: 'step', name: FIRST_OF_A_REFUSED_GROUP }), later),
+]
+
+/**
+ * The group of a program that the engine refuses, when it has one. A durable call made while
+ * a step runs is refused, so it is a group with a step ahead of its last call. The refusal
+ * fails the task for good, so nothing of a program runs after it.
+ */
+function refusedGroupOf<Op extends { kind: string; members?: Op[] }>(
+  ops: readonly Op[],
+): (Op & { members: Op[] }) | undefined {
+  return ops.find(
+    (op): op is Op & { members: Op[] } =>
+      op.kind === 'group' &&
+      (op.members ?? [])
+        .slice(0, -1)
+        .some((member) => member.kind === 'step' || member.kind === 'registered'),
+  )
+}
+
 const twoSpawns = (d: Drawing): ProgramOp[] => {
   d.spawned += 2
   return [
@@ -193,8 +223,10 @@ const twoSpawns = (d: Drawing): ProgramOp[] => {
  * a group takes its key when it is made, in the order written, so a group replays by
  * position, and the handler observes it by position: the order its calls are answered in may
  * differ between two schedules for no defect. A durable call made while a step runs is
- * refused (DESIGN.md section 3.10), so a group here starts its step last. Every other call
- * may be started beside another. The members of a group do not depend on one another: a
+ * refused (DESIGN.md section 3.10), whether the pass runs the step or replays it, so a group
+ * that starts its step first is refused on every schedule, and one that starts its step last
+ * is admitted. Every other call may be started beside another. The members of a group do not
+ * depend on one another: a
  * task that awaits, in a group, the event the same group emits can park before its emit
  * lands, and nothing else will wake it.
  */
@@ -246,6 +278,12 @@ const PROGRAM_SHAPES = {
     drawn(d, { kind: 'fail-once' }),
     drawn(d, { kind: 'step', namedAfterAttempt: true }),
   ],
+  'a step and then a step, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'step', name: LATER_IN_A_REFUSED_GROUP })),
+  'a step and then a sleep, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'sleep', sleepSeconds: 5 + d.rng.int(20) })),
+  'a step and then an await, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'await-external', eventName: `ext${d.at}` })),
 } satisfies Record<string, (d: Drawing) => ProgramOp[]>
 
 type ProgramShape = keyof typeof PROGRAM_SHAPES
@@ -267,6 +305,8 @@ function generateProgram(rng: Rng, forced?: ProgramShape): ProgramOp[] {
   const d: Drawing = { rng, at: 0, emitted: [], spawned: 0 }
   for (let i = 0; i < length; i++) {
     d.at = i
+    // A refused group fails the task for good, so it is the last thing a program holds.
+    if (refusedGroupOf(ops) !== undefined) return ops
     if (forced !== undefined && i === forcedAt) {
       ops.push(...drawShape(forced, d))
       continue
@@ -338,6 +378,7 @@ function generateProgram(rng: Rng, forced?: ProgramShape): ProgramOp[] {
       ops.push({ kind: 'step', valueIndex, nameIndex, namedAfterAttempt: rng.next() < 0.3 })
     }
   }
+  if (refusedGroupOf(ops) !== undefined) return ops
   ops.push({ kind: 'step', valueIndex: rng.int(VALUES.length), nameIndex: 0 }) // always end with output
   return ops
 }
@@ -374,7 +415,11 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
      * calls of a group are all made, in the order written, before any of them is answered.
      * It answers what the task observed, or the child it spawned.
      */
-    const call = async (op: ProgramOp, index: number): Promise<string | ChildTask | undefined> => {
+    const call = async (
+      op: ProgramOp,
+      index: number,
+      position = 0,
+    ): Promise<string | ChildTask | undefined> => {
       switch (op.kind) {
         case 'spawn':
           return await ctx.spawn(op.name ?? 'child', {
@@ -435,6 +480,7 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
               op.namedAfterAttempt ? `${name}-${ctx.attempt}` : name,
               () => {
                 watch?.bodies.push(index)
+                watch?.members?.push(`${index}.${position}`)
                 return VALUES[op.valueIndex]
               },
               op.registersRollback ? { rollback: () => {} } : undefined,
@@ -456,7 +502,9 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
       // its calls were answered in, which a fault may change.
       const answers =
         op.kind === 'group'
-          ? await Promise.all((op.members ?? []).map((member) => call(member, index)))
+          ? await Promise.all(
+              (op.members ?? []).map((member, position) => call(member, index, position)),
+            )
           : [await call(op, index)]
       for (const answer of answers) {
         if (typeof answer === 'string') observed.push(answer)
@@ -535,6 +583,8 @@ interface Watch {
   readonly trace: string[]
   /** The index of every step whose body ran, once for each time it ran. */
   readonly bodies: number[]
+  /** The same, as `index.position`, which tells the members of a group apart. */
+  readonly members?: string[]
   /** The user attempts the task was charged. */
   attempts?: number
 }
@@ -779,6 +829,78 @@ const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
   ),
 ]
 
+interface Row {
+  checkpoint_name: string
+  state: string
+}
+
+/**
+ * What two runs of a program with a refused group may differ by. The refusal ends the pass
+ * while the first member's own writes may still be in flight, so each row of that member may
+ * be missing from a run. One that is there holds what the program says it holds, and the rows
+ * that are left are compared whole, so no other row may differ.
+ */
+function withoutTheRowsInFlight(rows: unknown[], inFlight: ReadonlyMap<string, string>): Row[] {
+  const left: Row[] = []
+  for (const row of rows as Row[]) {
+    const holds = inFlight.get(row.checkpoint_name)
+    if (holds === undefined) left.push(row)
+    else
+      expect(row.state, `the row '${row.checkpoint_name}', which a refusal may leave out`).toBe(
+        holds,
+      )
+  }
+  return left
+}
+
+/** What a step's checkpoint holds: the value as the engine serializes it. */
+const storedValue = (valueIndex: number): string => JSON.stringify(VALUES[valueIndex]) ?? 'null'
+
+/** How the engine names a call it refuses, by the op that makes the call. */
+function refusedCallOf(op: ProgramOp): string {
+  if (op.kind === 'step') return `ctx.step('${op.name}')`
+  return op.kind === 'sleep' ? 'ctx.sleepFor' : 'ctx.awaitEvent'
+}
+
+/**
+ * A program whose group the engine refuses is held to this on every schedule: the task fails
+ * for good with the same refusal, which names the later call; the later member left nothing,
+ * no body and no row; and the checkpoint table is the reference's, but for the first member's
+ * own row, which the refusal may leave out.
+ */
+async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): Promise<void> {
+  const refused = refusedGroupOf(ops)
+  const [first, later] = refused?.members ?? []
+  if (refused === undefined || first === undefined || later === undefined)
+    throw new Error('the program holds no refused group')
+  const inFlight = new Map([[String(first.name), storedValue(first.valueIndex)]])
+  const laterBody = `${ops.indexOf(refused)}.1`
+  const run = async (seed: string, failAtCall: number) => {
+    const watch: Watch = { trace: [], bodies: [], members: [] }
+    const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+    expect(watch.members, `fault at call ${failAtCall}`).not.toContain(laterBody)
+    return { ...record, checkpoints: withoutTheRowsInFlight(record.checkpoints, inFlight) }
+  }
+  const reference = await run(`ref-${label}`, 0)
+  const failure = JSON.parse(reference.failure ?? 'null') as { name?: string; message?: string }
+  expect({
+    name: failure?.name,
+    refuses: failure?.message?.split(' called inside a step')[0],
+  }).toEqual({ name: 'FatalTaskError', refuses: refusedCallOf(later) })
+  for (const call of faultPoints(reference.calls)) {
+    const faulted = await run(`fault-${label}-${call}`, call)
+    expect(
+      // The longest name is the first member's own when its row is there.
+      {
+        ...faulted,
+        calls: reference.calls,
+        longestCheckpointName: reference.longestCheckpointName,
+      },
+      `fault at call ${call}`,
+    ).toEqual(reference)
+  }
+}
+
 describe('context-method enrollment (the inventory gate)', () => {
   it('every generated-classified method appears in the program generator', () => {
     const generatedMethods = new Set(Object.values(KIND_TO_METHOD))
@@ -976,6 +1098,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (const [title, ops] of RUN_PROGRAMS) {
     it(`${title}: every fault point yields the reference outcome`, async () => {
+      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
       await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
         runProgram(ops, runSeed, failAtCall),
       )
@@ -1246,6 +1369,8 @@ interface SagaOp {
   namedAfterAttempt?: boolean
   /** A group's calls, started together and awaited together, in the order the task writes them. */
   members?: SagaOp[]
+  /** A name of the op's own, in place of the corpus's, so that the step's key is its name. */
+  name?: string
   /** The shape this op was drawn as a part of, for the inventory. */
   shape?: string
 }
@@ -1287,6 +1412,20 @@ const SAGA_SHAPES = {
     sagaDrawn(rng, { kind: 'registered', namedAfterAttempt: true, rollbackFailsOnce: true }),
     sagaDrawn(rng, { kind: 'registered', namedAfterAttempt: true }),
   ],
+  // A registered step comes first, so that the task has a rollback to run whether or not the
+  // first member's start marker lands.
+  'two registered steps started together, which the engine refuses': (rng) => [
+    sagaDrawn(rng, { kind: 'registered' }),
+    {
+      kind: 'group',
+      nameIndex: 0,
+      valueIndex: 0,
+      members: [
+        sagaDrawn(rng, { kind: 'registered', name: FIRST_OF_A_REFUSED_GROUP }),
+        sagaDrawn(rng, { kind: 'registered', name: LATER_IN_A_REFUSED_GROUP }),
+      ],
+    },
+  ],
 } satisfies Record<string, (rng: Rng) => SagaOp[]>
 
 type SagaShape = keyof typeof SAGA_SHAPES
@@ -1303,6 +1442,8 @@ function generateSagaProgram(rng: Rng, forced?: SagaShape): SagaProgram {
   const forcedAt = forced === undefined ? -1 : rng.int(length)
   const ops: SagaOp[] = []
   for (let i = 0; i < length; i++) {
+    // A refused group fails the task for good, so it is the last thing a program holds.
+    if (refusedGroupOf(ops) !== undefined) break
     if (forced !== undefined && i === forcedAt) {
       ops.push(...drawSagaShape(forced, rng))
       continue
@@ -1340,7 +1481,7 @@ function generateSagaProgram(rng: Rng, forced?: SagaShape): SagaProgram {
     op.kind === 'registered' || op.kind === 'step' ? [sites.indexOf(op)] : [],
   )
   const failsAt =
-    forced !== undefined || rng.next() < 0.5
+    forced !== undefined || refusedGroupOf(ops) !== undefined || rng.next() < 0.5
       ? sites.length
       : (bodies[rng.int(bodies.length)] ?? sites.length)
   return { ops, failsAt }
@@ -1369,7 +1510,8 @@ function sagaHandler(
       }
       // A rollback that fails once asks the store whether it has failed before, by its step's
       // key. Its step has a name no other op has, so that the key is the name.
-      const base = op.rollbackFailsOnce ? `fails-once-${i}` : (STEP_NAMES[op.nameIndex] ?? 'op')
+      const base =
+        op.name ?? (op.rollbackFailsOnce ? `fails-once-${i}` : (STEP_NAMES[op.nameIndex] ?? 'op'))
       const name = op.namedAfterAttempt ? `${base}-${ctx.attempt}` : base
       if (op.kind === 'registered') {
         await ctx.step(name, body, {
@@ -1406,8 +1548,12 @@ function sagaHandler(
 /** What Sagas.tla and §3.10 say this program's rollbacks must be, from the program alone. */
 function expectedSaga(program: SagaProgram) {
   const sites = flat(program.ops)
+  // Of a refused group the first member starts, and with no fault its result never persists:
+  // the refusal fails the task while the step's start marker is being written, and the body
+  // runs after that. The later member is refused, so it never starts.
+  const [first, later] = (refusedGroupOf(program.ops)?.members ?? []).map((op) => sites.indexOf(op))
   const started = sites.flatMap((op, i) =>
-    op.kind === 'registered' && i <= program.failsAt ? [i] : [],
+    op.kind === 'registered' && i <= program.failsAt && i !== later ? [i] : [],
   )
   const undone: number[] = []
   let halted = false
@@ -1426,13 +1572,74 @@ function expectedSaga(program: SagaProgram) {
     handed: Object.fromEntries(
       (halted ? [...undone, started[started.length - 1 - undone.length]] : undone).map((i) => [
         i,
-        i === program.failsAt
+        i === program.failsAt || i === first
           ? fingerprint(undefined)
           : fingerprint(
               JSON.parse(JSON.stringify(VALUES[sites[i as number]?.valueIndex ?? 0]) ?? 'null'),
             ),
       ]),
     ),
+  }
+}
+
+/**
+ * The rows of a refused group's first member, and its site. The refusal ends the pass while
+ * the member's start marker is being written, so the marker, the step's result and the
+ * record of its rollback may each be missing from a run, and one that is there holds this.
+ */
+function rowsARefusalMayLeaveOut(program: SagaProgram) {
+  const sites = flat(program.ops)
+  const first = refusedGroupOf(program.ops)?.members[0]
+  if (first === undefined) return undefined
+  const site = sites.indexOf(first)
+  const startedBefore = sites.slice(0, site).filter((op) => op.kind === 'registered').length
+  const key = String(first.name)
+  return {
+    site,
+    key,
+    rows: new Map([
+      [key, storedValue(first.valueIndex)],
+      [`${SAGA_STARTED_PREFIX}${key}`, String(startedBefore + 1)],
+      [`${SAGA_ROLLBACK_PREFIX}${key}`, 'null'],
+    ]),
+  }
+}
+
+/**
+ * What two schedules of a saga are compared by. With a refused group the first member's own
+ * rows are left out of the table once each is seen to hold what it should, and the member is
+ * left out of the order and of what the rollbacks were handed once it is seen to agree with
+ * its rows: it was rolled back when and only when its start marker landed, and it was handed
+ * its output when and only when its result landed.
+ */
+function comparable(
+  run: Awaited<ReturnType<typeof runSagaProgram>>,
+  inFlight: ReturnType<typeof rowsARefusalMayLeaveOut>,
+) {
+  const { state, failure, outcome, checkpoints, undone, handed } = run
+  if (inFlight === undefined) return { state, failure, outcome, checkpoints, undone, handed }
+  const { [inFlight.site]: handedTheFirst, ...handedTheRest } = handed
+  const holds = (name: string): Row | undefined =>
+    checkpoints.find((row) => row.checkpoint_name === name)
+  const result = holds(inFlight.key)
+  expect({
+    rolledBack: undone.includes(inFlight.site),
+    recorded: holds(`${SAGA_ROLLBACK_PREFIX}${inFlight.key}`) !== undefined,
+    handed: handedTheFirst,
+  }).toEqual({
+    rolledBack: holds(`${SAGA_STARTED_PREFIX}${inFlight.key}`) !== undefined,
+    recorded: undone.includes(inFlight.site),
+    handed: !undone.includes(inFlight.site)
+      ? undefined
+      : fingerprint(result === undefined ? undefined : JSON.parse(result.state)),
+  })
+  return {
+    state,
+    failure,
+    outcome,
+    checkpoints: withoutTheRowsInFlight(checkpoints, inFlight.rows),
+    undone: undone.filter((site) => site !== inFlight.site),
+    handed: handedTheRest,
   }
 }
 
@@ -1514,7 +1721,7 @@ async function runSagaProgram(
       failure: result?.failureReasonJson,
       outcome: result?.rollback?.outcome,
       checkpoints: (cps?.rows ?? []).map(
-        (row) => `${String(row.checkpoint_name)} = ${String(row.state)}`,
+        (row): Row => ({ checkpoint_name: String(row.checkpoint_name), state: String(row.state) }),
       ),
       /** Each rollback in the order it first succeeded, and how often each ran. */
       undone: [...new Set(undos)].map((line) => Number(line.slice('undo:'.length))),
@@ -1615,26 +1822,13 @@ describe('saga replay equivalence (generated programs x fault points across the 
         undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
         handed: expected.handed,
       })
+      const inFlight = rowsARefusalMayLeaveOut(program)
       for (const call of faultPoints(reference.calls)) {
         const faulted = await runSagaProgram(program, `saga-fault-${title}-${call}`, call)
         expect(
-          {
-            state: faulted.state,
-            failure: faulted.failure,
-            outcome: faulted.outcome,
-            checkpoints: faulted.checkpoints,
-            undone: faulted.undone,
-            handed: faulted.handed,
-          },
+          comparable(faulted, inFlight),
           `fault at call ${call} of ${reference.calls}`,
-        ).toEqual({
-          state: reference.state,
-          failure: reference.failure,
-          outcome: reference.outcome,
-          checkpoints: reference.checkpoints,
-          undone: reference.undone,
-          handed: reference.handed,
-        })
+        ).toEqual(comparable(reference, inFlight))
         // The record is exactly once, which the checkpoint table holds. The effect is at
         // least once, and a second run needs a fault between the handler and its record.
         const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
