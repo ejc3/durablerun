@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events'
 import {
   FencedBatch,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   SchemaNotInitializedError,
+  type SqlTransactionLock,
   StoreUnavailableError,
   prepareRead,
   refusalStateRead,
@@ -482,6 +484,55 @@ describe('PgExecutor transactions', () => {
     ])
     expect(client.calls[1]?.args).toEqual(['q', `receipt'; SELECT 1; --`])
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it("takes the version table's lock ahead of a migration write's statements, as the released build sent it", async () => {
+    // The released build sent this lock as the first statement of each version's batch. It
+    // is the control's now, and what reaches the server is the same text in the same place,
+    // with no bind, so a migrator of either build waits for the other's.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await executor(new FakePool(client)).batch(
+      'migrate:v1',
+      [{ sql: "INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", args: [] }],
+      MIGRATION_WRITE,
+    )
+    expect(client.calls.map(({ text, args }) => [text, args ?? []])).toEqual([
+      ['BEGIN', []],
+      ['LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', []],
+      ["INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", []],
+      ['COMMIT', []],
+    ])
+  })
+
+  it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
+    // A lock kind is added by a later build of core, and an executor of this build can
+    // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
+    // keyed on coordinates that are not there. Ignored, it runs under none.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    const pool = new FakePool(client)
+    const outcome = await executor(pool)
+      .batch('a-later-protocol', [{ sql: 'UPDATE t SET v = 1', args: [] }], {
+        mode: 'write',
+        transactionLock: { kind: 'a kind of a later build' } as unknown as SqlTransactionLock,
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      {
+        refusal,
+        sent: client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+        connections: pool.connectCalls,
+      },
+      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
+      refusal: expect.stringContaining('a kind of a later build'),
+      sent: [],
+      connections: 0,
+    })
   })
 
   it('rolls back the same client before releasing it after a failed statement', async () => {

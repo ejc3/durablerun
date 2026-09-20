@@ -130,9 +130,32 @@ a last docs PR gives a live owner to every open bullet that is left.
    the label match allows today. A test on MySQL builds a version that was half
    applied, some of its statements run and its version row absent, runs
    `migrate()` again, and holds the schema and the version: no test has that
-   case. On MySQL `migrate()` crosses the five empty versions with one version
-   read and one locked batch, where today each costs a read and the lock, and
-   the counts are pinned.
+   case. On MySQL `migrate()` crosses everything that is pending, the five
+   empty versions among it, with one version read and one locked batch after
+   the bootstrap, where today each version costs a read and the lock, and the
+   counts are pinned. It is everything pending, and not the empty versions
+   alone, because those are 2, 3, 4, 5 and 7, split by version 6, so nothing
+   short of one batch crosses them together. This is met. The lock is the
+   third kind of `SqlTransactionLock`, `migration`, and core exports the one
+   control that carries it, `MIGRATION_WRITE`. The MySQL executor takes the
+   lock its control names, under the name the released build takes, and what
+   is left of its label match can only refuse: a `migrate:` write whose
+   control names no migration lock is refused with nothing sent, red first.
+   Both server executors refuse a lock kind they do not implement, red first,
+   where each took every kind that is not an event lock for a claim lock.
+   PostgreSQL's version batch names the lock in its control, where its admin
+   sent the lock as a statement, and the server is sent the same 132 protocol
+   messages as before, byte for byte. The half applied case passed when it was
+   written, so it was a missing test and not a bug. It cuts the batch the real
+   admin plans at every statement, from every version a database can be at,
+   58 cuts, by destroying the session that sent them, and it fails once an
+   index is created in a form that is not safe to repeat. A fresh MySQL
+   database costs three version reads and two locked batches whatever the
+   number of versions, where it cost nine and eight, and a current one a
+   single read, where it cost nine. Measured twice over 100 fresh databases a
+   build, interleaved, 32.7 ms became 30.2 and 33.1 became 31.4, beside
+   PostgreSQL unchanged at 37.3 and 36.9, and at 38.5 and 38.9. The registry
+   gained eleven mutations.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free
@@ -3077,17 +3100,39 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR4.4 store-mysql follow-ups**: what the PR4.3 review found that the
   milestone of 2026-09-16 did not need, none of it a correctness hole then. The
   follow-ups milestone builds them.
-  - Deferred from PR4.3: the migration lock is chosen by the batch label
+  - Done in PR4.4b: the migration lock was chosen by the batch label
     (`migrate:bootstrap` or `migrate:vN`), spelled in the executor, the admin,
     and `batch-lint.py`, where the event and claim locks travel in
-    `SqlBatchControl` so a wrapper cannot drop them. Carry it there as a lock
-    coordinate. With it goes the case no test has: a version that was half
-    applied, rerun through `migrate()`. It changes core's batch control and
-    every executor, which PR3.9e part 3b and the child-task fold are editing.
-    PostgreSQL's runner takes its own lock as a statement, `LOCK TABLE meta IN
-    SHARE ROW EXCLUSIVE MODE` ahead of each version's sentinel (PR4.6). Once
-    the migration lock travels as a coordinate, PostgreSQL's coordinate can
-    replace that statement.
+    `SqlBatchControl` so a wrapper cannot drop them. It travels there now, as
+    the lock kind `migration`, on all three dialects, and PostgreSQL's
+    coordinate replaced the `LOCK TABLE meta` statement of PR4.6 with the same
+    statement in the same place. The case no test had, a version that was half
+    applied and rerun through `migrate()`, is generated from the migration list
+    for MySQL, and libSQL and PostgreSQL each show that a failed version leaves
+    nothing behind. MySQL's `migrate()` sends everything pending as one batch.
+    DESIGN.md section 3.4 rule 9 and the MySQL notes hold the rules, and exit
+    test 5 above the evidence. `batch-lint.py` never checked the lock: what
+    named it there was the reason text of two declared exceptions. MySQL's
+    names the control now, and PostgreSQL's says what libSQL's says, because
+    the lock left that statement list.
+    - Option, not a deferral of this PR: the MySQL executor knows a migration
+      write by its label's prefix, a match that can only refuse. It could
+      recognise the statements that commit by themselves, whatever the label,
+      and refuse one that runs under no migration lock. That needs a reader of
+      MySQL statement text, which is a proxy of its own: a prepared DDL
+      statement's text is held in a session variable, where no reader of the
+      batch sees it. The trigger is the first statement that
+      commits by itself sent under a label that does not start with `migrate:`.
+    - Option, not a deferral of this PR: libSQL's and PostgreSQL's
+      `fencedBatch` are the same function now that PostgreSQL's lock left its
+      statement list: the sentinel, the version's statements, and the guarded
+      advance. One definition in core would hoist two copies. The trigger is
+      the next change to either.
+    - Option, not a deferral of this PR: PostgreSQL's bootstrap names no
+      migration lock, because that lock lives on the table the bootstrap
+      creates. A lock that lives elsewhere, an advisory lock, would change what
+      excludes what, which is spec-first work. The trigger is a bootstrap race
+      that does not converge.
   - Done in PR4.4a: one read that the executor knows to be a read is sent
     alone, under the session's autocommit, where a read batch cost four round
     trips. The executor knows because core brands what its read path
@@ -3588,7 +3633,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
   read and one more locked batch, 4 ms where it took 39. That cost is PR4.4b's
   to remove: its exit test counts MySQL's five empty versions, and this is the
-  fifth. libSQL showed no difference. Creating CI's database with ICU
+  fifth. libSQL showed no difference. PR4.4b has since removed MySQL's cost:
+  it crosses everything pending with one read and one locked batch. Creating CI's database with ICU
   cost the conformance leg nothing one run could show, 471 seconds against
   465. With version 7 the leg took 554 and 556 seconds in one run and 609 and
   612 in another, on a byte-ordered and an ICU server each time and under more

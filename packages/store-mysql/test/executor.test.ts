@@ -1,6 +1,8 @@
 import {
   FencedBatch,
+  MIGRATION_WRITE,
   type SqlStatement,
+  type SqlTransactionLock,
   StoreUnavailableError,
   prepareRead,
   refusalStateRead,
@@ -203,9 +205,11 @@ describe('MysqlExecutor transactions', () => {
 
   it('holds the migration lock from before a migration transaction until after it', async () => {
     const connection = new FakeConnection()
-    await executorOver(connection).batch('migrate:v1', [
-      { sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] },
-    ])
+    await executorOver(connection).batch(
+      'migrate:v1',
+      [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+      MIGRATION_WRITE,
+    )
     const sent = afterSessionSetup(connection)
     expect(
       sent.map((sql) =>
@@ -218,6 +222,54 @@ describe('MysqlExecutor transactions', () => {
       'COMMIT',
       'unlock',
     ])
+  })
+
+  it('refuses a migration write that names no migration lock, and sends nothing', async () => {
+    // MySQL commits each DDL statement on its own, so a migration write is safe only while
+    // no other migrator runs. The batch itself has to name the lock. Chosen from a list of
+    // labels, a `migrate:` label the list does not know runs its DDL beside another
+    // migrator, and nothing says so.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('migrate:backfill', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      { refusal, sent: afterSessionSetup(connection) },
+      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
+    ).toEqual({
+      refusal: expect.stringContaining('names no migration lock'),
+      sent: [],
+    })
+  })
+
+  it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
+    // A lock kind is added by a later build of core, and an executor of this build can
+    // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
+    // named from coordinates that are not there. Ignored, it runs under none.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('a-later-protocol', [{ sql: 'UPDATE t SET a = 1', args: [] }], {
+        mode: 'write',
+        transactionLock: { kind: 'a kind of a later build' } as unknown as SqlTransactionLock,
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      { refusal, sent: connection.sent },
+      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
+      refusal: expect.stringContaining('a kind of a later build'),
+      sent: [],
+    })
   })
 
   it('reports a DELETE of two rows as two rows', async () => {
@@ -275,7 +327,11 @@ describe('MysqlExecutor transactions', () => {
     const connection = new FakeConnection()
     connection.lockAnswer = 0
     const outcome = await executorOver(connection)
-      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .batch(
+        'migrate:v1',
+        [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+        MIGRATION_WRITE,
+      )
       .then(
         () => 'accepted',
         (error: unknown) => error,
@@ -338,7 +394,7 @@ describe('MysqlExecutor transactions', () => {
       // The outcome is taken first, so that a batch which is not run again fails the
       // assertion below and not the test's own await.
       const outcome = await executorOver(connection)
-        .batch('migrate:v1', [{ sql: WRITE, args: [] }])
+        .batch('migrate:v1', [{ sql: WRITE, args: [] }], MIGRATION_WRITE)
         .then(
           (results) => `answered ${results.length} statement`,
           (error: unknown) => error,

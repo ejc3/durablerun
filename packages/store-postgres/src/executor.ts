@@ -11,6 +11,7 @@ import {
   type SqlTransactionLock,
   StoreUnavailableError,
   isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -151,7 +152,49 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
   }
 }
 
-async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
+/**
+ * One migrator at a time, and the second one waits. This lock conflicts with itself and
+ * with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
+ * holding nothing, and when the first has committed it loses to that sentinel. Without it
+ * the second blocks on the first one's uncommitted sentinel while it holds its own
+ * row-exclusive lock on meta, and a version that then locks the table deadlocks with it,
+ * which PostgreSQL ends only after its deadlock timeout. A read does not conflict with this
+ * lock, so it stops no statement's clock read. A version that locks meta itself, as version
+ * 7 does, stops every statement from its own lock until it commits.
+ *
+ * It is a lock on the version table, so only a batch that runs once that table exists can
+ * name it: every version's batch, and not the bootstrap. The released build sent this same
+ * statement as the first of each version's batch, so a migrator of either build waits for
+ * the other's.
+ */
+const MIGRATION_LOCK_SQL = 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE'
+
+type LockAcquisition = (client: PoolClient) => Promise<void>
+
+/**
+ * How a lock is taken, decided before a connection is: a lock of a kind this executor does
+ * not implement is refused with nothing sent. A later build of core can add a kind. Taken
+ * for a kind this executor knows, the batch would run under the wrong lock, and ignored it
+ * would run under none.
+ */
+function transactionLockAcquisition(lock: SqlTransactionLock): LockAcquisition {
+  switch (lock.kind) {
+    case 'event':
+    case 'claim':
+      return (client) => acquireTransactionLock(client, lock)
+    case 'migration':
+      return async (client) => {
+        await client.query(MIGRATION_LOCK_SQL)
+      }
+    default:
+      return refuseUnknownLockKind(lock)
+  }
+}
+
+async function acquireTransactionLock(
+  client: PoolClient,
+  lock: Exclude<SqlTransactionLock, { readonly kind: 'migration' }>,
+): Promise<void> {
   if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {
     // A caller's event takes the lock every build has taken for it: a row of
     // `event_locks`, inserted when it is missing and then locked. A process of an older
@@ -194,6 +237,8 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
     )
     return
   }
+
+  if (lock.kind !== 'claim') return refuseUnknownLockKind(lock)
 
   // Claim tokens are fresh per tick, so a durable row sentinel would grow
   // without bound. A transaction-scoped advisory lock has exactly the needed
@@ -371,9 +416,12 @@ export class PgExecutor implements SqlExecutor {
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
-    if (prepared.length === 0) return []
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
+    // Refused before anything is sent, and before an empty batch is answered.
+    const acquireLock =
+      transactionLock === undefined ? undefined : transactionLockAcquisition(transactionLock)
+    if (prepared.length === 0) return []
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
     const alone = sentAlone(statements, mode)
 
@@ -407,9 +455,7 @@ export class PgExecutor implements SqlExecutor {
             transactionStarted = true
           }
 
-          if (transactionLock !== undefined) {
-            await acquireTransactionLock(client, transactionLock)
-          }
+          if (acquireLock !== undefined) await acquireLock(client)
 
           const results: SqlResult[] = []
           for (const [statementIndex, statement] of prepared.entries()) {
