@@ -620,6 +620,35 @@ describe('the tree rules', () => {
         eb.case().when('r.attempt', '>', literalValue(1)).then(literalValue('running')).end()
       expect(problem(runs().where((eb: Loose) => eb('r.state', '=', inline(eb))))).toBeNull()
     })
+    it('refuses more than its property and reads less, in the shapes DESIGN.md names', () => {
+      // More. The test names a state column only inside a CASE whose value is a number, beside
+      // arithmetic on a bound value. No index on the state is concerned, and it is refused.
+      const flagged = (eb: Loose) =>
+        eb
+          .case()
+          .when('r.state', '=', literalValue('running'))
+          .then(literalValue(1))
+          .else(literalValue(0))
+          .end()
+      const beside = (eb: Loose) => eb(flagged(eb), '=', eb(eb.val(1), '+', eb.ref('r.attempt')))
+      expect(String(problem(runs().where(beside)))).toMatch(BOUND)
+      // An empty list binds nothing and is refused with the same message.
+      expect(String(problem(runs().where('r.state', 'in', [])))).toMatch(BOUND)
+      // Less. A simple CASE on the state with a bound WHEN is no test of the state's column.
+      const simple = (eb: Loose) =>
+        eb(
+          eb.case(eb.ref('r.state')).when(eb.val('running')).then(literalValue(1)).end(),
+          '=',
+          literalValue(1),
+        )
+      expect(problem(runs().where(simple))).toBeNull()
+      // A subquery that selects the state is its own statement, so the column is not found in it.
+      const selectsState = (eb: Loose) =>
+        eb(eb.selectFrom('runs as x').select('x.state').limit(1), '=', eb.val('running'))
+      expect(problem(runs().where(selectsState))).toBeNull()
+      // A comparison written whole inside a fragment is text, which no tree rule reads.
+      expect(problem(runs().where(predicate('r.state = ?', ['running'])))).toBeNull()
+    })
   })
 
   describe('the shape of an INSERT', () => {
