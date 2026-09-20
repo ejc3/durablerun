@@ -2106,7 +2106,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     every stored value of the answer as its text. A stored `1e999` parses and
     is answered as `null`, which is left as it is. The parent's view stays
     open under PR3.4 above, with the reason.
-  - Eight mutations hold the new lines and checks, and the registry holds 933.
+  - Eight mutations hold the new lines and checks, and the registry holds 939.
     The base gate's one live arm is this entry's, keyed on main's registry,
     and it exempts five verdict markers the base predates. It must be keyed
     again if main's registry changes before this entry merges.
