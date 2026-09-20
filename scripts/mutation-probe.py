@@ -2661,6 +2661,28 @@ MUTATION_SPECS = [
         "every sweep scans tasks once for each expired lease it reads",
     ),
     (
+        # A walk that stands alone. Nothing drives this read and it drives nothing, so
+        # the nest rule has nothing to judge, and no pin of a chosen statement plans it.
+        # Compared with LIKE, which no index serves under the column's collation, it
+        # returns the row it returned and scans every run to find it. Only the refusal
+        # of a walk in every shipped statement's plan sees it.
+        "refused-run-state-read-seeks-its-run",
+        "packages/core/src/statements/reads.ts",
+        "  treeBuilder.selectFrom('runs').select('state').where('run_id', '=', binds.runId),\n",
+        "  treeBuilder.selectFrom('runs').select('state').where('run_id', 'like', binds.runId),\n",
+        "every refused write or heartbeat scans every run to read one run's state",
+    ),
+    (
+        # The same walk in the SELECT of an INSERT, which no plan test read before the
+        # refusal of a walk: the checkpoint write finds its fenced run by a comparison
+        # no index serves, in every batch that writes a checkpoint.
+        "checkpoint-write-seeks-its-source-run",
+        "packages/core/src/statements/checkpoint.ts",
+        "          .where('f.run_id', '=', binds.runId)\n",
+        "          .where('f.run_id', 'like', binds.runId)\n",
+        "every checkpoint write scans every run to find the run that writes it",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
@@ -9638,6 +9660,18 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-index-driver",
     ),
     "expired-claims-read-keys-its-task": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
+    "refused-run-state-read-seeks-its-run": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
+    "checkpoint-write-seeks-its-source-run": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/query-plans.test.ts",
         "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
@@ -19937,7 +19971,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1046:
+        if len(MUTATIONS) != 1048:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
