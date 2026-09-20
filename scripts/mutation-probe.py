@@ -15342,6 +15342,13 @@ MUTATION_SPECS.extend(
             "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
         ),
         (
+            "contest-books-a-permanent-store-error-as-an-outage",
+            "packages/conformance/src/self-concurrency.ts",
+            "      error instanceof StoreUnavailableError || error instanceof PermanentStoreError\n",
+            "      error instanceof StoreUnavailableError // MUTATION: a permanent store error is a refusal\n",
+            "a port call that breaks a constraint in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
+        ),
+        (
             "sdk-permanent-store-error-aborts-the-pass",
             "packages/sdk/src/task-control.ts",
             "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
@@ -15375,6 +15382,12 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor error typing, by the state and the number the server sends types a value of the wrong type for its column permanent by its number, because its state is the general one",
             "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+        ),
+        "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/self-concurrency-settle.test.ts",
+            "how a contest of the self-concurrency surface books what a copy threw keeps a permanent store error with the outages, which fail a contest in either order",
+            "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
         ),
         "sdk-permanent-store-error-aborts-the-pass": ExpectedVerdict(
             "behavior",
@@ -19151,7 +19164,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1003:
+        if len(MUTATIONS) != 1004:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

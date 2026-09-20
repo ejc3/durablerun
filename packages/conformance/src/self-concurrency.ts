@@ -1,5 +1,6 @@
 import {
   type ClaimedRun,
+  PermanentStoreError,
   type SchedulerStore,
   type StoreAdmin,
   StoreUnavailableError,
@@ -387,12 +388,17 @@ type Settled =
  * An outage is kept apart from a refusal. A refusal is the contract's answer to a call
  * that lost. An outage from a contest is a lock-order or serialization error the
  * executor should have absorbed, and its causes say which.
+ *
+ * A permanent store error is kept with the outages. It is no answer of the contract
+ * either: a legal call of the ports, alone or beside itself, never breaks a constraint.
+ * Before the executors typed it, such an error WAS an outage here and failed its contest.
+ * Counted as a refusal it could pass, by failing the same way in both orders.
  */
-function settle(call: Promise<unknown>): Promise<Settled> {
+export function settle(call: Promise<unknown>): Promise<Settled> {
   return call.then(
     (value): Settled => ({ kind: 'answered', value }),
     (error: unknown): Settled =>
-      error instanceof StoreUnavailableError
+      error instanceof StoreUnavailableError || error instanceof PermanentStoreError
         ? { kind: 'outage', why: describeFailure(error) }
         : { kind: 'refused', name: error instanceof Error ? error.name : String(error) },
   )
