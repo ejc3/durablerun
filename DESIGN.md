@@ -646,14 +646,18 @@ One invocation executes one claimed run to its next suspension point:
     nothing sees. That is tolerable here: the task has failed for good, and the
     only later reader of those rows is the rollback, which is held to being run
     when and only when the start marker landed and to being handed the output
-    when and only when the result landed. One case
+    when and only when the result landed. When that member was rolled back its
+    place in the order is asserted too: it started last of all, so it is rolled
+    back first. One case
     reverses the order two spawns are answered in and shows each child still
     under the key of its own call, and shows that the comparison fails when the
     children are swapped. Each shape heads a short program of its own, so every
     shape runs at every fault point whatever the random programs draw. The
-    file's self-tests fail when a generator stops drawing a shape, when a
-    generated method does not say whether a group holds it, and when a shape is
-    in no program the file runs. Three registered mutations keep the audit
+    file's self-tests fail when a generator stops drawing a shape, when a shape
+    is taken out of its table (one self-test names every shape), when a
+    generated method does not say whether a group holds it, when a shape is in
+    no program the file runs, and when a kind of call is made only inside a
+    group. Three registered mutations keep the audit
     checking that these programs can fail: one drops the replayed step's guard,
     one lowers the guard while a registered step writes its start marker, and
     one lets a rollback pass keep its own ordinal.

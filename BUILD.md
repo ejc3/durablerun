@@ -2287,7 +2287,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     44 tests where main has 27. About 10 s are added, and about twice that on
     CI's slowest runner. A program holds at most one shape and one failed attempt,
     and a program generated for a shape is short. Those are the levers, and no
-    shape and no seed was dropped.
+    shape and no seed was dropped. The seeds are main's, and the programs they
+    draw are not: the new draws moved the random stream.
   - Open question, recorded and not pursued here: a handler that swallows every
     rejection can observe an injected store outage and complete with it in its
     result. The shape is `Promise.allSettled([ctx.awaitEvent('never', {
