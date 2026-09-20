@@ -277,6 +277,16 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
         ),
       ),
     ).toHaveLength(1)
+    // Nor to a name ordered by. The key's own order serves such an ORDER BY with no sort, so
+    // no line of the plan shows it.
+    expect(
+      notKeyed(
+        await planLines(
+          client,
+          "SELECT st.state FROM checkpoints st WHERE st.task_id = ? AND substr(st.checkpoint_name, 1, 16) = '$rollback-tries:' ORDER BY st.checkpoint_name LIMIT 1",
+        ),
+      ),
+    ).toHaveLength(1)
     const faults: string[] = []
     const reached = new Set<string>()
     for (const st of new Map(seen.map((sent) => [sent.sql, sent])).values()) {
