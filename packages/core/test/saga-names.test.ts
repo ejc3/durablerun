@@ -146,4 +146,27 @@ describe("a rollback's attempt record, as the store names it and counts it", () 
       'InvalidDurableStringError, naming the step: true',
     ])
   })
+
+  it('holds the count at the largest safe integer, and never reads its own record as none', () => {
+    // Only a record an older build wrote can sit at the bound: that build's store wrote the
+    // count it was handed. One past the bound is no safe integer, and the decoder reads a
+    // record that holds one as no record, so the attempt after it would be stored as the
+    // first and every spent attempt would come back. The count stays at the bound, which
+    // still says the budget is spent, and the failure is recorded all the same.
+    const largest = Number.MAX_SAFE_INTEGER
+    const stored = (tries: number) => JSON.stringify({ tries, errorJson: '{"name":"Earlier"}' })
+    const recordOf = (write: { stateJson: string }) => decodeRollbackTry(write.stateJson)
+    const belowTheBound = nextRollbackTry(failed, stored(largest - 1))
+    const atTheBound = nextRollbackTry(failed, stored(largest))
+    const afterIt = nextRollbackTry(failed, atTheBound.stateJson)
+    expect({
+      belowTheBound: recordOf(belowTheBound),
+      atTheBound: recordOf(atTheBound),
+      afterIt: recordOf(afterIt),
+    }).toEqual({
+      belowTheBound: { tries: largest, errorJson: failed.errorJson },
+      atTheBound: { tries: largest, errorJson: failed.errorJson },
+      afterIt: { tries: largest, errorJson: failed.errorJson },
+    })
+  })
 })
