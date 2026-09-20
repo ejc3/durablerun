@@ -3,6 +3,7 @@ import {
   FencedBatch,
   SchemaMismatchError,
   SchemaNotInitializedError,
+  type SqlTransactionLock,
   StoreUnavailableError,
   prepareRead,
   refusalStateRead,
@@ -482,6 +483,34 @@ describe('PgExecutor transactions', () => {
     ])
     expect(client.calls[1]?.args).toEqual(['q', `receipt'; SELECT 1; --`])
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
+    // A lock kind is added by a later build of core, and an executor of this build can
+    // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
+    // keyed on coordinates that are not there. Ignored, it runs under none.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    const pool = new FakePool(client)
+    const outcome = await executor(pool)
+      .batch('a-later-protocol', [{ sql: 'UPDATE t SET v = 1', args: [] }], {
+        mode: 'write',
+        transactionLock: { kind: 'a kind of a later build' } as unknown as SqlTransactionLock,
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect({
+      refusal,
+      sent: client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      connections: pool.connectCalls,
+    }).toEqual({
+      refusal: expect.stringContaining('a kind of a later build'),
+      sent: [],
+      connections: 0,
+    })
   })
 
   it('rolls back the same client before releasing it after a failed statement', async () => {
