@@ -9,6 +9,7 @@ import {
   TERMINAL_STATES,
   childSpawnKey,
   encodeRollbackTry,
+  isPortRefusal,
 } from '@durablerun/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -18,6 +19,7 @@ import {
   IDENTIFIER_PLACES,
   OUTSIDE_THE_DOMAIN,
   PAST_THE_WIDTH,
+  PORT_OBJECT_PLACES,
   PORT_STRING_PLACES,
   PORT_STRING_PROBLEMS,
   type PortStringPlace,
@@ -138,6 +140,42 @@ export function identifierBoundConformance(
           'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
         ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
       }
+    })
+
+    it('refuses a string the port requires when it is left out, at every place, and passes one the caller may leave out', async () => {
+      // A place is asked with a value in the cases above. Here it is asked with nothing: a
+      // member is omitted, an argument is undefined, and an options object is left out
+      // whole. What the port's type requires is refused as the caller's mistake before
+      // anything is sent, and never as a TypeError from inside an entry or as a stored
+      // name built from `undefined`. What the type lets a caller leave out is not refused.
+      const answers: Record<string, { refusedAsTheCallersMistake: boolean; sent: boolean }> = {}
+      const expected: typeof answers = {}
+      const asked = [
+        ...PORT_STRING_PLACES.map((place) => ({ ...place, required: !place.mayBeLeftOut })),
+        ...PORT_OBJECT_PLACES.map((place) => ({
+          ...place,
+          required: !place.mayBeLeftOut && place.holdsARequiredString,
+        })),
+      ]
+      for (const { place, required, callWithout } of asked) {
+        const { store, reached } = storeOverRecorder(f)
+        const answer = await callWithout(store).then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+        answers[place] = {
+          refusedAsTheCallersMistake: isPortRefusal(answer),
+          sent: reached.length > 0,
+        }
+        expected[place] = { refusedAsTheCallersMistake: required, sent: !required }
+      }
+      expect(answers).toEqual(expected)
+      expect(asked.filter(({ required }) => !required).map(({ place }) => place)).toEqual([
+        'spawn[3].idempotencyKey(idempotencyKey)',
+        'spawn[3].headers(headers)',
+        'spawn[3]',
+        'spawn[3].childOf',
+      ])
     })
 
     it('leaves a payload to its serializer, at exactly the places that are written here', async () => {

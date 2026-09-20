@@ -63,8 +63,24 @@ export interface PortStringPlace {
   /** The method, where the string stands in the call, and its name: `claim[0](queue)`. */
   readonly place: string
   readonly rule: PortStringRule
+  /** Whether the port's type lets the caller leave this string out, as core's table marks it. */
+  readonly mayBeLeftOut: boolean
   /** Make the example call with `value` at this place and every other argument valid. */
   call(store: SchedulerStore, value: unknown): Promise<unknown>
+  /** Make the example call with this string left out and every other argument valid. */
+  callWithout(store: SchedulerStore): Promise<unknown>
+}
+
+/** An options object a call carries strings in, which a caller can leave out whole. */
+export interface PortObjectPlace {
+  /** The method and where the object stands in the call: `suspendRun[4]`. */
+  readonly place: string
+  /** Whether the port's type lets the caller leave the object out. */
+  readonly mayBeLeftOut: boolean
+  /** Whether a string the port requires stands in it, so that leaving it out leaves that out. */
+  readonly holdsARequiredString: boolean
+  /** Make the example call with the object left out and every other argument valid. */
+  callWithout(store: SchedulerStore): Promise<unknown>
 }
 
 type Path = readonly (number | string)[]
@@ -80,6 +96,20 @@ function withAt(value: unknown, path: Path, replacement: unknown): unknown {
     ...(value as object),
     [step]: withAt(Reflect.get(value as object, step), rest, replacement),
   }
+}
+
+/**
+ * A copy of `value` with what stands at `path` left out: a member is omitted, and an
+ * argument, which has a position to keep, is undefined. Only what is on the path is copied.
+ */
+function without(value: unknown, path: Path): unknown {
+  const [step, ...rest] = path
+  if (step === undefined) return undefined
+  if (Array.isArray(value)) {
+    return value.map((item, index) => (index === step ? without(item, rest) : item))
+  }
+  const { [step]: inner, ...others } = value as Record<number | string, unknown>
+  return rest.length === 0 ? others : { ...others, [step]: without(inner, rest) }
 }
 
 /**
@@ -111,6 +141,33 @@ function namesIn(
   )
 }
 
+/**
+ * Every object under `named` that names strings, with its path, whether the table marks
+ * it as one the caller may leave out, and whether a string the port requires stands in it.
+ */
+function objectsIn(
+  named: unknown,
+  path: Path,
+  mayBeLeftOut = false,
+): { path: Path; mayBeLeftOut: boolean; holdsARequiredString: boolean }[] {
+  if (named === null || typeof named !== 'object') return []
+  if (Object.hasOwn(named, '?')) return objectsIn(Reflect.get(named, '?'), path, true)
+  const beneath = Object.entries(named).flatMap(([property, inner]) =>
+    objectsIn(inner, [...path, Array.isArray(named) ? Number(property) : property]),
+  )
+  if (Array.isArray(named)) return beneath
+  const members = Object.values(named)
+  const holdsARequiredString =
+    members.some((member) => typeof member === 'string') ||
+    beneath.some(
+      (object) =>
+        object.path.length === path.length + 1 &&
+        !object.mayBeLeftOut &&
+        object.holdsARequiredString,
+    )
+  return [{ path, mayBeLeftOut, holdsARequiredString }, ...beneath]
+}
+
 /** A path as a place shows it: the argument's position, then the members under it. */
 const shown = ([argument, ...members]: Path): string =>
   `[${argument}]${members.map((member) => `.${member}`).join('')}`
@@ -122,13 +179,25 @@ const valueAt = (value: unknown, path: Path): unknown =>
     value,
   )
 
+/** Make one call of the port. */
+const make = (store: SchedulerStore, method: PortMethod, args: unknown): Promise<unknown> =>
+  (Reflect.get(store, method) as (...made: unknown[]) => Promise<unknown>).apply(
+    store,
+    args as unknown[],
+  )
+
 /**
  * The places, and what is wrong with the table or with the calls here. What is wrong is
  * data and not a throw, so that a table that is wrong fails a case by its name, with its
  * reason, and does not stop the whole suite from loading.
  */
-function generatePlaces(): { places: readonly PortStringPlace[]; problems: readonly string[] } {
+function generatePlaces(): {
+  places: readonly PortStringPlace[]
+  objects: readonly PortObjectPlace[]
+  problems: readonly string[]
+} {
   const places: PortStringPlace[] = []
+  const objects: PortObjectPlace[] = []
   const problems: string[] = []
   for (const method of PORT_METHODS) {
     const examples: readonly (readonly unknown[])[] = EXAMPLE_CALLS[method]
@@ -156,7 +225,7 @@ function generatePlaces(): { places: readonly PortStringPlace[]; problems: reado
     if (twice.length > 0) {
       problems.push(`${method}: the table names ${JSON.stringify(twice)} at more than one argument`)
     }
-    for (const { name, path } of named) {
+    for (const { name, path, mayBeLeftOut } of named) {
       const args = examples.find((example) => valueAt(example, path) !== undefined)
       if (args === undefined) {
         problems.push(`${method}${shown(path)}(${name}): no example call passes this string`)
@@ -167,21 +236,38 @@ function generatePlaces(): { places: readonly PortStringPlace[]; problems: reado
         // part of the place, so two names that changed places are two other places.
         place: `${method}${shown(path)}(${name})`,
         rule: PORT_STRING_RULES[name],
-        call: (store, value) =>
-          (Reflect.get(store, method) as (...made: unknown[]) => Promise<unknown>).apply(
-            store,
-            withAt(args, path, value) as unknown[],
-          ),
+        mayBeLeftOut,
+        call: (store, value) => make(store, method, withAt(args, path, value)),
+        callWithout: (store) => make(store, method, without(args, path)),
+      })
+    }
+    for (const { path, mayBeLeftOut, holdsARequiredString } of objectsIn(
+      PORT_STRINGS[method],
+      [],
+    )) {
+      const args = examples.find((example) => valueAt(example, path) !== undefined)
+      if (args === undefined) {
+        problems.push(`${method}${shown(path)}: no example call passes this object`)
+        continue
+      }
+      objects.push({
+        place: `${method}${shown(path)}`,
+        mayBeLeftOut,
+        holdsARequiredString,
+        callWithout: (store) => make(store, method, without(args, path)),
       })
     }
   }
-  return { places, problems }
+  return { places, objects, problems }
 }
 
 const generated = generatePlaces()
 
 /** Every place a string enters the port, in the table's order. */
 export const PORT_STRING_PLACES: readonly PortStringPlace[] = generated.places
+
+/** Every options object a call carries strings in, in the table's order. */
+export const PORT_OBJECT_PLACES: readonly PortObjectPlace[] = generated.objects
 
 /** What generating the places found wrong. The identifier surface holds it empty. */
 export const PORT_STRING_PROBLEMS: readonly string[] = generated.problems
