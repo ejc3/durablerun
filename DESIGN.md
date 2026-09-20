@@ -805,13 +805,14 @@ One invocation executes one claimed run to its next suspension point:
     the run's task (`run-task`) before the batch. A run's task never changes
     and run ids are never reused, so neither the read nor the memory can be
     stale. The store forgets a run once its own `complete`, `fail`, or
-    `failRollback` has ended it, so what it holds is the runs still at work.
-    Until it did, an ended run stayed until 1,024 newer activations pushed it
-    out. Such an entry could change no answer: it named the right task for as
-    long as it stayed, and a run remembered under another queue still loses
-    the batch's compare-and-set. What it could do was take the room of a run
-    still at work. A store that activated more than 1,024 runs while one ran
-    lost that run's entry, and the run's terminal write then paid the read. A
+    `failRollback` has ended it, so it holds the runs it activated and has
+    not ended, a suspended run among them until its next activation tells the
+    store again. The entry of an ended run can change no answer: it names the
+    right task for as long as it stays, and a run remembered under another
+    queue still loses the batch's compare-and-set. What it can do is take
+    room. The memo holds 1,024 runs and the oldest leaves first, so a store
+    that kept ended runs lost a run still at work after 1,024 newer
+    activations, and that run's terminal write then paid the read. A
     caller sees the forgetting only when it repeats a terminal write through
     the same store: the repeat reads the run's task again before it is
     refused. Passing the task id through the port would remove the read, and

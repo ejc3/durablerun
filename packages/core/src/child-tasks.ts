@@ -248,8 +248,8 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
  * the run, and the worker that calls them activated the run through the same store a
  * moment earlier. A run's task never changes and run ids are never reused, so an entry
  * cannot go stale, and a miss only costs the read. A store lets a run go once its own
- * terminal batch has ended it, so what is held is the runs still at work, and only a
- * store with more of those than the capacity loses one early. The oldest leaves first.
+ * terminal batch has ended it, so what is held is the runs it activated and has not
+ * ended, and an ended run takes no room from them. The oldest leaves first.
  */
 export class RunTaskMemo {
   readonly #tasks = new Map<string, string>()
