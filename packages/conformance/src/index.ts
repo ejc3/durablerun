@@ -1,6 +1,7 @@
 export type {
   StorageCorruption,
   StorageCorruptionAttempt,
+  StorageCorruptionDoor,
   StorageCorruptionDisposition,
   PersistedNumericTable,
   StoreFixture,
