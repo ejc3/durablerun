@@ -2,6 +2,7 @@ import {
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SqlExecutor,
+  type SqlStatement,
   encodeRollbackTry,
 } from '@durablerun/core'
 import { Client } from 'pg'
@@ -11,19 +12,11 @@ import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
- * Every shipped update of `tasks` reaches its row through the primary key on PostgreSQL.
- * PostgreSQL turns the follow-on's `IN` into a join driven from the source, so it was
- * keyed while the source was still correlated on the queue, and it is keyed with the queue
- * bound. This holds that, where it used to be a measurement. The statements are recovered
- * from the real operations. Sequential and bitmap scans are disabled for the planning
- * transaction, so a scan of `tasks` that remains is the statement's shape and not a small
- * table's price, and GENERIC_PLAN needs no bind values. The executor refuses a statement without
- * its binds, so the plans are read through a client of their own. This needs a server.
- */
-/**
- * The lines of a statement's plan: its generic plan, or with `args` the plan it ran under.
- * Without the two settings a plan over tables this small is the planner's guess at the
- * price of a few rows, and says nothing of how the statement reaches them.
+ * The lines of a statement's plan: its generic plan, which needs no bind values, or with
+ * `args` the plan it ran under. Sequential and bitmap scans are disabled for the planning
+ * transaction. Without that, a plan over tables this small is the planner's guess at the
+ * price of a few rows, and says nothing of how the statement reaches them. The executor
+ * refuses a statement without its binds, so plans are read through a client of their own.
  */
 async function planLines(
   client: Client,
@@ -47,6 +40,79 @@ async function planLines(
   }
 }
 
+type TestDb = Awaited<ReturnType<typeof openPostgresTestDb>>
+
+/**
+ * A store over `db` that hands `record` every statement it sends, and the moves both cases
+ * below make with it. Each claim is made under a worker name of its own.
+ */
+function driving(db: TestDb, record: (label: string, statement: SqlStatement) => void) {
+  const recorder: SqlExecutor = {
+    batch: (label, statements, control) => {
+      for (const statement of statements) record(label, statement)
+      return db.raw.batch(label, statements, control)
+    },
+  }
+  const store = new PostgresSchedulerStore(recorder, db.ids)
+  let claims = 0
+  const claimNext = async (taskId: string, what: string) => {
+    claims += 1
+    const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+    if (run?.taskId !== taskId) throw new Error(`expected to claim ${what}`)
+    return run
+  }
+  /** Spawn a task, and claim its run. */
+  const claimed = async (name: string, maxAttempts = 1) => {
+    const spawned = await store.spawn('q', name, '{}', { maxAttempts })
+    return claimNext(spawned.taskId, name)
+  }
+  /** Spawn a task, claim its run, and activate it. */
+  const started = async (name: string, maxAttempts = 1) => {
+    const run = await claimed(name, maxAttempts)
+    await store.activate('q', run.runId, run.claimToken, run.claimGen)
+    return run
+  }
+  /**
+   * A saga (DESIGN.md §3.10): a task whose one registered step started, and whose failure
+   * ended the forward phase and placed a rollback pass.
+   */
+  const rollingBack = async (name: string) => {
+    const forward = await started(name)
+    await store.setCheckpoint(
+      'q',
+      forward.taskId,
+      forward.runId,
+      forward.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    const entered = await store.fail('q', forward.runId, forward.claimToken, '{}', null)
+    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
+    return forward
+  }
+  /** Claim and activate the rollback pass of a task that is rolling back. */
+  const passOf = async (taskId: string) => {
+    const pass = await claimNext(taskId, 'the rollback pass')
+    await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
+    return pass
+  }
+  /** The attempt record of a failed rollback of step a. */
+  const tried = (tries: number, errorJson = '{}') => ({
+    key: `${SAGA_TRIES_PREFIX}a`,
+    stateJson: encodeRollbackTry({ tries, errorJson }),
+  })
+  return { store, claimed, started, rollingBack, passOf, tried }
+}
+
+/**
+ * Every shipped update of `tasks` reaches its row through the primary key on PostgreSQL.
+ * PostgreSQL turns the follow-on's `IN` into a join driven from the source, so it was
+ * keyed while the source was still correlated on the queue, and it is keyed with the queue
+ * bound. This holds that, where it used to be a measurement. The statements are recovered
+ * from the real operations, and a scan of `tasks` that remains under `planLines` is the
+ * statement's shape and not a small table's price. This needs a server.
+ */
 it('reaches tasks by an index condition in every shipped task update', async () => {
   const db = await openPostgresTestDb({ idNamespace: 'plan-task-updates' })
   const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
@@ -55,32 +121,16 @@ it('reaches tasks by an index condition in every shipped task update', async () 
     await db.admin.setFakeNowEpochMs(1_000_000)
     const seen = new Map<string, string>()
     const reached = new Set<string>()
-    const recorder: SqlExecutor = {
-      batch: (label, statements, control) => {
-        for (const st of statements) {
-          if (!/^\s*update "tasks"/i.test(st.sql)) continue
-          // A label is reached when it sends a task update, whichever label sent that text
-          // first: every task update `fail-rollback` sends is one `fail` sends too.
-          reached.add(label)
-          if (!seen.has(st.sql)) seen.set(st.sql, label)
-        }
-        return db.raw.batch(label, statements, control)
+    const { store, claimed, started, rollingBack, passOf, tried } = driving(
+      db,
+      (label, statement) => {
+        if (!/^\s*update "tasks"/i.test(statement.sql)) return
+        // A label is reached when it sends a task update, whichever label sent that text
+        // first: every task update `fail-rollback` sends is one `fail` sends too.
+        reached.add(label)
+        if (!seen.has(statement.sql)) seen.set(statement.sql, label)
       },
-    }
-    const store = new PostgresSchedulerStore(recorder, db.ids)
-    let claims = 0
-    const claimed = async (name: string, maxAttempts = 1) => {
-      const spawned = await store.spawn('q', name, '{}', { maxAttempts })
-      claims += 1
-      const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-      if (!run || run.taskId !== spawned.taskId) throw new Error(`expected to claim ${name}`)
-      return run
-    }
-    const started = async (name: string, maxAttempts = 1) => {
-      const run = await claimed(name, maxAttempts)
-      await store.activate('q', run.runId, run.claimToken, run.claimGen)
-      return run
-    }
+    )
     const deferred = await claimed('deferred')
     await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
     const waiting = await started('waiting')
@@ -91,44 +141,22 @@ it('reaches tasks by an index condition in every shipped task update', async () 
     await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
-    // A saga (DESIGN.md §3.10): the failure that ends the forward phase places a rollback
-    // pass, and a rollback's failed attempt places the next. Each ships a task update that
-    // follows the pass, under `fail` and under `fail-rollback`.
-    const saga = await started('rolls-back')
-    await store.setCheckpoint(
-      'q',
-      saga.taskId,
-      saga.runId,
-      saga.claimToken,
-      `${SAGA_STARTED_PREFIX}a`,
-      '1',
-      60,
-    )
-    const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
-    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
-    const sagaTried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
-    })
-    const passOf = async () => {
-      claims += 1
-      const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-      if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
-      await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
-      return pass
-    }
-    const firstPass = await passOf()
+    // The failure that ends a saga's forward phase places a rollback pass, and a rollback's
+    // failed attempt places the next. Each ships a task update that follows the pass, under
+    // `fail` and under `fail-rollback`.
+    const saga = await rollingBack('rolls-back')
+    const firstPass = await passOf(saga.taskId)
     const again = await store.failRollback(
       'q',
       firstPass.runId,
       firstPass.claimToken,
       '{}',
       { delaySeconds: 0 },
-      sagaTried(1),
+      tried(1),
     )
     if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
-    const lastPass = await passOf()
-    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
+    const lastPass = await passOf(saga.taskId)
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, tried(2))
     await store.cancelTask('q', waiting.taskId)
     const labels = reached
     expect(
@@ -185,52 +213,16 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
   try {
     await db.admin.setFakeNowEpochMs(1_000_000)
     const seen: { label: string; sql: string; args: unknown[] }[] = []
-    const recorder: SqlExecutor = {
-      batch: (label, statements, control) => {
-        for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
-        return db.raw.batch(label, statements, control)
-      },
-    }
-    const store = new PostgresSchedulerStore(recorder, db.ids)
-    let claims = 0
-    const started = async (name: string) => {
-      const spawned = await store.spawn('q', name, '{}', { maxAttempts: 1 })
-      claims += 1
-      const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-      if (run?.taskId !== spawned.taskId) throw new Error(`expected to claim ${name}`)
-      await store.activate('q', run.runId, run.claimToken, run.claimGen)
-      return run
-    }
+    const { store, started, rollingBack, passOf, tried } = driving(db, (label, statement) =>
+      seen.push({ label, sql: statement.sql, args: [...statement.args] }),
+    )
     const completed = await started('completes')
     await store.complete('q', completed.runId, completed.claimToken, '{}')
     const failed = await started('fails')
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
-    /** A task whose one registered step started, and whose failure placed a rollback pass. */
-    const rollingBack = async (name: string) => {
-      const forward = await started(name)
-      await store.setCheckpoint(
-        'q',
-        forward.taskId,
-        forward.runId,
-        forward.claimToken,
-        `${SAGA_STARTED_PREFIX}a`,
-        '1',
-        60,
-      )
-      expect(await store.fail('q', forward.runId, forward.claimToken, '{}', null)).toEqual({
-        rollingBack: true,
-      })
-      return forward
-    }
     const saga = await rollingBack('rolls-back')
-    claims += 1
-    const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-    if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
-    await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
-    await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, {
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"R"}' }),
-    })
+    const pass = await passOf(saga.taskId)
+    await store.failRollback('q', pass.runId, pass.claimToken, '{}', null, tried(1, '{"name":"R"}'))
     const cancelled = await rollingBack('cancelled-in-the-phase')
     expect(await store.cancelTask('q', cancelled.taskId)).toBe(true)
     const resultReadOf = async (taskId: string) => {
