@@ -2340,9 +2340,15 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   rollback's failure ended the task (§3.10). The SDK stores JSON, and the
   store's port takes any text, so a stored value that is not JSON is answered
   as its text under a key of its own, `resultText`, `failureText` or
-  `rollback.errorText`, in place of the decoded key. No value of a task that
-  ended ever changes, so a route that threw on one would answer 500 for that
-  task for good. Every response is stable JSON with
+  `rollback.errorText`, in place of the decoded key. A value can also parse
+  and still not serialize, as JSON nested deeper than the serializer can walk,
+  and the answer is then sent with every stored value in it as its text. The
+  route returns a stored text whole and sets no bound of its own on its size.
+  An older client that reads a decoded key finds it absent for such a value,
+  where it found a 500, and a client tells such a value from no value by its
+  text key. No value of a task that ended ever changes, so a route that threw
+  on one would answer 500 for that task for good. Every response is stable
+  JSON with
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
