@@ -371,7 +371,12 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
           withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
             await seedSwept(f, label)
             const { swept, rewritten } = await sweepOverAScanOf(f, label, -1)
-            expect({ swept: swept.kind, rewritten }).toEqual({ swept: 'resolved', rewritten: 0 })
+            // The sweep acted on the seeded task, so its scan returned that row, and no
+            // row of the scan carried a generation to rewrite.
+            expect({ swept, rewritten }).toMatchObject({
+              swept: { kind: 'resolved', value: [{ kind: 'cancelled', taskId: SWEPT.taskId }] },
+              rewritten: 0,
+            })
           }))
         continue
       }
