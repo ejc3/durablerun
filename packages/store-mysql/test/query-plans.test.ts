@@ -1,4 +1,10 @@
-import type { SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
+import {
+  type IdSource,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+  systemIdSource,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
 import { MysqlSchedulerStore } from '../src/store.js'
@@ -60,7 +66,7 @@ async function shippedBatch(
 /** Copy one row of a table `count` times, with some columns replaced by SQL. */
 async function cloneRows(
   db: TestDb,
-  table: 'tasks' | 'runs',
+  table: 'tasks' | 'runs' | 'waits',
   where: string,
   replaced: Readonly<Record<string, string>>,
   count = HISTORY,
@@ -293,6 +299,68 @@ async function claimMeasuringTheLegs(db: TestDb, limit: number, explained = fals
     limit,
   })
   return { ...legs, claimed: claimed.map((run) => run.runId).sort() }
+}
+
+/** The lock waits of this database, as the server holds them at this instant. */
+const LOCK_WAITS = {
+  sql: `SELECT l.OBJECT_NAME AS held_table, l.INDEX_NAME AS held_index, l.LOCK_MODE AS wanted
+        FROM performance_schema.data_lock_waits w
+        JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+        WHERE l.OBJECT_SCHEMA = DATABASE()`,
+  args: [],
+}
+const SESSIONS_ASLEEP = {
+  sql: "SELECT COUNT(*) AS asleep FROM performance_schema.threads WHERE PROCESSLIST_DB = DATABASE() AND PROCESSLIST_STATE = 'User sleep'",
+  args: [],
+}
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Claim once through an executor that holds the claim's transaction open for a second, and
+ * claim again beside it. What the second claim waited for is the server's own account of
+ * its lock waits, read while that claim is pending, so nothing here depends on how two
+ * claimers happen to interleave.
+ */
+async function claimBesideAHeldClaim(db: TestDb) {
+  const holding: SqlExecutor = {
+    batch: async (label, statements, control) => {
+      if (label !== 'claim') return db.raw.batch(label, statements, control)
+      const held = [...statements, { sql: 'SELECT SLEEP(1) AS held', args: [] }]
+      return (await db.raw.batch(label, held, control)).slice(0, statements.length)
+    },
+  }
+  const settled = <T>(work: Promise<T>) =>
+    work.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    )
+  const lease = { leaseSeconds: 60, limit: 1 }
+  const holder = settled(new MysqlSchedulerStore(holding, db.ids).claim(Q, 'holder', lease))
+  for (let tries = 0; ; tries++) {
+    const [sessions] = await db.raw.batch('fixture:asleep', [SESSIONS_ASLEEP], 'read')
+    if (Number(sessions?.rows[0]?.asleep) > 0) break
+    if (tries > 400) throw new Error('the holder never reached its sleep')
+    await pause(5)
+  }
+  let pending = true
+  const second = settled(new MysqlSchedulerStore(db.raw, db.ids).claim(Q, 'second', lease)).finally(
+    () => {
+      pending = false
+    },
+  )
+  const waitedFor = new Set<string>()
+  while (pending) {
+    const [waits] = await db.raw.batch('fixture:lock-waits', [LOCK_WAITS], 'read')
+    for (const row of waits?.rows ?? []) {
+      waitedFor.add(`${String(row.held_table)}.${String(row.held_index)} ${String(row.wanted)}`)
+    }
+    await pause(10)
+  }
+  const claimed = [await holder, await second].map((answer) => {
+    if ('error' in answer) throw answer.error
+    return answer.value.length
+  })
+  return { waitedFor: [...waitedFor].sort(), claimed }
 }
 
 describe("the claim's candidate legs on MySQL", () => {
@@ -564,6 +632,113 @@ describe('a keyed write on MySQL', () => {
         'mutation-verdict:behavior:mysql-keyed-write-takes-its-key',
       ).toEqual([])
       expect(seen.flatMap((write) => write.warnings)).toEqual([])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('lets a second claimer take its run beside a claim still open, waiting for no lock, beside an empty waits table and beside parked waiters', async () => {
+    // A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
+    // where a single-table UPDATE reads it with none. The claim deletes the expired waits
+    // of the runs it took, and finds those runs by their stamp. Read through `runs_poll`,
+    // that search covers every running run of the queue, and another claimer's run is one
+    // its transaction still holds, so the second claimer waits for the first, and two that
+    // wait for each other deadlock. Measured on MySQL 8.4 with the first claim held open:
+    // before any of this the second claimer waited for `runs.PRIMARY`, because the claim's
+    // own UPDATE scanned a four-row table and the holder held every row, and it took none
+    // of three due runs. With that UPDATE keyed it waited for a shared lock on `runs_poll`
+    // in both arrangements, as the unkeyed statements also did beside the parked waiters.
+    // Read through the index of the stamp, the search finds this transaction's own entries
+    // and no other, and the second claimer took its run in about 20 ms with no wait.
+    const arrangements: Awaited<ReturnType<typeof claimBesideAHeldClaim>>[] = []
+    for (const [due, parked] of [
+      [4, 0],
+      [40, 200],
+    ] as const) {
+      const db = await openMysqlTestDb({ idNamespace: `plan-held-${due}`, nowMs: 1_000_000 })
+      try {
+        const store = new MysqlSchedulerStore(db.raw, db.ids)
+        if (parked > 0) {
+          const waiter = await store.spawn(Q, 'waiter', '{}')
+          const [run] = await store.claim(Q, 'parker', { leaseSeconds: 60, limit: 1 })
+          if (run === undefined) throw new Error('the waiter was not claimed')
+          await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await store.awaitEvent(Q, waiter.taskId, run.runId, run.claimToken, 'step', 'never', 3600)
+          await cloneRows(
+            db,
+            'waits',
+            "src.step_name = 'step'",
+            { step_name: "CONCAT('step-', seq.n)" },
+            parked - 1,
+          )
+        }
+        for (let i = 0; i < due; i++) await store.spawn(Q, `job-${i}`, '{}')
+        await db.raw.batch('fixture:analyze', [
+          { sql: 'ANALYZE TABLE runs, tasks, waits', args: [] },
+        ])
+        arrangements.push(await claimBesideAHeldClaim(db))
+      } finally {
+        await db.close()
+      }
+    }
+    expect(
+      arrangements.map((arrangement) => arrangement.waitedFor),
+      'mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp',
+    ).toEqual([[], []])
+    expect(arrangements.map((arrangement) => arrangement.claimed)).toEqual([
+      [1, 1],
+      [1, 1],
+    ])
+  })
+
+  it("indexes a run's statement stamp by a prefix that holds what tells one call's stamp from another's", async () => {
+    // The stamp is a LONGTEXT, so its index is a prefix. A call's stamp is the call's
+    // token and the name of a fence, and the token is what differs between calls. While
+    // the token lies inside the prefix, the entries of two calls never share a key, so a
+    // search of the index for one call's stamp touches no entry of another's.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-stamp-index', nowMs: 1_000_000 })
+    try {
+      const [index] = await db.raw.batch(
+        'fixture:index',
+        [
+          {
+            sql: `SELECT COLUMN_NAME AS indexed, SUB_PART AS prefix FROM information_schema.statistics
+                  WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_stamp'
+                  ORDER BY SEQ_IN_INDEX`,
+            args: [],
+          },
+        ],
+        'read',
+      )
+      expect((index?.rows ?? []).map((row) => String(row.indexed))).toEqual(['fence_stamp'])
+      const prefix = Number(index?.rows[0]?.prefix)
+      const token = systemIdSource().token()
+      const ids: IdSource = { ...db.ids, token: () => token }
+      await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'one', '{}')
+      const sent: SqlStatement[] = []
+      const recorder: SqlExecutor = {
+        batch: (label, statements, control) => {
+          if (label === 'claim') sent.push(...statements)
+          return db.raw.batch(label, statements, control)
+        },
+      }
+      await new MysqlSchedulerStore(recorder, ids).claim(Q, 'worker', {
+        leaseSeconds: 60,
+        limit: 1,
+      })
+      const stamps = [
+        ...new Set(
+          sent
+            .flatMap((statement) => statement.args)
+            .filter((arg): arg is string => typeof arg === 'string' && arg !== token)
+            .filter((arg) => arg.includes(token)),
+        ),
+      ]
+      expect(stamps.length).toBeGreaterThan(0)
+      expect(
+        stamps.map((stamp) => stamp.indexOf(token) + token.length <= prefix),
+        'mutation-verdict:behavior:mysql-stamp-index-holds-the-token',
+      ).toEqual(stamps.map(() => true))
     } finally {
       await db.close()
     }

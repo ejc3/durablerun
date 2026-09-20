@@ -237,15 +237,72 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(binds(statement)).toBe(statement.args.length)
   })
 
-  it('writes a keyed delete in the form that takes an index', () => {
+  it('writes a keyed delete in the form that takes an index, and reads its keys through the index of their stamp', () => {
     const { sql } = compiled(
       treeBuilder
         .deleteFrom('waits')
-        .where((eb) => eb('run_id', 'in', eb.selectFrom('runs as f').select('f.run_id'))),
+        .where((eb) =>
+          eb(
+            'run_id',
+            'in',
+            eb.selectFrom('runs as f').select('f.run_id').where('f.fence_stamp', '=', 'stamp'),
+          ),
+        ),
     )
-    expect(sql).toBe(
-      'delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f`)',
+    expect(sql, 'mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index').toBe(
+      'delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where `f`.`fence_stamp` = ?)',
     )
+  })
+
+  it('refuses a delete whose keys are not fenced on the stamp', () => {
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) => eb('run_id', 'in', eb.selectFrom('runs as f').select('f.run_id'))),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused',
+    ).toThrow('a delete of waits takes its keys from runs unfenced')
+  })
+
+  it('refuses a delete whose fenced keys come from a table that declares no index of its stamp', () => {
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                eb
+                  .selectFrom('tasks as f')
+                  .select('f.task_id')
+                  .where('f.fence_stamp', '=', 'stamp'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused',
+    ).toThrow('a delete of waits takes its keys from tasks, which declares no index of its stamp')
+  })
+
+  it('refuses a delete whose keys are a fragment', () => {
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                rawSql<string>(sqlFragment('(SELECT r.run_id FROM runs r)'), 'subquery'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-keys-are-a-selection',
+    ).toThrow('a delete of waits takes its keys from something other than a selection of one table')
   })
 
   it('finds the key of a write wherever it stands among the conditions', () => {
