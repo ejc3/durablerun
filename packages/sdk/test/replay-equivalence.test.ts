@@ -864,7 +864,10 @@ async function owning(verdict: string | undefined, body: () => Promise<unknown>)
   try {
     await body()
   } catch (error) {
-    throw verdict === undefined ? error : new Error(verdict, { cause: error })
+    // Only a failed assertion is the program's verdict. A timeout, or a fault of the harness's
+    // own, is reported as itself, so that it is never booked as a mutant caught.
+    const failedAssertion = error instanceof Error && error.name === 'AssertionError'
+    throw verdict !== undefined && failedAssertion ? new Error(verdict, { cause: error }) : error
   }
 }
 
@@ -981,6 +984,12 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; ends: 'completed' | 'eit
 const everyCall = (measuredCalls: number): number[] =>
   Array.from({ length: measuredCalls }, (_, at) => at + 1)
 
+const SLEEPS_UNTIL_A_TIME: ProgramOp[] = [
+  { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: 900_000 },
+  { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: wakeAt(3) },
+  { kind: 'step', valueIndex: 0, nameIndex: 0 },
+]
+
 /** The generated programs this file runs at every fault point: six of random ops, and one for each shape. */
 const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
   ...[0, 1, 2, 3, 4, 5].map(
@@ -989,6 +998,9 @@ const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
   ...PROGRAM_SHAPE_NAMES.map(
     (shape) => [shape, generateProgram(new Rng(`shape-${shape}`), shape)] as const,
   ),
+  // The six seeds draw no sleep until a time outside a group, so one program makes that call
+  // one after another: to a time already past, and to one ahead.
+  ['a sleep until a time, one call after another', SLEEPS_UNTIL_A_TIME] as const,
 ]
 
 interface Row {
@@ -1090,6 +1102,48 @@ describe('context-method enrollment (the inventory gate)', () => {
       (method) => GROUPED[method] === 'a member',
     )
     expect([...members].sort()).toEqual([...declared].sort())
+  })
+
+  it('draws these shapes and runs these flow programs, by name, so that taking one out of its table fails here', () => {
+    expect({
+      plain: PROGRAM_SHAPE_NAMES,
+      saga: SAGA_SHAPE_NAMES,
+      flows: Object.keys(FLOW_PROGRAMS),
+    }).toEqual({
+      plain: [
+        'two awaits of one event, which park the run',
+        'two awaits of one event the program has emitted',
+        'two spawns',
+        'two awaits of children',
+        'two sleeps, which run one after the other',
+        'a sleep beside a step',
+        'an await beside a step',
+        'a step named after the attempt, on an attempt that fails and on the one after it',
+        'a step and then a step, which the engine refuses',
+        'a step and then a sleep, which the engine refuses',
+        'a step and then an await, which the engine refuses',
+      ],
+      saga: [
+        'a registered step beside a sleep',
+        'steps named after the attempt, and a rollback that fails once',
+        'two registered steps started together, which the engine refuses',
+      ],
+      flows: [
+        'flows that each await a child and then record it in a step under its own name, and then a sleep',
+        'flows that each await an event the program has emitted and then record it in a step, and then a sleep',
+        'flows that each wait on a timer of its own length and then run a step whose body takes time',
+      ],
+    })
+  })
+
+  it('every kind of call is made one call after another in a program this file runs, and not only inside a group', () => {
+    const oneAfterAnother = new Set<string>(
+      [
+        ...RUN_PROGRAMS.flatMap(([, ops]) => ops),
+        ...NAME_AXIS_MEMBERS.flatMap((call) => call.ops('n')),
+      ].map((op) => op.kind),
+    )
+    expect(Object.keys(KIND_TO_METHOD).filter((kind) => !oneAfterAnother.has(kind))).toEqual([])
   })
 
   it('every shape, and a step named after the attempt, is in a program this file runs at every fault point', () => {
@@ -1617,14 +1671,29 @@ function generateSagaProgram(rng: Rng, forced?: SagaShape): SagaProgram {
     ops[0] = { kind: 'registered', nameIndex: 0, valueIndex: 0 }
   }
   const sites = flat(ops)
-  const bodies = ops.flatMap((op) =>
-    op.kind === 'registered' || op.kind === 'step' ? [sites.indexOf(op)] : [],
+  // A body that can fail: a step at the top level, or a member of a group. Of a refused group
+  // none is chosen, because the refusal ends the task first.
+  const bodies = sites.flatMap((op, site) =>
+    op.kind === 'registered' || op.kind === 'step' ? [site] : [],
   )
   const failsAt =
     forced !== undefined || refusedGroupOf(ops) !== undefined || rng.next() < 0.5
       ? sites.length
       : (bodies[rng.int(bodies.length)] ?? sites.length)
   return { ops, failsAt }
+}
+
+/**
+ * A program that fails for good in the body of its group's registered step. A program
+ * generated for a shape fails after every op, so without this one no member of a group is a
+ * step that started and never persisted.
+ */
+function failingInsideItsGroup(program: SagaProgram): SagaProgram {
+  const member = program.ops
+    .flatMap((op) => (op.kind === 'group' ? (op.members ?? []) : []))
+    .find((op) => op.kind === 'registered')
+  if (member === undefined) throw new Error('the program has no group with a registered step')
+  return { ...program, failsAt: flat(program.ops).indexOf(member) }
 }
 
 /** What the world outside the store saw: bodies that ran, and rollbacks that ran or failed. */
@@ -1768,9 +1837,12 @@ function comparable(
     startMarkerLanded: holds(`${SAGA_STARTED_PREFIX}${inFlight.key}`) !== undefined,
     rollbackRecorded: holds(`${SAGA_ROLLBACK_PREFIX}${inFlight.key}`) !== undefined,
     handed: handedTheFirst,
+    place: undone.indexOf(inFlight.site),
   }).toEqual({
     startMarkerLanded: rolledBack,
     rollbackRecorded: rolledBack,
+    // It started last of all, so it is rolled back first.
+    place: rolledBack ? 0 : -1,
     handed: rolledBack
       ? fingerprint(result === undefined ? undefined : JSON.parse(result.state))
       : undefined,
@@ -1916,6 +1988,15 @@ const SAGA_RUN_PROGRAMS: readonly (readonly [string, SagaProgram])[] = [
   ...SAGA_SHAPE_NAMES.map(
     (shape) => [shape, generateSagaProgram(new Rng(`saga-shape-${shape}`), shape)] as const,
   ),
+  [
+    'a registered step beside a sleep, whose body fails for good',
+    failingInsideItsGroup(
+      generateSagaProgram(
+        new Rng('saga-shape-a registered step beside a sleep'),
+        'a registered step beside a sleep',
+      ),
+    ),
+  ] as const,
 ]
 
 describe('saga replay equivalence (generated programs x fault points across the phase)', () => {
