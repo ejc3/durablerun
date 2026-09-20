@@ -638,10 +638,13 @@ describe('the tree rules', () => {
             'register',
             loose
               .insertInto('waits')
-              .columns(['fence_stamp', 'fence_stamp', 'fence_at_ms'])
+              // The wait names the fixtures' event, so the lock rule has nothing to say and
+              // the stamp rule is the one that answers.
+              .columns(['event_name', 'fence_stamp', 'fence_stamp', 'fence_at_ms'])
               .expression(
                 loose
-                  .selectNoFrom(() => [
+                  .selectNoFrom((eb: Loose) => [
+                    eb.val('e').as('event_name'),
                     aliasedAs(stampValue, 'fence_stamp'),
                     aliasedAs(stampValue, 'again'),
                     aliasedAs(nowValue, 'fence_at_ms'),

@@ -76,24 +76,47 @@ describe('a read is built once and sent many times', () => {
     })
   }
 
-  it('no store sends a read it builds on every call', () => {
+  it('no store sends a read it builds on every call, and neither does the engine logic core runs for it', () => {
     // task-done-state is reached only through a transition, which compiles on every call,
-    // so it is held here with every other read of every store: readTree builds per call.
+    // so it is held here with every other read: readTree builds per call. It and run-task
+    // are sent by core's side of a task's ending, for every store. Every file of core that
+    // prepares or sends a read is found here and held to the same three things as a
+    // store's sources, so the next one is held without being named.
     const packages = new URL('../../', import.meta.url)
+    const sourcesOf = (directory: string) => {
+      const sources = new URL(directory, packages)
+      return readdirSync(sources, { recursive: true, encoding: 'utf8' })
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => ({ file, text: readFileSync(new URL(file, sources), 'utf8') }))
+    }
     const stores = readdirSync(packages).filter((name) => name.startsWith('store-'))
     expect(stores.length).toBeGreaterThanOrEqual(3)
-    for (const store of stores) {
-      const sources = new URL(`${store}/src/`, packages)
-      const text = readdirSync(sources, { recursive: true, encoding: 'utf8' })
-        .filter((file) => file.endsWith('.ts'))
-        .map((file) => readFileSync(new URL(file, sources), 'utf8'))
-        .join('\n')
-      expect(text.match(/\.readTree\(/g) ?? [], `${store} builds a read on every call`).toEqual([])
-      expect(text.match(/\.readPrepared\(/g)?.length ?? 0, store).toBeGreaterThanOrEqual(9)
+    const core = sourcesOf('core/src/').filter(({ text }) =>
+      /\.readPrepared\(|= prepareRead\(/.test(text),
+    )
+    // The scan found the file that sends both reads of a task's ending, so it can find one.
+    expect(core.map(({ file }) => file)).toContain('task-done.ts')
+    const held = [
+      ...stores.map((store) => ({
+        name: store,
+        text: sourcesOf(`${store}/src/`)
+          .map(({ text }) => text)
+          .join('\n'),
+        reads: 7,
+      })),
+      ...core.map(({ file, text }) => ({
+        name: `core/src/${file}`,
+        text,
+        reads: file === 'task-done.ts' ? 2 : 1,
+      })),
+    ]
+    for (const { name, text, reads } of held) {
+      expect(text.match(/\.readTree\(/g) ?? [], `${name} builds a read on every call`).toEqual([])
+      expect(text.match(/\.readPrepared\(/g)?.length ?? 0, name).toBeGreaterThanOrEqual(reads)
       // A read prepared inside a method would be prepared again on every call.
       expect(
         text.match(/prepareRead\(/g)?.length,
-        `${store} prepares a read outside module scope`,
+        `${name} prepares a read outside module scope`,
       ).toBe(text.match(/^const [A-Z_]+ = prepareRead\(/gm)?.length)
     }
   })

@@ -325,7 +325,7 @@ describe("a terminal batch's wake, which every task ending pays", () => {
     // The batch updates tasks twice: once for the task it ends, and once for the tasks
     // of the runs it woke. Require exactly one of the second.
     const updates = seen.filter(
-      (st) => /^\s*update "tasks" set/.test(st.sql) && st.sql.includes(`('pending')`),
+      (st) => /^\s*update "tasks" set/.test(st.sql) && st.sql.includes(`"state" = 'pending'`),
     )
     expect(updates).toHaveLength(1)
     const only = updates[0]

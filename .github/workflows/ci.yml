@@ -292,6 +292,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
@@ -310,7 +311,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
+          if digest == '0eec60003f1e21025c8fd11c489563f42ba61826fb486c7f681c93bff420eb37':
               # The saga reads changed shape. A rollback error is the record the task's last
               # run wrote, the names under a prefix are a range of the checkpoints key on
               # libSQL and MySQL, and on PostgreSQL the attempt records are read only for a

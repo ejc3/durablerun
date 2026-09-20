@@ -1,5 +1,5 @@
 import { type ExpressionBuilder, expressionBuilder } from 'kysely'
-import { type EventName, taskDoneEventName } from '../child-tasks.js'
+import { EventName, taskDoneEventName } from '../child-tasks.js'
 import type { SagaPhasePredicate } from '../sagas.js'
 import {
   FENCE_ASSIGNMENTS,
@@ -25,6 +25,18 @@ export type AwaitingClaim = {
   /** The store's join of the run `r` to the task `t` that owns it. */
   taskOwnsRun: SqlFragment
 }
+
+/**
+ * The event lock of a statement that names its event in its binds (§3.4 rule 2). An emit
+ * and an await of one event are atomic and mutually exclusive on every dialect, and the
+ * lock is what makes them so where a write batch is not serialized: the statement that
+ * records the event or registers the wait names the lock, so the batch that holds the
+ * statement holds the lock.
+ */
+const onItsEvent = (binds: { queue: string; eventName: EventName }) => ({
+  queue: binds.queue,
+  eventName: binds.eventName,
+})
 
 /**
  * The run is still running under its claim, and the store's predicate holds of the task
@@ -126,6 +138,7 @@ export const registerWaitCas = defineStatement(
       .expression(guarded)
       .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
   },
+  onItsEvent,
 )
 
 /**
@@ -162,6 +175,7 @@ export const emitEventCas = defineStatement(
           .where((eb) => eb('events.fence_stamp', 'is distinct from', stampValue))
           .where(rawSql<boolean>(binds.existingEventAdmits, 'predicate')),
       ),
+  onItsEvent,
 )
 
 /**
@@ -277,6 +291,16 @@ export const emittedEventRead = defineStatement(
  * an event that exists is left alone, so a revived task that ends again keeps its
  * first outcome. Every dialect serializes this batch against an await of the same
  * event, so nothing can insert the event between the check and the insert.
+ *
+ * That is the completion event's lock, which this statement names, so every batch that
+ * can end a task holds it and no store takes it by hand. It is held whether or not the
+ * batch ends the task, and this is where that is decided, once: a `fail` that schedules
+ * a retry, a lost-launch sweep that reopens, and a sweep that places a successor all
+ * take it and record nothing. A lock is taken before the transaction's first statement,
+ * on MySQL before the transaction, and only the compare-and-set inside it knows whether
+ * the task ends. Taking the lock after that statement won would wait on a lock while
+ * holding row locks, which is the order every dialect's executor rules out (event first,
+ * then rows). The price is one round trip on a dialect that pays one for each statement.
  */
 export const taskDoneEventInsert = defineStatement(
   'task-done event',
@@ -321,6 +345,7 @@ export const taskDoneEventInsert = defineStatement(
           ),
       )
   },
+  (binds) => ({ queue: binds.queue, eventName: EventName.taskDone(binds.taskId) }),
 )
 
 /**
@@ -378,4 +403,5 @@ export const materializeTaskDoneCas = defineStatement(
           .where((where) => where.exists(stillClaimed(binds, binds.liveTask))),
       )
   },
+  onItsEvent,
 )

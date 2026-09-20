@@ -592,8 +592,11 @@ One invocation executes one claimed run to its next suspension point:
     mutually exclusive, and on PostgreSQL only the lock makes them so: without
     it a parent reads no event, the child inserts the event and sees no wait
     row, and the parent then sleeps forever. SQLite's single writer hides the
-    race. Each of the five PostgreSQL sites takes the lock on its own line, and
-    each is held by a PostgreSQL case that keeps the await's transaction open
+    race. No store takes the lock. The completion event's statement names it
+    where core defines it, and a batch holds the lock of a statement it admits,
+    so a batch that adds the completion event holds its lock on every dialect,
+    and a store has no line to leave out (§3.4 rule 2). Each terminal batch is
+    still held by a PostgreSQL case that keeps the await's transaction open
     across the whole terminal batch, with a trigger that sleeps after the wait
     row is inserted: a locked batch waits and wakes the parent, and an unlocked
     one loses the wakeup every time. The await that records an outcome writes
@@ -602,10 +605,21 @@ One invocation executes one claimed run to its next suspension point:
     Without the lock the second inserts the same row, the table's key refuses
     it, and the await is reported as an outage. The emit has a case of the same
     kind, and the await's lock is the other side of every one of them, so each
-    of the eight lines that take the lock has a case that cannot miss and a
-    mutation that removes it. A race of twelve real concurrent awaits
-    against every terminal batch also runs on both dialects. It is a smoke and
-    not the proof: with the lock dropped it caught one site of five.
+    batch that holds the lock has a case that cannot miss, and a mutation that
+    stops the batch of that one label from holding it. A race of twelve real
+    concurrent awaits against every terminal batch also runs on both dialects.
+    It is a smoke and not the proof: with the lock dropped it caught one site
+    of five.
+  - A batch that can end a task holds the lock whether or not it ends one: a
+    `fail` that schedules a retry, a lost-launch sweep that reopens, and a
+    sweep that places a successor all hold it and record nothing. That is
+    decided once, where the completion event's statement names its lock. A
+    lock is taken before the transaction's first statement, on MySQL before
+    the transaction, and only the compare-and-set inside it knows whether the
+    task ends. Taking the lock after that statement won would wait on a lock
+    while holding row locks, which is the order every executor rules out
+    (event first, then rows). The price is one round trip on a dialect that
+    pays one for each statement.
   - The PostgreSQL event lock has two forms, chosen by who owns the name. A
     caller's event takes the row of `event_locks` that every build has taken:
     inserted when it is missing, then locked. A process of an older build keeps
@@ -711,13 +725,44 @@ One invocation executes one claimed run to its next suspension point:
     that ended it, so a batch that ended nothing writes no event, and a `fail`
     that scheduled a retry writes none. It carries no conflict clause, which a
     follow-on insert may not have. An event that exists is left alone by a
-    `NOT EXISTS` guard, which the event lock makes safe. Both stores add the
-    insert and the wake through one core function (`addTaskDone`). Nothing is
-    checked after the batch. A terminal write's answer is its batch's answer,
-    and a read after the commit could only change that answer for a transition
-    that has happened. A batch that named the wrong task or the wrong terminal
-    statement would end the task with no event, and an insert that writes
-    nothing passes every row-count audit. What holds that is
+    `NOT EXISTS` guard, which the event lock makes safe. Every store adds the
+    insert and the wake through one core function (`addTaskDone`). A batch is
+    held to it when it is built. The state a statement gives a task is nodes
+    and never text: a state's name is a value node (`taskStateValue`), which
+    the statement's text is compiled from, and the copy of a run's state is a
+    subquery built from nodes (`stampedRunState`). A fragment anywhere in that
+    value is refused, whatever it holds, because text can spell a state in
+    more ways than a reader of text closes, and a generated UPDATE's type takes
+    no text there. A statement that writes `tasks` and gives `state` a value
+    that names a terminal state where the column can receive it owes the
+    completion event, recorded under that statement's own stamp: a
+    `FencedBatch` that holds such a statement and no follow-on that inserts a
+    completion event gated by its stamp is refused when it runs, before
+    anything is sent, on every dialect. So a terminal path that forgets the
+    event, or names another statement as the one that ended the task, does not
+    run. Nothing is checked after the batch. A terminal write's answer is its
+    batch's answer, and a read after the commit could only change that answer
+    for a transition that has happened. The rule reads what the column can
+    receive and nothing else: the value itself, each result of a CASE and never
+    a condition, and what a subquery selects, from a table or from another
+    subquery, and never what it filters, joins on, groups or orders by. A
+    filter chooses a row and a condition chooses an arm. A run id is a caller's
+    string and may spell a state, and `deferLaunch`, `reschedule` and
+    `suspendRun` bind it in the filter of the copy, so a run nobody has is
+    answered with `LeaseLostError` whatever its id spells. Anything else below
+    the value is read whole, as an operand of what the column receives. Of a
+    derived or joined table it reads every column, whichever one the outer
+    query takes, so there it refuses more than it must. The
+    rule reads declared nodes, so four things are beyond it: a batch that
+    names the wrong task, a value that produces a terminal state and names
+    none, which is the copy of a stored state, even one whose own filter lets
+    a terminal run through alone, a state the database assembles from
+    pieces that name none, and the state of an INSERT ... SELECT that names it
+    in a table its own SELECT reads from or joins, because for an INSERT the
+    rule reads the selection at the state's position and not that SELECT's
+    sources. Every shipped copy reads a run the batch left live, no shipped
+    statement assembles a state, and spawn names `pending` itself. An insert
+    that writes nothing passes every row-count audit, so what holds those is
     `childTaskViolations`, which runs after every case of the surface, over
     every terminal label, in the fuzz, and in the SDK harness.
   - A terminal batch names the task, and `complete` and `fail` are handed only
@@ -743,6 +788,23 @@ One invocation executes one claimed run to its next suspension point:
     `ChildAwaitRefusedError`, classified in core. A child that ended with
     nothing recorded is recorded, as above. A live child means the awaiting
     run's own claim is gone. A child in the parent's queue is never refused.
+    The await's rounds, the classification of a refusal, its read and the read
+    of a run's task before a terminal batch (`run-task`), and the batch that
+    records an unrecorded ending are core's (`awaitTaskDone` and `endingTask`,
+    beside `addTaskDone`), so every dialect runs one protocol and none writes
+    it again. A dialect supplies facts. It opens and runs each of the three
+    batches, so that every batch label stays a literal in a store and every
+    batch reaches the executor from a store, which is where the label ledger,
+    the batch lint, and the fault matrix read them. It supplies its
+    `await-event` batch, how it says why a fence refused a write, and three
+    fragments. Core cannot read what a fragment means, and what holds each
+    fact differs. On consistent rows the recording batch's own claim predicate
+    implies `liveTask` and `taskOwnsRun`, so no conformance case tells a wrong
+    one from a right one, and against rows that are not consistent nothing at
+    that site holds them, as nothing did while each store held them inline. A
+    poison case for the recording batch is open work (BUILD.md, PR3.10). The
+    stored payload's type is held by the libSQL store's child-await error test
+    alone.
     This departs from Absurd, which refuses the same-queue await because its
     await polls and holds a worker slot, so a parent and its child can
     deadlock a small pool. Ours suspends and holds nothing. The model isolates
@@ -1371,9 +1433,26 @@ are load-bearing):
    against emit, so the batch carries a lock coordinate and the executor takes
    it first: a row lock inside the transaction on PostgreSQL, and a session
    named lock around the transaction on MySQL.
-   `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
-   coordinate — never caller SQL — to the dialect executor, which acquires it
-   before the first fenced CAS and holds it through commit or rollback. The
+   No store declares the lock. A statement that records an event or registers
+   a wait names the event it is serialized on where core defines it
+   (`defineStatement`'s third argument), and a `FencedBatch` holds the lock of
+   a statement from the moment it admits it: `emit-event`'s and `await-event`'s
+   compare-and-sets, the compare-and-set that records an unrecorded ending, and
+   a terminal batch's completion event, which is a follow-on and brings the
+   lock all the same, because the executor takes a batch's lock before its
+   first statement wherever the statement stands. A batch holds one lock, and a
+   second statement may name it again. A claim lock is declared before a
+   batch's first statement, and that statement must be the compare-and-set the
+   lock protects. An event lock arrives with the statement that names it, so
+   nothing holds an event-locked batch to open with a compare-and-set, as the
+   declared event lock did. Every shipped one opens with one, and the executor
+   takes the lock before the first statement whatever it is, so a read that
+   stood first would run under the lock. An INSERT into `events` or `waits`
+   whose definition names no lock, or names another event than the row's
+   `event_name`, is refused when the batch is built, on every dialect, libSQL
+   included. The batch carries only that closed lock coordinate, and never
+   caller SQL, to the dialect executor, which acquires it before the first
+   fenced CAS and holds it through commit or rollback. The
    executor binds both coordinate values as data, returns no result slot for
    the prelude, and matching event coordinates are mutually exclusive. A
    dialect may realize the coordinate with a durable sentinel row, as
