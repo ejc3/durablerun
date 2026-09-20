@@ -90,6 +90,22 @@ surface_loses() {
     "$copy/$2" "$3"
   surface_refusal_holds "$1" "$copy" "$surface_snapshot" "${@:4}"
 }
+surface_gains() {
+  # $1 what the control shows, $2 a declaration file of the packed packages, then the lines a
+  # copy of it gains at its top, then --, then every text the refusal must hold.
+  local what="$1" file="$2" copy="$PACK_DIR/surface-gains" lines=()
+  shift 2
+  while [[ "$1" != "--" ]]; do
+    lines+=("$1")
+    shift
+  done
+  shift
+  rm -rf "$copy"
+  cp -R "$PACK_DIR/surface" "$copy"
+  node -e "const fs=require('node:fs');const [file,...lines]=process.argv.slice(1);fs.writeFileSync(file,lines.join('\n')+'\n'+fs.readFileSync(file,'utf8'))" \
+    "$copy/$file" "${lines[@]}"
+  surface_refusal_holds "$what" "$copy" "$surface_snapshot" "$@"
+}
 surface_refuses 'a snapshot naming a never-exported name' \
   'PackageSurfaceControlNeverExported is gone' \
   "exported.PackageSurfaceControlNeverExported=['a control']"
@@ -120,6 +136,12 @@ surface_loses 'a released interface that lost a member' \
 surface_loses 'a released class that lost its private constructor' \
   core/package/dist/validate.d.ts '    private constructor();' \
   'UserName is declared differently' '- private constructor();'
+# How a name is exported is part of what a consumer sees: a copy in which the released value
+# systemClock is exported as a type only is refused, because a consumer can no longer use it
+# as a value, and the JavaScript export goes with a real change of that kind.
+surface_gains 'a released value exported as a type only' \
+  core/package/dist/index.d.ts "export type { systemClock } from './system-clock.js';" -- \
+  'systemClock is declared differently' '+ (a value exported as a type only)'
 # The same from the other side: the snapshot says a member was declared another way.
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \
