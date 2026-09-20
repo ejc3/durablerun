@@ -178,9 +178,10 @@ a last docs PR gives a live owner to every open bullet that is left.
     an index key that does not, and for a version that rewrites a table.
     This is met. The case was seen red by name against a server created with
     ICU's `en-US` and green against the same image without it, the PostgreSQL
-    conformance leg passes against both servers, and two registered mutations,
-    one that drops a column from the version and one that makes it rewrite a
-    table, are each caught by that test.
+    conformance leg passes against both servers, and three registered mutations,
+    one that drops a column from the version, one that makes it rewrite a table
+    and one that declares another collation on an index key, are each caught by
+    that test.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -2014,11 +2015,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   request runs `verify` took 1,096 to 1,767 seconds and `base-gate` 187 to 316,
   and their limits are now 90 and 20 minutes, each at least three times its
   slowest run, the margin the per-test limits have.
-  PR4.6 raised three limits by that rule. Three times `verify`'s slowest run,
-  1,767 seconds, is 5,301 of the 5,400 seconds that 90 minutes hold. PR4.6
-  adds about 17 ms to each of the 3,342 fresh PostgreSQL fixtures of a run,
-  about a minute where it was measured and about two on CI's slowest runner,
-  which takes three times the slowest run to about 5,650 seconds. `verify`'s
+  PR4.6 raised three limits by that rule. Three times a recorded 1,767 s plus
+  PR4.4c's projected 21 s is 5,364 of the 5,400 seconds that 90 minutes hold.
+  PR4.6 adds about 17 ms to each fresh PostgreSQL fixture of a run, 3,342 of
+  them when it was measured: about a minute there and about two on CI's
+  slowest runner, which takes three times the slowest run to about 5,720
+  seconds. `verify`'s
   limit is now 120 minutes, which holds the rule until its slowest run reaches
   2,400 seconds. `mutations` had a limit of 60 minutes and no arithmetic on
   record: over its last 38 successful runs it took 988 to 1,754 seconds, so
@@ -2631,7 +2633,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   in a row is still reported: the driver counts an outage, and the run waits
   out its lease. The version itself lost all three in 1 of 160 migrations in
   this order, which leaves version 6 and can be run again.
-  The registry moves from 873 to 879. The per-fixture cost
+  The registry moves from 880 to 886. The per-fixture cost
   is also why this PR raises the limits of three CI jobs, by the rule and with
   the arithmetic in the PR3.13 entry. An
   operator's own view, materialized view, trigger with a column list or a
