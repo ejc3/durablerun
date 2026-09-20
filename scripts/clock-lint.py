@@ -90,6 +90,12 @@ def tree_clock_spellings(text: str) -> str:
             "CLOCK_SPELLING is not a list of one String.raw arm to a line",
         )
     ]
+    # Whatever else an arm interpolates is text this lint cannot write out. Left in, Python
+    # reads it as a dollar sign and literal braces, the arm matches nothing, and every
+    # spelling it holds passes.
+    unread = [arm for arm in arms if "${" in arm]
+    if unread:
+        raise ValueError(f"{TREE_RULES}: an arm of CLOCK_SPELLING interpolates what this lint cannot read: {unread[0]}")
     if arms.count(TREE_ONLY_ARM) != 1:
         raise ValueError(f"{TREE_RULES}: CLOCK_SPELLING no longer holds the arm {TREE_ONLY_ARM}")
     return "|".join(arm for arm in arms if arm != TREE_ONLY_ARM)
