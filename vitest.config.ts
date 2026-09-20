@@ -9,6 +9,7 @@ const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
   postgres: [
     'packages/conformance/test/postgres-bootstrap-window.test.ts',
     'packages/store-postgres/test/deadlocked-read.test.ts',
+    'packages/store-postgres/test/error-typing.test.ts',
     'packages/store-postgres/test/query-plans.test.ts',
     'packages/store-postgres/test/racing-migrators.test.ts',
     'packages/store-postgres/test/round-trips.test.ts',

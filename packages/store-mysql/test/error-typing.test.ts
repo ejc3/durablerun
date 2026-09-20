@@ -64,3 +64,49 @@ describe('MysqlExecutor error typing against a real server', () => {
     }
   })
 })
+
+describe('what a real MySQL server answers a refused statement', () => {
+  it('is typed permanent by its class, or by its number where MySQL files it outside the classes', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'refused-statements', migrate: false })
+    try {
+      await db.raw.batch('fixture:a-strict-table', [
+        {
+          sql: 'CREATE TABLE strict (id BIGINT PRIMARY KEY, n BIGINT NOT NULL DEFAULT 0, label VARCHAR(8) NOT NULL)',
+          args: [],
+        },
+      ])
+      const answered = (sql: string, args: (string | number)[] = []) =>
+        db.raw.batch('fixture:refused', [{ sql, args }]).then(
+          () => 'answered',
+          (error: unknown) => ({
+            name: (error as Error).name,
+            errno: ((error as Error).cause as { errno?: unknown } | undefined)?.errno,
+            state: ((error as Error).cause as { sqlState?: unknown } | undefined)?.sqlState,
+          }),
+        )
+      expect({
+        syntaxError: await answered('SELEC 1'),
+        valueOutOfRange: await answered(
+          "INSERT INTO strict (id, n, label) VALUES (1, 9223372036854775807 + 1, 'a')",
+        ),
+        divisionByZero: await answered("INSERT INTO strict (id, n, label) VALUES (1, 1 / 0, 'a')"),
+        textForANumber: await answered("INSERT INTO strict (id, n, label) VALUES (1, ?, 'a')", [
+          '',
+        ]),
+        textThatIsNoNumber: await answered("INSERT INTO strict (id, n, label) VALUES (1, ?, 'a')", [
+          '12abc',
+        ]),
+        columnLeftOut: await answered('INSERT INTO strict (id) VALUES (1)'),
+      }).toEqual({
+        syntaxError: { name: 'PermanentStoreError', errno: 1064, state: '42000' },
+        valueOutOfRange: { name: 'PermanentStoreError', errno: 1690, state: '22003' },
+        divisionByZero: { name: 'PermanentStoreError', errno: 1365, state: '22012' },
+        textForANumber: { name: 'PermanentStoreError', errno: 1366, state: 'HY000' },
+        textThatIsNoNumber: { name: 'PermanentStoreError', errno: 1265, state: '01000' },
+        columnLeftOut: { name: 'PermanentStoreError', errno: 1364, state: 'HY000' },
+      })
+    } finally {
+      await db.close()
+    }
+  })
+})
