@@ -503,6 +503,37 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       }).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
     })
 
+    // The store that activated a run remembers its task, so the worker's own terminal
+    // write pays no read. Once that write has ended the run the entry has no further
+    // use, and the store lets it go: asked to end the same run again, it reads the run's
+    // task (`run-task`) like a store that never knew it.
+    it('forgets the task of a run once its terminal batch has ended the run', async () => {
+      const recorded = recordingLabels(f)
+      const failure = '{"name":"Boom"}'
+      const endings = {
+        complete: (run: ClaimedRun) => recorded.store.complete(Q, run.runId, run.claimToken, '{}'),
+        fail: (run: ClaimedRun) => recorded.store.fail(Q, run.runId, run.claimToken, failure, null),
+        'fail with a retry': (run: ClaimedRun) =>
+          recorded.store.fail(Q, run.runId, run.claimToken, failure, { delaySeconds: 60 }),
+      }
+      const askedAgain: Record<string, { refusal: string; labels: string[] }> = {}
+      for (const [name, end] of Object.entries(endings)) {
+        await recorded.store.spawn(Q, name, '{}')
+        const run = await claimActivated(recorded.store, Q, `w-${name}`)
+        await end(run)
+        recorded.labels.length = 0
+        askedAgain[name] = { refusal: await refusalName(end(run)), labels: [...recorded.labels] }
+      }
+      expect(askedAgain).toEqual({
+        complete: { refusal: 'LeaseLostError', labels: ['run-task', 'complete', 'refusal-state'] },
+        fail: { refusal: 'LeaseLostError', labels: ['run-task', 'fail', 'refusal-state'] },
+        'fail with a retry': {
+          refusal: 'LeaseLostError',
+          labels: ['run-task', 'fail', 'refusal-state'],
+        },
+      })
+    })
+
     // AwaitRefused and RefusedNeverWaits: a child in another queue is refused for good,
     // and registers nothing. The rule is decided inside the await batch, whose
     // compare-and-set requires a live child in the parent's queue. Only an await that
