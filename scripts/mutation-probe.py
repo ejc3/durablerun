@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import fnmatch
 import hashlib
 import io
 import json
@@ -14686,6 +14687,7 @@ def classify_verdict(
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
 VERDICT_INVENTORY_ORPHAN_FAULT = "accept-orphan-verdict-marker"
 FROZEN_MIGRATION_TARGET_FAULT = "accept-frozen-migration-mutation"
+VERDICT_FILE_EXCLUDED_FAULT = "accept-verdict-in-a-file-the-audit-excludes"
 TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT = (
     "poison-typescript-mutant-syntax-live-enrollment"
 )
@@ -14809,6 +14811,7 @@ SELF_TEST_FAULTS = (
     "accept-collateral-message",
     VERDICT_INVENTORY_ORPHAN_FAULT,
     FROZEN_MIGRATION_TARGET_FAULT,
+    VERDICT_FILE_EXCLUDED_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
     TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
     TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT,
@@ -14838,6 +14841,28 @@ def verdict_inventory_problems(
             f"source verdict marker {marker!r} has no live ExpectedVerdict or exact exemption"
         )
     return problems
+
+
+def verdicts_the_audit_never_runs(verdict_files: dict[str, str]) -> list[str]:
+    """Verdicts whose file the audit's own test command leaves out.
+
+    Each mutation runs only its registered test, through TEST_CMD. A test in a file that
+    command excludes never runs, so its mutation can never be caught. The audit says so
+    only when it selects that mutation, as a baseline whose target did not run. This
+    refuses the verdict where it is declared.
+    """
+    excludes = [
+        TEST_CMD[index + 1]
+        for index, argument in enumerate(TEST_CMD[:-1])
+        if argument == "--exclude"
+    ]
+    return [
+        f"{name}: its verdict's file {file} matches the audit's --exclude {glob!r}, "
+        "so the audit never runs its test"
+        for name, file in sorted(verdict_files.items())
+        for glob in excludes
+        if fnmatch.fnmatchcase(file, glob)
+    ]
 
 
 # Where the rules that read a statement tree live. A region runs from its first anchor to
@@ -15741,6 +15766,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         pass
     elif fault == FROZEN_MIGRATION_TARGET_FAULT:
         pass
+    elif fault == VERDICT_FILE_EXCLUDED_FAULT:
+        pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT:
@@ -16613,6 +16640,38 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
             )
+    excluded_file_checker = verdicts_the_audit_never_runs
+    if fault == VERDICT_FILE_EXCLUDED_FAULT:
+        excluded_file_checker = lambda verdict_files: []
+    excluded_file_cases = (
+        (
+            "a verdict in a fuzz file",
+            {"in-a-fuzz-file": "packages/conformance/test/fuzz-regressions.test.ts"},
+            (
+                "in-a-fuzz-file: its verdict's file "
+                "packages/conformance/test/fuzz-regressions.test.ts matches the audit's "
+                "--exclude 'packages/conformance/test/fuzz-*', so the audit never runs its test",
+            ),
+        ),
+        (
+            "a verdict in the process chaos test",
+            {"in-the-chaos-test": "packages/driver/test/chaos-process.test.ts"},
+            (
+                "in-the-chaos-test: its verdict's file "
+                "packages/driver/test/chaos-process.test.ts matches the audit's --exclude "
+                "'packages/driver/test/chaos-process.test.ts', so the audit never runs its test",
+            ),
+        ),
+        (
+            "a verdict in a file the audit runs",
+            {"in-the-checker-test": "packages/conformance/test/invariant-checkers.test.ts"},
+            (),
+        ),
+    )
+    for label, verdict_files, wanted in excluded_file_cases:
+        got = tuple(excluded_file_checker(verdict_files))
+        if got != wanted:
+            failures.append(f"excluded-file {label}: expected {wanted!r}, got {got!r}")
     tree_coverage_source = (
         "function gate(node) {\n"
         "  if (node.a && node.b) return null\n"
@@ -17228,6 +17287,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 VERDICT_MARKER_EXEMPTIONS,
             )
         )
+        failures.extend(
+            excluded_file_checker(
+                {mutation.name: mutation.verdict.file for mutation in MUTATIONS}
+            )
+        )
     for label, result, verdict, wanted in cases:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
@@ -17291,6 +17355,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(direct_marker_cases)} direct-marker cases, "
         f"{len(title_owner_cases)} title-owner cases, "
         f"{len(verdict_inventory_cases)} verdict-inventory cases, "
+        f"{len(excluded_file_cases)} excluded-file cases, "
         f"{len(question_delta_cases)} question-delta cases, "
         f"{len(syntax_mutations)} mutant-syntax cases, "
         f"{len(live_enrollment_faults)} live-enrollment faults, "

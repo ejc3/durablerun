@@ -3980,6 +3980,7 @@ BAD_INVOCATIONS = [
         "accept-collateral-message",
         "accept-orphan-verdict-marker",
         "accept-frozen-migration-mutation",
+        "accept-verdict-in-a-file-the-audit-excludes",
     )
 ]
 
