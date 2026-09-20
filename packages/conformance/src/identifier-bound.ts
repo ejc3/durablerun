@@ -223,7 +223,21 @@ export function identifierBoundConformance(
         held: HELD_PLACES.length,
         payloads: PAYLOAD_PLACES.length,
         distinct: new Set(PORT_STRING_PLACES.map(({ place }) => place)).size,
-      }).toEqual({ places: 82, identifiers: 72, held: 73, payloads: 8, distinct: 82 })
+        // The options objects, which the case above asks left out whole. One that vanished
+        // from the generated places would leave that case as green as it was.
+        objects: PORT_OBJECT_PLACES.map(({ place }) => place),
+        objectsThePortRequires: PORT_OBJECT_PLACES.filter(
+          ({ mayBeLeftOut, holdsARequiredString }) => !mayBeLeftOut && holdsARequiredString,
+        ).map(({ place }) => place),
+      }).toEqual({
+        places: 82,
+        identifiers: 72,
+        held: 73,
+        payloads: 8,
+        distinct: 82,
+        objects: ['spawn[3]', 'spawn[3].childOf', 'suspendRun[4]', 'failRollback[5]'],
+        objectsThePortRequires: ['suspendRun[4]', 'failRollback[5]'],
+      })
       // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
       const { store } = storeOverRecorder(f)
       const answers = await refusalsAt(PAYLOAD_PLACES, store, '{"a":"\u0000"}')
