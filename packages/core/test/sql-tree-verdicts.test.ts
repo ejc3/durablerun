@@ -520,6 +520,32 @@ describe('the tree rules', () => {
         'mutation-verdict:construction:tree-read-status-is-a-state',
       ).toMatch(BOUND)
     })
+
+    it('is refused in a one-state list under IN', () => {
+      expect(String(problem(runs().where('r.state', 'in', ['running'])))).toMatch(BOUND)
+    })
+
+    it('is refused in a list of plain values, every one of which the builder binds', () => {
+      expect(String(problem(runs().where('r.state', 'not in', ['running', 'pending'])))).toMatch(
+        BOUND,
+      )
+    })
+
+    it('is refused in a list that holds one bound value among inline ones', () => {
+      const mixed = (eb: Loose) => eb('r.state', 'in', [literalValue('pending'), 'running'])
+      expect(String(problem(runs().where(mixed)))).toMatch(BOUND)
+    })
+
+    it('is admitted in a list of inline literals', () => {
+      const inline = (eb: Loose) =>
+        eb('r.state', 'in', [literalValue('pending'), literalValue('running')])
+      expect(problem(runs().where(inline))).toBeNull()
+    })
+
+    it('is refused when the bound value stands in parentheses', () => {
+      const wrapped = (eb: Loose) => eb('r.state', '=', eb.parens(eb.val('running')))
+      expect(String(problem(runs().where(wrapped)))).toMatch(BOUND)
+    })
   })
 
   describe('the shape of an INSERT', () => {
