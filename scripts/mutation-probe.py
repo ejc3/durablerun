@@ -13902,7 +13902,7 @@ MUTATION_SPECS.extend(
             "packages/driver/src/loop.ts",
             "    requirePortString('driverId', this.driverId)\n",
             "    // MUTATION: not held at construction\n",
-            "a driver configured with a queue or an id past the width runs forever and does nothing: every tick reads as an outage and every registry beat is swallowed",
+            "a driver configured with an id past the width or outside the domain runs forever and does nothing: every registry beat under that id is refused, and a refused beat is swallowed",
         ),
     )
 )
@@ -14097,8 +14097,9 @@ for _verdict, _names in (
 # The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
 # every string once, and every store is reached only through the check built from that
 # table. The first two bend the check: the rule of an identifier, and the wrapper that
-# puts the check in front of an entry. The last four bend the table, one for each kind
-# of string: a queue, a step key, an event name, and a claim token. The identifier
+# puts the check in front of an entry. Four bend the table, one for each kind of string,
+# a queue, a step key, an event name, and a claim token, and a fifth bends the rules, the
+# claim token's put back to no width. The identifier
 # surface draws its places from the same table, so a place the table stops holding is
 # asked nothing by the refusal cases. What fails is the surface's written list of the
 # places that are not identifiers, by the name of the place.
@@ -14185,6 +14186,95 @@ for _verdict, _names in (
             "port-rules-hold-a-claim-token-to-the-width",
             "parent-queue-held-to-the-width",
             "parent-run-id-held-to-the-width",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# What the review of the one check found at the mechanism. An entry is looked up when it is
+# called, so a method patched onto a store class after a store exists is reached. The
+# checked entry is an accessor that cannot be defined again, so a class field cannot replace
+# it. The constructor loops by index, so a store built while the array iterator answers
+# nothing still holds every entry. And a string the port requires is refused when it is
+# left out, which the identifier surface asks of every place.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-entry-looked-up-when-called",
+            "packages/core/src/port-strings.ts",
+            "        const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)\n",
+            "        const called: unknown = entry // MUTATION: the entry as it was at construction\n",
+            "a test double patched onto a store class after the store under test exists is never reached, so the real entry runs and the double counts no call",
+        ),
+        (
+            "port-check-cannot-be-defined-away",
+            "packages/core/src/port-strings.ts",
+            "      defineProperty(this, method, { get: () => checked })\n",
+            "      defineProperty(this, method, { configurable: true, get: () => checked })\n",
+            "a subclass written with an arrow field for an entry constructs without a word, and the field is handed a queue with a NUL in it",
+        ),
+        (
+            "port-constructor-loops-by-index",
+            "packages/core/src/port-strings.ts",
+            "    for (let index = 0; index < PORT_METHODS.length; index++) {\n      const method = PORT_METHODS[index]\n      if (method === undefined) continue\n",
+            "    for (const method of PORT_METHODS) {\n",
+            "a store built while the array iterator answers nothing constructs without a word, holds no entry, and accepts a NUL",
+        ),
+        (
+            "port-required-string-left-out-is-refused",
+            "packages/core/src/port-strings.ts",
+            "    if (value === undefined) {\n      throw new InvalidDurableStringError(`${named} was left out, and the port requires it`)\n    }\n",
+            "    // MUTATION: a required string that was left out is left to the entry\n",
+            "a payload or a checkpoint key that was left out is a TypeError from a bind or a batch that is sent first, and never the refusal of a caller's mistake",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port reaches a method patched onto the prototype after the store was constructed, with the check still in front",
+            "mutation-verdict:behavior:port-entry-looked-up-when-called",
+        ),
+        (
+            "port-entry-looked-up-when-called",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port refuses to construct a store whose class field replaces an entry, and the check with it",
+            "mutation-verdict:behavior:port-check-cannot-be-defined-away",
+        ),
+        (
+            "port-check-cannot-be-defined-away",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port puts the check in front of every entry of a store built while the array iterator answers nothing",
+            "mutation-verdict:behavior:port-constructor-loops-by-index",
+        ),
+        (
+            "port-constructor-loops-by-index",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses a string the port requires when it is left out, at every place, and passes one the caller may leave out",
+            "mutation-verdict:behavior:required-string-left-out-refused-at-every-place",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-required-string-left-out-is-refused",
         ),
     ),
 ):
@@ -19500,7 +19590,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1019:
+        if len(MUTATIONS) != 1023:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -169,7 +169,10 @@ export function identifierBoundConformance(
         }
         expected[place] = { refusedAsTheCallersMistake: required, sent: !required }
       }
-      expect(answers).toEqual(expected)
+      expect(
+        answers,
+        'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
+      ).toEqual(expected)
       expect(asked.filter(({ required }) => !required).map(({ place }) => place)).toEqual([
         'spawn[3].idempotencyKey(idempotencyKey)',
         'spawn[3].headers(headers)',

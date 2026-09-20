@@ -307,13 +307,16 @@ describe('a store that extends the held port', () => {
     const entry = Patched.prototype.claim
     Patched.prototype.claim = () => Promise.resolve('the patch')
     try {
-      expect({
-        answered: await patched.claim('q', 'w', { leaseSeconds: 30, limit: 1 }),
-        refused: await patched.claim(NUL, 'w', { leaseSeconds: 30, limit: 1 }).then(
-          () => 'accepted',
-          (error: unknown) => (error instanceof Error ? error.name : String(error)),
-        ),
-      }).toEqual({ answered: 'the patch', refused: 'InvalidDurableStringError' })
+      expect(
+        {
+          answered: await patched.claim('q', 'w', { leaseSeconds: 30, limit: 1 }),
+          refused: await patched.claim(NUL, 'w', { leaseSeconds: 30, limit: 1 }).then(
+            () => 'accepted',
+            (error: unknown) => (error instanceof Error ? error.name : String(error)),
+          ),
+        },
+        'mutation-verdict:behavior:port-entry-looked-up-when-called',
+      ).toEqual({ answered: 'the patch', refused: 'InvalidDurableStringError' })
     } finally {
       Patched.prototype.claim = entry
     }
@@ -343,7 +346,9 @@ describe('a store that extends the held port', () => {
         }),
       )
       .catch((error: unknown) => `threw ${error instanceof Error ? error.name : String(error)}`)
-    expect(outcome).toBe('threw TypeError')
+    expect(outcome, 'mutation-verdict:behavior:port-check-cannot-be-defined-away').toBe(
+      'threw TypeError',
+    )
   })
 
   it('puts the check in front of every entry of a store built while the array iterator answers nothing', async () => {
@@ -374,7 +379,9 @@ describe('a store that extends the held port', () => {
       () => 'accepted',
       (error: unknown) => (error instanceof Error ? error.name : String(error)),
     )
-    expect(refused).toBe('InvalidDurableStringError')
+    expect(refused, 'mutation-verdict:behavior:port-constructor-loops-by-index').toBe(
+      'InvalidDurableStringError',
+    )
   })
 
   it('refuses to construct a store that lacks a method of the port', () => {
