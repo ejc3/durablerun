@@ -2159,11 +2159,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   table lists them. `--write <release> <tarball-dir> <snapshot>` writes the
   snapshot of the next release, and over a snapshot of the same release it
   refuses a tarball whose sha256 differs and keeps both tables.
-  `package-smoke.sh` holds twelve controls. Each of the check's eleven refusals
-  was deleted in a copy of the script, and the control that owns it went red.
-  Two controls are the historical false negative from both sides: a copy of the
-  packed packages in which `Checkpoint` lost a member, and a snapshot in which
-  that member was declared another way. What the check does not see: a
+  `package-smoke.sh` holds thirteen controls, which build the entries they
+  break, so they also pass on the empty tables of a new release. Each of the
+  check's eleven refusals was deleted in a copy of the script, and the control
+  that owns it went red. Two controls are the historical false negative from
+  both sides: a copy of the packed packages in which `Checkpoint` lost a member,
+  and a snapshot in which that member was declared another way. What the check does not see: a
   declaration that refers to a dependency's type changes with the dependency,
   whose declarations are not packed, and a private member's name, which a
   consumer's subclass can collide with. A rewrite that means the same, an

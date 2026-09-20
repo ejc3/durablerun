@@ -48,9 +48,12 @@ done
 surface_snapshot="$ROOT/scripts/published-surface-v0.1.0-alpha.1.json"
 node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_snapshot"
 # The check must be able to fail, and for the reason each control names. A control
-# changes one thing in a copy of the snapshot and leaves the rest, the real withdrawals
-# and changes included, so every other refusal stays quiet. The refusal is read, not only
-# the exit code: a control that is refused for another reason, or for a second one, fails here.
+# changes one thing in a copy of the snapshot, or of the packed declarations, and leaves the
+# rest, the real withdrawals and changes included, so every other refusal stays quiet. The
+# refusal is read, not only the exit code: a control that is refused for another reason, or
+# for a second one, fails here. A control that needs an entry that holds builds it, a released
+# name that is gone or a change to Checkpoint, so the controls also pass on a snapshot whose
+# tables are empty, as they are just after a release.
 surface_control="$PACK_DIR/surface-control.json"
 surface_refusal_holds() {
   # $1 what the control shows, $2 the unpacked packages, $3 the snapshot, then every text
@@ -69,10 +72,23 @@ surface_refusal_holds() {
 }
 surface_refuses() {
   # $1 what the control shows, $2 the refusal expected, $3 JavaScript that edits the copy of
-  # the snapshot, then any more text the refusal must hold.
-  node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const core=(table)=>(((s[table]??={})['@durablerun/core']??={})['.']??={});const exported=core('surface'),withdrawn=core('withdrawn'),changed=core('changed');$3;fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
+  # the snapshot, then any more text the refusal must hold. The JavaScript has the core entry
+  # point's three tables, pin(lines), the sha256 of a shape, and differ(), which says in the
+  # copy that Checkpoint was released with another member and returns the sha256 of the packed
+  # declaration, so an entry that records it is a change that holds.
+  node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const core=(table)=>(((s[table]??={})['@durablerun/core']??={})['.']??={});const exported=core('surface'),withdrawn=core('withdrawn'),changed=core('changed');const pin=(lines)=>require('node:crypto').createHash('sha256').update(lines.join('\n')).digest('hex');const differ=()=>{const packed=pin(exported.Checkpoint);exported.Checkpoint[1]=exported.Checkpoint[1].replace(';',' | PackageSurfaceControl;');return packed};$3;fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
     "$surface_snapshot" "$surface_control"
   surface_refusal_holds "$1" "$PACK_DIR/surface" "$surface_control" "$2" "${@:4}"
+}
+surface_loses() {
+  # $1 what the control shows, $2 a declaration file of the packed packages, $3 the one line
+  # a copy of it loses, then every text the refusal must hold.
+  local copy="$PACK_DIR/surface-loses"
+  rm -rf "$copy"
+  cp -R "$PACK_DIR/surface" "$copy"
+  node -e "const fs=require('node:fs');const [file,member]=process.argv.slice(1);const before=fs.readFileSync(file,'utf8');if(before.split(member+'\n').length!==2)throw new Error('package-smoke: expected one line '+member.trim()+' in '+file);fs.writeFileSync(file,before.replace(member+'\n',''))" \
+    "$copy/$2" "$3"
+  surface_refusal_holds "$1" "$copy" "$surface_snapshot" "${@:4}"
 }
 surface_refuses 'a snapshot naming a never-exported name' \
   'PackageSurfaceControlNeverExported is gone' \
@@ -88,55 +104,45 @@ surface_refuses 'a withdrawal of a name that is still exported' \
 surface_refuses 'a withdrawal of a name the release never exported' \
   'never exported it' \
   "withdrawn.PackageSurfaceControlNeverExported='a control'"
-# The reason is blanked on a real withdrawal, the only kind that holds otherwise.
 surface_refuses 'a withdrawal with no reason' \
-  'is withdrawn with no reason' \
-  "withdrawn[Object.keys(withdrawn)[0]]=' '"
+  'PackageSurfaceControlGone is withdrawn with no reason' \
+  "exported.PackageSurfaceControlGone=['a control'];withdrawn.PackageSurfaceControlGone=' '"
 # The declarations are read, not only the names: a copy of the packed packages in which a
 # released interface lost one member is refused, and the refusal names the interface and the
 # member. A check that compares export names accepts it, as
 # postmortems/pr3.5a-simplification-review.md records.
-surface_lost_member="$PACK_DIR/surface-lost-member"
-cp -R "$PACK_DIR/surface" "$surface_lost_member"
-node -e "const fs=require('node:fs');const file=process.argv[1];const before=fs.readFileSync(file,'utf8');const member='    checkpointName: string;\n';if(before.split(member).length!==2)throw new Error('package-smoke: expected one checkpointName member in '+file);fs.writeFileSync(file,before.replace(member,''))" \
-  "$surface_lost_member/core/package/dist/types.d.ts"
-surface_refusal_holds 'a released interface that lost a member' \
-  "$surface_lost_member" "$surface_snapshot" \
+surface_loses 'a released interface that lost a member' \
+  core/package/dist/types.d.ts '    checkpointName: string;' \
   'Checkpoint is declared differently' '- checkpointName: string;'
 # A private constructor is part of what a consumer sees, because it says the class cannot be
 # constructed: a copy in which UserName lost its private constructor, and kept its other
 # private member, is refused.
-surface_lost_constructor="$PACK_DIR/surface-lost-constructor"
-cp -R "$PACK_DIR/surface" "$surface_lost_constructor"
-node -e "const fs=require('node:fs');const file=process.argv[1];const before=fs.readFileSync(file,'utf8');const member='    private constructor();\n';if(before.split(member).length!==2)throw new Error('package-smoke: expected one private constructor in '+file);fs.writeFileSync(file,before.replace(member,''))" \
-  "$surface_lost_constructor/core/package/dist/validate.d.ts"
-surface_refusal_holds 'a released class that lost its private constructor' \
-  "$surface_lost_constructor" "$surface_snapshot" \
+surface_loses 'a released class that lost its private constructor' \
+  core/package/dist/validate.d.ts '    private constructor();' \
   'UserName is declared differently' '- private constructor();'
 # The same from the other side: the snapshot says a member was declared another way.
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \
-  "exported.Checkpoint[1]=exported.Checkpoint[1].replace(';',' | PackageSurfaceControl;')" \
+  "differ()" \
   '- checkpointName: string | PackageSurfaceControl;' '+ checkpointName: string;'
 # A change that does not hold: without these the table would excuse a declaration nobody
 # changed, a name the release never had, a name that is gone, a change with nothing said
 # about why, or a second change to a name that is already listed.
 surface_refuses 'a change listed for a declaration that did not change' \
   'Checkpoint is listed as changed, but it is declared as' \
-  "changed.Checkpoint={reason:'a control',declarationSha256:'0'}"
+  "changed.Checkpoint={reason:'a control',declarationSha256:pin(exported.Checkpoint)}"
 surface_refuses 'a change listed for a name the release never exported' \
   'PackageSurfaceControlNeverExported is listed as changed, but' \
   "changed.PackageSurfaceControlNeverExported={reason:'a control',declarationSha256:'0'}"
 surface_refuses 'a change listed for a withdrawn name' \
-  'is both withdrawn and listed as changed' \
-  "changed[Object.keys(withdrawn)[0]]={reason:'a control',declarationSha256:'0'}"
-# The last two edit a real change, the only kind that holds otherwise.
+  'PackageSurfaceControlGone is both withdrawn and listed as changed' \
+  "exported.PackageSurfaceControlGone=['a control'];withdrawn.PackageSurfaceControlGone='a control';changed.PackageSurfaceControlGone={reason:'a control',declarationSha256:'0'}"
 surface_refuses 'a change listed with no reason' \
-  'is listed as changed with no reason' \
-  "changed[Object.keys(changed)[0]].reason=' '"
+  'Checkpoint is listed as changed with no reason' \
+  "changed.Checkpoint={reason:' ',declarationSha256:differ()}"
 surface_refuses 'a second change to a listed name' \
-  'the sha256 recorded is not the packed declaration' \
-  "changed[Object.keys(changed)[0]].declarationSha256='0'"
+  'Checkpoint is listed as changed, but the sha256 recorded is not the packed declaration' \
+  "differ();changed.Checkpoint={reason:'a control',declarationSha256:'0'}"
 
 node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 
