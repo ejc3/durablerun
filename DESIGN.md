@@ -567,10 +567,12 @@ One invocation executes one claimed run to its next suspension point:
   leaves out a column with no default, all under its general state HY000
   beside a lock wait timeout, and 1265 as an error, text that is not a number
   for a numeric column, under 01000, the state of a warning. For that last one
-  the three dialects give three answers, because libSQL stores the text, so it
-  is held by each server's own case and by no shared one. The two lists are
-  held to the server's own list of error numbers (§3.4). One difference
-  between dialects is deliberate: a syntax error is
+  the three dialects give three answers: libSQL stores the text, PostgreSQL
+  refuses it with 22P02, which its class makes permanent, and MySQL refuses it
+  with 1265, which only its number makes permanent. So it is held by each
+  server's own case and by no shared one. The two lists are held to the
+  server's own list of error numbers (§3.4). One difference between dialects
+  is deliberate: a syntax error is
   permanent on the two servers, which give it a code of its own, and an outage
   on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
   together with a transaction state error that a new connection cures, and
@@ -2551,15 +2553,21 @@ not depend on careful reading:
   executor case on a fake driver is fed only the codes its author listed. On
   MySQL that gap is closed at its source: one real-server case reads the
   server's own list, `performance_schema.events_errors_summary_global_by_error`,
-  which names every error number with its SQLSTATE, and asks the executor's
-  classifier about each of the 1,776 numbers a client can be sent. Under
-  classes 22, 23 and 42, a number whose name says a limit must not be typed
-  permanent, unless a table says why no retry lifts it. Outside those classes,
-  a number whose name says a constraint, a default, a truncation or a bad
-  value must be typed permanent, or match exactly one written reason. A reason
-  that explains nothing fails it too, and so does a server version that adds
-  such a number. Its limits are what a name can say: a number whose name does
-  not say what it means, and a name the two patterns do not match, pass it
+  which names each of the 1,776 numbers a client can be sent with its
+  SQLSTATE, and asks the executor's classifier about every number whose name
+  says one of two things, 138 and 49 of them at MySQL 8.4.11. A number whose
+  name says a limit must not be typed permanent, whatever class it is filed
+  under, and whether the class or the list kept by hand types it, unless a
+  table says why no retry lifts it. Outside classes 22, 23 and 42, a number
+  whose name says a constraint, a default, a truncation or a bad value must be
+  typed permanent, or match exactly one written reason. A reason that explains
+  nothing fails it too, and so does a server version that adds such a number.
+  Where a reason rests on what the store's schema lacks, a view, an
+  auto-increment or a temporal column, a functional index or a stored program,
+  the same file reads that from a migrated database. A reason about which
+  statements the store sends is held by nothing. Its limits are what a name
+  can say: a number whose name does not say what it means, and a name the two
+  patterns do not match, as 1040, the server's limit on connections, pass it
   unseen. PostgreSQL has no such catalog, so its map is held by its SQLSTATE
   classes alone, which the standard defines. A batch sent after the executor
   closed is a `StoreUnavailableError`.

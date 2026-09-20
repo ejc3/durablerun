@@ -789,7 +789,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, and SQLSTATE classes 21 and
     54 on the two servers, stay outages, because no case here could produce one
     through a port. On MySQL the case that reads the server's list names every
-    number it leaves an outage and why. Trigger: one of them is met in a run.
+    number it leaves an outage though its name says a refused value, and why.
+    A name can miss one: 1153 (`ER_NET_PACKET_TOO_LARGE`, 08S01) stays an
+    outage though the same statement is refused every time, which is main's
+    behaviour and the safe side. Trigger: one of them is met in a run.
 - **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
   `Launcher.launch` takes an optional second argument whose one field is an
   abort signal. The resident driver's launch deadline hands every call a signal
