@@ -159,7 +159,7 @@ starts each call when it is awaited.
 - Fixes: commit `0d0a92a` corrects the texts of findings 2, 3 and 4 in DESIGN.md, BUILD.md and a test comment. They have no red test, because no test reads prose.
 - Finder: the one full review of PR #68. Its verdict: "The refactor holds up on three dialects, with one reproduced behaviour change that should be fixed before merge and six low-severity items."
 - The reviewer's probe, run again as a case of the shared suite with main as the control. On main all 15 answers are `LeaseLostError` on libSQL, PostgreSQL and MySQL. On the reviewed head 9 of the 15 are a plain error on each. On the fixed head all 15 are `LeaseLostError` on each. The reviewer ran `deferLaunch` alone and read that `reschedule` and `suspendRun` share the helper, and the case shows they fail the same way.
-- The class, on the unfixed code. The new case of the identifier surface sends the six state words to every entry of the port, 56 calls a word. On the red commit it fails on each dialect at three entries, the run id of those three writes, and at no other. On main and on the fixed head it passes on each dialect. So no other entry of the port reads a caller's identifier as a state today.
+- The class, on the unfixed code. The new case of the identifier surface sends the six state words to every entry of the port, 56 calls a word. The case arrived with the fix and is not in the red commit. Laid over the red commit, it fails on each dialect at three entries, the run id of those three writes, and at no other. On main and on the fixed head it passes on each dialect. So no other entry of the port reads a caller's identifier as a state today.
 - Every finding was checked before it was folded, and none was refuted. Three of the review's seven items are not counted. Its finding 4, a sentence of an older BUILD.md entry that described `lockEvent`, is corrected. Its finding 5, two files whose cases moved off a terminal state written as text, is now named in the body's `gate-changes:` line with why nothing weakens. Its finding 6, the same 33 lines of `taskDoneDialect()` in each store, stands as the body's simplify dispositions say, because the batch lint refuses the collapse.
 - What did not reproduce. A wider reach was looked for and not found: the identifier surface's new case fails at three entries and nowhere else, and no other shipped statement binds a caller's string below a value it gives `tasks.state`. The wrong-fact probes are the review's, and they were not run again here. The review did not run the whole libSQL conformance file or the fuzz with the facts wrong, so the corrected texts say what it ran and no more. Main's self-concurrency surface arrived while this was folded, and because this pull request moved where the event lock is taken, conformance ran on three dialects on the rebased branch before anything else: all 37 contests of each dialect pass, with the executors' count of deadlock victims held at zero.
 
@@ -216,6 +216,19 @@ Deferred (recorded in BUILD.md):
   after the fact, over the rows.
 - A state the database assembles from pieces that name none ships today, as it
   always could.
+- A task inserted by an INSERT ... SELECT whose state is named in a table that
+  SELECT reads from or joins ships today with no completion event, as it
+  always could: for an INSERT the rule reads the selection at the state's
+  position and never that SELECT's sources. The fold's derived-table and
+  joined-table cases hold a subquery given as a value, and not this. The
+  re-review of the fold found it, and it is an accepted exhibit now, beside a
+  refused control. No shipped statement has the shape.
+- A copy of one column of a derived or joined table is refused as the end of
+  a task when another column of that table names a terminal state, because
+  the rule reads every column such a table selects and not the one the outer
+  query takes. It is the over-read of finding 1 one level down. It is
+  conservative, no store builds the shape, and an exhibit holds it beside a
+  control the rule accepts. The re-review of the fold found it.
 - A reading that came to take a clause which chooses a row, other than a
   filter, a join condition or a CASE condition, passes every case and refuses
   a legal write. No case names ORDER BY, GROUP BY, HAVING or LIMIT.
