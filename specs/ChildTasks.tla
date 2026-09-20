@@ -90,8 +90,10 @@
 \* it.  The script holds this block to what it can see: every quoted label is
 \* a batch some store sends, every action named is an action of Next below,
 \* and every action of Next is mapped here or listed as having no batch, with
-\* the reason.  It reads no guard.  The `child-tasks` conformance surface holds
-\* each action and guard by a case that names it.
+\* the reason.  It reads no guard.  The guards are held by conformance cases
+\* under descriptive titles: the `child-tasks` surface holds the awaits and the
+\* terminal batches, and the scheduler suite holds SpawnChild's guard, that a
+\* child is created only under its parent's live claim.
 \*
 \* An entry starts three spaces in and keeps its labels, its actions, and its
 \* class on that one line, and its prose continues five spaces in.  The class
