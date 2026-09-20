@@ -1,3 +1,4 @@
+import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SchedulerStore } from './ports.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
@@ -219,31 +220,37 @@ export function requirePortString(name: PortStringName, raw: unknown): void {
 function requireNamed(named: NamedStrings | undefined, value: unknown): void {
   if (named === null || named === undefined) return
   if (typeof named !== 'string' && hasOwn(named, '?')) {
+    // What the port's type lets a caller leave out is held only when it was passed.
+    if (value === undefined) return
     requireNamed(named['?'], value)
     return
   }
   if (typeof named === 'string') {
+    // Everything else the port requires, a payload too: whether a string is there is the
+    // port's shape and not the payload's domain. Left to an entry, a string that was left
+    // out became a TypeError from a bind, or a stored key that ends in the word undefined.
+    if (value === undefined) {
+      throw new InvalidDurableStringError(`${named} was left out, and the port requires it`)
+    }
     requirePortString(named, value)
     return
   }
-  // An options object that was left out, or that is not an object, belongs to the entry.
-  if (typeof value !== 'object' || value === null) return
+  // An options object the port requires. When it was left out, or is not an object, every
+  // string in it was left out.
+  const members = typeof value === 'object' && value !== null ? value : undefined
   const properties = objectKeys(named)
   for (let index = 0; index < properties.length; index++) {
     const property = properties[index]
     if (property === undefined) continue
-    // A member that was left out is not a string the port was passed. The entry that
-    // reads the object owns a member it requires.
-    const member: unknown = reflectGet(value, property)
-    if (member === undefined) continue
-    requireNamed(named[property], member)
+    requireNamed(named[property], members === undefined ? undefined : reflectGet(members, property))
   }
 }
 
 /**
  * The one check of the strings a port call carries: every string the table names is held
- * to its rule, in the order of the arguments, before the entry runs. The refusal is
- * `InvalidDurableStringError`, and it names what the caller passed.
+ * to its rule, in the order of the arguments, before the entry runs, and a string the port
+ * requires is refused when it was left out. The refusal is `InvalidDurableStringError`,
+ * and it names what the caller passed or left out.
  */
 export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
   const named: readonly NamedStrings[] = PORT_STRINGS[method]

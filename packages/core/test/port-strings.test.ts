@@ -144,7 +144,7 @@ describe('the strings a port call carries', () => {
     })
   })
 
-  it('refuses null and any other value that is not a string where a string was passed, and nothing that was left out', () => {
+  it('refuses null and any other value that is not a string where a string was passed, and a required string that was left out', () => {
     const spawn = (options?: unknown) =>
       refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}', options]))
     const outside = 'idempotencyKey must be a string without NUL or lone UTF-16 surrogates'
@@ -162,27 +162,47 @@ describe('the strings a port call carries', () => {
       'an optional member that is a number': outside,
       'a required argument that is null':
         'queue must be a string without NUL or lone UTF-16 surrogates',
-      'a required argument left out':
-        'queue must be a string without NUL or lone UTF-16 surrogates',
+      'a required argument left out': 'queue was left out, and the port requires it',
     })
   })
 
-  it('passes over an options object, and a member of one, that the caller left out', () => {
+  it('passes over what the caller may leave out, and refuses what the port requires when it is left out', () => {
+    const childOf = { parentQueue: 'q', parentTaskId: 'p', runId: 'r', claimToken: 'c' }
+    const leftOut = (name: string) => `${name} was left out, and the port requires it`
     expect({
       noOptions: refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}'])),
       emptyOptions: refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}', {}])),
       aKeyAlone: refusalOf(() =>
         requirePortStrings('spawn', ['q', 't', '{}', { idempotencyKey: 'k' }]),
       ),
-      // An entry reads a missing checkpoint for itself. The check does not read through it.
+      // A parent may be left out. One that is passed has five strings the port requires.
+      aMemberOfAParent: refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}', { childOf }])),
+      anEmptyParent: refusalOf(() =>
+        requirePortStrings('spawn', ['q', 't', '{}', { childOf: {} }]),
+      ),
+      aPayload: refusalOf(() => requirePortStrings('spawn', ['q', 't', undefined])),
+      aPayloadThatIsPassed: refusalOf(() => requirePortStrings('spawn', ['q', 't', 42])),
       noCheckpoint: refusalOf(() =>
         requirePortStrings('suspendRun', ['q', 'r', 'c', null, undefined]),
+      ),
+      aCheckpointThatIsNotAnObject: refusalOf(() =>
+        requirePortStrings('suspendRun', ['q', 'r', 'c', null, 42]),
+      ),
+      aMemberOfACheckpoint: refusalOf(() =>
+        requirePortStrings('suspendRun', ['q', 'r', 'c', null, { key: 'k' }]),
       ),
     }).toEqual({
       noOptions: 'accepted',
       emptyOptions: 'accepted',
       aKeyAlone: 'accepted',
-      noCheckpoint: 'accepted',
+      aMemberOfAParent: leftOut('childOf.replayKey'),
+      anEmptyParent: leftOut('childOf.parentQueue'),
+      aPayload: leftOut('paramsJson'),
+      // A payload that is passed is its serializer's, whatever it is.
+      aPayloadThatIsPassed: 'accepted',
+      noCheckpoint: leftOut('checkpoint.key'),
+      aCheckpointThatIsNotAnObject: leftOut('checkpoint.key'),
+      aMemberOfACheckpoint: leftOut('checkpoint.stateJson'),
     })
   })
 })

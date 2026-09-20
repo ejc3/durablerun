@@ -1933,10 +1933,17 @@ are load-bearing):
    - A payload, which is JSON text or the headers object, is its serializer's, and this
      check leaves it alone.
    - A value that is not a string where the port takes one is refused as a string outside
-     the domain is, because the domain is of strings. A string the caller left out is
-     not a refusal of this check: an optional argument, or any member of an options
-     object. The entry that reads the object owns a member it requires. Null is not a
-     way to leave a string out.
+     the domain is, because the domain is of strings. Null is not a way to leave a
+     string out.
+   - A string the port's type lets a caller leave out is not a refusal: an optional
+     argument, or an optional member of an options object, which today are a spawn's
+     options, its idempotency key, its parent and its headers. Every other string the port
+     requires, and one that is left out is refused the same way, a payload too, because
+     whether a string is there is the port's shape and not the payload's domain. An
+     options object the port requires that is left out, or is not an object, has every
+     string in it left out. Left to the entries, a string that was left out became a
+     TypeError from a bind, or, for a child spawn's replay key, a stored key that ends in
+     the word undefined.
    - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
      happens before an id is minted or anything is sent, and it is a rejected promise and
      never a throw.
