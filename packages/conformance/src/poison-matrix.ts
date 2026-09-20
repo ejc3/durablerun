@@ -90,7 +90,15 @@ const PROTECTED_WAIT_EVENT = 'protected-wait-event'
 const PROTECTED_STEP = '$await:protected'
 const PROTECTED_DRIVER = 'protected-driver'
 
-export type PoisonTargetArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-timeout'
+/** The arms that find their target by a scan. The poison sorts first, and the healthy trigger wins the same call. */
+export type PoisonSelectingArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-timeout'
+/**
+ * The arms that name their target. Their profile is the state in which the label acts on
+ * a target with nothing corrupt, so the corruption is what refuses the poison call, and
+ * the healthy trigger wins a call of its own.
+ */
+export type PoisonAddressedArm = 'activate' | 'defer-launch'
+export type PoisonTargetArm = PoisonSelectingArm | PoisonAddressedArm
 
 type PoisonTargetProfileSeed<
   State extends 'pending' | 'sleeping' | 'running',
@@ -140,9 +148,42 @@ export type PoisonTargetProfileSeedRecord = Readonly<{
     940_000,
     null
   >
+  'activate-unactivated': UnactivatedClaimSeed
+  'defer-launch-unactivated': UnactivatedClaimSeed
 }>
 
+/**
+ * A run claimed and not yet activated, under a live lease: what a claim receipt names.
+ * Activation and the launch deferral both act on it, so both arms seed it.
+ */
+type UnactivatedClaimSeed = PoisonTargetProfileSeed<
+  'running',
+  'poison-worker',
+  1,
+  0,
+  60_000,
+  1_060_000,
+  1_000_000,
+  null
+>
+
 export type PoisonTargetProfile = keyof PoisonTargetProfileSeedRecord
+
+const UNACTIVATED_CLAIM_SEED = Object.freeze({
+  state: 'running',
+  taskAttempts: 0,
+  taskMaxAttempts: 5,
+  taskInfraRetries: 0,
+  runAttempt: 1,
+  claimedBy: TOKEN,
+  claimGen: 1,
+  activatedGen: 0,
+  runRelaunchCount: 0,
+  leaseMs: 60_000,
+  claimExpiresAtMs: 1_060_000,
+  heartbeatAtMs: 1_000_000,
+  availableAtMs: null,
+} as const satisfies UnactivatedClaimSeed)
 
 export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
   'claim-pending': Object.freeze({
@@ -205,6 +246,8 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: 940_000,
     availableAtMs: null,
   }),
+  'activate-unactivated': UNACTIVATED_CLAIM_SEED,
+  'defer-launch-unactivated': UNACTIVATED_CLAIM_SEED,
 } as const satisfies PoisonTargetProfileSeedRecord)
 
 type CounterSeedOverrides = Readonly<
@@ -223,6 +266,7 @@ export type PoisonUnreachableTargetReason =
   | 'counter-relation-needs-another-invalid-field'
   | 'generation-classification-needs-another-invalid-field'
   | 'transition-does-not-read-field'
+  | 'receipt-cannot-name-the-generation'
 
 export type PoisonTargetability =
   | { readonly kind: 'targetable'; readonly companions?: CounterSeedOverrides }
@@ -507,6 +551,60 @@ const COUNTER_TARGETABILITY = Object.freeze({
   }),
 } as const satisfies PoisonCounterTargetabilityRecord)
 
+type CounterBoundaryKey = keyof PoisonCounterTargetabilityRecord
+type AddressedTargetability<Key extends string> = Readonly<
+  Record<PoisonAddressedArm, Readonly<Record<Key, PoisonTargetability>>>
+>
+
+const RECEIPT_GENERATION_TARGETABILITY = Object.freeze({
+  kind: 'unreachable' as const,
+  reason: 'receipt-cannot-name-the-generation' as const,
+})
+
+/**
+ * What a transition on a claim receipt reads of each counter boundary. A receipt names
+ * the generation it holds and the port refuses a generation outside the bounds, so a
+ * stored claim generation outside them is another claim's to every caller. An activated
+ * generation above its bound is at or past the claim's, which the latch refuses first.
+ */
+const RECEIPT_COUNTER_TARGETABILITY = Object.freeze({
+  'task-attempts/upper': COUNTER_RELATION_TARGETABILITY,
+  'task-attempts/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/lower': COUNTER_RELATION_TARGETABILITY,
+  'task-infra-retries/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-infra-retries/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'run-attempt/upper': COUNTER_RELATION_TARGETABILITY,
+  'run-attempt/lower': COUNTER_RELATION_TARGETABILITY,
+  'run-claim-gen/upper': RECEIPT_GENERATION_TARGETABILITY,
+  'run-claim-gen/lower': RECEIPT_GENERATION_TARGETABILITY,
+  'run-activated-gen/upper': GENERATION_TARGETABILITY,
+  'run-activated-gen/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'run-relaunch-count/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'run-relaunch-count/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'checkpoint-owner-attempt/upper': UNREAD_TARGETABILITY,
+  'checkpoint-owner-attempt/lower': UNREAD_TARGETABILITY,
+} as const satisfies Readonly<Record<CounterBoundaryKey, PoisonTargetability>>)
+
+/**
+ * Every counter boundary against every arm that names its target. Activation and the
+ * launch deferral apply one admission to the receipt, so they share one classification.
+ * The key type asks a new persisted counter, and a new arm, for its answers.
+ */
+const ADDRESSED_COUNTER_TARGETABILITY = Object.freeze({
+  activate: RECEIPT_COUNTER_TARGETABILITY,
+  'defer-launch': RECEIPT_COUNTER_TARGETABILITY,
+} as const satisfies AddressedTargetability<CounterBoundaryKey>)
+
+/** One row of an addressed table, as the arms of a target. It is the one place that spells them. */
+const addressedArmsOf = <Key extends string>(
+  table: AddressedTargetability<Key>,
+  key: Key,
+): Readonly<Record<PoisonAddressedArm, PoisonTargetability>> => ({
+  activate: table.activate[key],
+  'defer-launch': table['defer-launch'][key],
+})
+
 const ALL_TARGET_ARMS = Object.freeze({
   claim: Object.freeze({ kind: 'targetable' as const }),
   'sweep:lost-launch': Object.freeze({ kind: 'targetable' as const }),
@@ -520,6 +618,20 @@ export const POISON_RELATIONAL_TARGETS = Object.freeze({
   'counter-fractional/task-max-attempts': ALL_TARGET_ARMS,
   'counter-fractional/run-relaunch-count': ALL_TARGET_ARMS,
 } as const satisfies PoisonRelationalTargetRecord)
+
+const EVERY_RELATIONAL_TARGET = Object.freeze({
+  'attempts/at-max-with-live-run': TARGETABLE_COUNTER_TARGETABILITY,
+  'accounting/below-top-minus-one': TARGETABLE_COUNTER_TARGETABILITY,
+  'accounting/live-run-not-next': TARGETABLE_COUNTER_TARGETABILITY,
+  'counter-fractional/task-max-attempts': TARGETABLE_COUNTER_TARGETABILITY,
+  'counter-fractional/run-relaunch-count': TARGETABLE_COUNTER_TARGETABILITY,
+} as const satisfies Readonly<Record<keyof PoisonRelationalTargetRecord, PoisonTargetability>>)
+
+/** The relational and fractional targets against every arm that names its target. */
+const ADDRESSED_RELATIONAL_TARGETS = Object.freeze({
+  activate: EVERY_RELATIONAL_TARGET,
+  'defer-launch': EVERY_RELATIONAL_TARGET,
+} as const satisfies AddressedTargetability<keyof PoisonRelationalTargetRecord>)
 
 function counterCompanions(
   fieldId: PersistedCounterFieldId,
@@ -541,6 +653,7 @@ function counterBoundaryTarget(
   side: 'upper' | 'lower',
 ): CounterBoundaryTarget {
   const arms = COUNTER_TARGETABILITY[`${fieldId}/${side}`]
+  const addressed = addressedArmsOf(ADDRESSED_COUNTER_TARGETABILITY, `${fieldId}/${side}`)
   const companions = counterCompanions(fieldId, side)
   const mergeCompanions = (targetability: PoisonTargetability): PoisonTargetability =>
     targetability.kind === 'targetable' && companions !== undefined
@@ -553,6 +666,8 @@ function counterBoundaryTarget(
       claim: mergeCompanions(arms.claim),
       'sweep:lost-launch': mergeCompanions(arms['sweep:lost-launch']),
       'sweep:claim-timeout': mergeCompanions(arms['sweep:claim-timeout']),
+      activate: mergeCompanions(addressed.activate),
+      'defer-launch': mergeCompanions(addressed['defer-launch']),
     }),
   })
 }
@@ -1206,10 +1321,29 @@ export interface UnreachablePoisonTarget {
   readonly reason: Extract<PoisonTargetability, { kind: 'unreachable' }>['reason']
 }
 
-const profilesForArm = (arm: PoisonTargetArm): readonly PoisonTargetProfile[] =>
-  arm === 'claim'
-    ? ['claim-pending', 'claim-sleeping']
-    : [arm === 'sweep:lost-launch' ? 'sweep-lost-launch' : 'sweep-claim-timeout']
+/** The lifecycle profiles each arm is targeted in, in enrollment order. */
+const PROFILES_FOR_ARM = Object.freeze({
+  claim: ['claim-pending', 'claim-sleeping'],
+  'sweep:lost-launch': ['sweep-lost-launch'],
+  'sweep:claim-timeout': ['sweep-claim-timeout'],
+  activate: ['activate-unactivated'],
+  'defer-launch': ['defer-launch-unactivated'],
+} as const satisfies Readonly<Record<PoisonTargetArm, readonly PoisonTargetProfile[]>>)
+
+const POISON_TARGET_ARMS = Object.keys(PROFILES_FOR_ARM) as PoisonTargetArm[]
+
+const isAddressedArm = (label: string): label is PoisonAddressedArm =>
+  Object.hasOwn(ADDRESSED_COUNTER_TARGETABILITY, label)
+
+/** Every arm that names its target, with the profile it is targeted in. */
+export const POISON_ADDRESSED_PROFILES: readonly {
+  readonly arm: PoisonAddressedArm
+  readonly profile: PoisonTargetProfile
+}[] = Object.freeze(
+  POISON_TARGET_ARMS.filter(isAddressedArm).flatMap((arm) =>
+    PROFILES_FOR_ARM[arm].map((profile) => Object.freeze({ arm, profile })),
+  ),
+)
 
 const targetCases: PoisonTargetCase[] = []
 const unreachableTargets: UnreachablePoisonTarget[] = []
@@ -1217,7 +1351,7 @@ const enrollTarget = (
   witness: PoisonWitness,
   targetArms: Readonly<Record<PoisonTargetArm, PoisonTargetability>>,
 ): void => {
-  for (const arm of ['claim', 'sweep:lost-launch', 'sweep:claim-timeout'] as const) {
+  for (const arm of POISON_TARGET_ARMS) {
     const targetability = targetArms[arm]
     if (targetability.kind === 'unreachable') {
       unreachableTargets.push(
@@ -1230,7 +1364,7 @@ const enrollTarget = (
       )
       continue
     }
-    for (const profile of profilesForArm(arm)) {
+    for (const profile of PROFILES_FOR_ARM[arm]) {
       targetCases.push(
         Object.freeze({
           id: `${witness.id}/${profile}`,
@@ -1267,8 +1401,13 @@ const aggregateOwnsWitness = (
 ): witness is PoisonWitness & { readonly id: PoisonAggregateWitnessId } =>
   Object.prototype.hasOwnProperty.call(POISON_AGGREGATE_WITNESSES, witness.id)
 
-for (const [witnessId, targetArms] of Object.entries(POISON_RELATIONAL_TARGETS)) {
-  enrollTarget(requiredPoisonWitness(witnessId), targetArms)
+for (const witnessId of Object.keys(
+  POISON_RELATIONAL_TARGETS,
+) as (keyof PoisonRelationalTargetRecord)[]) {
+  enrollTarget(requiredPoisonWitness(witnessId), {
+    ...POISON_RELATIONAL_TARGETS[witnessId],
+    ...addressedArmsOf(ADDRESSED_RELATIONAL_TARGETS, witnessId),
+  })
 }
 for (const witness of POISON_WITNESSES) {
   if (witness.counterBoundary) enrollTarget(witness, witness.counterBoundary.arms)
@@ -2741,8 +2880,7 @@ function declaredTargetErrors(
   const task = rowById(before, 'tasks', TASK)
   const run = rowById(before, 'runs', RUN)
   const healthyRun = rowById(before, 'runs', TRIGGER_RUN)
-  const expectedState =
-    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
+  const expectedState = POISON_TARGET_PROFILE_SEEDS[profile].state
   if (task?.state !== expectedState || run?.state !== expectedState) {
     errors.push(`declared ${profile} lifecycle was not applied`)
   }
@@ -2859,6 +2997,21 @@ function declaredTargetErrors(
   }
 
   const expires = exactInteger(run?.claim_expires_at_ms)
+  if (profile === 'activate-unactivated' || profile === 'defer-launch-unactivated') {
+    if (run?.claimed_by !== TOKEN || expires === undefined || expires <= BigInt(NOW)) {
+      errors.push(`declared ${profile} run is not a live owned claim`)
+    }
+    // The receipt names the poison invocation's generation, and the latch admits it only
+    // while no activation has reached that generation.
+    if (
+      (targetFieldId !== 'run-claim-gen' && claimGen !== BigInt(POISON_INVOCATION.claimGen)) ||
+      (targetFieldId !== 'run-activated-gen' &&
+        (claimGen === undefined || activatedGen === undefined || activatedGen >= claimGen))
+    ) {
+      errors.push(`declared ${profile} claim is not the unactivated one its receipt names`)
+    }
+    return errors
+  }
   if (
     run?.claimed_by !== TOKEN ||
     expires === undefined ||
@@ -3401,7 +3554,9 @@ export async function runPoisonMatrixCase(
         return Object.freeze({ target, status: 'rejected', reason })
       }
     }
-    const targetedSelection = options.targetProfile !== undefined
+    // An arm that names its target is refused on the poison and wins a healthy call of
+    // its own. An arm that scans must win the healthy trigger in the one call it makes.
+    const targetedSelection = options.targetProfile !== undefined && !isAddressedArm(label)
     outcomes.push(
       await call('poison', () =>
         invoke(label, store, POISON_INVOCATION, targetedSelection ? 1 : 100),
@@ -3482,4 +3637,32 @@ export function runPoisonTargetCase(
     targetProfile: target.profile,
     targetCompanions: target.companions,
   })
+}
+
+/**
+ * The control of an addressed profile: the arm's own call on the profile with nothing
+ * corrupt. The call must act on the poison target. That is what makes a targeted refusal
+ * on the same profile the corruption's, and not a condition of the profile that refuses
+ * every caller.
+ */
+export async function observeCleanAddressedProfile(
+  makeFixture: StoreFixtureFactory,
+  { arm, profile }: (typeof POISON_ADDRESSED_PROFILES)[number],
+): Promise<{ invocation: PromiseSettledResult<unknown>; poisonSubjectUnchanged: boolean }> {
+  const f = await makeFixture(`poison-clean-${profile}`)
+  try {
+    await seedBase(f)
+    await preparePoisonTarget(f.raw, profile, {})
+    await seedHealthyTrigger(f.raw, arm)
+    const before = await snapshot(f.raw)
+    const [invocation] = await Promise.allSettled([invoke(arm, f.store, POISON_INVOCATION)])
+    const after = await snapshot(f.raw)
+    if (invocation === undefined) throw new Error(`${profile}: the clean call did not settle`)
+    return {
+      invocation,
+      poisonSubjectUnchanged: same(poisonOwnedClosure(before), poisonOwnedClosure(after)),
+    }
+  } finally {
+    await f.close()
+  }
 }

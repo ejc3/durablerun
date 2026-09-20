@@ -1036,12 +1036,12 @@ describe('poison/invariant mechanism self-tests', () => {
           kind: classification.kind,
         })),
       ),
-    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 3)
+    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 5)
     expect(
       POISON_TARGET_CASES,
       'mutation-verdict:behavior:poison-targetability-inventory',
-    ).toHaveLength(50)
-    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
+    ).toHaveLength(74)
+    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(44)
   })
 
   it('pins every unreachable counter target and its reason', () => {
@@ -1049,29 +1049,47 @@ describe('poison/invariant mechanism self-tests', () => {
       'counter-bound/task-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/activate=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/activate=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-claim-gen/activate=receipt-cannot-name-the-generation',
+      'counter-bound/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
       'counter-bound/run-activated-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/activate=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/defer-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/activate=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
       'counter-bound-lower/task-max-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/activate=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/claim=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/activate=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/run-claim-gen/activate=receipt-cannot-name-the-generation',
+      'counter-bound-lower/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
       'counter-bound-lower/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/activate=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
     ])
   })
 
@@ -1088,7 +1106,14 @@ describe('poison/invariant mechanism self-tests', () => {
 
   it('owns an executable case for every declared lifecycle profile', () => {
     expect(new Set(POISON_TARGET_CASES.map((candidate) => candidate.profile))).toEqual(
-      new Set(['claim-pending', 'claim-sleeping', 'sweep-lost-launch', 'sweep-claim-timeout']),
+      new Set([
+        'claim-pending',
+        'claim-sleeping',
+        'sweep-lost-launch',
+        'sweep-claim-timeout',
+        'activate-unactivated',
+        'defer-launch-unactivated',
+      ]),
     )
   })
 
@@ -1213,6 +1238,24 @@ describe('poison/invariant mechanism self-tests', () => {
     ).rejects.toThrow(/generation tuple has an unrelated claim refusal/)
   })
 
+  it('rejects a receipt target whose claim was already activated', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/activate-unactivated'),
+        {
+          beforeSnapshot: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET activated_gen = claim_gen WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/claim is not the unactivated one its receipt names/)
+  })
+
   it('seeds a sleeping claim target from a prior activated generation', async () => {
     let generation: unknown
     await runPoisonTargetCase(
@@ -1255,6 +1298,14 @@ describe('poison/invariant mechanism self-tests', () => {
       {
         profile: 'sweep-claim-timeout',
         targetId: 'counter-bound/task-max-attempts/sweep-claim-timeout',
+      },
+      {
+        profile: 'activate-unactivated',
+        targetId: 'counter-bound/task-max-attempts/activate-unactivated',
+      },
+      {
+        profile: 'defer-launch-unactivated',
+        targetId: 'counter-bound/task-max-attempts/defer-launch-unactivated',
       },
     ] as const
     const observations: unknown[] = []
@@ -1361,6 +1412,40 @@ describe('poison/invariant mechanism self-tests', () => {
             lease_ms: 60_000,
             claim_expires_at_ms: 999_998,
             heartbeat_at_ms: 940_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'activate-unactivated',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 0,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 1_060_000,
+            heartbeat_at_ms: 1_000_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'defer-launch-unactivated',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 0,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 1_060_000,
+            heartbeat_at_ms: 1_000_000,
             available_at_ms: null,
           },
         },

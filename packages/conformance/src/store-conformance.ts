@@ -12,6 +12,7 @@ import type { StoreFixtureFactory } from './fixture.js'
 import { identifierBoundConformance } from './identifier-bound.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
 import {
+  POISON_ADDRESSED_PROFILES,
   POISON_AGGREGATE_WITNESSES,
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
@@ -22,6 +23,7 @@ import {
   type PoisonTargetCase,
   type PoisonTargetProfile,
   duplicatePoisonWitnessIds,
+  observeCleanAddressedProfile,
   observePoisonAggregateAmbientCase,
   observePoisonAggregateTargetCase,
   runPoisonMatrixCase,
@@ -226,8 +228,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(POISON_WITNESS_COUNT).toBe(146)
       expect(POISON_WRITE_LABELS).toHaveLength(21)
       expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_066)
-      expect(POISON_TARGET_CASES).toHaveLength(50)
-      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
+      expect(POISON_TARGET_CASES).toHaveLength(74)
+      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(44)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
         POISON_TARGET_CASES.length,
       )
@@ -507,6 +509,28 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             observation: {
               label: 'sweep:claim-timeout',
               profile: 'sweep-claim-timeout',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/activate-unactivated',
+            kind: 'observed',
+            observation: {
+              label: 'activate',
+              profile: 'activate-unactivated',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/defer-launch-unactivated',
+            kind: 'observed',
+            observation: {
+              label: 'defer-launch',
+              profile: 'defer-launch-unactivated',
               witness: 'accounting/live-run-not-next',
               conditionIds: ['accounting/live-run-not-next'],
               corruptionDisposition: 'injected',
@@ -1121,6 +1145,24 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
                 profile: 'sweep-claim-timeout',
               },
             },
+            {
+              profile: 'activate-unactivated',
+              kind: 'resolved',
+              result: {
+                label: 'activate',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'activate-unactivated',
+              },
+            },
+            {
+              profile: 'defer-launch-unactivated',
+              kind: 'resolved',
+              result: {
+                label: 'defer-launch',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'defer-launch-unactivated',
+              },
+            },
           ],
           receipt: { result: [], after: receiptBefore },
         })
@@ -1187,6 +1229,18 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           ])
         })
       })
+
+      // A targeted refusal is the corruption's only if the same call acts on the same
+      // profile with nothing corrupt. An arm that scans shows that in the cell itself, where
+      // its one call wins the healthy trigger. An arm that names its target shows it here.
+      for (const addressed of POISON_ADDRESSED_PROFILES) {
+        it(`${addressed.profile} admits ${addressed.arm} when nothing is corrupt`, async () => {
+          expect(await observeCleanAddressedProfile(makeFixture, addressed)).toMatchObject({
+            invocation: { status: 'fulfilled' },
+            poisonSubjectUnchanged: false,
+          })
+        })
+      }
 
       for (const target of POISON_TARGET_CASES) {
         if (
