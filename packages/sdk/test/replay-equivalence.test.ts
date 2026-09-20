@@ -22,6 +22,9 @@ import { LONGEST_NAME_BUILT, roomOf } from './name-rooms.js'
 
 const Q = 'q'
 
+/** A wait on a real timer. It is not durable: nothing of it is stored, and a replay waits again. */
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 /** Two tries, the second at once: a task whose first attempt fails, and every rollback. */
 const TWO_TRIES_AT_ONCE = {
   maxAttempts: 2,
@@ -110,9 +113,11 @@ type CallKind =
 interface ProgramOp {
   /**
    * A call; a group of calls started together and awaited together, which a task writes as
-   * `Promise.all`; or a failure of the task's first attempt, which its retry gets past.
+   * `Promise.all`; a failure of the task's first attempt, which its retry gets past; flows,
+   * which are functions started together that each await and then go on; or a wait on a timer,
+   * which is not durable.
    */
-  kind: CallKind | 'group' | 'fail-once'
+  kind: CallKind | 'group' | 'fail-once' | 'flows' | 'wait'
   valueIndex: number
   nameIndex: number
   sleepSeconds?: number
@@ -133,6 +138,12 @@ interface ProgramOp {
   namedAfterAttempt?: boolean
   /** A group's calls, in the order the task writes them. */
   members?: ProgramOp[]
+  /** Flows: each is ops run one after the other, and all of them are started together. */
+  flows?: ProgramOp[][]
+  /** How long a wait lasts, in milliseconds of a real timer. */
+  waitMs?: number
+  /** A step whose body takes this many milliseconds of a real timer before it returns. */
+  bodyMs?: number
   /** The shape this op was drawn as a part of, for the inventory. */
   shape?: string
 }
@@ -150,9 +161,16 @@ const KIND_TO_METHOD: Record<CallKind, keyof TaskContext> = {
   'await-child-timeout': 'awaitTask',
 }
 
-/** A program's calls in the order the task writes them: a group's members stand in its place. */
-function flat<Op extends { kind: string; members?: Op[] }>(ops: readonly Op[]): Op[] {
-  return ops.flatMap((op) => (op.kind === 'group' ? (op.members ?? []) : [op]))
+/**
+ * A program's calls in the order the task writes them: a group's members stand in its place,
+ * and so do the ops of its flows, one flow after another.
+ */
+function flat<Op extends { kind: string; members?: Op[]; flows?: Op[][] }>(
+  ops: readonly Op[],
+): Op[] {
+  return ops.flatMap((op) =>
+    op.kind === 'group' ? (op.members ?? []) : op.kind === 'flows' ? (op.flows ?? []).flat() : [op],
+  )
 }
 
 /** What a shape is drawn from: the generator's stream, and what the program holds so far. */
@@ -485,19 +503,24 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
           }
         case 'step': {
           const name = op.name ?? STEP_NAMES[op.nameIndex] ?? 'op'
+          const ran = () => {
+            watch?.bodies.push(index)
+            watch?.members?.push(`${index}.${position}`)
+            return VALUES[op.valueIndex]
+          }
           return fingerprint(
             await ctx.step(
               op.namedAfterAttempt ? `${name}-${ctx.attempt}` : name,
-              () => {
-                watch?.bodies.push(index)
-                watch?.members?.push(`${index}.${position}`)
-                return VALUES[op.valueIndex]
-              },
+              op.bodyMs === undefined ? ran : () => wait(op.bodyMs ?? 0).then(ran),
               op.registersRollback ? { rollback: () => {} } : undefined,
             ),
           )
         }
+        case 'wait':
+          await wait(op.waitMs ?? 1)
+          return undefined
         case 'group':
+        case 'flows':
         case 'fail-once':
           throw new FatalTaskError(`the generator drew '${op.kind}' where a call goes`)
       }
@@ -510,12 +533,25 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
       }
       // A group is observed by position, as `Promise.all` answers it, and never in the order
       // its calls were answered in, which a fault may change.
+      // A flow is a function of its own: it makes its next call when its last one is answered,
+      // so the calls of two flows are made at moments the store and the timers decide. Flows
+      // are observed by position too, each flow's answers in the order it got them.
       const answers =
         op.kind === 'group'
           ? await Promise.all(
               (op.members ?? []).map((member, position) => call(member, index, position)),
             )
-          : [await call(op, index)]
+          : op.kind === 'flows'
+            ? (
+                await Promise.all(
+                  (op.flows ?? []).map(async (flow, position) => {
+                    const seen: (string | ChildTask | undefined)[] = []
+                    for (const member of flow) seen.push(await call(member, index, position))
+                    return seen
+                  }),
+                )
+              ).flat()
+            : [await call(op, index)]
       for (const answer of answers) {
         if (typeof answer === 'string') observed.push(answer)
         else if (answer !== undefined) children.push(answer)
@@ -614,8 +650,11 @@ const INJECTED_OUTAGE = 'injected outage'
 
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
-  /** Every generated program completes. A name past its room fails its task for good. */
-  readonly ends?: 'completed' | 'failed'
+  /**
+   * Every generated program completes. A name past its room fails its task for good. 'either'
+   * leaves the ending to the caller, who compares it between schedules.
+   */
+  readonly ends?: 'completed' | 'failed' | 'either'
   readonly watch?: Watch
 }
 
@@ -642,6 +681,7 @@ async function runProgram(
   longestEmittedName: number
   longestTaskId: number
   calls: number
+  state: string | undefined
 }> {
   const { tamper = (store: SchedulerStore) => store, ends = 'completed', watch } = options
   const raw = LibsqlExecutor.open(':memory:')
@@ -708,6 +748,7 @@ async function runProgram(
       '{}',
       ops.some((op) => op.kind === 'fail-once') ? TWO_TRIES_AT_ONCE : undefined,
     )
+    const settleMs = 3 * Math.max(0, ...written.map((op) => op.bodyMs ?? 0))
     const externals = [
       ...new Set(
         written.filter((op) => op.kind === 'await-external').map((op) => op.eventName as string),
@@ -735,6 +776,9 @@ async function runProgram(
           { store, clock, registry },
           { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
         ).catch(() => {})
+        // A body on a timer can outlast its pass. The lease is still held, so what it writes
+        // lands, and the round waits for it as a worker's process would go on running it.
+        if (settleMs > 0) await wait(settleMs)
       }
       // Moves time without firing sleeps: the pump parks until its pass ends.
       clock.advance(70_000)
@@ -742,7 +786,10 @@ async function runProgram(
       await real.sweep(Q, 10)
     }
     const outcome = await real.getTaskResult(Q, spawned.taskId)
-    expect(outcome?.state, `program must terminate (fault at call ${failAtCall})`).toBe(ends)
+    expect(
+      ends === 'either' ? ['completed', 'failed'] : [ends],
+      `program must terminate (fault at call ${failAtCall})`,
+    ).toContain(outcome?.state)
     const [cps, spawnedWith] = await raw.batch(
       't',
       [
@@ -779,6 +826,7 @@ async function runProgram(
     if (watch !== undefined) watch.attempts = Number(measured?.rows[0]?.attempts)
     return {
       calls,
+      state: outcome?.state,
       tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
       spawned: spawnMemos(cps?.rows ?? []).map(
         (memo) => `${memo.name} -> ${paramsOf.get(memo.taskId)}`,
@@ -827,9 +875,10 @@ async function owning(verdict: string | undefined, body: () => Promise<unknown>)
 async function everyFaultPointYieldsTheReference(
   label: string,
   run: (seed: string, failAtCall: number) => ReturnType<typeof runProgram>,
+  points: (measuredCalls: number) => number[] = faultPoints,
 ): ReturnType<typeof runProgram> {
   const reference = await run(`ref-${label}`, 0)
-  for (const call of faultPoints(reference.calls)) {
+  for (const call of points(reference.calls)) {
     const faulted = await run(`fault-${label}-${call}`, call)
     // Everything a run reports, but for how many store calls it took, which a fault changes.
     expect({ ...faulted, calls: reference.calls }, `fault at call ${call}`).toEqual(reference)
@@ -849,6 +898,88 @@ function inventoryOf(ops: readonly ProgramOp[]): string[] {
 const NAMED_AFTER_THE_ATTEMPT = 'a step named after the attempt'
 /** What a program can hold beside a kind of call and a shape. */
 const OTHER_HOLDINGS = ['group', 'fail-once', NAMED_AFTER_THE_ATTEMPT]
+
+const flowsOf = (...flows: ProgramOp[][]): ProgramOp => ({
+  kind: 'flows',
+  valueIndex: 0,
+  nameIndex: 0,
+  flows,
+})
+const inAFlow = (op: Omit<ProgramOp, 'valueIndex' | 'nameIndex'>, valueIndex = 0): ProgramOp => ({
+  valueIndex,
+  nameIndex: 0,
+  ...op,
+})
+
+/**
+ * The programs no generator draws: concurrent FLOWS. The calls of a group are all made before
+ * the first of them is answered. A flow is a function of its own that awaits and then makes a
+ * durable call, so two flows started together reach their calls at moments that a store call
+ * or a timer decides, and on a pass that replays every await from its memo they reach them in
+ * lockstep. Each program says how it must end. The first two are ordinary programs in which
+ * no call is made inside a step, so they complete. The last one ends as the engine decides,
+ * and like every program it ends the same way whichever store call an outage takes. A flow
+ * program is short, and the call that tells is not always one the sample takes, so it runs
+ * with an outage at EVERY store call.
+ */
+const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; ends: 'completed' | 'either' }> = {
+  'flows that each await a child and then record it in a step under its own name, and then a sleep':
+    {
+      ends: 'completed',
+      ops: [
+        group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-child', childIndex: 0 }),
+            inAFlow({ kind: 'step', name: 'record-0' }),
+          ],
+          [
+            inAFlow({ kind: 'await-child', childIndex: 1 }),
+            inAFlow({ kind: 'step', name: 'record-1' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'flows that each await an event the program has emitted and then record it in a step, and then a sleep':
+    {
+      ends: 'completed',
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record-e1' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record-e2' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'flows that each wait on a timer of its own length and then run a step whose body takes time': {
+    ends: 'either',
+    ops: [
+      flowsOf(
+        [
+          inAFlow({ kind: 'wait', waitMs: 1 }),
+          inAFlow({ kind: 'step', name: 'item-1', bodyMs: 10 }),
+        ],
+        [
+          inAFlow({ kind: 'wait', waitMs: 4 }),
+          inAFlow({ kind: 'step', name: 'item-4', bodyMs: 10 }, 1),
+        ],
+      ),
+    ],
+  },
+}
+
+/** Every store call of a run, where the sample of `faultPoints` takes every other one. */
+const everyCall = (measuredCalls: number): number[] =>
+  Array.from({ length: measuredCalls }, (_, at) => at + 1)
 
 /** The generated programs this file runs at every fault point: six of random ops, and one for each shape. */
 const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
@@ -1110,6 +1241,21 @@ describe('replay equivalence (generated programs x fault points x adversarial va
         )
       })
     }, 60_000)
+  }
+
+  for (const [title, program] of Object.entries(FLOW_PROGRAMS)) {
+    it(`${title}: an outage at every store call yields the reference outcome`, async () => {
+      await everyFaultPointYieldsTheReference(
+        title,
+        async (runSeed, failAtCall) => {
+          const record = await runProgram(program.ops, runSeed, failAtCall, { ends: 'either' })
+          if (failAtCall === 0 && program.ends !== 'either')
+            expect(record.state, 'how the program says it ends, with no fault').toBe(program.ends)
+          return record
+        },
+        everyCall,
+      )
+    }, 120_000)
   }
 })
 
