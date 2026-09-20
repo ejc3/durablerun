@@ -1064,7 +1064,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
 
   /** One statement's plan, read. Every reading in this block is this one, the generated check's too. */
   const nestsOf = async (st: { sql: string; args: unknown[] }) =>
-    readNests(await planTree(st.sql, st.args))
+    readNests(await planTree(st.sql, st.args), st.sql)
   /** The same reading of a statement that nothing runs, so each bind is a placeholder. */
   const read = (sql: string) => nestsOf({ sql, args: (sql.match(/\?/g) ?? []).map(() => 0) })
 
@@ -1214,14 +1214,24 @@ describe('every statement a store ships, by the nests of its plan', () => {
        select f.queue, f.run_id, t.task_name, 0
        from runs f join tasks t on t.task_name = f.run_id where f.run_id = ?`,
     )
+    // Each walk is refused as the walk it is, and then for what the nest makes of it.
     expect([correlated, listed, scanned].map((reading) => reading.faults)).toEqual([
-      [expect.stringMatching(/ :: runs once for each row of a walk: SCAN tasks$/)],
       [
+        expect.stringMatching(/^SCAN tasks :: is a walk of tasks: /),
+        expect.stringMatching(/ :: runs once for each row of a walk: SCAN tasks$/),
+      ],
+      [
+        expect.stringMatching(
+          /^SEARCH f .*runs_poll \(queue=\? AND state=\?\) :: is a walk of runs: /,
+        ),
         expect.stringMatching(
           /^SEARCH t .* :: runs once for each row of a walk: SEARCH f .*runs_poll \(queue=\? AND state=\?\)$/,
         ),
       ],
-      [expect.stringMatching(/^SCAN t :: is not keyed, and runs once for each row of SEARCH f /)],
+      [
+        expect.stringMatching(/^SCAN t :: is a walk of tasks: /),
+        expect.stringMatching(/^SCAN t :: is not keyed, and runs once for each row of SEARCH f /),
+      ],
     ])
     // What a plan cannot show, each with the defect present and no fault. Both steps are
     // keyed, and one task's rows are many: every checkpoint of a task, once for each run of it.
@@ -1229,16 +1239,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `update runs set claim_gen = (select count(*) from checkpoints c
                                     where c.task_id = runs.task_id) where task_id = ?`,
     )
-    // A lone walk drives nothing and nothing drives it. In an UPDATE or a DELETE the block
-    // above refuses it, and in an insert or a read nothing does.
-    const lone = await read(
-      `insert into events (queue, event_name, payload, emitted_at_ms)
-       select queue, run_id, null, 0 from runs where queue = ? and state = ?`,
-    )
-    expect([ownRows, lone]).toEqual([
-      { faults: [], dueDrivers: [] },
-      { faults: [], dueDrivers: [] },
-    ])
+    expect(ownRows).toEqual({ faults: [], dueDrivers: [] })
     // What is due under no limit, and what is not due at all, read alike: a due range that
     // drives. The list of names above is what holds them, by a reason a person wrote.
     const unlimited = await read(
