@@ -15380,7 +15380,7 @@ VERDICTS.update(
         "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/executor.test.ts",
-            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files under its general state by their numbers",
+            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files outside the three classes by their numbers",
             "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
         ),
         "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
@@ -15479,6 +15479,104 @@ for _verdict, _names in (
     (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
     (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
     (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# A limit that a retry cures is read before the class MySQL files it under, two more numbers
+# are typed permanent outside the classes, and one real-server case holds both lists to the
+# server's own list of error numbers.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-limit-under-a-permanent-class-is-an-outage",
+            "packages/store-mysql/src/executor.ts",
+            "    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)\n",
+            "    const stateClass = false // MUTATION: a limit is typed by the class MySQL files it under\n",
+            "a limit on connections or on prepared statements, which another session's release lifts, is answered as permanent because MySQL files it under class 42, so a hosted route answers 500 where a 503 invites the retry that works",
+        ),
+        (
+            "mysql-limit-1203-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections\n",
+            "  // MUTATION: error 1203 is typed by its class\n",
+            "MySQL error 1203, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1226-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits\n",
+            "  // MUTATION: error 1226 is typed by its class\n",
+            "MySQL error 1226, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1461-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: error 1461 is typed by its class\n",
+            "MySQL error 1461, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-number-1265-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column\n",
+            "  // MUTATION: error 1265 is an outage\n",
+            "MySQL error 1265, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-number-1364-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: error 1364 is an outage\n",
+            "MySQL error 1364, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-error-list-holds-the-limits-under-a-permanent-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: the prepared statement limit leaves the list the server's own names are held to\n",
+            "a limit leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+        (
+            "mysql-error-list-holds-the-refused-values-outside-the-classes",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: a column left out leaves the list the server's own names are held to\n",
+            "a refused row leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "mysql-limit-under-a-permanent-class-is-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class",
+            "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+        ),
+        "mysql-error-list-holds-the-limits-under-a-permanent-class": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a number permanent by its class only when no retry lifts what its name says",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+        ),
+        "mysql-error-list-holds-the-refused-values-outside-the-classes": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a refused value or row permanent whatever state MySQL files it under, or says why not",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+        ),
+    }
+)
+for _verdict, _names in (
+    (
+        VERDICTS["mysql-limit-under-a-permanent-class-is-an-outage"],
+        ("mysql-limit-1203-is-read-before-its-class", "mysql-limit-1226-is-read-before-its-class", "mysql-limit-1461-is-read-before-its-class",),
+    ),
+    (
+        VERDICTS["mysql-wrong-value-for-field-is-permanent"],
+        ("mysql-number-1265-is-permanent", "mysql-number-1364-is-permanent",),
+    ),
 ):
     for _name in _names:
         VERDICTS[_name] = _verdict
@@ -19249,7 +19347,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1013:
+        if len(MUTATIONS) != 1021:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
