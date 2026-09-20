@@ -13,10 +13,17 @@ export class FakeLauncher implements Launcher {
   }
 }
 
-/** Poll, yielding a real event-loop turn each time, until cond holds or two seconds pass. */
-export async function until(cond: () => boolean, what: string): Promise<void> {
-  const deadline = performance.now() + 2_000
-  while (!cond()) {
+/**
+ * Poll, yielding a real event-loop turn each time, until cond holds or the deadline passes:
+ * two seconds, or what a caller that waits on a real socket asks for.
+ */
+export async function until(
+  cond: () => boolean | Promise<boolean>,
+  what: string,
+  deadlineMs = 2_000,
+): Promise<void> {
+  const deadline = performance.now() + deadlineMs
+  while (!(await cond())) {
     if (performance.now() > deadline) throw new Error(`timed out waiting for: ${what}`)
     await new Promise((r) => setImmediate(r))
   }
