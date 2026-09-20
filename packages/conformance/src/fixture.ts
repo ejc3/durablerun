@@ -135,35 +135,27 @@ export interface CorruptionTarget {
 export function corruptionTarget(
   corruption: Exclude<StorageCorruption, OverWidthCorruption>,
 ): CorruptionTarget {
+  const at = (where: string, identityArgs: string[]): CorruptionTarget => ({
+    table: corruption.table,
+    where,
+    identityArgs,
+  })
   switch (corruption.table) {
     case 'tasks':
-      return { table: 'tasks', where: 'task_id = ?', identityArgs: [corruption.taskId] }
+      return at('task_id = ?', [corruption.taskId])
     case 'runs':
-      return { table: 'runs', where: 'run_id = ?', identityArgs: [corruption.runId] }
+      return at('run_id = ?', [corruption.runId])
     case 'checkpoints':
-      return {
-        table: 'checkpoints',
-        where: 'task_id = ? AND checkpoint_name = ?',
-        identityArgs: [corruption.taskId, corruption.checkpointName],
-      }
+      return at('task_id = ? AND checkpoint_name = ?', [
+        corruption.taskId,
+        corruption.checkpointName,
+      ])
     case 'events':
-      return {
-        table: 'events',
-        where: 'queue = ? AND event_name = ?',
-        identityArgs: [corruption.queue, corruption.eventName],
-      }
+      return at('queue = ? AND event_name = ?', [corruption.queue, corruption.eventName])
     case 'waits':
-      return {
-        table: 'waits',
-        where: 'run_id = ? AND step_name = ?',
-        identityArgs: [corruption.runId, corruption.stepName],
-      }
+      return at('run_id = ? AND step_name = ?', [corruption.runId, corruption.stepName])
     case 'drivers':
-      return {
-        table: 'drivers',
-        where: 'queue = ? AND driver_id = ?',
-        identityArgs: [corruption.queue, corruption.driverId],
-      }
+      return at('queue = ? AND driver_id = ?', [corruption.queue, corruption.driverId])
   }
 }
 

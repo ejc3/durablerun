@@ -1,5 +1,4 @@
 export type {
-  CorruptionTarget,
   StorageCorruption,
   StorageCorruptionAttempt,
   StorageCorruptionDisposition,
