@@ -200,16 +200,20 @@ describe('DriverLoop', () => {
     )
     const done = loop.run()
     await until(() => signals.length === 1, 'first launch waiting')
-    expect(
-      signals[0]?.aborted,
-      'a launch inside its deadline carries a signal that has not fired',
-    ).toBe(false)
+    const insideTheDeadline = signals[0]?.aborted
     await f.advance(5_000)
-    await until(() => loop.stats.launchFailed === 1, 'timeout counted')
-    expect(signals[0]?.aborted, 'the launch the watchdog stopped waiting for is aborted').toBe(true)
+    await until(() => loop.stats.launched + loop.stats.launchFailed === 1, 'the launch counted')
+    // The call carries a signal that has not fired inside the deadline and has fired past it.
+    expect(
+      [insideTheDeadline, signals[0]?.aborted],
+      'mutation-verdict:behavior:launch-deadline-tells-the-launcher',
+    ).toEqual([false, true])
     // The answer that came after the abort was not read. It is a failed launch, as a
     // timeout always was, and the run comes back through the lost-launch path.
-    expect(loop.stats.launched).toBe(0)
+    expect(
+      { launched: loop.stats.launched, launchFailed: loop.stats.launchFailed },
+      'mutation-verdict:behavior:aborted-launch-answer-is-never-read',
+    ).toEqual({ launched: 0, launchFailed: 1 })
     await f.advance(5_000)
     await until(() => signals.length === 2, 'relaunch after recovery')
     expect(signals[1]?.aborted).toBe(false)

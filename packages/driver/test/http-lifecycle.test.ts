@@ -203,9 +203,10 @@ describe('a launch the driver stopped waiting for', () => {
         () => loop.stats.launchFailed === 1,
         'the launch deadline counted as a failed launch',
       )
+      // The driver closes the connection of a launch it stopped waiting for.
       expect(
         await reached(() => peer.closed(0), SOCKET_WAIT_MS),
-        'the driver closes the connection of a launch it stopped waiting for',
+        'mutation-verdict:behavior:http-launch-ends-at-the-callers-deadline',
       ).toBe(true)
     } finally {
       await stopLoop(f.clock, loop, done)
@@ -325,13 +326,54 @@ describe('the wake ping a worker sends after a pass', () => {
       ).toEqual([5_000])
       f.clock.advance(5_000)
       f.clock.fire()
+      // The worker closes the connection of a ping nobody answered.
       expect(
         await reached(() => peer.closed(0), SOCKET_WAIT_MS),
-        'the worker closes the connection of a ping nobody answered',
+        'mutation-verdict:behavior:wake-ping-ends-at-its-deadline',
       ).toBe(true)
     } finally {
       await worker.close()
       await peer.close()
+      f.close()
+    }
+  })
+
+  it('leaves no sleep on the clock once it is answered', async () => {
+    const f = await fx('lifecycle-answered-ping')
+    let wakes = 0
+    const wake = createWakeServer({
+      wake: () => {
+        wakes++
+      },
+    })
+    const worker = createWorkerServer({
+      store: f.store,
+      clock: f.clock,
+      registry: JOBS,
+      secret: SECRET,
+      driverUrl: `http://127.0.0.1:${await wake.listen()}`,
+    })
+    const port = await worker.listen()
+    try {
+      const launch = await claimedLaunch(f.store)
+      const ack = await fetch(`http://127.0.0.1:${port}/launch`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-durablerun-signature': signBody(SECRET, launch.body),
+        },
+        body: launch.body,
+      })
+      expect(ack.status).toBe(202)
+      await until(() => wakes === 1, 'the ping reaching the driver', SOCKET_WAIT_MS)
+      // The deadline's sleep ends with the ping, so an answered ping leaves no timer behind.
+      expect(
+        await reached(() => f.clock.sleeps.length === 0, SOCKET_WAIT_MS),
+        'mutation-verdict:behavior:answered-wake-ping-leaves-no-timer',
+      ).toBe(true)
+    } finally {
+      await worker.close()
+      await wake.close()
       f.close()
     }
   })
@@ -359,11 +401,17 @@ describe('closing the worker server', () => {
         closed = true
       })
       await client.send(launch.body.slice(half))
+      // A launch that was on the wire when close() began is answered.
       expect(
         await reached(() => client.statuses().length === 1, SOCKET_WAIT_MS),
-        'a launch that was on the wire when close() began is answered',
+        'mutation-verdict:behavior:worker-close-answers-a-launch-on-the-wire',
       ).toBe(true)
       expect(client.statuses()).toEqual([202])
+      // The answer of a closing server says that its connection ends with it.
+      expect(
+        client.seen.data,
+        'mutation-verdict:behavior:closing-worker-answer-ends-its-connection',
+      ).toMatch(/\r\nconnection: close\r\n/i)
       expect(
         await reached(() => closed, SOCKET_WAIT_MS),
         'close() resolves once the launch is acked and its pass is over',
@@ -437,9 +485,10 @@ describe('closing the worker server', () => {
       expect(closed).toBe(false)
       f.clock.advance(5_000)
       f.clock.fire()
+      // close() ends what is left once its bound passes.
       expect(
         await reached(() => closed, SOCKET_WAIT_MS),
-        'close() ends what is left once its bound passes',
+        'mutation-verdict:behavior:worker-close-is-bounded',
       ).toBe(true)
       expect(
         await reached(() => client.seen.closed, SOCKET_WAIT_MS),
@@ -467,9 +516,10 @@ describe('closing the wake server', () => {
       closed = true
     })
     try {
+      // close() resolves while a silent client holds a connection.
       expect(
         await reached(() => closed),
-        'close() resolves while a silent client holds a connection',
+        'mutation-verdict:behavior:wake-server-close-ends-every-connection',
       ).toBe(true)
       expect(
         await reached(() => client.seen.closed, SOCKET_WAIT_MS),
@@ -493,15 +543,17 @@ describe('the limits of the local servers', () => {
         secret: SECRET,
       })
       const wake = createWakeServer({ wake: () => {} })
-      for (const [name, server] of [
-        ['worker', worker.server],
-        ['wake', wake.server],
-      ] as const) {
-        expect(
-          { headersMs: server.headersTimeout, requestMs: server.requestTimeout },
-          `the ${name} server`,
-        ).toEqual({ headersMs: 10_000, requestMs: 30_000 })
-      }
+      const limits = { headersMs: 10_000, requestMs: 30_000 }
+      expect(
+        {
+          worker: {
+            headersMs: worker.server.headersTimeout,
+            requestMs: worker.server.requestTimeout,
+          },
+          wake: { headersMs: wake.server.headersTimeout, requestMs: wake.server.requestTimeout },
+        },
+        'mutation-verdict:behavior:local-servers-carry-their-limits',
+      ).toEqual({ worker: limits, wake: limits })
     } finally {
       f.close()
     }
