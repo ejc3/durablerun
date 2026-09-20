@@ -3,6 +3,7 @@ import {
   type ClaimedRun,
   type LeaseEnd,
   LeaseLostError,
+  PermanentStoreError,
   RunCancelledError,
   StoreUnavailableError,
   SuspendSignal,
@@ -28,6 +29,7 @@ export type InfrastructureControlSnapshot =
   | { readonly kind: 'lease-lost' }
   | { readonly kind: 'run-cancelled' }
   | { readonly kind: 'store-unavailable' }
+  | { readonly kind: 'store-permanent' }
 
 export type TaskControlSnapshot =
   | SuspendControlSnapshot
@@ -73,6 +75,7 @@ const ROLLBACK_PHASE = freeze({ kind: 'rollback-phase' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const RUN_CANCELLED = freeze({ kind: 'run-cancelled' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
+const STORE_PERMANENT = freeze({ kind: 'store-permanent' } as const)
 
 function isRelativeWake(wake: WakeSpec): wake is { inSeconds: number } {
   return taskHasOwn(wake, 'inSeconds')
@@ -83,6 +86,9 @@ export function trustedStoreControl(error: unknown): InfrastructureControlSnapsh
     if (hasInstance(RunCancelledError, error)) return RUN_CANCELLED
     if (hasInstance(LeaseLostError, error)) return LEASE_LOST
     if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE
+    // A permanent answer of the store is infrastructure too. Left to fall through, it would
+    // reach task code as an ordinary error and be billed to the task's own attempts.
+    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT
   } catch {
     // A hostile proxy is not one of the store's typed infrastructure errors.
   }

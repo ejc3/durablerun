@@ -313,19 +313,6 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def exempt(repaired, candidate, markers):
-              # Exempt verdict markers this tree registers and the base registry predates.
-              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(table) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              entries = ''.join(
-                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                  for marker in markers
-              )
-              return repaired.replace(table, table + entries)
           def reaim_entry(repaired, candidate, name):
               # Replace one entry of the base registry with this tree's entry of the same name, for a
               # mutation whose target line this tree rewrote. Its name must stand, and so must
@@ -351,24 +338,44 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == 'ad98c88952cc01f4d80c3fd383e91ad453a9c22214b4731da36246ddef2fea29':
-              # Three base entries name lines this tree deleted. Each store checked its own
+          def exempt(repaired, candidate, markers):
+              # Exempt verdict markers this tree registers and the base registry predates.
+              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(table) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              return repaired.replace(table, table + entries)
+          if digest == '375588de1cb5e1fbd9fa5f8b9d412be97d633625439213b167439abef2d505f6':
+              # Four base entries name lines this tree deleted. Each store checked its own
               # entries, and the driver loop held its two names to the width alone. One check
               # in core now stands in front of every entry, built from one table of the port's
               # strings, so each mutant moved to what holds its property now: the spawn queue's
               # to the table's first place, the emitted name's to the width half of the check's
-              # rule, and the loop's to the line that asks the port's check of its driver id.
-              # Each keeps its owner, and each owner still fails under it. Three more named a
-              # second copy of a check that stood behind the one check in core, where no
-              # mutant of it could be seen through the port once the one check answered first.
-              # The copies are deleted, and each of the three moved to the table's place for
-              # its string: an emitted event name, a parent's queue and a parent's run id. One
-              # more names the line that refuses a reserved key, which reads the caller's key
-              # under another local now that the key's own checks are gone from beside it. Seven
-              # entries moved in all. Fifteen mutations are new, four of them for what the review
-              # of the one check found at the mechanism and four more at the same mechanism, and
-              # they answer to ten verdict markers that are newer than the base. No entry was
-              # retired.
+              # rule, the loop's to the line that asks the port's check of its driver id, and
+              # the claim token's, which named the first line of `claim` in the libSQL store,
+              # to the table's place for the token at `claim`. Each keeps its owner but the
+              # last, which the width case cannot own: that case draws its places from the
+              # table and asks nothing of a place the table stopped holding, so the written
+              # list of places owns it. Each owner still fails under its mutant. Three more
+              # named a second copy of a check that stood behind the one check in core, where
+              # no mutant of it could be seen through the port once the one check answered
+              # first. The copies are deleted, and each of the three moved to the table's place
+              # for its string: an emitted event name, a parent's queue and a parent's run id.
+              # One more names the line that refuses a reserved key, which reads the caller's
+              # key under another local now that the key's own checks are gone from beside it.
+              # Eight entries moved in all. One base verdict moved with no entry re-aimed: the
+              # reader of a failed rollback's argument refuses another shape behind the one
+              # check now, so the mutation that stops it refusing answers to core's own case
+              # of the reader. Fifteen mutations are new, four of them for what the review of
+              # the one check found at the mechanism and four more at the same mechanism, and
+              # with that verdict they answer to eleven verdict markers that are newer than the
+              # base. No entry was retired.
               repaired = previous
               for name in (
                   'spawn-queue-is-a-durable-string',
@@ -378,6 +385,7 @@ jobs:
                   'parent-queue-held-to-the-width',
                   'parent-run-id-held-to-the-width',
                   'spawn-refuses-reserved-idempotency-key',
+                  'claim-token-held-to-the-width',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
               repaired = exempt(repaired, candidate, (
@@ -391,6 +399,7 @@ jobs:
                   'mutation-verdict:construction:port-table-frozen-throughout',
                   'mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place',
                   'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
+                  'mutation-verdict:behavior:saga-failed-rollback-shape-is-checked',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

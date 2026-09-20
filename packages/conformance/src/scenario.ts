@@ -17,6 +17,20 @@ export async function readOne(
   return result?.rows[0]
 }
 
+/** The stored state of one checkpoint of a task, or undefined when it has none under that name. */
+export async function checkpointState(
+  raw: SqlExecutor,
+  taskId: string,
+  name: string,
+): Promise<string | undefined> {
+  const row = await readOne(
+    raw,
+    'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+    [taskId, name],
+  )
+  return row === undefined ? undefined : String(row.state)
+}
+
 /** A scenario failure whose fixture then also failed to close. */
 export class FixtureCloseFailure extends Error {
   constructor(
@@ -183,4 +197,12 @@ export function describeFailure(error: unknown): string {
     current = current instanceof Error ? current.cause : undefined
   }
   return lines.join('\n')
+}
+
+/** Puts a task at `retries` infrastructure retries and its run at the matching ordinal. */
+export function infraRetrySeed(taskId: string, runId: string, retries: number) {
+  return [
+    { sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`, args: [retries, taskId] },
+    { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
+  ]
 }

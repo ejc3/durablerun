@@ -9,7 +9,6 @@ import {
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
-  SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
   type SqlRow,
   childSpawnKey,
@@ -31,11 +30,17 @@ import {
   checkpointOwned,
   claimActivated,
   claimOne,
+  infraRetrySeed,
   readOne,
   refusalName,
   warmConnections,
   withFixture,
 } from './scenario.js'
+import {
+  labelsThatInsertARun,
+  labelsWithACarryScenario,
+  witnessRunInserts,
+} from './successor-carry.js'
 
 const Q = 'q'
 /** The fake clock every suite fixture starts at. */
@@ -54,14 +59,6 @@ async function snapshot(
     'read',
   )
   return { tasks: tasks?.rows, runs: runs?.rows }
-}
-
-/** Puts a task at `retries` infrastructure retries and its run at the matching ordinal. */
-function infraRetrySeed(taskId: string, runId: string, retries: number) {
-  return [
-    { sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`, args: [retries, taskId] },
-    { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
-  ]
 }
 
 /**
@@ -681,6 +678,56 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           observed: { kind: 'resolved', value: [] },
           after: before,
         })
+      })
+
+      it('answers a claim under a token longer than an identifier alike on every dialect, and never as an outage', async () => {
+        // 3,000 hex characters that no compression shortens. An index of the token holds
+        // a bounded row on one dialect, a prefix on another and the whole value on the
+        // third: with no bound on the token, PostgreSQL answered this claim as an outage
+        // where the other two took the run. The token is held to an identifier's width
+        // where it enters, so every dialect refuses it, and refuses it the same way.
+        let x = 0x2545f491
+        const token = Array.from({ length: 3000 }, () => {
+          x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+          return (x >>> 28).toString(16)
+        }).join('')
+        await f.store.spawn(Q, 'long-claim-token', '{}')
+        const answer = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 }).then(
+          (runs) => `took ${runs.length}`,
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+        expect(answer).toBe('InvalidDurableStringError')
+      })
+
+      it('same-token receipt holds the lease expiry to its range, at both ends', async () => {
+        // The receipt's bounds check on the lease expiry is the one term a dialect may
+        // spell differently, to keep its planner from choosing an index by it. Whatever
+        // the spelling, a stored expiry outside the range is refused and both ends of the
+        // range are admitted.
+        const range = PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms
+        await f.store.spawn(Q, 'receipt-expiry-range', '{}')
+        const run = await claimOne(f.store, Q, 'receipt-expiry-range-token')
+        const receiptAt = async (expiry: number) => {
+          await f.raw.batch('set-receipt-expiry', [
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = ? WHERE run_id = ?`,
+              args: [expiry, run.runId],
+            },
+          ])
+          return f.store.claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 }).then(
+            (runs) => runs.map((receipt) => receipt.runId),
+            () => 'rejected' as const,
+          )
+        }
+        expect(
+          {
+            below: await receiptAt(range.min - 1),
+            lowest: await receiptAt(range.min),
+            highest: await receiptAt(range.max),
+            above: await receiptAt(range.max + 1),
+          },
+          'mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range',
+        ).toEqual({ below: [], lowest: [run.runId], highest: [run.runId], above: [] })
       })
 
       it('same-token receipt refuses corrupt persisted headers', async () => {
@@ -2459,132 +2506,37 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
-      it('both successor paths carry every inherited run column', async () => {
-        const seeded: Record<(typeof SUCCESSOR_CARRIED_RUN_COLUMNS)[number], string> = {
-          wake_event: 'e-carry',
-          event_payload: '{"x":1}',
-          wake_step: 'carry-step',
-          run_db: 'carry-db',
-        }
-        // Every other runs column: a successor sets each of these for itself, including
-        // created_at_ms, which it sets to its parent's failure instant.
-        const successorOwned = [
-          'run_id',
-          'queue',
-          'task_id',
-          'attempt',
-          'state',
-          'claimed_by',
-          'claim_gen',
-          'activated_gen',
-          'relaunch_count',
-          'lease_ms',
-          'claim_expires_at_ms',
-          'heartbeat_at_ms',
-          'available_at_ms',
-          'started_at_ms',
-          'completed_at_ms',
-          'failed_at_ms',
-          'result',
-          'failure_reason',
-          'created_at_ms',
-          'fence_stamp',
-          'fence_at_ms',
-        ]
-        // A carried wake must be legal: its payload's source event exists.
-        await f.raw.batch('carry-event', [
-          {
-            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-                  VALUES (?, ?, ?, 1000000)`,
-            args: [Q, seeded.wake_event, seeded.event_payload],
-          },
-        ])
-        const parkWake = (runId: string) => ({
-          sql: `UPDATE runs
-                SET ${SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => `${column} = ?`).join(', ')}
-                WHERE run_id = ?`,
-          args: [...SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => seeded[column]), runId],
-        })
-        const retried = await activatedRun('w-carry-retry')
-        await f.raw.batch('carry-park-retry', [parkWake(retried.runId)])
-        await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Boom"}', {
-          delaySeconds: 30,
-        })
-        const revivalQueue = 'carry-revival'
-        await f.raw.batch('carry-revival-event', [
-          {
-            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-                  VALUES (?, ?, ?, 1000000)`,
-            args: [revivalQueue, seeded.wake_event, seeded.event_payload],
-          },
-        ])
-        const revivalTask = await f.store.spawn(revivalQueue, 'job', '{}')
-        const revival = await claimActivated(f.store, revivalQueue, 'w-carry-revival')
-        await f.raw.batch('carry-park-revival', [parkWake(revival.runId)])
-        await f.store.fail(revivalQueue, revival.runId, revival.claimToken, '{"name":"Boom"}', null)
-        expect(await f.store.retryTask(revivalQueue, revivalTask.taskId)).not.toBeNull()
-        const timedOut = await activatedRun('w-carry-timeout')
-        await f.raw.batch('carry-park-timeout', [parkWake(timedOut.runId)])
-        await f.admin.setFakeNowEpochMs(1_100_000)
-        const swept = await f.store.sweep(Q, 10)
-        expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
-
-        const families: {
-          path: string
-          taskId: string
-          parent: SqlRow
-          successor: SqlRow
-          createdAt: unknown
-        }[] = []
-        // A failure successor is created at its parent's failure instant, and a
-        // revival at the instant of the task CAS that revived it.
-        for (const [path, taskId, createdAt] of [
-          ['user retry', retried.taskId, 'parent failure'],
-          ['claim-timeout sweep', timedOut.taskId, 'parent failure'],
-          ['revival', revivalTask.taskId, 'revival'],
-        ] as const) {
-          const { runs } = await snapshot(f, taskId)
-          const [parent, successor] = runs ?? []
-          if (runs?.length !== 2 || !parent || !successor) {
-            throw new Error(`task ${taskId} has no successor run`)
-          }
-          const revivedAt =
-            createdAt === 'revival'
-              ? (await readOne(f.raw, `SELECT fence_at_ms FROM tasks WHERE task_id = ?`, [taskId]))
-                  ?.fence_at_ms
-              : parent.fence_at_ms
-          families.push({ path, taskId, parent, successor, createdAt: revivedAt })
-        }
-        for (const { path, successor, createdAt } of families) {
-          expect(
-            Object.keys(successor).sort(),
-            `every runs column of the ${path} successor is carried or successor-owned`,
-          ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
-          expect(
-            successor.created_at_ms,
-            `the ${path} successor is created at its expected instant`,
-          ).toBe(createdAt)
-        }
-        await attributeExpectedFailure(
-          { kind: 'behavior', mutation: 'successor-carries-every-column' },
-          /successor dropped an inherited column/,
-          async () => {
-            for (const { path, taskId, parent, successor } of families) {
-              for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
-                if (parent[column] !== seeded[column]) {
-                  throw new Error(`the ${path} parent of task ${taskId} lost its seeded ${column}`)
-                }
-                if (successor[column] !== seeded[column]) {
-                  throw new Error(
-                    `successor dropped an inherited column: ${column} on the ${path} successor of task ${taskId}`,
-                  )
-                }
-              }
-            }
-          },
-        )
-        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      // Generated from the SQL corpus: one case for each label that inserts a run, over every
+      // statement of its that does (successor-carry.ts). A new batch that inserts a run
+      // fails here until a scenario reaches it, and then its run must carry.
+      // A label whose run insert the corpus stopped recognising would lose its case below
+      // and fail nothing, so the labels the scenarios drive are held to the corpus as well.
+      it('gives a generated successor-carry case to every label a scenario drives', () => {
+        expect(labelsThatInsertARun(dialect).sort()).toEqual(labelsWithACarryScenario().sort())
       })
+
+      for (const label of labelsThatInsertARun(dialect)) {
+        it(`${label}: every run it inserts carries what its parent carried`, async () => {
+          const report = await witnessRunInserts(f, dialect, label, START_MS)
+          await attributeExpectedFailure(
+            { kind: 'behavior', mutation: 'successor-carries-every-column' },
+            /successor dropped an inherited column/,
+            async () => {
+              if (report.dropped.length > 0) {
+                throw new Error(
+                  `successor dropped an inherited column: ${report.dropped.join('; ')}`,
+                )
+              }
+            },
+          )
+          // After the marked assertion: a run insert nothing reached leaves it nothing to judge.
+          expect({ unreached: report.unreached, misplaced: report.misplaced }).toEqual({
+            unreached: [],
+            misplaced: [],
+          })
+          expect(await engineInvariantViolations(f.raw)).toEqual([])
+        })
+      }
 
       it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
         const run = await activatedRun('w-over-infra-cap')

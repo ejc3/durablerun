@@ -479,14 +479,6 @@ export const checkpointIsTheEngines = (name: string): string =>
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
 
 /**
- * `name` is a rollback's attempt record, the one name the batch that fails a pass may
- * commit for its caller. Under another name that write would replace the saga's cause,
- * commit a forward step inside the frozen phase, or record a rollback that never ran.
- */
-export const checkpointIsAnAttemptRecord = (name: string): string =>
-  namedUnder(name, SAGA_TRIES_PREFIX)
-
-/**
  * The rollback of the step a saga checkpoint `marker` names has run. The name is built
  * with CONCAT, because the two-bar operator is OR under this store's fixed sql_mode.
  */

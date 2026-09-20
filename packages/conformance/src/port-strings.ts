@@ -20,6 +20,7 @@ import {
 
 const wake = { inSeconds: 1 }
 const checkpoint = { key: 'k', stateJson: '{}' }
+const failed = { stepKey: 's', errorJson: '{}' }
 const parent = { parentQueue: 'q', parentTaskId: 'p', runId: 'r', claimToken: 'c', replayKey: 'k' }
 
 /**
@@ -43,7 +44,7 @@ const EXAMPLE_CALLS: {
   complete: [['q', 'r', 'c', '{}']],
   suspendRun: [['q', 'r', 'c', wake, checkpoint]],
   fail: [['q', 'r', 'c', '{}', null]],
-  failRollback: [['q', 'r', 'c', '{}', null, checkpoint]],
+  failRollback: [['q', 'r', 'c', '{}', null, failed]],
   sweep: [['q', 10]],
   expireLeaseNow: [['q', 'r', 'c']],
   getCheckpoints: [['q', 't', 1]],

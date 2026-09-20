@@ -3,12 +3,12 @@ import {
   type Clock,
   IDENTIFIER_CHARACTERS,
   InvalidDurableStringError,
+  PermanentStoreError,
   PortRefusalError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   type SchedulerStore,
-  encodeRollbackTry,
+  StoreUnavailableError,
   parseTaskValueJson,
   systemClock,
 } from '@durablerun/core'
@@ -141,8 +141,8 @@ function haltRollback(
   errorJson: string,
 ) {
   return f.store.failRollback(Q, pass.runId, pass.claimToken, SAGA_CAUSE, null, {
-    key: `${SAGA_TRIES_PREFIX}charge`,
-    stateJson: encodeRollbackTry({ tries: 1, errorJson }),
+    stepKey: 'charge',
+    errorJson,
   })
 }
 
@@ -185,6 +185,44 @@ describe('hosted-alpha Web Request router', () => {
     } finally {
       f.close()
     }
+  })
+
+  describe('a store failure, by kind', () => {
+    const enqueueOver = async (seed: string, failure: Error) => {
+      const f = await fixture(seed, {
+        wrapStore: (store) => withStoreOverrides(store, { spawn: () => Promise.reject(failure) }),
+      })
+      try {
+        const response = await f.router.handle(
+          request('/api/tasks', 'POST', JSON.stringify({ taskName: 'job', params: {} })),
+        )
+        return { status: response.status, body: await responseBody(response) }
+      } finally {
+        f.close()
+      }
+    }
+
+    it('answers 500 for a permanent store error, which no retry repairs, and never 400', async () => {
+      // The store's answer, not a refusal of what the caller sent, so it is no 400. And a 503
+      // would invite a producer to retry a request the store refuses the same way each time.
+      expect(
+        await enqueueOver(
+          'hosted-permanent-store-error',
+          new PermanentStoreError(
+            'batch(spawn) failed permanently (SQLSTATE 23505): duplicate key value',
+          ),
+        ),
+      ).toEqual({ status: 500, body: { error: 'internal_error' } })
+    })
+
+    it('answers 503 for a store outage, which a retry can cure', async () => {
+      expect(
+        await enqueueOver(
+          'hosted-store-outage',
+          new StoreUnavailableError('batch(spawn) failed: connection refused'),
+        ),
+      ).toEqual({ status: 503, body: { error: 'service_unavailable' } })
+    })
   })
 
   it('returns 503 for a failed rearm without rolling back a completed task', async () => {

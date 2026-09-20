@@ -175,8 +175,8 @@ export const cancelNotDue = (task: string, at: string): string => {
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
-const storedBoundedInteger = (col: string, min: number, max: number): string =>
-  `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
+const storedBoundedInteger = (col: string, min: number, max: number, compared = col): string =>
+  `(${storedInteger(col)} AND ${compared} BETWEEN ${min} AND ${max})`
 
 const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
   const separator = bounds.field.indexOf('.')
@@ -200,6 +200,26 @@ export const storedIntegerWithin = (
 ): string => {
   const column = persistedColumn(bounds, alias)
   return storedBoundedInteger(column, bounds.min, bounds.max)
+}
+
+/**
+ * `storedIntegerWithin` for a statement that must not reach its rows through this column.
+ * SQLite reads a bare column's BETWEEN as a range over an index of that column, and with no
+ * statistics it rates a two-sided range above two equalities. So the claim's receipt read
+ * walked every unexpired lease of its queue through `runs_lease` to find the few runs its
+ * token holds. A unary plus keeps a term out of index selection, which is SQLite's
+ * documented use of it. It also takes the column's affinity out of the comparison, and
+ * that changes nothing here: the other two operands are this fragment's own integer
+ * literals, which carry no affinity to apply, and the first conjunct has already required
+ * the stored value to be an integer, so an integer is compared with integers under either
+ * spelling and a value of any other storage class is refused before the comparison counts.
+ */
+export const storedIntegerWithinOffIndex = (
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+  alias?: string,
+): string => {
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max, `+${column}`)
 }
 
 /**
@@ -434,14 +454,6 @@ export const checkpointInItsPhase = (task: string, name: string): string =>
 export const checkpointIsTheEngines = (name: string): string =>
   `(${name} = '${SAGA_PHASE_CHECKPOINT}'
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
-
-/**
- * `name` is a rollback's attempt record, the one name the batch that fails a pass may
- * commit for its caller. Under another name that write would replace the saga's cause,
- * commit a forward step inside the frozen phase, or record a rollback that never ran.
- */
-export const checkpointIsAnAttemptRecord = (name: string): string =>
-  namedUnder(name, SAGA_TRIES_PREFIX)
 
 /** The rollback of the step a saga checkpoint `marker` names has run. */
 const rollbackRan = (marker: string, prefix: string): string =>

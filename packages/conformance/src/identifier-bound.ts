@@ -8,7 +8,6 @@ import {
   type SqlExecutor,
   TERMINAL_STATES,
   childSpawnKey,
-  encodeRollbackTry,
   isPortRefusal,
 } from '@durablerun/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -83,7 +82,7 @@ const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
   'suspendRun[4].stateJson(checkpoint.stateJson)': 'payload',
   'fail[3](failureJson)': 'payload',
   'failRollback[3](failureJson)': 'payload',
-  'failRollback[5].stateJson(rollbackTry.stateJson)': 'payload',
+  'failRollback[5].errorJson(rollback.errorJson)': 'payload',
   'setCheckpoint[5](stateJson)': 'payload',
   'emitEvent[2](payloadJson)': 'payload',
 }
@@ -270,11 +269,10 @@ export function identifierBoundConformance(
             key: `${SAGA_STARTED_PREFIX}${key}`,
             stateJson: '0',
           }),
-        'rollbackTry.key': (s, key) =>
-          s.failRollback('q', 'r', 'c', '{}', null, {
-            key: `${SAGA_TRIES_PREFIX}${key}`,
-            stateJson: '{}',
-          }),
+        // The store builds the attempt record's name from the step, so the step is held to
+        // the room that name leaves, and the refusal names the step the caller passed.
+        'rollback.stepKey': (s, key) =>
+          s.failRollback('q', 'r', 'c', '{}', null, { stepKey: key, errorJson: '{}' }),
       }
       const saga = async (key: string) => {
         const outcomes: Record<string, { refused: boolean; namesIt: boolean; sent: boolean }> = {}
@@ -339,7 +337,7 @@ export function identifierBoundConformance(
           'checkpointName, as a rollback record': { ...fits, namesIt: false },
           'checkpoint.key': refusedNamingIt,
           // `$rollback-tries:` and 240 characters are 256, which the plain width refuses.
-          'rollbackTry.key': refusedNamingIt,
+          'rollback.stepKey': refusedNamingIt,
         },
         plainCheckpoint: fits,
       })
@@ -420,8 +418,8 @@ export function identifierBoundConformance(
         await live.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
         const pass = await claimActivated(live.store, queue, 'w-pass')
         await live.store.failRollback(queue, pass.runId, pass.claimToken, CAUSE, null, {
-          key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-          stateJson: encodeRollbackTry({ tries: 1, errorJson: CAUSE }),
+          stepKey,
+          errorJson: CAUSE,
         })
 
         const [tasks, events, checkpoints] = await live.raw.batch(

@@ -2,6 +2,7 @@ import { engineInvariantViolations } from '@durablerun/conformance'
 import {
   FatalTaskError,
   LeaseLostError,
+  PermanentStoreError,
   type SchedulerStore,
   StoreUnavailableError,
   SuspendSignal,
@@ -25,7 +26,15 @@ import {
   taskMapSet,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
-import { Q, claimAndRun, claimInvocation, fx, invocationOf, registry } from './worker-harness.js'
+import {
+  Q,
+  claimAndRun,
+  claimInvocation,
+  fx,
+  invocationOf,
+  passOver,
+  registry,
+} from './worker-harness.js'
 
 const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['function', () => () => undefined],
@@ -860,37 +869,13 @@ describe('runClaimedRun', () => {
   })
 
   it('propagates an ordinary completion rejection without billing it as a user failure', async () => {
-    const f = await fx('sdk-complete-ordinary-rejection')
     const rejection = new Error('ordinary completion rejection')
-    let failCalls = 0
-    try {
-      await f.store.spawn(Q, 'job', '{}')
-      const invocation = await claimInvocation(f, 'w1')
-      const store = withStoreOverrides<SchedulerStore>(f.store, {
+    expect(
+      await passOver('sdk-complete-ordinary-rejection', {
         complete: () => Promise.reject(rejection),
-        fail: () => {
-          failCalls++
-          return Promise.resolve({ rollingBack: false })
-        },
-      })
-      const observed = await runClaimedRun(
-        {
-          store,
-          clock: f.clock,
-          registry: registry({ job: async () => 'done' }),
-        },
-        invocation,
-      ).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      )
-      expect(
-        { observed, failCalls },
-        'mutation-verdict:behavior:sdk-complete-ordinary-rejection-identity',
-      ).toEqual({ observed: { error: rejection }, failCalls: 0 })
-    } finally {
-      f.close()
-    }
+      }),
+      'mutation-verdict:behavior:sdk-complete-ordinary-rejection-identity',
+    ).toEqual({ observed: { error: rejection }, failCalls: 0 })
   })
 
   it('reads an awaitEvent timeout accessor once and stores that validated value', async () => {
@@ -1612,6 +1597,46 @@ describe('runClaimedRun', () => {
     )
     expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
+  })
+
+  it('a permanent store error at a transition write aborts the pass exactly as an outage does', async () => {
+    // The store's answer is permanent, and it is still not the task's failure. The pass
+    // ends as it ends on an outage: no transition, the user's budget untouched, and the
+    // lease recovers the run. Naming an error more precisely must not change who pays.
+    expect(
+      await passOver('sdk-complete-permanent', {
+        complete: () =>
+          Promise.reject(new PermanentStoreError('batch(complete) failed permanently')),
+      }),
+    ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
+  })
+
+  it('a permanent store error at a context store call aborts the pass and is never billed to the task', async () => {
+    // Thrown into task code as an ordinary error, it would be recorded through fail() as
+    // the task's own failure and charged to the attempts the caller asked for.
+    expect(
+      await passOver(
+        'sdk-checkpoint-permanent',
+        {
+          setCheckpoint: () =>
+            Promise.reject(new PermanentStoreError('batch(set-checkpoint) failed permanently')),
+        },
+        async (ctx) => {
+          await ctx.step('once', () => 1)
+          return 'done'
+        },
+      ),
+      'mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass',
+    ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
+  })
+
+  it('a PermanentStoreError constructed by task code is an ordinary task failure, billed to the task', async () => {
+    // Authority comes from the store boundary that enrolled the error, never from its class.
+    expect(
+      await passOver('sdk-constructed-permanent', {}, () => {
+        throw new PermanentStoreError('made by task code')
+      }),
+    ).toEqual({ observed: { value: { kind: 'retry-scheduled' } }, failCalls: 1 })
   })
 
   it('the heartbeat pump keeps a long pass alive at half-lease cadence', async () => {

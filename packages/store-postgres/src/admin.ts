@@ -1,14 +1,14 @@
 import {
   MAX_EPOCH_MS,
-  SchemaMismatchError,
-  SchemaNotInitializedError,
+  MIGRATION_WRITE,
   type SqlExecutor,
-  type SqlResult,
   type SqlStatement,
   type StoreAdmin,
+  applyVersionedWrite,
   decodeBoundedInteger,
+  readSchemaVersion,
+  requireCurrentSchemaVersion,
   requireEpochMs,
-  storageValueKind,
 } from '@durablerun/core'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -24,6 +24,10 @@ export class PostgresStoreAdmin implements StoreAdmin {
   async migrate(): Promise<void> {
     // The executor turns undefined_table into this typed result only for the
     // canonical version read. No message matching occurs at this layer.
+    //
+    // The bootstrap names no migration lock, where every version's batch does. PostgreSQL's
+    // migration lock is a lock on meta, the table this batch creates. Racing bootstraps
+    // converge without one: the batch is one transaction, and a loser is forgiven below.
     if ((await this.readSchemaVersion()) === null) {
       await this.applyVersionedWrite(
         () =>
@@ -48,77 +52,30 @@ export class PostgresStoreAdmin implements StoreAdmin {
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
       await this.applyVersionedWrite(
-        () => this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)),
+        () =>
+          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),
         migration.version,
       )
     }
 
-    const version = await this.schemaVersion()
-    if (version !== CURRENT_SCHEMA_VERSION) {
-      // A recorded version past this build's newest is a healthy schema that a newer build
-      // migrated. It is refused like any other mismatch, with the advice that fits it.
-      throw new SchemaMismatchError(
-        version > CURRENT_SCHEMA_VERSION
-          ? `the schema is recorded at version ${version} and this build knows versions up to ${CURRENT_SCHEMA_VERSION}: a newer build migrated this database, which needs no repair. Run that build or a later one`
-          : `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
-      )
-    }
+    requireCurrentSchemaVersion(await this.schemaVersion(), CURRENT_SCHEMA_VERSION)
   }
 
-  /**
-   * A concurrent migrator can win either the fresh-catalog bootstrap or a
-   * version sentinel. PostgreSQL may report the losing CREATE as a catalog
-   * uniqueness error even with IF NOT EXISTS, so the authoritative version —
-   * not the error code — decides whether the write already completed.
-   */
-  private async applyVersionedWrite(
+  private applyVersionedWrite(
     write: () => Promise<unknown>,
     minimumVersion: number,
   ): Promise<void> {
-    try {
-      await write()
-    } catch (error) {
-      const version = await this.readSchemaVersion()
-      if (version !== null && version >= minimumVersion) return
-      throw error
-    }
+    return applyVersionedWrite(write, minimumVersion, () => this.readSchemaVersion())
   }
 
   async schemaVersion(): Promise<number> {
     return (await this.readSchemaVersion()) ?? 0
   }
 
-  private async readSchemaVersion(): Promise<number | null> {
-    let results: SqlResult[]
-    try {
-      results = await this.db.batch(
-        'migrate:version',
-        [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
-        'read',
-      )
-    } catch (error) {
-      if (error instanceof SchemaNotInitializedError) return null
-      throw error
-    }
-
-    const result = results.length === 1 ? results[0] : undefined
-    const row = result?.rows.length === 1 ? result.rows[0] : undefined
-    if (!row) {
-      throw new SchemaMismatchError(
-        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,
-      )
-    }
-    const stored = row.value
-    if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
-      throw new SchemaMismatchError(
-        `schema_version must be a canonical nonnegative integer, got ${storageValueKind(stored)}`,
-      )
-    }
-    const version = Number(stored)
-    if (!Number.isSafeInteger(version)) {
-      throw new SchemaMismatchError(`schema_version is outside the safe integer range: ${stored}`)
-    }
-    return version
+  private readSchemaVersion(): Promise<number | null> {
+    return readSchemaVersion(() =>
+      this.db.batch('migrate:version', [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }], 'read'),
+    )
   }
 
   async setFakeNowEpochMs(epochMs: number | null): Promise<void> {
@@ -157,15 +114,9 @@ export class PostgresStoreAdmin implements StoreAdmin {
 
 function fencedBatch(migration: PostgresMigration): SqlStatement[] {
   return [
-    // One migrator at a time, and the second one waits. This lock conflicts with itself and
-    // with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
-    // holding nothing, and when the first has committed it loses to that sentinel. Without
-    // it the second blocks on the first one's uncommitted sentinel while it holds its own
-    // row-exclusive lock on meta, and a version that then locks the table deadlocks with
-    // it, which PostgreSQL ends only after its deadlock timeout. A read does not conflict
-    // with this lock, so it stops no statement's clock read. A version that locks meta
-    // itself, as version 7 does, stops every statement from its own lock until it commits.
-    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },
+    // The batch's control names the migration lock, which the executor takes ahead of this
+    // sentinel, so a second migrator waits there holding nothing.
+    //
     // Plain INSERT is the transaction fence. A stale or concurrent re-apply
     // raises unique_violation and rolls back its DDL with it.
     {

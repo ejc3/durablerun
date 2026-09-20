@@ -1495,8 +1495,8 @@ MUTATION_SPECS = [
     (
         "text-statement-list-holds-every-raw-batch",
         "packages/store-libsql/src/admin.ts",
-        "        await this.db.batch('migrate:bootstrap', [\n",
-        "        await this.db.batch('migrate:bootstrapped', [\n",
+        "          'migrate:bootstrap',\n",
+        "          'migrate:bootstrapped',\n",
         "a store sends SQL text under a label that scripts/text-statements.json does not list",
     ),
     (
@@ -2648,6 +2648,19 @@ MUTATION_SPECS = [
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
+        # Not correctness either: the access path of a read. Joined to its task
+        # by the queue alone, the sweep's read of expired leases scans tasks once
+        # for each lease it reads, and every pin of a chosen statement still
+        # passes. Only the nests of every shipped statement's plan see it.
+        "expired-claims-read-keys-its-task",
+        "packages/store-libsql/src/store.ts",
+        "      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "      taskOwnsRun: sqlFragment('t.queue = r.queue'),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "every sweep scans tasks once for each expired lease it reads",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
@@ -3049,7 +3062,7 @@ MUTATION_SPECS = [
     ),
     (
         "persisted-row-rejects-spread-descriptor",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/validate.ts",
         "export function persistedRowInteger(\n"
         "  scope: string,\n"
         "  row: SqlRow,\n"
@@ -3806,14 +3819,14 @@ MUTATION_SPECS = [
     ),
     (
         "test-token-source-monotonic",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (proposed <= tokens) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a duplicate proposed serial",
     ),
     (
         "test-token-source-valid-serial",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (!Number.isSafeInteger(proposed)) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a non-integer or unsafe proposed serial",
@@ -3827,63 +3840,63 @@ MUTATION_SPECS = [
     ),
     (
         "schema-absence-is-typed",
-        "packages/store-libsql/src/admin.ts",
-        "      if (error instanceof SchemaNotInitializedError) return null",
-        "      if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
+        "packages/core/src/schema-version.ts",
+        "    if (error instanceof SchemaNotInitializedError) return null",
+        "    if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
         "schema-version-missing-result",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length === 0) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length === 0) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "an absent schema-version result is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-results",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length > 1) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length > 1) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "duplicated schema-version results are interpreted as a fresh database",
     ),
     (
         "schema-version-missing-row",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length === 0) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length === 0) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "an absent schema-version row is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-rows",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length > 1) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length > 1) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
         "libsql-bootstrap-loss-forgiven",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        throw error\n",
-        "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version === minimumVersion) return\n",
+        "a migrator whose bootstrap lost to a winner that went on past version zero is rejected: the recovery every dialect shares forgives a failed write only at exactly its target version",
     ),
     (
         "libsql-bootstrap-failure-rethrown",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        if ((await this.readSchemaVersion()) === undefined) throw error\n",
-        "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if ((version || 0) >= minimumVersion) return\n",
+        "a bootstrap that failed with nothing committed is swallowed and migration runs on: the recovery every dialect shares reads an absent version as zero",
     ),
     (
         "postgres-bootstrap-loss-forgiven",
-        "packages/store-postgres/src/admin.ts",
-        "      if (version !== null && version >= minimumVersion) return\n",
-        "      if (version !== null && version > minimumVersion) return\n",
-        "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version > minimumVersion) return\n",
+        "a migrator whose own bootstrap committed and lost only its answer is rejected: the recovery every dialect shares forgives a failed write only past its target version",
     ),
     (
         "postgres-version-read-isolation",
@@ -3908,10 +3921,38 @@ MUTATION_SPECS = [
     ),
     (
         "postgres-migrator-locks-meta-before-its-sentinel",
-        "packages/store-postgres/src/admin.ts",
-        "    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },\n",
-        "",
+        "packages/store-postgres/src/executor.ts",
+        "        await client.query(MIGRATION_LOCK_SQL)\n",
+        "        void MIGRATION_LOCK_SQL // MUTATION\n",
         "a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
+        "postgres-lock-of-an-unknown-kind-is-refused",
+        "packages/store-postgres/src/executor.ts",
+        "      return refuseUnknownLockKind(lock)\n",
+        "      return async () => undefined // MUTATION\n",
+        "a lock of a kind that a later build of core added is ignored, and the batch runs under no lock",
+    ),
+    (
+        "postgres-migration-write-names-its-lock",
+        "packages/store-postgres/src/executor.ts",
+        "  if (needsTheLock && lock?.kind !== 'migration') {\n",
+        "  if (needsTheLock && lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+        "a version's batch whose control was dropped runs with no lock on meta, where at the commit before the lock was a statement of the batch that no wrapper could drop",
+    ),
+    (
+        "postgres-version-batch-names-the-migration-lock",
+        "packages/store-postgres/src/admin.ts",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),\n",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)), // MUTATION\n",
+        "a version's batch names no lock, so a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
+        "libsql-migration-write-names-the-migration-lock",
+        "packages/store-libsql/src/admin.ts",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),\n",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)), // MUTATION\n",
+        "a migration write names the migration lock on two dialects and not on the third, so a recorder, a wrapper, or a port in another language meets two rules",
     ),
     (
         "postgres-deadlocked-read-runs-again",
@@ -3936,9 +3977,9 @@ MUTATION_SPECS = [
     ),
     (
         "migration-postcondition-old-version",
-        "packages/store-libsql/src/admin.ts",
-        "    if (version !== CURRENT_SCHEMA_VERSION) {",
-        "    if (version > CURRENT_SCHEMA_VERSION) {",
+        "packages/core/src/schema-version.ts",
+        "  if (version !== current) {",
+        "  if (version > current) {",
         "a committed migration can leave the recorded version behind and still report success",
     ),
     (
@@ -4013,20 +4054,20 @@ MUTATION_SPECS = [
         "      headersInput === undefined\n"
         "        ? null\n"
         "        : JSON.stringify(\n"
-        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
+        "            JSON.parse(serializeTaskValue('task headers', headersInput)),\n"
         "          )",
         "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
         "claim-retry-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
         "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
         "claim retry decoding resolves ambient JSON.parse after the durable guard",
     ),
     (
         "claim-headers-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "      row.headers === null\n"
         "        ? {}\n"
         "        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),",
@@ -4636,6 +4677,46 @@ MUTATION_SPECS = [
         "    queueScoped: false,\n"
         "  }),\n",
         "generated waits-to-runs updates can cross the immutable queue boundary",
+    ),
+    (
+        # Not correctness: the access path of a claim's two follow-ons. The token
+        # narrows nothing, because the compare-and-set writes it with the stamp, so
+        # no behavioural case can see it go. Without it the follow-ons find the runs
+        # the batch took by walking every running run of the queue, and only a plan
+        # of the SHIPPED statements can see that. The mutant keeps the bind, so the
+        # statement still runs.
+        "claim-followons-name-the-token",
+        "packages/store-libsql/src/store.ts",
+        "      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,\n",
+        "      where: `f.queue = ? AND f.state = 'running' AND (f.claimed_by = ? OR 1 = 1)`,\n",
+        "a claim's follow-ons walk every running run of the queue to find the runs the batch took",
+    ),
+    (
+        # The same term on PostgreSQL, held by the rows its scans read and not by an
+        # index's name: with the term gone the planner can still name runs_held and
+        # read every running run of the queue through it.
+        "postgres-claim-followons-name-the-token",
+        "packages/store-postgres/src/store.ts",
+        "      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,\n",
+        "      where: `f.queue = ? AND f.state = 'running' AND (f.claimed_by = ? OR 1 = 1)`,\n",
+        "a claim's follow-ons on PostgreSQL read every running run of the queue to find the runs the batch took",
+    ),
+    (
+        # Not correctness either: the unary plus changes no truth value. Without it
+        # SQLite reaches the receipt's rows through runs_lease, a range over every
+        # unexpired lease of the queue.
+        "claim-receipt-bound-stays-off-the-lease-index",
+        "packages/store-libsql/src/fragments.ts",
+        "bounds.max, `+${column}`)\n",
+        "bounds.max, column)\n",
+        "a claim's receipt read walks every unexpired lease of its queue",
+    ),
+    (
+        "claim-receipt-requires-lease-expiry-range",
+        "packages/store-libsql/src/fragments.ts",
+        "  return storedBoundedInteger(column, bounds.min, bounds.max, `+${column}`)\n",
+        "  return storedInteger(column)\n",
+        "a same-token receipt returns a run whose stored lease expiry is outside its range",
     ),
 ]
 
@@ -5673,7 +5754,7 @@ MUTATION_SPECS.extend(
         ),
         (
             "retry-persisted-normalization",
-            "packages/store-libsql/src/store.ts",
+            "packages/core/src/statements/claim-receipt.ts",
             "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
             "    retryStrategy: parseTaskValueJson(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
             "claim exposes unchecked durable retry JSON",
@@ -7432,16 +7513,79 @@ MUTATION_SPECS.extend(
         (
             "mysql-bootstrap-is-one-statement",
             "packages/store-mysql/src/admin.ts",
-            "        () => this.db.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }]),\n",
-            "        () =>\n          this.db.batch('migrate:bootstrap', [\n            { sql: META_BOOTSTRAP_SQL.split(' AS SELECT ')[0] as string, args: [] }, // MUTATION\n            { sql: \"INSERT INTO meta (`key`, value) VALUES ('schema_version', '0')\", args: [] },\n          ]),\n",
+            "            [{ sql: META_BOOTSTRAP_SQL, args: [] }],\n",
+            "            [\n              { sql: META_BOOTSTRAP_SQL.split(' AS SELECT ')[0] as string, args: [] }, // MUTATION\n              { sql: \"INSERT INTO meta (`key`, value) VALUES ('schema_version', '0')\", args: [] },\n            ],\n",
             "MySQL commits the version table before its row, and a concurrent version read reports a foreign database",
         ),
         (
-            "mysql-bootstrap-loss-forgiven",
+            "mysql-migration-write-names-its-lock",
+            "packages/store-mysql/src/executor.ts",
+            "  if (lock?.kind !== 'migration') {\n",
+            "  if (lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+            "a migration write under a label that no list knows runs its DDL under no lock, beside another migrator, and MySQL cannot undo what it did",
+        ),
+        (
+            "mysql-migration-batch-sent-as-a-read-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode === 'read') {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "  if (mode === 'read' && lock !== undefined) {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "a migrate: batch sent as a read runs its DDL with no lock, because a DDL statement's own commit ends the read-only transaction first",
+        ),
+        (
+            "mysql-lock-of-an-unknown-kind-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "      return refuseUnknownLockKind(lock)\n",
+            "      return [MIGRATION_LOCK, '', ''] // MUTATION\n",
+            "a lock of a kind that a later build of core added is taken for one this executor knows, and the batch runs under the wrong lock",
+        ),
+        (
+            "mysql-migration-lock-keeps-the-released-name",
+            "packages/store-mysql/src/executor.ts",
+            "const MIGRATION_LOCK = 'durablerun:migrate'\n",
+            "const MIGRATION_LOCK = 'durablerun:migration' // MUTATION\n",
+            "a migrator of this build and one of the released build take different locks, and run their DDL side by side for the length of a deploy",
+        ),
+        (
+            "mysql-index-form-is-safe-to-repeat",
+            "packages/store-mysql/src/schema.ts",
+            "        WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') = 0,\n",
+            "        WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') >= 0,\n",
+            "a migrator that died after MySQL committed an index cannot be finished: the next migrate() fails on a duplicate key name, on every start",
+        ),
+        (
+            "mysql-failed-batch-is-forgiven-where-the-version-moved",
             "packages/store-mysql/src/admin.ts",
-            "      if (version !== null && version >= minimumVersion) return\n",
-            "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
-            "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+            "        plannedFrom + 1,\n",
+            "        CURRENT_SCHEMA_VERSION, // MUTATION\n",
+            "a batch that failed while a slower migrator was part of the way through fails migrate(), where nothing was wrong",
+        ),
+        (
+            "mysql-migrator-plans-again-only-after-progress",
+            "packages/store-mysql/src/admin.ts",
+            "      if (recorded <= plannedFrom) break\n",
+            "      if (recorded < plannedFrom) break // MUTATION\n",
+            "a batch that reports success and moves nothing is planned again for ever, and migrate() never returns",
+        ),
+        (
+            "mysql-advance-is-guarded-on-the-version-before",
+            "packages/store-mysql/src/admin.ts",
+            "      sql: \"UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND value = ?\",\n",
+            "      sql: \"UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND ? IS NOT NULL\",\n",
+            "a batch planned from a version that has since moved writes the recorded version back, under a schema that is already past it",
+        ),
+        (
+            "mysql-pending-batch-names-the-migration-lock",
+            "packages/store-mysql/src/admin.ts",
+            "            versionBatch(migration),\n            MIGRATION_WRITE,\n",
+            "            versionBatch(migration),\n            'write', // MUTATION\n",
+            "the batch of pending versions names no lock, and the executor refuses every migrate() of a MySQL database",
+        ),
+        (
+            "mysql-bootstrap-loss-forgiven",
+            "packages/core/src/schema-version.ts",
+            "    if (version !== null && version >= minimumVersion) return\n",
+            "    if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
+            "a migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded: the recovery every dialect shares forgives no failed write",
         ),
         (
             "mysql-only-an-insert-counts-twice",
@@ -9493,6 +9637,12 @@ VERDICTS = {
         "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
         "mutation-verdict:behavior:emit-index-driver",
     ),
+    "expired-claims-read-keys-its-task": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -9516,7 +9666,7 @@ VERDICTS = {
     "successor-carries-every-column": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule fail: every run it inserts carries what its parent carried",
         "mutation-verdict:behavior:successor-carries-every-column",
         "packages/conformance/src/suite.ts",
     ),
@@ -10338,6 +10488,30 @@ VERDICTS = {
         "packages/store-postgres/test/racing-migrators.test.ts",
         "racing PostgreSQL migrators make the second wait for the first at every version, and never deadlock",
         "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
+    ),
+    "postgres-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
+        "mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused",
+    ),
+    "postgres-migration-write-names-its-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing",
+        "mutation-verdict:construction:postgres-migration-write-names-its-lock",
+    ),
+    "postgres-version-batch-names-the-migration-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/admin.test.ts",
+        "PostgresStoreAdmin migrates a typed-fresh database through every fenced version",
+        "mutation-verdict:construction:postgres-version-batch-names-the-migration-lock",
+    ),
+    "libsql-migration-write-names-the-migration-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/schema.test.ts",
+        "a migration write names the migration lock in its control, the bootstrap and every version",
+        "mutation-verdict:construction:libsql-migration-write-names-the-migration-lock",
     ),
     "postgres-deadlocked-read-runs-again": ExpectedVerdict(
         "behavior",
@@ -11692,6 +11866,31 @@ VERDICTS.update(
             "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
             "mutation-verdict:behavior:task-boundary-aggregate",
         ),
+        "claim-followons-name-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "claim candidate legs reaches every run a claim reads by a key or by the due range, in all four statements",
+            "mutation-verdict:behavior:claim-followons-name-the-token",
+        ),
+        "postgres-claim-followons-name-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/query-plans.test.ts",
+            "reads of runs no more than a claim takes, beside the running runs other workers hold",
+            "mutation-verdict:behavior:postgres-claim-followons-name-the-token",
+        ),
+        "claim-receipt-bound-stays-off-the-lease-index": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "claim candidate legs reaches every run a claim reads by a key or by the due range, in all four statements",
+            "mutation-verdict:behavior:claim-followons-name-the-token",
+        ),
+        "claim-receipt-requires-lease-expiry-range": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] claim same-token receipt holds the lease expiry to its range, at both ends",
+            "mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range",
+            "packages/conformance/src/suite.ts",
+        ),
     }
 )
 
@@ -11804,6 +12003,60 @@ VERDICTS.update(
             "packages/store-mysql/test/admin.test.ts",
             "MysqlStoreAdmin bootstraps in one statement that creates the version table with its row",
             "mutation-verdict:construction:mysql-bootstrap-is-one-statement",
+        ),
+        "mysql-migration-write-names-its-lock": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration write that names no migration lock, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-write-names-its-lock",
+        ),
+        "mysql-migration-batch-sent-as-a-read-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration batch sent as a read, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused",
+        ),
+        "mysql-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
+            "mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused",
+        ),
+        "mysql-migration-lock-keeps-the-released-name": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator beside one of the released build waits for the migration lock as that build takes it, and migrates once it is free",
+            "mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name",
+        ),
+        "mysql-index-form-is-safe-to-repeat": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator that died inside its batch is finished by the next migrate(), wherever it died and whatever it had planned from",
+            "mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat",
+        ),
+        "mysql-failed-batch-is-forgiven-where-the-version-moved": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin plans again after a batch that failed while the version moved on, and only then",
+            "mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved",
+        ),
+        "mysql-migrator-plans-again-only-after-progress": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin sends one batch and then fails when a batch reports success and the version did not move",
+            "mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress",
+        ),
+        "mysql-advance-is-guarded-on-the-version-before": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator that planned from a version that has since moved runs its whole batch over a database another migrator finished, and changes nothing",
+            "mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before",
+        ),
+        "mysql-pending-batch-names-the-migration-lock": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin crosses every pending version with one version read and one batch, each version advanced only from the one before",
+            "mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock",
         ),
         "mysql-bootstrap-loss-forgiven": ExpectedVerdict(
             "behavior",
@@ -12804,11 +13057,67 @@ MUTATION_SPECS.extend(
             "a suspension commits a marker named as the phase marker and forges a saga",
         ),
         (
-            "saga-attempt-record-name-is-checked",
-            "packages/store-libsql/src/store.ts",
-            "         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,\n",
-            "         )${rollback === undefined ? '' : ` AND ? IS NOT NULL`}`,\n",
-            "a failed rollback commits its record over the phase marker and replaces the saga's cause",
+            "saga-store-counts-failed-attempts",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = (last?.tries ?? 0) * 0 + 1\n",
+            "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = last?.tries ?? 1\n",
+            "a rollback's count stops at its first record, so a second failed attempt is stored as the first",
+        ),
+        (
+            "saga-store-count-saturates",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n  if (last !== null && !isSafeInteger(tries)) tries = last.tries\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "from a record at the largest safe integer the count goes one past it, the record reads as none, and the attempt after it is stored as the first",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "packages/core/src/sagas.ts",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`\n",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_ROLLBACK_PREFIX}${stepKey}`\n",
+            "a failed rollback is stored under the name that says the rollback ran, so the step is owed nothing",
+        ),
+        (
+            "saga-failed-rollback-shape-is-checked",
+            "packages/core/src/sagas.ts",
+            "  if (typeof stepKey !== 'string' || typeof errorJson !== 'string') {\n",
+            "  if (false) {\n",
+            "a caller of the older port is not told what the port takes, and its record is read as a step named undefined",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "packages/sdk/src/context.ts",
+            "      this.replayLastCutAt = key\n      this.#controls.rollbackPhase()\n",
+            "      this.replayLastCutAt = key\n",
+            "a step with no memo runs its body inside the rolling-back phase",
+        ),
+        (
+            "saga-sdk-spawn-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n",
+            "a rollback pass asks the store for a child, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-await-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n    this.refuseForwardProgress()\n",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n",
+            "a rollback pass asks the store to register a wait, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-sleep-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n",
+            "a sleep with no memo throws the sleep signal inside the phase, and task code that tells signals apart is misled",
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
@@ -12972,6 +13281,13 @@ MUTATION_SPECS.extend(
             "the relaunch cap enters the phase and ends the task in one batch",
         ),
         (
+            "saga-pass-budget-is-the-user-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "           AND f.attempt < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "the pass is checked against the run's own ordinal, so a task with an infrastructure retry one attempt below the bound never rolls back",
+        ),
+        (
             "saga-pass-needs-room-in-the-budget",
             "packages/store-libsql/src/store.ts",
             "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
@@ -13012,6 +13328,13 @@ MUTATION_SPECS.extend(
             "        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),\n",
             "        phase: sqlFragment('? IS NOT NULL', [taskId]),\n",
             "a rollback pass parks on an event that may never come",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),\n",
+            "                phase: sqlFragment('? IS NOT NULL', [childOf.parentTaskId]),\n",
+            "a rollback pass spawns a child, which runs work the saga is about to compensate",
         ),
         (
             "saga-revival-refused-once-a-saga-began",
@@ -13369,6 +13692,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a child spawn inside the phase, and still finds a child the forward phase spawned",
+            "mutation-verdict:behavior:saga-child-spawn-is-frozen",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] ends failed with the deciding failure and a complete outcome once every rollback ran",
             "mutation-verdict:behavior:saga-finish-is-honest",
             "packages/conformance/src/sagas.ts",
@@ -13436,6 +13771,17 @@ for _verdict, _names in (
             "packages/sdk/test/sagas.test.ts",
             "step rollbacks through the SDK [libsql] counts each failed rollback attempt and retries it under its own budget, past the spent task budget",
             "mutation-verdict:behavior:saga-sdk-attempts-counted",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts the saga when a rollback spends its budget, and the result says what was left",
+            "mutation-verdict:behavior:saga-sdk-budget-is-counted",
         ),
         (
             "saga-failed-attempts-accumulate",
@@ -13625,6 +13971,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] holds the pass to the user ordinal at the bound, for a task that has infrastructure retries",
+            "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-budget-is-the-user-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] rolls back a task spawned with the largest budget a task may have",
             "mutation-verdict:behavior:saga-pass-fits-the-largest-budget",
             "packages/conformance/src/sagas.ts",
@@ -13674,12 +14032,49 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "saga conformance [libsql] refuses a failed rollback whose attempt record carries any other name",
-            "mutation-verdict:behavior:saga-attempt-record-name-is-checked",
+            "saga conformance [libsql] counts a rollback's failed attempts itself, one more than the last one stored",
+            "mutation-verdict:behavior:saga-store-counts-failed-attempts",
             "packages/conformance/src/sagas.ts",
         ),
         (
-            "saga-attempt-record-name-is-checked",
+            "saga-store-counts-failed-attempts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it holds the count at the largest safe integer, and never reads its own record as none",
+            "mutation-verdict:behavior:saga-store-count-saturates",
+        ),
+        (
+            "saga-store-count-saturates",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names a failed rollback's attempt record itself, and refuses the record an older caller hands over",
+            "mutation-verdict:behavior:saga-store-names-the-attempt-record",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+        ),
+    ),
+    (
+        # Through a store the port's one check refuses a failed rollback of another shape
+        # first, as a step that was left out, so no case that goes through a store can see
+        # this reader stop refusing. Core's own case of the reader calls it directly.
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it takes the step and the failure, each read once, and refuses anything else by saying what the port takes",
+            "mutation-verdict:behavior:saga-failed-rollback-shape-is-checked",
+        ),
+        (
+            "saga-failed-rollback-shape-is-checked",
         ),
     ),
     (
@@ -13691,6 +14086,20 @@ for _verdict, _names in (
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] throws the phase signal from every durable call that has no memo, and writes nothing for it",
+            "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "saga-sdk-spawn-is-frozen",
+            "saga-sdk-await-is-frozen",
+            "saga-sdk-sleep-is-frozen",
         ),
     ),
     (
@@ -13896,6 +14305,13 @@ MUTATION_SPECS.extend(
             "    if (started && this.#sagaCauseJson !== undefined) return key\n",
             "    if (started) return key // MUTATION\n",
             "a step that started under an older build and never persisted, under a stored key past the width, runs its body again on every remaining attempt before a write that can never succeed",
+        ),
+        (
+            "claim-token-held-to-the-width",
+            "packages/core/src/port-strings.ts",
+            "  claim: ['queue', 'claimToken', null],\n",
+            "  claim: ['queue', 'paramsJson', null],\n",
+            "a claim under a token too long for PostgreSQL's index of it answers as an outage there and takes its run on the other two dialects",
         ),
         (
             "driver-identifiers-held-at-construction",
@@ -14122,9 +14538,9 @@ MUTATION_SPECS.extend(
         (
             "port-table-holds-a-queue",
             "packages/core/src/port-strings.ts",
-            "  claim: ['queue', 'claimToken', null],\n",
-            "  claim: ['paramsJson', 'claimToken', null],\n",
-            "a claim is made on a queue no store keeps: PostgreSQL reports a NUL as an outage that a driver retries for ever, and libSQL claims nothing",
+            "  sweep: ['queue', null],\n",
+            "  sweep: ['paramsJson', null],\n",
+            "a sweep runs on a queue no store keeps: PostgreSQL reports a NUL as an outage that a driver retries for ever, and libSQL sweeps nothing",
         ),
         (
             "port-table-holds-a-step-key",
@@ -14186,6 +14602,7 @@ for _verdict, _names in (
             "port-rules-hold-a-claim-token-to-the-width",
             "parent-queue-held-to-the-width",
             "parent-run-id-held-to-the-width",
+            "claim-token-held-to-the-width",
         ),
     ),
 ):
@@ -15062,6 +15479,120 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The poison matrix's target profiles for the arms that name their target (DESIGN.md, the
+# poison matrix; packages/conformance/src/poison-matrix.ts). A profile seeds the poisoned
+# target in the state in which its label acts on a target with nothing corrupt, so its cells
+# reach the guards behind the label's state condition. One mutation for each profile removes
+# a guard its cells reach, and one generated cell of that profile owns it, so the audit keeps
+# showing that the profile's cells can fail. The first two edits are the ones
+# `activate-requires-relaunch-bound` and `defer-launch-requires-claim-receipt-admission` make,
+# which hand-written cases own. The third is narrower than `retry-task-requires-counters-in-range`,
+# which removes three conjuncts at once where this removes the one on infrastructure retries.
+# The last two are one edit, which each failure label's own cell owns.
+MUTATION_SPECS.extend(
+    (
+        (
+            "poison-target-activate-holds-relaunch-bound",
+            "packages/store-libsql/src/store.ts",
+            "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n",
+            "    AND 1 = 1\n",
+            "the poison matrix's activate target activates a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+            "packages/store-libsql/src/store.ts",
+            "        admission: sqlFragment(claimReceiptAdmission()),",
+            "        admission: sqlFragment('1 = 1'),",
+            "the poison matrix's defer-launch target parks a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+            "packages/store-libsql/src/store.ts",
+            "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n",
+            "         AND 1 = 1\n",
+            "the poison matrix's retry-task target revives a failed task whose infrastructure retries are out of range",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail target places a rollback pass for a run below a higher owned ordinal",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail-rollback target ends a task for a run below a higher owned ordinal",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment activate-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-activate-holds-relaunch-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment defer-launch-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment retry-task-failed contains counter-bound/task-infra-retries",
+            "mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-started-step contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-rollback-rolling-back contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -15805,6 +16336,278 @@ for _verdict, _names in (
             "task-state-takes-no-fragment",
             "task-state-fragment-refuses",
         ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# Executor error typing: what each store's executor types permanent, from the driver's
+# code and never from message text, and what a worker pass does with the type.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-permanent-result-code-is-typed",
+            "packages/store-libsql/src/executor.ts",
+            "      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "      if (false && error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "a broken constraint is answered as an outage, which every consumer retries until a run's infrastructure budget is gone",
+        ),
+        (
+            "postgres-permanent-sqlstate-class-is-typed",
+            "packages/store-postgres/src/executor.ts",
+            "    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "    if (false && error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "a constraint violation, a value out of range and a syntax error are answered as outages, which every consumer retries and no retry repairs",
+        ),
+        (
+            "mysql-permanent-sqlstate-class-is-typed",
+            "packages/store-mysql/src/executor.ts",
+            "      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||\n",
+            "      false || // MUTATION: no state is permanent\n",
+            "a duplicate entry, a value out of range and a statement the server will never accept are answered as outages, which every consumer retries",
+        ),
+        (
+            "mysql-wrong-value-for-field-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column\n",
+            "  // MUTATION: a value of the wrong type for its column is an outage\n",
+            "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
+        ),
+        (
+            "contest-books-a-permanent-store-error-as-an-outage",
+            "packages/conformance/src/self-concurrency.ts",
+            "      error instanceof StoreUnavailableError || error instanceof PermanentStoreError\n",
+            "      error instanceof StoreUnavailableError // MUTATION: a permanent store error is a refusal\n",
+            "a port call that breaks a constraint in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
+        ),
+        (
+            "sdk-permanent-store-error-aborts-the-pass",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
+            "    // MUTATION: a permanent store error is no control of the pass\n",
+            "a permanent store error from a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "libsql-permanent-result-code-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/executor.test.ts",
+            "error typing, by the result code and never by the message types a broken constraint and a datatype mismatch permanent, and every other code an outage",
+            "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+        ),
+        "postgres-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage",
+            "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage",
+            "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files outside the three classes by their numbers",
+            "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+        ),
+        "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/self-concurrency-settle.test.ts",
+            "how a contest of the self-concurrency surface books what a copy threw keeps a permanent store error with the outages, which fail a contest in either order",
+            "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
+        ),
+        "sdk-permanent-store-error-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a permanent store error at a context store call aborts the pass and is never billed to the task",
+            "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+        ),
+    }
+)
+
+# MySQL files a broken CHECK constraint under its general state, as it files a value of the
+# wrong type, so both are typed by number, and the case that holds the one holds the other.
+MUTATION_SPECS.append(
+    (
+        "mysql-broken-check-constraint-is-permanent",
+        "packages/store-mysql/src/executor.ts",
+        "  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint\n",
+        "  // MUTATION: a broken CHECK constraint is an outage\n",
+        "a broken CHECK constraint is answered as an outage on MySQL and retried, where libSQL and PostgreSQL answer the same write as permanent",
+    )
+)
+VERDICTS["mysql-broken-check-constraint-is-permanent"] = VERDICTS[
+    "mysql-wrong-value-for-field-is-permanent"
+]
+
+# Each member of a map is a condition of its own. With one member removed, the registered
+# case of its executor fails at the codes that member typed, under the verdict of its rule.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-constraint-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_MISMATCH'])\n",
+            "a broken primary key, unique, not null or check constraint is answered as an outage and retried",
+        ),
+        (
+            "libsql-mismatch-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT'])\n",
+            "a value of the wrong type for a column that enforces one is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-22-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-23-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-42-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-22-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-23-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-42-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+    )
+)
+for _verdict, _names in (
+    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
+    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
+    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# A limit that a retry cures is read before the class MySQL files it under, two more numbers
+# are typed permanent outside the classes, and one real-server case holds both lists to the
+# server's own list of error numbers.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-limit-under-a-permanent-class-is-an-outage",
+            "packages/store-mysql/src/executor.ts",
+            "    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)\n",
+            "    const stateClass = false // MUTATION: a limit is typed by the class MySQL files it under\n",
+            "a limit on connections or on prepared statements, which another session's release lifts, is answered as permanent because MySQL files it under class 42, so a hosted route answers 500 where a 503 invites the retry that works",
+        ),
+        (
+            "mysql-limit-1203-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections\n",
+            "  // MUTATION: error 1203 is typed by its class\n",
+            "MySQL error 1203, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1226-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits\n",
+            "  // MUTATION: error 1226 is typed by its class\n",
+            "MySQL error 1226, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1461-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: error 1461 is typed by its class\n",
+            "MySQL error 1461, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-number-1265-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column\n",
+            "  // MUTATION: error 1265 is an outage\n",
+            "MySQL error 1265, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-number-1364-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: error 1364 is an outage\n",
+            "MySQL error 1364, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-error-list-holds-the-limits-under-a-permanent-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: the prepared statement limit leaves the list the server's own names are held to\n",
+            "a limit leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+        (
+            "mysql-error-list-holds-the-refused-values-outside-the-classes",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: a column left out leaves the list the server's own names are held to\n",
+            "a refused row leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "mysql-limit-under-a-permanent-class-is-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class",
+            "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+        ),
+        "mysql-error-list-holds-the-limits-under-a-permanent-class": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a number permanent, by its class or by hand, only when no retry lifts what its name says",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+        ),
+        "mysql-error-list-holds-the-refused-values-outside-the-classes": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a refused value or row permanent whatever state MySQL files it under, or says why not",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+        ),
+    }
+)
+for _verdict, _names in (
+    (
+        VERDICTS["mysql-limit-under-a-permanent-class-is-an-outage"],
+        ("mysql-limit-1203-is-read-before-its-class", "mysql-limit-1226-is-read-before-its-class", "mysql-limit-1461-is-read-before-its-class",),
+    ),
+    (
+        VERDICTS["mysql-wrong-value-for-field-is-permanent"],
+        ("mysql-number-1265-is-permanent", "mysql-number-1364-is-permanent",),
     ),
 ):
     for _name in _names:
@@ -17156,6 +17959,21 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "saga-failed-attempts-accumulate": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-store-count-goes-on-from-the-record": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-step-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-spawn-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-await-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-sleep-is-frozen": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
     "saga-fatal-rollback-error-is-permanent": (
@@ -19691,7 +20509,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1027:
+        if len(MUTATIONS) != 1084:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
