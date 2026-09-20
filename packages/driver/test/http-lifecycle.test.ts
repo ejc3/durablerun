@@ -380,6 +380,38 @@ describe('closing the worker server', () => {
       f.close()
     }
   })
+
+  it('delivers the ack of a launch that arrived whole just before close() began', async () => {
+    const f = await fx('lifecycle-close-ack-in-hand')
+    const worker = createWorkerServer({
+      store: f.store,
+      clock: f.clock,
+      registry: JOBS,
+      secret: SECRET,
+    })
+    const client = await rawClient(await worker.listen())
+    try {
+      const launch = await claimedLaunch(f.store)
+      // The whole launch has reached the handler, which has not written its ack yet. Its
+      // pass runs whatever close() does to the connection, so a dropped ack here is a
+      // failed launch counted against a run that ran.
+      const requested = once(worker.server, 'request')
+      await client.send(launchText(launch.body))
+      await requested
+      const closing = worker.close()
+      expect(
+        await reached(() => client.statuses().length === 1, SOCKET_WAIT_MS),
+        'the ack of a launch whose pass runs is delivered',
+      ).toBe(true)
+      expect(client.statuses()).toEqual([202])
+      await closing
+      expect((await f.store.getTaskResult(Q, launch.taskId))?.state).toBe('completed')
+    } finally {
+      client.socket.destroy()
+      await worker.close()
+      f.close()
+    }
+  })
 })
 
 describe('closing the wake server', () => {
