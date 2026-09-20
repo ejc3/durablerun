@@ -3851,6 +3851,13 @@ MUTATION_SPECS = [
         "a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
     ),
     (
+        "postgres-deadlocked-read-runs-again",
+        "packages/store-postgres/src/executor.ts",
+        "          const runAgain =\n            attempt < DEADLOCK_VICTIM_ATTEMPTS &&\n",
+        "          const runAgain =\n            mode !== 'read' &&\n            attempt < DEADLOCK_VICTIM_ATTEMPTS &&\n",
+        "a read batch that loses a deadlock to a schema version's table locks is reported to its caller and never run again",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9892,6 +9899,12 @@ VERDICTS = {
         "packages/store-postgres/test/racing-migrators.test.ts",
         "racing PostgreSQL migrators make the second wait for the first at every version, and never deadlock",
         "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
+    ),
+    "postgres-deadlocked-read-runs-again": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/deadlocked-read.test.ts",
+        "a read batch that loses a deadlock is run again and returns",
+        "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -17168,7 +17181,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 883:
+        if len(MUTATIONS) != 884:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

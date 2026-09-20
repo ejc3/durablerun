@@ -68,7 +68,9 @@ describe('a read batch that loses a deadlock', () => {
       // Only the read's abort can give this connection `runs` while its transaction is open.
       await version.query('LOCK TABLE runs IN ACCESS EXCLUSIVE MODE')
       await version.query('COMMIT')
-      expect(await read).toBe('returned')
+      expect(await read, 'mutation-verdict:behavior:postgres-deadlocked-read-runs-again').toBe(
+        'returned',
+      )
     } finally {
       await Promise.all(clients.map((client) => client.end().catch(() => undefined)))
       await db.close()
