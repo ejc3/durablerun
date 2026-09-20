@@ -1796,9 +1796,9 @@ async function sagaReplaysAsItsReference(title: string, program: SagaProgram): P
   }
 }
 
-/** The generated sagas this file runs at every fault point: six of random ops, and one for each shape. */
+/** The generated sagas this file runs at every fault point: eight of random ops, and one for each shape. */
 const SAGA_RUN_PROGRAMS: readonly (readonly [string, SagaProgram])[] = [
-  ...[0, 1, 2, 3, 4, 5].map(
+  ...[0, 1, 2, 3, 4, 5, 6, 7].map(
     (seed) =>
       [`saga program ${seed}`, generateSagaProgram(new Rng(`saga-program-${seed}`))] as const,
   ),
