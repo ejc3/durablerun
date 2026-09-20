@@ -265,6 +265,35 @@ describe('a store that extends the held port', () => {
     expect(Object.keys(store)).toEqual(['answer'])
   })
 
+  it('reaches a method patched onto the prototype after the store was constructed, with the check still in front', async () => {
+    // A test double is often a patch of a store class's prototype, made after the store
+    // under test exists. The store has to reach the patch, and the check has to stay in
+    // front of it.
+    class Patched extends HeldPort {
+      claim(): Promise<unknown> {
+        return Promise.resolve('the entry')
+      }
+    }
+    for (const method of Object.keys(PORT_STRINGS)) {
+      if (method !== 'claim')
+        Object.defineProperty(Patched.prototype, method, { value: () => Promise.resolve() })
+    }
+    const patched = new Patched() as Patched & SchedulerStore
+    const entry = Patched.prototype.claim
+    Patched.prototype.claim = () => Promise.resolve('the patch')
+    try {
+      expect({
+        answered: await patched.claim('q', 'w', { leaseSeconds: 30, limit: 1 }),
+        refused: await patched.claim(NUL, 'w', { leaseSeconds: 30, limit: 1 }).then(
+          () => 'accepted',
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        ),
+      }).toEqual({ answered: 'the patch', refused: 'InvalidDurableStringError' })
+    } finally {
+      Patched.prototype.claim = entry
+    }
+  })
+
   it('refuses to construct a store that lacks a method of the port', () => {
     class Lacking extends HeldPort {}
     expect(() => new Lacking()).toThrow(/must define spawn as a method/)
