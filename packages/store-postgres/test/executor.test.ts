@@ -273,7 +273,11 @@ describe('PgExecutor transactions', () => {
   })
 
   it('runs a batch again when PostgreSQL chose it as a deadlock victim, and gives up after three', async () => {
-    const run = async (deadlocksBeforeSuccess: number, code = '40P01') => {
+    const run = async (
+      deadlocksBeforeSuccess: number,
+      code = '40P01',
+      mode: 'write' | 'read' = 'write',
+    ) => {
       let attempts = 0
       const client = new FakeClient((text) => {
         if (text !== 'UPDATE contended') return EMPTY_RESULT
@@ -282,7 +286,7 @@ describe('PgExecutor transactions', () => {
         return result([], [], 1)
       })
       const outcome = await executor(new FakePool(client))
-        .batch('contended', [{ sql: 'UPDATE contended', args: [] }])
+        .batch('contended', [{ sql: 'UPDATE contended', args: [] }], mode)
         .then(
           (results) => results.map((entry) => entry.rowsAffected),
           (error: unknown) => (error instanceof Error ? error.name : String(error)),
@@ -295,6 +299,7 @@ describe('PgExecutor transactions', () => {
         victimOnce: await run(1),
         victimAlways: await run(99),
         anotherError: await run(1, '23505'),
+        victimOnceInARead: (await run(1, '40P01', 'read')).outcome,
       },
       'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
     ).toEqual({
@@ -302,6 +307,8 @@ describe('PgExecutor transactions', () => {
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
       // Only a deadlock is run again. Any other failure is reported the first time.
       anotherError: { outcome: 'StoreUnavailableError', texts: once },
+      // A read is run again like a write. It takes table locks, so it can be the victim.
+      victimOnceInARead: [1],
     })
   })
 

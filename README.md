@@ -47,13 +47,16 @@ The shared conformance matrix requires PostgreSQL 17 through
 ```sh
 podman run --rm --name durablerun-postgres-17 \
   -e POSTGRES_DB=durablerun -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_INITDB_ARGS="--locale-provider=icu --icu-locale=en-US" \
   -p 127.0.0.1:5432:5432 -d postgres:17-alpine
 DURABLERUN_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:5432/durablerun \
   bash scripts/confine.sh pnpm verify
 ```
 
 CI and nightly jobs provide the same PostgreSQL service; no repository secret
-is required.
+is required. The ICU arguments give the database a linguistic collation. Without
+them this image sorts text by its bytes, which hides any statement that orders by
+the database's collation, as a managed PostgreSQL server may.
 
 ## Run MySQL conformance
 

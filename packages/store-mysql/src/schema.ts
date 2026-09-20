@@ -208,6 +208,9 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     version: 6,
     statements: createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
   },
+  // PostgreSQL's version 7 declares a byte collation on every text column. Version 1
+  // above already declares one on every string column.
+  { version: 7, statements: [] },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

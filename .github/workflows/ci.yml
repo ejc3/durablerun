@@ -13,14 +13,18 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # 18 to 30 minutes across recent runs. Three times the slowest, the margin the per-test limits have: a slow runner must
-    # not cancel a required check, and a hung run must not hold a runner for the six hour default.
-    timeout-minutes: 90
+    # 16 to 30 minutes across recent runs. At least three times the slowest, the margin the per-test limits have, with
+    # room for the suite to grow: a slow runner must not cancel a required check, and a hung run must not hold a runner
+    # for the six hour default. A limit is not latency. The arithmetic is in BUILD.md, where the limit was first set.
+    timeout-minutes: 120
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # The dialects this job has servers for. MySQL runs the same suite in its
       # own job below, beside this one, so this job stays the length it was.
       DURABLERUN_CONFORMANCE_DIALECTS: libsql,postgres
+      # What the service below is created with. A PostgreSQL test holds the server to it, so
+      # an image that stopped honouring the arguments cannot pass for a linguistic server.
+      DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
     services:
       postgres:
         image: postgres:17-alpine
@@ -28,6 +32,11 @@ jobs:
           POSTGRES_DB: durablerun
           POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
+          # This image's C library sorts text by its bytes whatever locale the database
+          # names, so a statement that orders by the database's collation cannot fail
+          # here. ICU gives the service a linguistic collation, as a managed server may
+          # have, and the suite then sees what that server would show.
+          POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=en-US"
         ports:
           - 5432:5432
         options: >-
@@ -51,7 +60,8 @@ jobs:
   # flushes are off, which is what keeps a database for every test affordable.
   conformance-mysql:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Six to eleven minutes across recent runs, and at least three times the slowest, like verify.
+    timeout-minutes: 45
     env:
       DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
     steps:
@@ -85,11 +95,14 @@ jobs:
   # a CI job and no one has to run it by hand before merging.
   mutations:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 16 to 30 minutes across recent runs, and at least three times the slowest, like verify.
+    timeout-minutes: 120
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # Some registered mutations are killed by tests that need a MySQL server.
       DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
+      # What the PostgreSQL service below is created with, as in the verify job.
+      DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
     services:
       postgres:
         image: postgres:17-alpine
@@ -97,6 +110,8 @@ jobs:
           POSTGRES_DB: durablerun
           POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
+          # A linguistic collation, for the reason the verify job's service gives.
+          POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=en-US"
         ports:
           - 5432:5432
         options: >-
@@ -169,7 +184,7 @@ jobs:
   base-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Three to five and a half minutes across recent runs. Its longest step is main's registry self-test over the head tree.
+    # Three to six minutes across recent runs. Its longest step is main's registry self-test over the head tree.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -279,7 +294,7 @@ jobs:
                   raise SystemExit('pinned pairs control: the pinned head file was not installed.')
           print('pinned pairs controls: skipped twice, refused, and installed as pinned.')
           PY
-      - name: Bridge re-aimed mutation targets in the older base registry
+      - name: Bridge the older base registry to this tree
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
         # find strings were legitimately re-aimed, and some markers are newer than
@@ -329,7 +344,7 @@ jobs:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
           base.write_text(repaired)
-          print('Re-aimed registered mutation text; all other base registry bytes are unchanged.')
+          print('Bridged the base registry as its arm says; all other base registry bytes are unchanged.')
           PY
       - name: The base branch's checkers, applied to this tree
         env:
