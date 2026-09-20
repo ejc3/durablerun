@@ -1193,6 +1193,16 @@ are load-bearing):
      deadline on the failed run. A store passes the generation order with the
      expired claim, what it requires of the owner, and the relaunch backoff
      with its guard, where PostgreSQL says LEAST.
+     The generation is what makes anything else the scan read safe to act on.
+     The claim-timeout write takes everything it needs from the stored row
+     (still running, activated at its own generation, lease expired, owner
+     admissible), so without the comparison it admits only a sweep the stored
+     row justifies, and no test failed when it was removed. The lost-launch
+     write reports the relaunch count its scan read, which only the generation
+     ties to the row, and the claim-timeout batch once took its successor's
+     attempt from the scan. Both keep the comparison, and the stale-token
+     column holds both to it: a sweep whose scan read another generation acts
+     on nothing.
    - The emit's wake is a shared UPDATE, `wakeRunsUpdate`. It reads the event
      the batch recorded through one node-built subquery in four places: the
      gate, the wake instant, the stored payload, and the provenance instant.
@@ -2057,6 +2067,67 @@ not depend on careful reading:
   observing that a label was called, or deriving authority from the
   after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
+- *The stale-token column* (`conformance/src/stale-token-column.ts`): a worker
+  write is fenced on the claim its caller presents (rules 4 and 5), and each
+  compare-and-set composes that comparison by its own choice. The rules that
+  read a batch read the fences between its statements, not which binds a
+  statement compares, so a statement that leaves the token out passes them.
+  Stale-caller tests were written by hand, one operation at a time, and
+  `failRollback` had none: with its token comparison removed a stale caller
+  ended a saga while the whole libSQL conformance file stayed green. The
+  column generates the cases. It calls the poison matrix's `invoke` for every
+  write label, over every shape of target `invoke` tells apart, on a store
+  that records the call, and it enrolls a call exactly when the call carries
+  the target's claim token or generation. A new label that presents a claim
+  gets its case unlisted, and a label that presents none cannot be listed.
+  Thirteen calls are enrolled. Activate and defer-launch present the token
+  and the generation of a claim receipt. Heartbeat, reschedule, suspend,
+  await-event, record-task-done, complete, fail, fail-rollback,
+  expire-lease-now, set-checkpoint, and the spawn of a child present the
+  token. `claim` presents a token of its own making and no claim it must
+  hold, so it is outside. A case seeds the call's healthy target from the
+  poison matrix's own seeds, makes the call as callers that do not hold the
+  claim, and requires the port's lost-lease answer and six unchanged tables.
+  The answer is `LeaseLostError`, or, where the method answers in band,
+  `null` from `activate`, `false` from `expireLeaseNow`, and a lease reported
+  lost from `heartbeat`. Then the same call under the claim itself must win.
+  That is what makes a refusal the lease's: with `fail-rollback` seeded
+  outside the rolling-back phase, the refusal and the unchanged rows held with
+  the token unfenced, and the case failed only at the holder's call. The
+  stale callers are chosen against what a statement can spell. The statement
+  grammar lists no function, so a comparison that folds the token's case or
+  reads part of it cannot be written: a call of `lower` is refused when the
+  batch is built. An ordering comparison can be written, and it admits every
+  value on one side of the claim's: with `<=` in place of `=` in the shared
+  claim predicate, a column that presented two arbitrary tokens stayed green.
+  So the token is presented with its last character dropped and with one
+  added, beside the token of another live claim in the queue, which a
+  comparison that asks whether any run holds the token would admit. A
+  receipt's generation is presented from the claim before and from a claim
+  not yet made. The lease sweeps present no token and act on the claim their
+  scan read (the shared statements, above), so their two cases run the sweep
+  over a scan that reports the run one claim later, require that nothing is
+  swept and no row moves, and then require the honest sweep to act. A typed
+  record asks
+  every `sweep:` label whether its scan hands it a generation, and each case
+  checks that answer against the scan the store sends. Seventeen registered
+  mutations, one for each comparison of each call, remove it from the
+  statement the call sends, and the enrollment case holds the marker tables
+  to the derived column, so a call that joins the column fails there until
+  its mutation is registered. What the column cannot see, written and run. It
+  sees the calls `invoke` makes. The spawn of a child was the one token-taking
+  call `invoke` did not make: with the parent's token comparison removed from
+  the spawn statement alone, the column without that call passed 16 of 16
+  while a hand-written case failed. `invoke` now makes that call, and an
+  inventory of target shapes, whose type asks every optional field of a target
+  for its shape, keeps a second such argument from arriving unseen. A
+  token-taking argument that `invoke` never passes is still outside. It makes
+  each call once, with one set of arguments, from one seed: the immediate
+  chain, a `reschedule` with no delay, shares the park's statement and keeps
+  its hand-written case. It samples the callers and does not prove equality,
+  and a sweep's scan is presented from one side only. The column costs about
+  0.4 s of test time on libSQL and about 1.4 s on PostgreSQL and on MySQL, on
+  a shared machine.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.
