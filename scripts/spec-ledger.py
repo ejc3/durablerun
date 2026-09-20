@@ -170,11 +170,17 @@ if untagged:
 # refusal (zombie or replay gets zero rows / an error, never success).
 # Per-ACTION, not per-label, is load-bearing: 'await-event' had a twin for
 # its miss branch while the hit branch shipped an unfenced success read.
+# main_pairs is every mapping of the block, whatever its class, for the check further down
+# that each name is an action.
 fenced_actions = set()
+main_pairs: set[tuple[str, str]] = set()
 for ln in block.splitlines():
-    m = re.search(r"'[a-zA-Z0-9:_-]+'\s*->\s*([A-Za-z0-9_/ ]+?)\s*\[cas-fenced\]", ln)
+    m = re.search(r"'([a-zA-Z0-9:_-]+)'\s*->\s*([A-Za-z0-9_/ ]+?)\s*(\[[a-z-]+\])", ln)
     if m:
-        fenced_actions.update(a.strip() for a in m.group(1).split("/"))
+        names = {a.strip() for a in m.group(2).split("/")}
+        main_pairs.update((m.group(1), name) for name in names)
+        if m.group(3) == "[cas-fenced]":
+            fenced_actions.update(names)
 tests = ""
 for path in sorted(root.glob("packages/*/test/**/*.ts")):
     tests += path.read_text()
@@ -256,6 +262,7 @@ def next_state_actions(module_text: str) -> tuple[set[str], str | None]:
 
 problems: list[str] = []
 side_models: list[str] = []
+side_pairs: set[tuple[str, str]] = set()
 for mutants in sorted((root / "specs").glob("*.mutants.json")):
     model = mutants.name.removesuffix(".mutants.json")
     module = root / "specs" / f"{model}.tla"
@@ -304,7 +311,11 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
         mapping = MAPPING.fullmatch(body) if indent == 3 else None
         unmapped = NO_BATCH.fullmatch(body) if indent == 3 else None
         if mapping:
-            mapped.update(mapping["actions"].split(" / "))
+            actions = mapping["actions"].split(" / ")
+            mapped.update(actions)
+            side_pairs.update(
+                (label, action) for label in QUOTED.findall(mapping["left"]) for action in actions
+            )
             stated = BRACKETED.findall(body)
             if len(stated) > 1 or not set(stated) <= set(TAGS):
                 problems.append(
@@ -345,6 +356,26 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
             f"and also lists it as having no batch"
         )
     side_models.append(f"{model}.tla ({len(next_actions)} actions)")
+
+# The main ledger names actions too, and a name that is no action takes a twin that proves
+# nothing: 'fail' was mapped to FailRun, which no module defines, and one marker under that
+# name stood for the two actions behind it. Each name is an action of Scheduler.tla's Next,
+# or the action a side model's block maps from the same label, which is how
+# 'record-task-done' names AwaitMaterialize of ChildTasks.tla. One direction only: Next may
+# hold an action that no line names.
+if main_pairs:
+    scheduler_actions, unreadable = next_state_actions(spec)
+    if unreadable:
+        problems.append(
+            f"spec-ledger: cannot read Scheduler.tla's next-state relation: {unreadable}"
+        )
+    for label, action in sorted(main_pairs - side_pairs):
+        if not unreadable and action not in scheduler_actions:
+            problems.append(
+                f"spec-ledger: Scheduler.tla's ledger maps '{label}' to '{action}', which is not "
+                f"an action of its next-state relation, and no side model's block maps "
+                f"'{label}' to it"
+            )
 if problems:
     print("\n".join(problems))
     sys.exit(1)
