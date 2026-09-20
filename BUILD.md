@@ -145,21 +145,24 @@ a last docs PR gives a live owner to every open bullet that is left.
    where each took every kind that is not an event lock for a claim lock.
    PostgreSQL's version batch names the lock in its control, where its admin
    sent the lock as a statement, and the server is sent the same protocol
-   messages as before, byte for byte, 132 of them at seven versions. The
-   PostgreSQL executor refuses a migration write that names no lock too, its
-   bootstrap excepted, and MySQL's refuses a `migrate:` batch sent as a read,
-   each red first, after the review showed the first was weaker than the
-   statement it replaced and the second was a hole in the refusal. The half applied case passed when it was
-   written, so it was a missing test and not a bug. It cuts the batch the real
-   admin plans at every statement, from every version a database can be at,
-   58 cuts at seven versions, by destroying the session that sent them, and it
+   messages as before, byte for byte: 132 of them at seven versions, and 157
+   at nine. The PostgreSQL executor refuses a migration write that names no
+   lock too, its bootstrap excepted, and MySQL's refuses a `migrate:` batch
+   sent as a read, each red first, after the review showed the first was
+   weaker than the statement it replaced and the second was a hole in the
+   refusal. The half applied case passed when it was written, so it was a
+   missing test and not a bug. It cuts the batch the real admin plans at every
+   statement, from every version a database can be at, 143 cuts at nine
+   versions and 58 at seven, by destroying the session that sent them, and it
    fails once an index is created in a form that is not safe to repeat. A
    fresh MySQL database costs three version reads and two locked batches
-   whatever the number of versions, where it cost nine and eight at seven
-   versions, and a current one a single read, where it cost nine. Measured twice over 100 fresh databases a
-   build, interleaved, 32.7 ms became 30.2 and 33.1 became 31.4, beside
-   PostgreSQL unchanged at 37.3 and 36.9, and at 38.5 and 38.9. The registry
-   gained eleven mutations.
+   whatever the number of versions, where at nine versions it cost eleven and
+   ten, and a current one a single read, where it cost eleven. The cost was
+   measured over 100 fresh databases a build, interleaved, twice at seven
+   versions and twice at nine: 32.7 ms became 30.2 and 33.1 became 31.4 at
+   seven, 45.2 became 44.2 and 45.9 became 43.8 at nine, and PostgreSQL, which
+   did not change, moved by less than half a millisecond in all four runs. The
+   registry gained thirteen mutations.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free

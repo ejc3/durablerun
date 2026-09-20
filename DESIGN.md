@@ -2156,8 +2156,8 @@ are load-bearing):
    takes the lock with the released build's statement, spelled in the test, and
    requires `migrate()` to wait for that name with nothing written, and a
    fresh `migrate()` and a second one send PostgreSQL the protocol messages the
-   released build sends, byte for byte: 132 of them at seven versions, which is
-   where it was recorded.
+   released build sends, byte for byte. That was recorded at seven versions,
+   132 messages, and again at nine, 157.
    Both server executors know a migration write by its label's prefix,
    `migrate:`, and that match can only REFUSE: a write under such a label whose
    control names no migration lock is refused before a connection is taken.
@@ -3331,13 +3331,17 @@ realized in the store's compiler, executor, fragments, or schema:
   nothing here, so `migrate()` reads the version once and sends every pending
   version as ONE batch under one hold of the lock. A fresh database costs three
   version reads and two locked batches whatever the number of versions, and a
-  current one a single read, where
-  one batch for each version costs nine and eight at seven versions, the
-  number every figure here was measured at. Five of
+  current one a single read, where one batch for each version costs a read and
+  the lock for every version: at nine versions, eleven reads and ten locked
+  batches for a fresh database, and eleven reads for a current one. Five of
   those versions are empty, and version 6 splits them, so nothing short of one
-  batch crosses them together. Measured twice over 100 fresh databases a build,
-  interleaved: 32.7 ms became 30.2, and 33.1 became 31.4, beside PostgreSQL,
-  which did not change, at 37.3 and 36.9, and at 38.5 and 38.9. The read comes before the lock, so a batch can be planned from a
+  batch crosses them together. The cost was measured over 100 fresh databases
+  a build, interleaved, twice at seven versions and twice at nine. At seven,
+  32.7 ms became 30.2, and 33.1 became 31.4. At nine, 45.2 became 44.2, and
+  45.9 became 43.8. PostgreSQL, which did not change, moved by less than half
+  a millisecond in all four runs. So the saving is one to two milliseconds,
+  and the counts are the firmer fact. The read comes before the lock, so a
+  batch can be planned from a
   version that has since moved: it repeats statements that change nothing, and
   its advances match no row. That sets a rule for whoever writes a MySQL
   version. A stale plan replays EVERY version that was pending when it read
@@ -3360,8 +3364,8 @@ realized in the store's compiler, executor, fragments, or schema:
   crash, which is what the test's rule covers: every plan it cuts starts from
   a database where what the plan creates is not there yet.
   `store-mysql/test/migration.test.ts` cuts the batch the real admin plans at
-  every statement, from every version a database can be at, 58 cuts at seven
-  versions, by destroying the session that sent them. It holds the version the
+  every statement, from every version a database can be at, 143 cuts at nine
+  versions and 58 at seven, by destroying the session that sent them. It holds the version the
   server left to that rule, and the next `migrate()` to the schema of a clean
   migration. Two more cases stop this build's migrator between its read and
   its batch, while another migrator of this build finishes, and while one of
