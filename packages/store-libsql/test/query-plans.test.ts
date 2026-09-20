@@ -1192,6 +1192,14 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
   })
 
+  it('refuses a statement whose kind it cannot tell from its first word', async () => {
+    // The two lines over a write go by the statement's kind, which its first word says. A
+    // comment before that word hides a DELETE with no WHERE, which plans as no rows at all.
+    expect((await read('/* every wait */ delete from waits')).faults).toEqual([
+      'cannot tell what kind of statement this is from its first word',
+    ])
+  })
+
   it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
     // A step is judged by its constrained columns, whatever table it names, so an equality on
     // a column named `key` reads as keyed on any table. It is true of `meta`, whose key is
