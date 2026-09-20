@@ -20,6 +20,14 @@ const Q = 'q'
 const SECRET = 'test-secret'
 /** A wait on a real socket gets more room than a wait on an in-process counter. */
 const SOCKET_WAIT_MS = 5_000
+/**
+ * The body a pin sends to a route that never reads it. It has to be larger than the request
+ * stream can buffer. A body that fits in the buffer is swallowed by the parser whether or not
+ * the platform discards it, so a pin with a small body passes with the discard gone. With the
+ * discard switched off, a body of this size stalls the parser, and the next request on the
+ * connection is never answered.
+ */
+const UPLOAD_BYTES = 1024 * 1024
 const JOBS: TaskRegistry = new Map([['job', async () => 'ok']])
 const LOOP = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60, launchTimeoutSeconds: 5 }
 
@@ -476,7 +484,7 @@ describe('closing the wake server', () => {
     try {
       // close() resolves while a silent client holds a connection.
       expect(
-        await reached(() => closed),
+        await reached(() => closed, SOCKET_WAIT_MS),
         'mutation-verdict:behavior:wake-server-close-ends-every-connection',
       ).toBe(true)
       expect(
@@ -527,7 +535,7 @@ describe('a request that is rejected with a body', () => {
     const client = await rawClient(await worker.listen())
     try {
       const launch = await claimedLaunch(f.store)
-      const upload = 'x'.repeat(1_000)
+      const upload = 'x'.repeat(UPLOAD_BYTES)
       // A route the worker does not have is answered before anything is read, and its
       // body arrives after the answer.
       await client.send(
@@ -538,7 +546,9 @@ describe('a request that is rejected with a body', () => {
         'the answer to a route the worker does not have',
         SOCKET_WAIT_MS,
       )
-      await client.send(upload)
+      // Not awaited: with the discard gone this write never drains, and the case has to fail
+      // by its named wait, not hang in a write.
+      client.socket.write(upload)
       // A launch nobody signed is read whole and then refused.
       await client.send(
         `POST /launch HTTP/1.1\r\nHost: x\r\nx-durablerun-signature: forged\r\nContent-Length: ${Buffer.byteLength(launch.body)}\r\n\r\n${launch.body}`,
@@ -570,10 +580,17 @@ describe('a request that is rejected with a body', () => {
     })
     const client = await rawClient(await wake.listen())
     try {
-      // A wake with a body nobody reads, a route the server does not have, and a wake.
-      await client.send('POST /wake HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello')
-      await client.send('PUT /nope HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello')
-      await client.send('POST /wake HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n')
+      const upload = 'x'.repeat(UPLOAD_BYTES)
+      // A wake with a body nobody reads, a route the server does not have, and a wake. The
+      // large writes are not awaited: with the discard gone they never drain, and the case has
+      // to fail by its named wait, not hang in a write.
+      client.socket.write(
+        `POST /wake HTTP/1.1\r\nHost: x\r\nContent-Length: ${upload.length}\r\n\r\n${upload}`,
+      )
+      client.socket.write(
+        `PUT /nope HTTP/1.1\r\nHost: x\r\nContent-Length: ${upload.length}\r\n\r\n${upload}`,
+      )
+      client.socket.write('POST /wake HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n')
       await until(
         () => client.statuses().length === 3,
         'three answers on one connection',
