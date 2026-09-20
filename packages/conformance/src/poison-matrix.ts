@@ -1365,7 +1365,8 @@ for (const [table, , columns] of SNAPSHOT_TABLES) {
   RELATIONSHIP_COLUMNS[table] = columns
 }
 
-async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
+/** Every row of the six protocol tables, in a stable order. */
+export async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
   const results = await raw.batch(
     'poison:snapshot',
     SNAPSHOT_TABLES.map(([table, orderBy]) => sql(`SELECT * FROM ${table} ORDER BY ${orderBy}`)),
@@ -1397,7 +1398,8 @@ async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
   return protocol
 }
 
-async function seedBase(f: StoreFixture): Promise<void> {
+/** The population every generated case starts from, at the fixed instant. */
+export async function seedBase(f: StoreFixture): Promise<void> {
   await f.admin.setFakeNowEpochMs(NOW)
   await f.raw.batch(
     'poison:setup',
@@ -1637,7 +1639,8 @@ const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
     ),
   )
 
-async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
+/** A healthy task and run in the state in which `label` is a legal call. */
+export async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
   if (label === 'driver-heartbeat' || label === 'spawn') return
   let statements: readonly SqlStatement[]
   switch (label) {
@@ -1732,12 +1735,15 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
   await raw.batch('poison:trigger', statements, 'write')
 }
 
-interface InvocationTarget {
+/** What one invocation of a write label names: the rows it acts on and the claim it presents. */
+export interface InvocationTarget {
   driverId: string
   taskName: string
   taskId: string
   runId: string
   token: string
+  /** The generation of the claim that holds `runId`. */
+  claimGen: number
   claimWorker: string
   eventName: string
   stepName: string
@@ -1750,12 +1756,13 @@ interface InvocationTarget {
   endedChildId: string
 }
 
-const POISON_INVOCATION: InvocationTarget = {
+export const POISON_INVOCATION: InvocationTarget = {
   driverId: POISON_DRIVER,
   taskName: 'poison',
   taskId: TASK,
   runId: RUN,
   token: TOKEN,
+  claimGen: 1,
   claimWorker: 'poison-claim',
   eventName: EVENT,
   stepName: STEP,
@@ -1768,12 +1775,13 @@ const POISON_INVOCATION: InvocationTarget = {
   endedChildId: ENDED_CHILD,
 }
 
-const HEALTHY_INVOCATION: InvocationTarget = {
+export const HEALTHY_INVOCATION: InvocationTarget = {
   driverId: TRIGGER_DRIVER,
   taskName: 'trigger',
   taskId: TRIGGER_TASK,
   runId: TRIGGER_RUN,
   token: TRIGGER_TOKEN,
+  claimGen: 1,
   claimWorker: 'healthy-claim',
   eventName: TRIGGER_EVENT,
   stepName: TRIGGER_STEP,
@@ -1786,7 +1794,8 @@ const HEALTHY_INVOCATION: InvocationTarget = {
   endedChildId: TRIGGER_ENDED_CHILD,
 }
 
-async function invoke(
+/** The one call of the scheduler port that sends `label`, naming `target`. */
+export async function invoke(
   label: (typeof MATRIX_WRITE_LABELS)[number],
   store: SchedulerStore,
   target: InvocationTarget,
@@ -1800,9 +1809,9 @@ async function invoke(
     case 'claim':
       return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: selectionLimit })
     case 'activate':
-      return store.activate(Q, target.runId, target.token, 1)
+      return store.activate(Q, target.runId, target.token, target.claimGen)
     case 'defer-launch':
-      return store.deferLaunch(Q, target.runId, target.token, 1, 1)
+      return store.deferLaunch(Q, target.runId, target.token, target.claimGen, 1)
     case 'heartbeat':
       return store.heartbeat(Q, target.runId, target.token, 60)
     case 'reschedule':
