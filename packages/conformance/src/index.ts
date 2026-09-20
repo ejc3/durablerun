@@ -1,4 +1,5 @@
 export type {
+  CorruptionTarget,
   StorageCorruption,
   StorageCorruptionAttempt,
   StorageCorruptionDisposition,
@@ -8,6 +9,7 @@ export type {
   StoreFixtureOptions,
 } from './fixture.js'
 export {
+  corruptionTarget,
   executeStorageCorruption,
   overWidthWrite,
   unboundedOverWidthAttempt,

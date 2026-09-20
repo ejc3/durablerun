@@ -117,6 +117,56 @@ export function unboundedOverWidthAttempt(
   }
 }
 
+/** The one stored row a corruption lands in. */
+export interface CorruptionTarget {
+  readonly table: StorageCorruption['table']
+  /** The predicate that names the row by its key columns, the same text on every dialect. */
+  readonly where: string
+  /** The binds of `where`, in order. */
+  readonly identityArgs: string[]
+}
+
+/**
+ * Where a corruption of one stored value lands. The shared schema names every table's key
+ * columns, so the table, the predicate and its binds are the same on every dialect. What a
+ * dialect writes there, and how its column refuses the value, stays in that dialect's
+ * fixture. An over-width name has its own write, `overWidthWrite`, and is not a target here.
+ */
+export function corruptionTarget(
+  corruption: Exclude<StorageCorruption, OverWidthCorruption>,
+): CorruptionTarget {
+  switch (corruption.table) {
+    case 'tasks':
+      return { table: 'tasks', where: 'task_id = ?', identityArgs: [corruption.taskId] }
+    case 'runs':
+      return { table: 'runs', where: 'run_id = ?', identityArgs: [corruption.runId] }
+    case 'checkpoints':
+      return {
+        table: 'checkpoints',
+        where: 'task_id = ? AND checkpoint_name = ?',
+        identityArgs: [corruption.taskId, corruption.checkpointName],
+      }
+    case 'events':
+      return {
+        table: 'events',
+        where: 'queue = ? AND event_name = ?',
+        identityArgs: [corruption.queue, corruption.eventName],
+      }
+    case 'waits':
+      return {
+        table: 'waits',
+        where: 'run_id = ? AND step_name = ?',
+        identityArgs: [corruption.runId, corruption.stepName],
+      }
+    case 'drivers':
+      return {
+        table: 'drivers',
+        where: 'queue = ? AND driver_id = ?',
+        identityArgs: [corruption.queue, corruption.driverId],
+      }
+  }
+}
+
 export type StorageCorruptionDisposition = 'injected' | 'structurally-rejected'
 
 /**
