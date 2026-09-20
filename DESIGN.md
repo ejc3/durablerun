@@ -2402,9 +2402,10 @@ are load-bearing):
    server counted no deadlock. A disk will be slower.
 
    MySQL declares it through a form that the catalog guards, the first version
-   there that alters a table: the `ALTER TABLE … MODIFY … NOT NULL` is chosen
-   only while `information_schema` calls the column nullable, and then
-   prepared, as an index is. `MODIFY` restates the whole column, and a migrator
+   there that alters a table: the `ALTER TABLE … MODIFY … NOT NULL` is skipped
+   only when `information_schema` calls the column NOT NULL, and is otherwise
+   prepared and run, as an index is, so a column the catalog does not hold
+   fails loudly. `MODIFY` restates the whole column, and a migrator
    that planned from a stale read replays every version that was pending when
    it read, so the bare statement replayed after a later version would put
    this declaration back over whatever that version made of the column. The

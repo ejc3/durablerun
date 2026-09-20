@@ -107,13 +107,17 @@ export function createIndexIfMissing(table: string, index: string, columns: stri
 }
 
 /**
- * `ALTER TABLE … MODIFY … NOT NULL` in a form that acts only while the catalog calls the
- * column nullable. MySQL commits each DDL statement on its own, so a migrator that died
+ * `ALTER TABLE … MODIFY … NOT NULL` in a form that does nothing once the catalog calls the
+ * column NOT NULL. MySQL commits each DDL statement on its own, so a migrator that died
  * after the change and before the version runs the version again, and a migrator that planned
  * from a stale read replays it. MODIFY restates the whole column, so a replay of the bare
  * statement would put this declaration back over whatever a later version made of the
  * column. Guarded by the catalog, a replay finds the column not nullable and does nothing.
- * The statement is chosen by what the catalog holds and then prepared, as an index is.
+ * The statement is chosen by what the catalog holds and then prepared, as an index is. It
+ * does nothing ONLY on the catalog's word that the column is NOT NULL: a column the catalog
+ * does not hold is a caller's mistake, and the form then attempts the change, which fails
+ * loudly, where doing nothing would let the caller's version be recorded over a column that
+ * never changed.
  *
  * The change is asked for in place and with no lock, and that clause carries the refusal of
  * a NULL. Under a strict `sql_mode` it is how InnoDB makes the change anyway, and a row that
@@ -132,9 +136,9 @@ export function setNotNullWhileNullable(
   return [
     `SET @durablerun_ddl = IF(
        (SELECT is_nullable FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = '${table}' AND column_name = '${column}') = 'YES',
-       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',
-       'DO 0')`,
+        WHERE table_schema = DATABASE() AND table_name = '${table}' AND column_name = '${column}') = 'NO',
+       'DO 0',
+       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,
     'PREPARE durablerun_ddl FROM @durablerun_ddl',
     'EXECUTE durablerun_ddl',
     'DEALLOCATE PREPARE durablerun_ddl',

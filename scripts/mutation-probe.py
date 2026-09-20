@@ -4288,8 +4288,8 @@ MUTATION_SPECS = [
     (
         "mysql-payload-is-not-null",
         "packages/store-mysql/src/schema.ts",
-        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
-        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
         "MySQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
     ),
     (
@@ -4297,8 +4297,8 @@ MUTATION_SPECS = [
         # every version that was pending when it read. The mutant alters whatever the catalog says.
         "mysql-column-form-acts-only-while-nullable",
         "packages/store-mysql/src/schema.ts",
-        "AND column_name = '${column}') = 'YES',\n",
-        "AND column_name = '${column}') IS NOT NULL,\n",
+        "AND column_name = '${column}') = 'NO',\n",
+        "AND column_name = '${column}') = 'never',\n",
         "a replayed version 10 restates the payload column over what a later version made of it",
     ),
     (
@@ -4307,8 +4307,8 @@ MUTATION_SPECS = [
         # session with no strict mode makes the change and stores an empty string.
         "mysql-column-change-refuses-outside-a-strict-mode",
         "packages/store-mysql/src/schema.ts",
-        " NOT NULL, ALGORITHM=INPLACE, LOCK=NONE',\n",
-        " NOT NULL',\n",
+        " NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        " NOT NULL')`,\n",
         "a MySQL session with no strict mode makes the payload NOT NULL over a NULL and stores an empty string there",
     ),
     (
