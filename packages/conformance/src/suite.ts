@@ -2750,6 +2750,27 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         )
       })
 
+      // A run id is the caller's string, and one that spells a task state is still only an
+      // id. The three writes that copy a run's state into its task find no such run here,
+      // and answer as they do for any other run this queue never had.
+      it('a run id that spells a task state is only an id, and a run nobody has holds no lease', async () => {
+        const answers: Record<string, string> = {}
+        for (const runId of ['no-such-run', 'pending', 'failed', 'completed', 'cancelled']) {
+          answers[`deferLaunch ${runId}`] = await refusalName(
+            f.store.deferLaunch(Q, runId, 'token', 1, 15),
+          )
+          answers[`reschedule ${runId}`] = await refusalName(
+            f.store.reschedule(Q, runId, 'token', { inSeconds: 1 }),
+          )
+          answers[`suspendRun ${runId}`] = await refusalName(
+            f.store.suspendRun(Q, runId, 'token', { inSeconds: 1 }, { key: 's', stateJson: '{}' }),
+          )
+        }
+        expect(answers).toEqual(
+          Object.fromEntries(Object.keys(answers).map((write) => [write, 'LeaseLostError'])),
+        )
+      })
+
       it('suspendRun rejects a non-integer stored attempt atomically', async () => {
         const run = await activatedRun()
         const disposition = await executeStorageCorruption(f, {

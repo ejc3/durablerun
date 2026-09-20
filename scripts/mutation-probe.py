@@ -6585,36 +6585,36 @@ MUTATION_SPECS.extend(
             "task-done-event-complete",
             "packages/store-libsql/src/store.ts",
             "    this.taskDone(b, queue, taskId, 'task', {\n      state: 'completed',\n      completedPayloadJson: resultJson,\n    })\n",
-            "    // MUTATION: no completion event, and no wake\n",
-            "complete ends a task without writing its completion event or waking its waiters",
+            "    this.taskDone(b, queue, 'another-task', 'task', {\n      state: 'completed',\n      completedPayloadJson: resultJson,\n    })\n",
+            "complete records the completion event of another task, so the task it ends has no event and its waiter is never woken",
         ),
         (
             "task-done-event-fail",
             "packages/store-libsql/src/store.ts",
             "    this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {\n      state: 'failed',\n      failureReasonJson: failureJson,\n    })\n",
-            "    void (retry ? 0 : 1) // MUTATION: no completion event, and no wake\n",
-            "a terminal fail ends a task without writing its completion event or waking its waiters",
+            "    this.taskDone(b, queue, 'another-task', retry ? 'task-terminal' : 'task', {\n      state: 'failed',\n      failureReasonJson: failureJson,\n    })\n",
+            "a terminal fail records the completion event of another task, so the task it ends has no event and its waiter is never woken",
         ),
         (
             "task-done-event-cancel",
             "packages/store-libsql/src/store.ts",
             "    this.taskDone(b, queue, taskId, 'cancel', {\n      state: 'cancelled',\n      failureReasonJson: REASON_CANCELLED,\n    })\n",
-            "    // MUTATION: no completion event, and no wake\n",
-            "both cancellations end a task without writing its completion event or waking its waiters",
+            "    this.taskDone(b, queue, 'another-task', 'cancel', {\n      state: 'cancelled',\n      failureReasonJson: REASON_CANCELLED,\n    })\n",
+            "both cancellations record the completion event of another task, so the task it ends has no event and its waiter is never woken",
         ),
         (
             "task-done-event-relaunch-cap",
             "packages/store-libsql/src/store.ts",
             "    this.taskDone(b, queue, item.taskId, 'task-fail', {\n      state: 'failed',\n      failureReasonJson: REASON_RELAUNCH_CAP,\n    })\n",
-            "    // MUTATION: no completion event, and no wake\n",
-            "the relaunch cap ends a task without writing its completion event or waking its waiters",
+            "    this.taskDone(b, queue, 'another-task', 'task-fail', {\n      state: 'failed',\n      failureReasonJson: REASON_RELAUNCH_CAP,\n    })\n",
+            "the relaunch cap records the completion event of another task, so the task it ends has no event and its waiter is never woken",
         ),
         (
             "task-done-event-infra-cap",
             "packages/store-libsql/src/store.ts",
             "    this.taskDone(b, queue, item.taskId, 'task-terminal', {\n      state: 'failed',\n      failureReasonJson: REASON_INFRA_CAP,\n    })\n",
-            "    // MUTATION: no completion event, and no wake\n",
-            "the infrastructure cap ends a task without writing its completion event or waking its waiters",
+            "    this.taskDone(b, queue, 'another-task', 'task-terminal', {\n      state: 'failed',\n      failureReasonJson: REASON_INFRA_CAP,\n    })\n",
+            "the infrastructure cap records the completion event of another task, so the task it ends has no event and its waiter is never woken",
         ),
         (
             "task-done-event-fail-names-its-terminal-statement",
@@ -6646,9 +6646,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-raises-its-refusal",
-            "packages/store-libsql/src/store.ts",
-            "      if (refusal !== null) throw refusal\n",
-            "      // MUTATION: a refusal is never raised\n",
+            "packages/core/src/task-done.ts",
+            "    if (refusal !== null) throw refusal\n",
+            "    // MUTATION: a refusal is never raised\n",
             "an await of a child in another queue is reported as a lost lease and retried for ever",
         ),
         (
@@ -6849,37 +6849,37 @@ MUTATION_SPECS.extend(
         ),
         (
             "postgres-lost-launch-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })\n    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    const guard = ",
-            "    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    const guard = ",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'sweep:lost-launch') this.holdEventLock(statement.eventLock)\n",
             "the relaunch cap ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-claim-timeout-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })\n    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    // Ownership CAS",
-            "    const swept = { queue, runId: item.runId, claimGen: item.claimGen }\n    // Ownership CAS",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'sweep:claim-timeout') this.holdEventLock(statement.eventLock)\n",
             "the infrastructure cap ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-cancel-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "  ): Promise<boolean> {\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "  ): Promise<boolean> {\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'cancel-task' && this.label !== 'sweep:cancel') this.holdEventLock(statement.eventLock)\n",
             "a cancellation ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-complete-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'complete') this.holdEventLock(statement.eventLock)\n",
             "complete ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
             "postgres-fail-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n",
-            "    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'fail') this.holdEventLock(statement.eventLock)\n",
             "a terminal fail ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
@@ -7045,16 +7045,16 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-recording-error-names-the-task",
-            "packages/store-libsql/src/store.ts",
-            "        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
-            "        `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
+            "packages/core/src/task-done.ts",
+            "      `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
+            "      `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that records an outcome and reads a corrupt stored payload hands the task the engine's event name",
         ),
         (
             "postgres-recording-await-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
-            "    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'record-task-done') this.holdEventLock(statement.eventLock)\n",
             "two awaits that record the outcome of one child insert the same event row, and the second is reported as an outage",
         ),
         (
@@ -7073,16 +7073,16 @@ MUTATION_SPECS.extend(
         ),
         (
             "postgres-emit-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
-            "    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'emit-event') this.holdEventLock(statement.eventLock)\n",
             "an emit inserts its event between an await reading none and registering its wait, and the waiter sleeps for ever",
         ),
         (
             "postgres-await-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "    b.lockEvent({ queue, eventName: name })\n    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
-            "    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'await-event') this.holdEventLock(statement.eventLock)\n",
             "an await registers its wait after a terminal batch that did not wait for it has looked for one, and the parent sleeps for ever",
         ),
         (
@@ -7115,9 +7115,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "child-await-registers-on-a-revived-child",
-            "packages/store-libsql/src/store.ts",
-            "      if (child === null || !isTerminalState(child.outcome.state)) continue\n",
-            "      if (child === null || !isTerminalState(child.outcome.state)) break\n",
+            "packages/core/src/task-done.ts",
+            "    if (child === null || !isTerminalState(child.outcome.state)) continue\n",
+            "    if (child === null || !isTerminalState(child.outcome.state)) break\n",
             "a parent whose claim is live is told its lease is lost, because its child was revived before the read that says why",
         ),
         (
@@ -12745,9 +12745,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "saga-postgres-fail-rollback-takes-the-event-lock",
-            "packages/store-postgres/src/store.ts",
-            "      tree: TREE_DIALECT,\n    })\n    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
-            "      tree: TREE_DIALECT,\n    })\n    return this.failInto(b, {\n      operation: 'failRollback',\n",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (statement.eventLock !== null && this.label !== 'fail-rollback') this.holdEventLock(statement.eventLock)\n",
             "a rollback that halts ends a child between an await reading no event and registering its wait, and the parent sleeps for ever",
         ),
         (
@@ -13846,6 +13846,544 @@ QUESTION_TOKEN_DELTA_REASONS = {
         "replacement adds a TypeScript optional-chaining token while re-reading the task accessor"
     ),
 }
+
+# PR3.3b, the hoists of the child-task review. Core holds the lock a statement names, so the
+# nine mutants that each dropped one store's lock line are re-aimed above at that one line,
+# each for its own batch label. One condition for each mutation below.
+MUTATION_SPECS.extend(
+    (
+        (
+            "statement-carries-the-lock-it-names",
+            "packages/core/src/sql-tree.ts",
+            "      named === null\n",
+            "      true\n",
+            "a statement's definition names the lock of its event and the statement carries none, so no batch holds it",
+        ),
+        (
+            "tree-event-lock-inserts-only",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (written !== 'events' && written !== 'waits') return null\n",
+            "a statement that updates or deletes an event or a wait is asked for a lock only an insert needs, and every such batch is refused",
+        ),
+        (
+            "tree-event-lock-events",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (!InsertQueryNode.is(tree) || written !== 'waits') return null\n",
+            "a statement records an event under no lock, so an await can read no event and register a wait the emit never sees",
+        ),
+        (
+            "tree-event-lock-waits",
+            "packages/core/src/sql-tree.ts",
+            "  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null\n",
+            "  if (!InsertQueryNode.is(tree) || written !== 'events') return null\n",
+            "a statement registers a wait under no lock, so an emit can record the event between the await's check and its wait",
+        ),
+        (
+            "tree-event-lock-missing",
+            "packages/core/src/sql-tree.ts",
+            "  if (lock === null) {\n",
+            "  if (false) {\n",
+            "a statement that names no lock is answered with a crash inside the rule, and not told to name one",
+        ),
+        (
+            "tree-event-lock-names-the-row",
+            "packages/core/src/sql-tree.ts",
+            "  if (eventName !== lock.eventName) {\n",
+            "  if (false) {\n",
+            "a statement records one event under the lock of another, which excludes nothing that touches its event",
+        ),
+        (
+            "tree-event-lock-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unserialized !== null) throw new Error(`${at} ${unserialized}`)\n",
+            "    if (false && unserialized !== null) throw new Error(`${at} ${unserialized}`)\n",
+            "the batch asks the lock rule and admits the statement whatever it answers",
+        ),
+        (
+            "batch-holds-the-lock-its-statement-names",
+            "packages/core/src/fenced-batch.ts",
+            "    if (statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "    if (false && statement.eventLock !== null) this.holdEventLock(statement.eventLock)\n",
+            "no batch takes the lock its statement names, so every emit, await, and task ending runs unserialized",
+        ),
+        (
+            "batch-holds-one-lock",
+            "packages/core/src/fenced-batch.ts",
+            "    if (held !== undefined && !same) {\n",
+            "    if (false && held !== undefined && !same) {\n",
+            "a batch whose statements name two events keeps the first lock in silence, and the second event is unserialized",
+        ),
+        (
+            "batch-lock-may-be-named-again",
+            "packages/core/src/fenced-batch.ts",
+            "      held.eventName === lock.eventName\n",
+            "      held.eventName !== lock.eventName\n",
+            "a batch whose second statement names the lock it already holds is refused, and one that names another event is admitted",
+        ),
+        (
+            "terminal-task-state-is-of-tasks",
+            "packages/core/src/sql-tree.ts",
+            "  if (statementTable(tree) !== 'tasks') return []\n",
+            "  if (false) return []\n",
+            "a statement that writes a terminal state into runs is held to a completion event it does not owe, and every completing batch is refused",
+        ),
+        (
+            "terminal-task-state-reads-the-state-column",
+            "packages/core/src/sql-tree.ts",
+            "    .filter((update) => assignedColumn(update) === 'state')\n",
+            "    .filter(() => true)\n",
+            "a terminal state's name written into another column of tasks is read as the task ending",
+        ),
+        (
+            "terminal-task-state-of-an-insert",
+            "packages/core/src/sql-tree.ts",
+            "  const inserted = InsertQueryNode.is(tree) ? insertedValue(tree, 'state') : undefined\n",
+            "  const inserted = InsertQueryNode.is(tree) ? undefined : undefined\n",
+            "a statement inserts a task that is already terminal, and the batch records no completion event",
+        ),
+        (
+            "terminal-task-state-reads-an-assigned-value",
+            "packages/core/src/sql-tree.ts",
+            "  return [...assigned, inserted].filter((value) => value !== undefined)\n",
+            "  return [...assigned, inserted] as OperationNode[]\n",
+            "an UPDATE of tasks, which inserts no state, crashes the rules that read the state it writes",
+        ),
+        (
+            "task-state-takes-no-fragment",
+            "packages/core/src/sql-tree.ts",
+            "  return taskStateValues(tree).some((value) => someNode(value, (node) => RawNode.is(node)))\n",
+            "  return taskStateValues(tree).some((value) => someNode(value, () => false))\n",
+            "a fragment gives a task its state, so a terminal state spelled as text owes no completion event",
+        ),
+        (
+            "terminal-task-state-is-asked",
+            "packages/core/src/sql-tree.ts",
+            "  return taskStateValues(tree).some((value) =>\n    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n  )\n",
+            "  return taskStateValues(tree).some(() => false)\n",
+            "no statement is read as ending a task, so a terminal path that records no completion event runs",
+        ),
+        (
+            "terminal-task-state-as-a-value",
+            "packages/core/src/sql-tree.ts",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
+            "    receivedNodes(value).some((node) => boundValue(node) === 'failed'),\n",
+            "one terminal state is read and the others are not, so a cancellation owes no completion event",
+        ),
+        (
+            "terminal-task-state-in-any-arm",
+            "packages/core/src/sql-tree.ts",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
+            "    isTerminalState(boundValue(value)),\n",
+            "only a value that is itself a state is read, so an expression with a terminal arm owes no completion event",
+        ),
+        (
+            "terminal-task-state-reads-the-value",
+            "packages/core/src/sql-tree.ts",
+            "    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),\n",
+            "    receivedNodes(value).some(() => true),\n",
+            "every statement that writes tasks.state is held to a completion event, a live state included",
+        ),
+        (
+            "terminal-task-state-skips-a-filter",
+            "packages/core/src/sql-tree.ts",
+            "  if (SelectQueryNode.is(value)) {\n",
+            "  if (false && SelectQueryNode.is(value)) {\n",
+            "the filter of a copied state is read as what the task receives, so a run id that spells a terminal state has its write refused as the end of a task",
+        ),
+        (
+            "terminal-task-state-skips-a-condition",
+            "packages/core/src/sql-tree.ts",
+            "  if (CaseNode.is(value)) {\n",
+            "  if (false && CaseNode.is(value)) {\n",
+            "the condition of a CASE arm is read as what the task receives, so a statement that compares against a terminal state owes an event no task needs",
+        ),
+        (
+            "terminal-task-state-reads-a-case-with-no-else",
+            "packages/core/src/sql-tree.ts",
+            "    return results.filter((result) => result !== undefined).flatMap(receivedNodes)\n",
+            "    return (results as OperationNode[]).flatMap(receivedNodes)\n",
+            "a CASE with no ELSE crashes the rule that reads the state a statement gives a task",
+        ),
+        (
+            "terminal-task-state-reads-a-selection",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.selections ?? []),\n",
+            "      ...(value.selections ?? []).slice(0, 0),\n",
+            "what a subquery selects is not read, so a terminal state a subquery names ends a task with no completion event",
+        ),
+        (
+            "terminal-task-state-reads-a-derived-table",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.from?.froms ?? []),\n",
+            "      ...(value.from?.froms ?? []).slice(0, 0),\n",
+            "what a subquery selects from is not read, so a terminal state named in a derived table ends a task with no completion event",
+        ),
+        (
+            "terminal-task-state-reads-a-joined-table",
+            "packages/core/src/sql-tree.ts",
+            "      ...(value.joins ?? []).map((join) => join.table),\n",
+            "      ...(value.joins ?? []).slice(0, 0).map((join) => join.table),\n",
+            "what a subquery joins is not read, so a terminal state named in a joined derived table ends a task with no completion event",
+        ),
+        (
+            "task-state-fragment-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unreadState !== null) throw new Error(`${at} ${unreadState}`)\n",
+            "    if (false && unreadState !== null) throw new Error(`${at} ${unreadState}`)\n",
+            "the batch asks whether it can read a task's state and admits the statement whatever the answer",
+        ),
+        (
+            "completion-event-is-an-event",
+            "packages/core/src/fenced-batch.ts",
+            "        following !== null && written === 'events'\n",
+            "        following !== null && written !== 'tasks'\n",
+            "a wait registered on the completion event is taken for the event, and the task ends with nothing recorded",
+        ),
+        (
+            "completion-event-is-an-insert",
+            "packages/core/src/fenced-batch.ts",
+            "        following !== null && written === 'events'\n",
+            "        written === 'events'\n",
+            "a statement that updates the completion event is taken for the insert that records it, and the task ends with nothing recorded",
+        ),
+        (
+            "completion-event-is-recognised",
+            "packages/core/src/fenced-batch.ts",
+            "      if (ended !== null) recordsEndOf = gateName\n",
+            "      recordsEndOf = gateName\n",
+            "any follow-on under the ending statement's stamp is taken for the completion event",
+        ),
+        (
+            "completion-event-names-the-ending-statement",
+            "packages/core/src/fenced-batch.ts",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf !== undefined),\n",
+            "a completion event recorded under another statement's stamp pays for this one, and it writes no row when this one ends the task",
+        ),
+        (
+            "terminal-task-state-is-what-owes",
+            "packages/core/src/fenced-batch.ts",
+            "      (s) => s.endsTask && !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "      (s) => !this.statements.some((other) => other.recordsEndOf === s.name),\n",
+            "every statement of every batch is held to a completion event, and no batch runs",
+        ),
+        (
+            "terminal-task-state-refuses",
+            "packages/core/src/fenced-batch.ts",
+            "    if (unrecorded !== undefined) {\n",
+            "    if (false && unrecorded !== undefined) {\n",
+            "the batch finds a statement that ends a task with no completion event, and runs all the same",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is carried by the statement whose definition names it",
+            "mutation-verdict:construction:statement-carries-the-lock-it-names",
+        ),
+        (
+            "statement-carries-the-lock-it-names",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is asked of an INSERT, and of no other statement",
+            "mutation-verdict:construction:tree-event-lock-inserts-only",
+        ),
+        (
+            "tree-event-lock-inserts-only",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is named by a statement that records an event",
+            "mutation-verdict:construction:tree-event-lock-events",
+        ),
+        (
+            "tree-event-lock-events",
+            "tree-event-lock-refuses",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is named by a statement that registers a wait",
+            "mutation-verdict:construction:tree-event-lock-waits",
+        ),
+        (
+            "tree-event-lock-waits",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event says a statement that names no lock names none",
+            "mutation-verdict:construction:tree-event-lock-missing",
+        ),
+        (
+            "tree-event-lock-missing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path the lock of an event is the lock of the event the row names",
+            "mutation-verdict:construction:tree-event-lock-names-the-row",
+        ),
+        (
+            "tree-event-lock-names-the-row",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude takes the lock a statement names wherever in the batch the statement stands",
+            "mutation-verdict:construction:batch-holds-the-lock-its-statement-names",
+        ),
+        (
+            "batch-holds-the-lock-its-statement-names",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude holds one lock, which a second statement may name again",
+            "mutation-verdict:construction:batch-holds-one-lock",
+        ),
+        (
+            "batch-holds-one-lock",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch.test.ts",
+            "closed transaction lock prelude holds one lock, which a second statement may name again",
+            "mutation-verdict:construction:batch-lock-may-be-named-again",
+        ),
+        (
+            "batch-lock-may-be-named-again",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task owes the completion event, recorded under its own stamp",
+            "mutation-verdict:construction:terminal-task-state-owes-its-completion-event",
+        ),
+        (
+            "terminal-task-state-is-asked",
+            "completion-event-is-recognised",
+            "terminal-task-state-refuses",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a completion event recorded under another statement",
+            "mutation-verdict:construction:completion-event-names-the-ending-statement",
+        ),
+        (
+            "completion-event-names-the-ending-statement",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a wait registered on the completion event",
+            "mutation-verdict:construction:completion-event-is-an-event",
+        ),
+        (
+            "completion-event-is-an-event",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is not paid by a statement that updates the completion event and inserts none",
+            "mutation-verdict:construction:completion-event-is-an-insert",
+        ),
+        (
+            "completion-event-is-an-insert",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task is a statement that writes tasks, and a run that completes owes nothing",
+            "mutation-verdict:construction:terminal-task-state-is-of-tasks",
+        ),
+        (
+            "terminal-task-state-is-of-tasks",
+            "terminal-task-state-is-what-owes",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the state a statement writes, and no other column",
+            "mutation-verdict:construction:terminal-task-state-reads-the-state-column",
+        ),
+        (
+            "terminal-task-state-reads-the-state-column",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the value, so a live state owes nothing",
+            "mutation-verdict:construction:terminal-task-state-reads-an-assigned-value",
+        ),
+        (
+            "terminal-task-state-reads-an-assigned-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the value, so a live state owes nothing",
+            "mutation-verdict:construction:terminal-task-state-reads-the-value",
+        ),
+        (
+            "terminal-task-state-reads-the-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a terminal state written as a value",
+            "mutation-verdict:construction:terminal-task-state-as-a-value",
+        ),
+        (
+            "terminal-task-state-as-a-value",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a terminal state in any arm of an expression built from nodes",
+            "mutation-verdict:construction:terminal-task-state-in-any-arm",
+        ),
+        (
+            "terminal-task-state-in-any-arm",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads the state an INSERT gives a new task",
+            "mutation-verdict:construction:terminal-task-state-of-an-insert",
+        ),
+        (
+            "terminal-task-state-of-an-insert",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task does not read the filter of a copied state, where a run id is a caller's string",
+            "mutation-verdict:construction:terminal-task-state-skips-a-filter",
+        ),
+        (
+            "terminal-task-state-skips-a-filter",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task does not read the condition of an arm",
+            "mutation-verdict:construction:terminal-task-state-skips-a-condition",
+        ),
+        (
+            "terminal-task-state-skips-a-condition",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads an expression that has no ELSE",
+            "mutation-verdict:construction:terminal-task-state-reads-a-case-with-no-else",
+        ),
+        (
+            "terminal-task-state-reads-a-case-with-no-else",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads what a subquery selects",
+            "mutation-verdict:construction:terminal-task-state-reads-a-selection",
+        ),
+        (
+            "terminal-task-state-reads-a-selection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a state that reaches the column through a derived table",
+            "mutation-verdict:construction:terminal-task-state-reads-a-derived-table",
+        ),
+        (
+            "terminal-task-state-reads-a-derived-table",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task reads a state that reaches the column through a joined table",
+            "mutation-verdict:construction:terminal-task-state-reads-a-joined-table",
+        ),
+        (
+            "terminal-task-state-reads-a-joined-table",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+            "the tree path a statement that ends a task takes no fragment, whatever the fragment holds",
+            "mutation-verdict:construction:task-state-takes-no-fragment",
+        ),
+        (
+            "task-state-takes-no-fragment",
+            "task-state-fragment-refuses",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
 
 MUTATIONS = [
     Mutation(
@@ -17610,7 +18148,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 917:
+        if len(MUTATIONS) != 949:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
