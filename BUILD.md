@@ -200,6 +200,20 @@ a last docs PR gives a live owner to every open bullet that is left.
     one that drops a column from the version, one that makes it rewrite a table
     and one that declares another collation on an index key, are each caught by
     that test.
+19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
+    refused, by the tree rule and by `clock-lint`, which read one list of clock
+    spellings. A batch of reads refuses a state or status column tested against
+    a list under IN that holds a bound value. The registry self-test fails when
+    one spelling of a list written on one line has no mutation of its own.
+    This is met. A verdict case and two bad inputs of the lint self-test were
+    committed failing for `age`, and four verdict cases were committed failing
+    for the read rule: a one-state list, a list of plain values, a list with
+    one bound member, and a bound value in parentheses. Six registered
+    mutations are each caught by one of those cases. `clock-lint` holds no list
+    of its own, and its self-test refuses a tree with no list. Removing the
+    mutation of any one clock keyword, date function, counting operator or
+    deadline test from a copy of the registry gives one problem that names it,
+    and five cases in the registry self-test hold that.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1155,14 +1169,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     functions a statement may call, which makes a clock called as a node
     unwritable whatever it is named, and the scan of fragment text names a
     date function with no argument and the literal `'now'`. That scan stays a
-    spelling list: `age(column)` reads the clock on PostgreSQL and passes it.
+    spelling list. PR3.9g put PostgreSQL's `age` on it, and gave the list one
+    definition that `scripts/clock-lint.py` reads. A clock spelled under a
+    name nobody has listed still passes both scans: a list is a list.
     What has no mutation is derived, not listed here. The registry self-test,
     `pnpm lint:mutation-verdicts`, reads every condition-bearing line of
     `sql-tree.ts` and of the tree path in `fenced-batch.ts`, and fails when a
     line holds more conditions than registered mutations touch it, unless
     `TREE_CONDITIONS_WITHOUT_A_MUTATION` in `scripts/mutation-probe.py` lists
     the line with what a run showed: deleting it fails ordinary tests, or no
-    shape can tell it from the code. Part 3b deleted one entry by name,
+    shape can tell it from the code. Since PR3.9g a line of a spelling list
+    that holds two or more spellings is held by entry and not by that count:
+    each spelling needs a mutation whose replacement drops it and no other.
+    Part 3b deleted one entry by name,
     `compiled.readsClock`. The comparison that stood beside it,
     `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refused,
     because the clock token compiles to the batch clock's text, and also that
@@ -1239,9 +1258,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to 4 microseconds. It also found two reads binding a state their text had
     written inline: they write it inline again (`literalValue`), and a batch of
     reads refuses a state or status column compared with a bound value. Two
-    shapes still pass that rule and wait for part 2's decision about
-    fragments: a state bound inside a store fragment, and a one-state IN list
-    of a bound value. One narrow re-review of that fold found that the fix
+    shapes still passed that rule. PR3.9g closed one, a list under IN that
+    holds a bound value. The other still passes: a state bound inside a store
+    fragment, which a tree carries as text. Only the option "Fragments that
+    carry the module they came from", in the options backlog of the milestone
+    that ended on 2026-09-19, would let a tree read it, and that option is not
+    planned. One narrow re-review of that fold found that the fix
     had taken each bind's type from the first call a prepared read saw,
     unchecked, in a record every store shares: a malformed first call was
     sent as it was, and every later call of that read was refused. A prepared
@@ -1272,6 +1294,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
     refused where the statement is built as well as by the lint. The registry
     holds 873 mutations. The two options that were not built are in the
     options backlog of the milestone that ended on 2026-09-19.
+  - PR3.9g, delivered: three residuals of the tree rules. The clock spellings
+    list PostgreSQL's `age`, which measures from the current date when it is
+    given one argument. Every call is refused, the form with two arguments
+    too, which reads no clock: no store statement calls `age`, telling one
+    argument from two would mean reading SQL, and the refusal says that a span
+    between two stored instants is a subtraction. The spellings have one
+    definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
+    `packages/core/src/sql-tree.ts`. `scripts/clock-lint.py` kept a second
+    list by hand. It now reads that one from the checkout it stands in, leaves
+    out the one arm a store's admin statements would trip, and refuses to run
+    when it cannot read the list. Before the change the pattern read from the
+    tree's list was compared with the hand-kept one and was the same string.
+    The lint is exactly as strong as the tree's list, which its self-test
+    keeps as a case: a tree whose list lacks `sysdate` accepts `SYSDATE()`.
+    A batch of reads also refuses a state or status column tested against a
+    list under IN or NOT IN that holds a bound value, and a bound value in
+    parentheses, both of which passed the rule that read only a bare bound
+    value. A list of inline literals is admitted, because that is the form a
+    partial index matches. No statement a store sends changed: the generated
+    corpus is the same on three dialects. The registry self-test holds each
+    spelling of a one-line list to a mutation of its own. Counting the
+    mutations on the line would not: eight clock keywords stand on a line that
+    nine mutations touch, the eight and the one that blanks the arm, so one
+    keyword could lose its mutation with the count met. No mutation was added
+    for it, because every such spelling already had one. Its kept false
+    negative is a spelling written inside a character class, which reads as
+    one entry. The registry holds 937 mutations.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
