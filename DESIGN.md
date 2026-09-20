@@ -913,9 +913,10 @@ One invocation executes one claimed run to its next suspension point:
     name or its alias in that statement, to be a seek by the key the write was
     handed, so a scan, a walk, or an index added later fails alike. The other
     refuses any step, under any alias, that is pinned by a queue and a state and
-    nothing more. It excuses three statements by name, the claim's, which find
-    the runs that claim took by queue and state because the stamp has no index.
-    BUILD.md records that as open. `store-mysql`'s plan test measures claim,
+    nothing more. It excuses nothing: the claim's three statements, which it
+    excused by name until schema version 9, reach what their token holds
+    through `runs_held`, as the item on a claim's reads of `runs` below says.
+    `store-mysql`'s plan test measures claim,
     activate, and complete beside 2,000 tasks from inside each batch. The
     wake's task
     follow-on selects its source by queue and state, so correlated it ran once
@@ -942,6 +943,82 @@ One invocation executes one claimed run to its next suspension point:
     IF NOT EXISTS`, and its DDL commits on its own, so version 6 chooses its
     statement from the catalog and prepares it, which is safe to repeat after a
     migrator that died between the index and the version.
+  - A claim's reads of `runs`. A claim reads `runs` for what ONE token holds.
+    Its held guard asks whether the token holds a run already, its two
+    follow-ons find the runs the batch just took, and its receipt read returns
+    them. By queue and state alone the only index is `runs_poll`, so each of
+    those read every running run of the queue, on every tick, the idle ones
+    included. Beside 100,000 running runs one claim took 200 ms on libSQL
+    against 5 ms beside eight, and 64 ms on PostgreSQL against 7. On MySQL it
+    took 33 ms beside 10,000 and 638 ms beside 40,000 under the server's default
+    buffer pool, against 4. Schema version 9 is the index `runs_held`, a queue's
+    running runs by their token: `(queue, claimed_by)` over the rows whose state
+    is running on libSQL and PostgreSQL, and `(queue, claimed_by(255), state)`
+    on MySQL, which has no partial index and keeps the token in a LONGTEXT. The
+    contract gives a claim token no length. The engine's own are 32 characters,
+    and a caller's longer one still seeks by its first 255 and is compared whole
+    on the row. With the index one claim costs 4 to 8 ms on every dialect at
+    every size measured, up to 100,000 running runs, and no other write was
+    measurably slower: an entry enters the index at claim and leaves it when the
+    run leaves `running`, and those transitions already move the row in
+    `runs_poll` and `runs_lease`. On PostgreSQL an update that is not heap-only
+    writes every index that holds the row, so heartbeat and activate write this
+    one too, as they already wrote `runs_lease`. It is an index and nothing
+    else: a build that predates it runs against the schema unchanged, and a
+    newer build's statements are valid without it. Three things make the index
+    reachable, and a check holds each one.
+    First, the two follow-ons name the claim token beside the stamp. The stamp
+    is the fence. The token is for the planner and narrows nothing, for one
+    reason: a run carries this batch's claim stamp only when this batch's
+    compare-and-set wrote it, that one statement (core's `claimCas`) writes the
+    token in the same update, and under a token that already holds a run it
+    takes nothing. No other statement writes that stamp. If the compare-and-set
+    ever wrote the stamp without the token, the receipt read would find nothing,
+    and the conformance case `claims due runs oldest-first with claim_gen 1 and
+    full task data` fails, as it did when that was tried. Removing the term
+    changes no answer, so no behavioural case can hold it, and plan pins do.
+    libSQL's allows a claim to reach `runs` by a key or by the due range of its
+    candidate legs and by nothing else, in all four statements, planned under
+    the binds a real claim sent. PostgreSQL's counts the rows every scan of
+    `runs` reads beside 300 running runs that other workers hold, because with
+    the term gone the planner can still name `runs_held` and read every running
+    run through it. A registered mutation on each weakens the term to a
+    tautology that keeps its bind. On MySQL the index of the statement stamp
+    already keyed both follow-ons, so the term changes no plan there and a
+    mutant without it survives by construction. It is kept so that the three
+    stores' text stays alike. MySQL's pin counts the rows each statement walks
+    beside 400 running runs, with a run due and with none, and holds the index
+    through the held guard and the receipt read.
+    Second, libSQL writes the receipt's bounds check on the lease expiry with a
+    unary plus (`storedIntegerWithinOffIndex`). With no statistics SQLite rates
+    a two-sided range above two equalities, so with the index in place it still
+    reached the receipt's rows through `runs_lease`, a range over every
+    unexpired lease of the queue: 40 ms at 100,000 running runs. A unary plus
+    keeps a term out of index selection. It also takes the column's affinity out
+    of the comparison, which changes nothing here. The other two operands are
+    the fragment's own integer literals, which have no affinity for the column's
+    to convert, and the fragment's first conjunct has already required the
+    stored value to be an integer, so an integer is compared with integers under
+    either spelling and any other storage class is refused before the comparison
+    counts. The conformance case `same-token receipt holds the lease expiry to
+    its range, at both ends` holds that truth value on every dialect: a stored
+    expiry one below and one above the range is refused, and both ends are
+    admitted. One registered mutation drops the plus, and the libSQL pin catches
+    it. Another drops the check, and that case catches it.
+    Third, the held guard and the receipt read compare the state with a BOUND
+    value, inside the claim's write batch, and a partial index is matched to a
+    bound state only by a planner that has the value. SQLite plans a statement
+    again once a bound value decides a partial index. The PostgreSQL executor
+    sends every statement unnamed with its values, and PostgreSQL plans such a
+    statement with them. The limit is measured: with the server set to
+    `plan_cache_mode = force_generic_plan`, the held guard and the receipt read
+    fall back to the plan they had before the index, the follow-ons keep the
+    index because their state is a literal, and one claim beside 100,000 running
+    runs costs 32.6 ms against 7.4, where it cost 64 before the index. That is
+    slower and never wrong. An executor that prepared named statements would
+    meet the same limit once PostgreSQL chose a generic plan. The PostgreSQL pin
+    plans with real binds, so it cannot see this. It is the pin's false
+    negative.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
@@ -2152,7 +2229,8 @@ are load-bearing):
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. That is true of
-   version 7, which changes no statement the engine sends. It is not true of
+   version 7, which changes no statement the engine sends, and of version 9,
+   whose index serves statements that are valid without it. It is not true of
    MySQL's version 8: a newer build's keyed deletes name the index that
    version adds, so there the database is migrated first, as the note on
    version 8 among the MySQL notes says. An older build
