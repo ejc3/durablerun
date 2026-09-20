@@ -693,6 +693,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     host that calls `close()` where those seconds matter, such as a deploy that
     waits for it. The red is ready-made: a raw client connects and sends
     nothing, and `close()` has to resolve with the clock where it was.
+  - Option, not scheduled: a standing control for the two cases that pin the
+    platform's discard of an unread request body. Today the control is a run by
+    hand: with the discard switched off both cases fail, and with their first
+    bodies of 1,000 and 5 bytes both passed. A case would switch the discard
+    off and expect the pins' scenario to wedge. Trigger: a change to either
+    pin, or a new major version of the runtime.
+  - PR2.5b's one review found no HIGH, no MEDIUM, three LOW and two notes,
+    recorded in `postmortems/pr2.5b-transport-lifecycle-review.md`. Four are
+    counted there: a sentence of DESIGN.md that was narrower than the code, two
+    pins that could not fail for the reason they name, a wrapper that dropped an
+    argument of the port, and a comment that blamed the client for every stall.
 
 ## Phase 3 — full Absurd semantics
 
