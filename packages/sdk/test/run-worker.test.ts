@@ -2,6 +2,7 @@ import { engineInvariantViolations } from '@durablerun/conformance'
 import {
   FatalTaskError,
   LeaseLostError,
+  PermanentStoreError,
   type SchedulerStore,
   StoreUnavailableError,
   SuspendSignal,
@@ -1603,6 +1604,80 @@ describe('runClaimedRun', () => {
     )
     expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
+  })
+
+  it('a permanent store error at a transition write aborts the pass exactly as an outage does', async () => {
+    // The store's answer is permanent, and it is still not the task's failure. The pass
+    // ends as it ends on an outage: no transition, the user's budget untouched, and the
+    // lease recovers the run. Naming an error more precisely must not change who pays.
+    const f = await fx('sdk-complete-permanent')
+    try {
+      let failCalls = 0
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        complete: () =>
+          Promise.reject(new PermanentStoreError('batch(complete) was refused for good')),
+        fail: () => {
+          failCalls++
+          return Promise.resolve({ rollingBack: false })
+        },
+      })
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const observed = await runClaimedRun(
+        { store, clock: f.clock, registry: registry({ job: async () => 'done' }) },
+        invocation,
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      )
+      expect({ observed, failCalls }).toEqual({
+        observed: { value: { kind: 'aborted' } },
+        failCalls: 0,
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('a permanent store error at a context store call aborts the pass and is never billed to the task', async () => {
+    // Thrown into task code as an ordinary error, it would be recorded through fail() as
+    // the task's own failure and charged to the attempts the caller asked for.
+    const f = await fx('sdk-checkpoint-permanent')
+    try {
+      let failCalls = 0
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        setCheckpoint: () =>
+          Promise.reject(new PermanentStoreError('batch(set-checkpoint) was refused for good')),
+        fail: () => {
+          failCalls++
+          return Promise.resolve({ rollingBack: false })
+        },
+      })
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const observed = await runClaimedRun(
+        {
+          store,
+          clock: f.clock,
+          registry: registry({
+            job: async (ctx) => {
+              await ctx.step('once', () => 1)
+              return 'done'
+            },
+          }),
+        },
+        invocation,
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      )
+      expect({ observed, failCalls }).toEqual({
+        observed: { value: { kind: 'aborted' } },
+        failCalls: 0,
+      })
+    } finally {
+      f.close()
+    }
   })
 
   it('the heartbeat pump keeps a long pass alive at half-lease cadence', async () => {

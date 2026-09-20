@@ -1,6 +1,7 @@
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { childTaskConformance } from './child-tasks.js'
+import { executorErrorConformance } from './executor-errors.js'
 import {
   MATRIX_PRE_STATES,
   MATRIX_READ_LABELS,
@@ -1257,4 +1258,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'schema-admin', run: schemaAdminConformance },
   { id: 'self-concurrency', run: selfConcurrencyConformance },
   { id: 'stale-token', run: staleTokenConformance },
+  { id: 'executor-errors', run: executorErrorConformance },
 ] as const)
