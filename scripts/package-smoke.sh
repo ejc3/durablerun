@@ -82,6 +82,25 @@ surface_refuses 'a withdrawal with no reason' \
   'is withdrawn with no reason' \
   "withdrawn[Object.keys(withdrawn)[0]]=' '"
 
+# The declarations are read, not only the names: a copy of the packed packages in which a
+# released interface lost one member is refused, and the refusal names the interface and the
+# member. A check that compares export names accepts it, as
+# postmortems/pr3.5a-simplification-review.md records.
+surface_lost_member="$PACK_DIR/surface-lost-member"
+cp -R "$PACK_DIR/surface" "$surface_lost_member"
+node -e "const fs=require('node:fs');const file=process.argv[1];const before=fs.readFileSync(file,'utf8');const member='    checkpointName: string;\n';if(before.split(member).length!==2)throw new Error('package-smoke: expected one checkpointName member in '+file);fs.writeFileSync(file,before.replace(member,''))" \
+  "$surface_lost_member/core/package/dist/types.d.ts"
+if refusal="$(node "$ROOT/scripts/package-surface.mjs" "$surface_lost_member" "$surface_snapshot" 2>&1)"; then
+  echo "package-smoke: package-surface accepted a released interface that lost a member" >&2
+  exit 1
+fi
+for expected in 'package-surface: 1 ' 'Checkpoint is declared differently' '- checkpointName: string;'; do
+  if [[ "$refusal" != *"$expected"* ]]; then
+    echo "package-smoke: package-surface refused a released interface that lost a member for another reason: $refusal" >&2
+    exit 1
+  fi
+done
+
 node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 
 cp "$ROOT/scripts/package-smoke-fixture/package.json" "$CONSUMER_DIR/package.json"
