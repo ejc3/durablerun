@@ -556,11 +556,21 @@ One invocation executes one claimed run to its next suspension point:
   exception), 23 (integrity constraint violation) and 42 (syntax error or
   access rule violation) are permanent. MySQL reads the same three classes from
   the SQLSTATE the server sends beside its error number, after the numbers that
-  have a type of their own, and adds two numbers, 1366, a value of the wrong
-  type for its column, and 3819, a broken CHECK constraint, because MySQL files
-  both under its general state HY000, beside a lock wait timeout, where no
-  class can name them. One difference between dialects is deliberate: a syntax
-  error is
+  have a type of their own. A class does not say everything on MySQL, in both
+  directions, so two lists of numbers are kept beside the classes. Read BEFORE
+  the class, and outages: 1203, 1226 and 1461, a limit on the server's or an
+  account's connections and on prepared statements, which MySQL files under
+  class 42 beside a syntax error, and which another session's release lifts,
+  so a retry cures them and a hosted route answers them 503. Typed permanent
+  though MySQL files them OUTSIDE the three classes: 1366, a value of the wrong
+  type for its column, 3819, a broken CHECK constraint, and 1364, a row that
+  leaves out a column with no default, all under its general state HY000
+  beside a lock wait timeout, and 1265 as an error, text that is not a number
+  for a numeric column, under 01000, the state of a warning. For that last one
+  the three dialects give three answers, because libSQL stores the text, so it
+  is held by each server's own case and by no shared one. The two lists are
+  held to the server's own list of error numbers (§3.4). One difference
+  between dialects is deliberate: a syntax error is
   permanent on the two servers, which give it a code of its own, and an outage
   on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
   together with a transaction state error that a new connection cures, and
@@ -585,9 +595,12 @@ One invocation executes one claimed run to its next suspension point:
   transition, which is a spec change first (BUILD.md, PR2.5a). The driver loop,
   the tick, the launch reconciler, the inline launcher and the HTTP worker
   treat every throw alike, and none of them changed. The SDK's replay
-  equivalence harness holds "exactly as an outage" at every store call of every
-  program it generates: the fault it injects at a call is an outage or a
-  permanent store error, drawn by the call it fails.
+  equivalence harness holds "exactly as an outage" at every store call it
+  SAMPLES, which is the odd calls of a program from the third and its last
+  call, and not every call: each sampled call is failed once with an outage and
+  once with a permanent store error, each run is held to the kind it asked for,
+  and the file's last case is a floor that fails unless every store method the
+  sweeps failed at all met both kinds. All twelve do.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -1865,7 +1878,10 @@ are load-bearing):
    failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
    On PostgreSQL a version's batch first takes a lock on `meta` that a second
    migrator waits on, so the loser's error is the sentinel's unique violation
-   and never a deadlock (rule 11).
+   and never a deadlock (rule 11). The loser of the BOOTSTRAP meets the same
+   SQLSTATE, 23505, on another key: the catalog's own index
+   `pg_type_typname_nsp_index`, because two sessions created `meta` together. It
+   is the same class and is absorbed the same way.
    The loser's error is a constraint violation, so its executor types it
    `PermanentStoreError` (§3.2), and this is the one place where a legal use of
    a port meets one. Convergence does not change, because the admin reads the
@@ -2527,11 +2543,26 @@ not depend on careful reading:
   statements all three dialects read alike (§3.2). One refused write for each
   kind of constraint the `tasks` table declares on every dialect, a primary
   key, the unique index of an idempotency key, a NOT NULL column and the CHECK
-  on a task's state, is a `PermanentStoreError` and writes nothing. The kinds
-  are generated from one table, because a dialect can file one kind apart from
-  the rest: MySQL answers a broken CHECK constraint under its general state,
-  and an executor case on a fake driver is fed only the codes its author
-  listed. A batch sent after the executor closed is a `StoreUnavailableError`.
+  on a task's state, is a `PermanentStoreError` and writes nothing. NOT NULL is
+  broken both ways, by a NULL that is written and by a column that is left
+  out. The kinds are generated from one table, because a dialect can file one
+  kind, or one way of breaking it, apart from the rest: MySQL answers a broken
+  CHECK constraint and a column left out under its general state, and an
+  executor case on a fake driver is fed only the codes its author listed. On
+  MySQL that gap is closed at its source: one real-server case reads the
+  server's own list, `performance_schema.events_errors_summary_global_by_error`,
+  which names every error number with its SQLSTATE, and asks the executor's
+  classifier about each of the 1,776 numbers a client can be sent. Under
+  classes 22, 23 and 42, a number whose name says a limit must not be typed
+  permanent, unless a table says why no retry lifts it. Outside those classes,
+  a number whose name says a constraint, a default, a truncation or a bad
+  value must be typed permanent, or match exactly one written reason. A reason
+  that explains nothing fails it too, and so does a server version that adds
+  such a number. Its limits are what a name can say: a number whose name does
+  not say what it means, and a name the two patterns do not match, pass it
+  unseen. PostgreSQL has no such catalog, so its map is held by its SQLSTATE
+  classes alone, which the standard defines. A batch sent after the executor
+  closed is a `StoreUnavailableError`.
   Two write batches that update the same two rows in opposite orders, started
   together on connections that are already open, are both answered with each
   update applied once: PostgreSQL and MySQL make one of them a deadlock victim
@@ -3133,8 +3164,10 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   with 500 `internal_error`, as it answers `SchemaMismatchError`: a 503 would
   invite a producer to retry a request the store refuses the same way every
   time. It is never a 400, which is for what the caller sent, and a permanent
-  store error is the store's answer. Before the executors typed the error,
-  these failures answered 503. No durable state depends on the status, and an
+  store error is the store's answer. A limit on connections or on prepared
+  statements is an outage and answers 503, though MySQL files it under a
+  permanent class (§3.2), because there the retry works. Before the executors
+  typed the error, these failures answered 503. No durable state depends on the status, and an
   at-least-once tick host retries any answer that is not a success. Neither
   answer carries the error's message.
 - **Driver hosting**: the hosted alpha is fully serverless. Each accepted

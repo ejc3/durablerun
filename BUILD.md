@@ -267,8 +267,9 @@ a last docs PR gives a live owner to every open bullet that is left.
 24. PR2.5a: a broken constraint of each kind the `tasks` table declares, sent
     through a store's executor, is typed
     `PermanentStoreError` on libSQL, PostgreSQL and MySQL, a batch on a closed
-    executor is typed `StoreUnavailableError`, and two batches that deadlock
-    are both answered, by one shared conformance surface with no dialect fork.
+    executor is typed `StoreUnavailableError`, and two batches that lock the
+    same rows in opposite orders are both answered, by one shared conformance
+    surface with no dialect fork.
     A worker pass ends on the new type exactly as on an outage, and a hosted
     route answers it 500. This is met. The primary key case of
     `packages/conformance/src/executor-errors.ts` was committed failing on all
@@ -703,8 +704,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   sibling of `StoreUnavailableError` as `SchemaMismatchError` is, and each
   executor types it from the driver's error code and never from message text
   (DESIGN.md §3.2): libSQL from the primary SQLite result code, PostgreSQL and
-  MySQL from SQLSTATE classes 22, 23 and 42, and MySQL's errors 1366 and 3819
-  by number, because MySQL files them under its general state.
+  MySQL from SQLSTATE classes 22, 23 and 42. MySQL keeps two lists of numbers
+  beside the classes: 1203, 1226 and 1461 are read before the class and stay
+  outages, because they are limits that a retry cures and MySQL files them
+  under class 42, and 1265, 1364, 1366 and 3819 are typed permanent though
+  MySQL files them outside the three classes.
   A code the map does not know stays an outage, a deadlock victim keeps its
   retry, and on libSQL a syntax error stays an outage, because SQLite files it
   under its generic code. One shared conformance surface, `executor-errors`,
@@ -715,7 +719,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   CHECK case then failed on MySQL alone, which answers a broken CHECK
   constraint with error 3819 under HY000: committed failing, then typed by
   number. Each executor's own cases run on a fake driver, or on a table of the
-  author's own, so they could not show it.
+  author's own, so they could not show it. The pull request's one review then
+  found the same gap three more times (postmortems/pr2.5a-permanent-store-
+  errors-review.md): the three limits under class 42, which this entry's rule
+  by class had turned from outages into permanent errors, a NOT NULL column
+  left out (1364), and text that is no number (1265). Each was committed
+  failing and then fixed, and the class was closed at its source: one
+  real-server case reads the server's own list of error numbers and holds both
+  of the executor's lists to it (DESIGN.md §3.4). Run over the executor as it
+  was before the fold, it fails naming all five numbers.
   What consumers do was decided before any code. A worker pass treats the new
   type exactly as an outage, through an internal control kind of its own,
   because naming an error more precisely must not change who pays for it, and
@@ -723,12 +735,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   hosted answer: 500, where the same failure answered 503. No log line was
   added, because no log seam exists. The self-concurrency surface books the new
   type with the outages, so a port call that breaks a constraint still fails
-  its contest, and the SDK's replay equivalence harness draws an outage or a
-  permanent store error at every call it fails, so "exactly as an outage" is
-  held at every store call of every generated program. Fifteen mutations hold
-  the new conditions, one for the rule of each map, one for each member of a
-  map, and one each for the worker pass and the contest's booking, and the
-  registry holds 1013.
+  its contest, and the SDK's replay equivalence harness fails every store call
+  it samples, the odd calls from the third and the last call, once with an
+  outage and once with a permanent store error, under a floor that fails unless
+  every store method the sweeps failed met both kinds. The harness first drew
+  the kind by the call's number, which landed the permanent kind on two store
+  methods of twelve while this entry said every call: the review measured it,
+  and the floor was committed failing before the draw changed. Twenty-three
+  mutations hold the new conditions: one for the rule of each map, one for each
+  member of a map and of MySQL's two lists, one for the rule that reads a limit
+  before its class, two owned by the case that reads the server's list, and
+  one each for the worker pass and the contest's booking. The registry holds
+  1021.
   - Option for the worker pass, not built, with its trigger: a run whose store
     call fails permanently ends at once, as neither the task's failure nor an
     exhausted infrastructure budget. It needs a terminal reason of its own and
@@ -738,7 +756,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that has just refused a write. Whoever builds it keeps the admin's
     convergence out of it: racing migrators meet a constraint violation by
     design, the loser's sentinel (DESIGN.md §3.4), and `migrate()` has no run to
-    end. Trigger: the first permanent code met on an activated run in dogfood
+    end. Its spec also says what a run does with a unique violation that came
+    from an id collision, which a retry with a new id cures, where no retry
+    cures any other permanent answer. Trigger: the first permanent code met on an activated run in dogfood
     or CI, or the first `$InfraRetriesExhausted` whose cause was one.
   - Option for the libSQL executor, not built, with its trigger: type a syntax
     error permanent on libSQL too. `SQLITE_ERROR` is SQLite's generic code, and
@@ -764,10 +784,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     legal refusals enumerated first, the admin's and the spawn's among them.
     Trigger: a contest is found to pass with an error in both orders.
   - Option for the executors, not built, with its trigger: widen the maps.
-    `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, SQLSTATE class 21 on the two
-    servers, and MySQL numbers under HY000 other than 1366 stay outages,
-    because no case here could produce one through a port. Trigger: one of them
-    is met in a run.
+    `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, and SQLSTATE classes 21 and
+    54 on the two servers, stay outages, because no case here could produce one
+    through a port. On MySQL the case that reads the server's list names every
+    number it leaves an outage and why. Trigger: one of them is met in a run.
 - **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
   `Launcher.launch` takes an optional second argument whose one field is an
   abort signal. The resident driver's launch deadline hands every call a signal
