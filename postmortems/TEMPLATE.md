@@ -81,8 +81,34 @@ were re-reviewed as new code or merely re-tested.>
 
 ## Evidence
 
-- Red tests: commit `<hash>` — run and seen failing (<n> tests) against `<buggy commit>`.
+- Red tests: commit `<hash>`, probe `<test file>` `<test name>` — run and seen failing (<n> tests) against `<buggy commit>`.
 - Fixes: commit `<hash>`; gate after fix: <verify / fuzz / TLC results>.
+- <The attestation script reads the commits cited here. Any backticked commit
+  id in this document that the repository holds must be on the pull request's
+  branch; write one that is rightly elsewhere without backticks. A label is
+  the first word of either line above, whole or cut short to three letters or
+  more: at the start of a line, or inside one at the start of a clause,
+  before a colon or straight before an id. An id belongs to the nearest label
+  before it, so give each
+  round's red tests and fixes a label, on lines of their own or sharing one.
+  Under a label every id must resolve and be the pull request's own, made
+  after it left its base, and some cited fix must descend from each red test;
+  a commit of an earlier pull request goes in prose on another line. A line
+  may also name a commit of the other kind, the fix that answers a red test
+  or the red test a fix turns green: a commit under both labels counts where
+  it comes first after its label. First under both it is refused, because a
+  red test and its fix are two commits, and first under neither it is
+  refused, because nothing says which it is. So for two findings write a
+  label before every pair: "Red test: commit R1. Fix: commit F1, which turns
+  R1 green. Red test: commit R2. Fix: commit F2, which turns R2 green." A
+  round with no red test of its own says so on the first line above, which
+  may then cite no commit; the second line always cites one. An id that
+  follows the word that stands before the buggy commit above, in the same
+  clause, is the code a red test ran against, and is neither. A red test that
+  names a probe as the first line above does, the test file and then a test
+  name if the file holds more, is run by `--prove-reds`: it must fail at the
+  red commit and pass at the head. A rebase gives every commit a new id, so
+  cite them last, and again whenever the branch moves. Delete this bullet.>
 - Finder: <which review round / tool>, quoted verdict: "<...>".
 - <Links or quoted excerpts sufficient for an outside reader to audit the
   round. Never cite session-local or machine-local paths — quote the
