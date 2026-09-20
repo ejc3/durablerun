@@ -68,6 +68,8 @@ None of the seven was caused by a fix for another finding of this round. Two wer
 
 The fixes of this round changed behaviour: the route's answer gained three keys, a guard left two stores, and a floor moved. They were tested, with the gates in the PR body, and they have not been reviewed as new code.
 
+One slip of the fold did not reach a reviewer. The commit for finding 5 registered its mutation without the reason the registry asks of a verdict whose test title is generated, and the registry's self-test refused it in the final gates. A later commit of this branch adds the reason. That is this project's machinery catching its own fold, so it is not counted among the seven.
+
 ## Evidence
 
 - Red tests: commit `55e5361`, probe `packages/driver/test/hosted.test.ts` `answers with the text of a rollback error that is not JSON`, run and seen failing (3 tests) against `fa81612`. Each of the three new cases got 500 `internal_error` where it expected 200: a rollback error, a failure reason and a result that are not JSON.
