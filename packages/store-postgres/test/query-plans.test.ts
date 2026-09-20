@@ -171,9 +171,12 @@ it('reaches tasks by an index condition in every shipped task update', async () 
  * `$started:` are not the range from `$started:` to `$started;` (DESIGN.md §3.4). An
  * index that holds only saga names would make the read one seek, and BUILD.md records it
  * with its measurement and what would call for it. What this holds: the walk is keyed by
- * the task, no name is compared by order, and the attempt records are not read at all
- * for a task whose saga never began, which is every read of a plain task's result, nor
- * for one that something other than a rollback's failure ended.
+ * the task. No checkpoint name is ordered or compared by order: not in an index
+ * condition, where the plan shows it, and not elsewhere in the statement, where the text
+ * is read for it, because an ORDER BY that the key's own order serves shows in no plan.
+ * And the attempt records are not read at all for a task whose saga never began, which
+ * is every read of a plain task's result, nor for one that a cancellation ended. They
+ * are read for every other failed task whose saga began.
  */
 it("walks a saga's names among one task's rows of the key, and reads no attempt record when no saga began", async () => {
   const db = await openPostgresTestDb({ idNamespace: 'plan-saga-names' })
@@ -260,40 +263,53 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
           ? []
           : [`${line.trim()} :: ${condition}`]
       })
-    // The check can say no: to a read with no task bound, and to a name compared by order.
-    expect(
-      notKeyed(
-        await planLines(
-          client,
-          "SELECT 1 FROM checkpoints ss WHERE substr(ss.checkpoint_name, 1, 9) = '$started:'",
-        ),
-      ),
-    ).toHaveLength(1)
-    expect(
-      notKeyed(
-        await planLines(
-          client,
-          "SELECT 1 FROM checkpoints ss WHERE ss.task_id = ? AND ss.checkpoint_name >= '$started:' AND ss.checkpoint_name < '$started;'",
-        ),
-      ),
-    ).toHaveLength(1)
-    // Nor to a name ordered by. The key's own order serves such an ORDER BY with no sort, so
-    // no line of the plan shows it.
-    expect(
-      notKeyed(
-        await planLines(
-          client,
-          "SELECT st.state FROM checkpoints st WHERE st.task_id = ? AND substr(st.checkpoint_name, 1, 16) = '$rollback-tries:' ORDER BY st.checkpoint_name LIMIT 1",
-        ),
-      ),
-    ).toHaveLength(1)
+    /**
+     * What a statement's text says of a checkpoint name's order. An ORDER BY on a name that
+     * the key's own order serves plans with no sort, and a comparison outside the index
+     * condition is a filter like any other, so no line of a plan shows either. This reads
+     * text, so it sees these spellings and no other.
+     */
+    const ordersAName = (sql: string) =>
+      [
+        ...sql.matchAll(/\border\s+by\b[^)]*?\bcheckpoint_name\b/gi),
+        ...sql.matchAll(/\bcheckpoint_name"?\s*(?:<=|>=|<(?!>)|(?<![-<])>|between\b)/gi),
+        ...sql.matchAll(/(?:<=|>=|<(?!>)|(?<![-<])>)\s*(?:"?\w+"?\.)?"?checkpoint_name\b/gi),
+      ].map((found) => `its text orders a name: ${found[0].replace(/\s+/g, ' ')}`)
+    const faultsOf = async (sql: string) => [
+      ...notKeyed(await planLines(client, sql)),
+      ...ordersAName(sql),
+    ]
+    // Each check can say no. The plan cannot say it of an ORDER BY, because the key's own
+    // order serves one with no sort, and that is why the text is read.
+    const UNBOUND =
+      "SELECT 1 FROM checkpoints ss WHERE substr(ss.checkpoint_name, 1, 9) = '$started:'"
+    const RANGED =
+      "SELECT 1 FROM checkpoints ss WHERE ss.task_id = ? AND ss.checkpoint_name >= '$started:' AND ss.checkpoint_name < '$started;'"
+    const ORDERED =
+      "SELECT st.state FROM checkpoints st WHERE st.task_id = ? AND substr(st.checkpoint_name, 1, 16) = '$rollback-tries:' ORDER BY st.checkpoint_name LIMIT 1"
+    const EQUAL =
+      "SELECT 1 FROM checkpoints sr WHERE sr.task_id = ? AND sr.checkpoint_name = ? AND sr.checkpoint_name <> '$rolling-back'"
+    expect({
+      unboundInThePlan: notKeyed(await planLines(client, UNBOUND)).length,
+      rangedInThePlan: notKeyed(await planLines(client, RANGED)).length,
+      rangedInTheText: ordersAName(RANGED).length,
+      orderedInThePlan: notKeyed(await planLines(client, ORDERED)).length,
+      orderedInTheText: ordersAName(ORDERED).length,
+      equalInTheText: ordersAName(EQUAL).length,
+    }).toEqual({
+      unboundInThePlan: 1,
+      rangedInThePlan: 1,
+      rangedInTheText: 2,
+      orderedInThePlan: 0,
+      orderedInTheText: 1,
+      equalInTheText: 0,
+    })
     const faults: string[] = []
     const reached = new Set<string>()
     for (const st of new Map(seen.map((sent) => [sent.sql, sent])).values()) {
       if (!/\bcheckpoints (sp|ss|sr|st)\b/.test(st.sql)) continue
       reached.add(st.label)
-      for (const fault of notKeyed(await planLines(client, st.sql)))
-        faults.push(`[${st.label}] ${fault}`)
+      for (const fault of await faultsOf(st.sql)) faults.push(`[${st.label}] ${fault}`)
     }
     expect(faults.join('\n')).toBe('')
     expect(
