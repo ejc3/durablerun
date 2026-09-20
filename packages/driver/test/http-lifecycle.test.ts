@@ -289,6 +289,152 @@ describe('a launch the driver stopped waiting for', () => {
   })
 })
 
+describe('the wake ping a worker sends after a pass', () => {
+  it('holds no connection, past its deadline, to a driver that accepted it and never answered', async () => {
+    const f = await fx('lifecycle-silent-driver')
+    const peer = await silentPeer()
+    const worker = createWorkerServer({
+      store: f.store,
+      clock: f.clock,
+      registry: JOBS,
+      secret: SECRET,
+      driverUrl: peer.url,
+    })
+    const port = await worker.listen()
+    try {
+      const launch = await claimedLaunch(f.store)
+      const ack = await fetch(`http://127.0.0.1:${port}/launch`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-durablerun-signature': signBody(SECRET, launch.body),
+        },
+        body: launch.body,
+      })
+      expect(ack.status).toBe(202)
+      await until(
+        () => peer.accepted() === 1,
+        'the ping reaching the silent driver',
+        SOCKET_WAIT_MS,
+      )
+      // The pass is over and took its own sleeps with it, so the one sleep left on the
+      // worker's clock is the deadline of the ping.
+      expect(
+        f.clock.sleeps.map((sleep) => sleep.ms),
+        'a ping is sent with a deadline of five seconds',
+      ).toEqual([5_000])
+      f.clock.advance(5_000)
+      f.clock.fire()
+      expect(
+        await reached(() => peer.closed(0), SOCKET_WAIT_MS),
+        'the worker closes the connection of a ping nobody answered',
+      ).toBe(true)
+    } finally {
+      await worker.close()
+      await peer.close()
+      f.close()
+    }
+  })
+})
+
+describe('closing the worker server', () => {
+  it('lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both', async () => {
+    const f = await fx('lifecycle-close-launch-on-the-wire')
+    const worker = createWorkerServer({
+      store: f.store,
+      clock: f.clock,
+      registry: JOBS,
+      secret: SECRET,
+    })
+    const client = await rawClient(await worker.listen())
+    try {
+      const launch = await claimedLaunch(f.store)
+      const half = Math.floor(launch.body.length / 2)
+      // The headers and half the body arrive, close() begins, and the rest arrives.
+      const requested = once(worker.server, 'request')
+      await client.send(launchText(launch.body, launch.body.slice(0, half)))
+      await requested
+      let closed = false
+      const closing = worker.close().then(() => {
+        closed = true
+      })
+      await client.send(launch.body.slice(half))
+      expect(
+        await reached(() => client.statuses().length === 1, SOCKET_WAIT_MS),
+        'a launch that was on the wire when close() began is answered',
+      ).toBe(true)
+      expect(client.statuses()).toEqual([202])
+      expect(
+        await reached(() => closed, SOCKET_WAIT_MS),
+        'close() resolves once the launch is acked and its pass is over',
+      ).toBe(true)
+      expect((await f.store.getTaskResult(Q, launch.taskId))?.state).toBe('completed')
+      expect(
+        await reached(() => client.seen.closed, SOCKET_WAIT_MS),
+        'a closing server ends the connection once it has answered',
+      ).toBe(true)
+      await closing
+    } finally {
+      client.socket.destroy()
+      await worker.close()
+      f.close()
+    }
+  })
+})
+
+describe('closing the wake server', () => {
+  it('is not held open by a client that connected and sent nothing', async () => {
+    const wake = createWakeServer({ wake: () => {} })
+    const port = await wake.listen()
+    const connected = once(wake.server, 'connection')
+    const client = await rawClient(port)
+    await connected
+    let closed = false
+    const closing = wake.close().then(() => {
+      closed = true
+    })
+    try {
+      expect(
+        await reached(() => closed),
+        'close() resolves while a silent client holds a connection',
+      ).toBe(true)
+      expect(
+        await reached(() => client.seen.closed, SOCKET_WAIT_MS),
+        'the silent client is dropped',
+      ).toBe(true)
+    } finally {
+      client.socket.destroy()
+      await closing
+    }
+  })
+})
+
+describe('the limits of the local servers', () => {
+  it('give a connection ten seconds for its headers and thirty for its whole request', async () => {
+    const f = await fx('lifecycle-limits')
+    try {
+      const worker = createWorkerServer({
+        store: f.store,
+        clock: f.clock,
+        registry: JOBS,
+        secret: SECRET,
+      })
+      const wake = createWakeServer({ wake: () => {} })
+      for (const [name, server] of [
+        ['worker', worker.server],
+        ['wake', wake.server],
+      ] as const) {
+        expect(
+          { headersMs: server.headersTimeout, requestMs: server.requestTimeout },
+          `the ${name} server`,
+        ).toEqual({ headersMs: 10_000, requestMs: 30_000 })
+      }
+    } finally {
+      f.close()
+    }
+  })
+})
+
 /**
  * Node discards what is left of a request body once its response has finished, so a
  * route that answers before it reads leaves the connection in step with the next
