@@ -622,6 +622,30 @@ One invocation executes one claimed run to its next suspension point:
     awaited something that is not durable and while the step is still pending,
     races the step's body on the pass that runs it. No guard makes that the same
     on two passes, and the engine does not try.
+  - What holds this. The SDK's replay-equivalence harness
+    (`packages/sdk/test/replay-equivalence.test.ts`) draws these groups in both
+    of its generators, beside the programs of one call after another that it
+    drew before, and runs every program with an outage injected at each sampled
+    store call. It observes a group by position, as `Promise.all` answers it,
+    and never in the order the calls were answered in. A program with an
+    admitted group is held to the whole comparison every program is held to:
+    the same ending, result, failure, checkpoint table and task counts as the
+    run with no fault, and for a saga the same rollback order and the same
+    output handed to each rollback. A program with a refused group is held to
+    the same failure at every fault point, to the refused call having run no
+    body and left no row, to the saga's row checkers, and to a checkpoint table
+    equal to the reference's but for the first step's own rows, each of which
+    is either missing or exactly what the program says it holds. One case
+    reverses the order two spawns are answered in and shows each child still
+    under the key of its own call, and shows that the comparison fails when the
+    children are swapped. Each shape heads a short program of its own, so every
+    shape runs at every fault point whatever the random programs draw. The
+    file's self-tests fail when a generator stops drawing a shape, when a
+    generated method does not say whether a group holds it, and when a shape is
+    in no program the file runs. Three registered mutations keep the audit
+    checking that these programs can fail: one drops the replayed step's guard,
+    one lowers the guard while a registered step writes its start marker, and
+    one lets a rollback pass keep its own ordinal.
   - **Known cost for a task in flight when the build changes.** An older build
     could carry a task past such a group: a crash after the first step's
     checkpoint, and the next pass admitted the later call. With both members
@@ -911,7 +935,8 @@ One invocation executes one claimed run to its next suspension point:
     queue and decodes. It runs in the operation fuzz, which awaits children
     and requires a cross-queue await to be refused, and in the SDK's
     replay-equivalence harness, which generates `spawn` and `awaitTask`, counts
-    tasks so that a second child fails the comparison, and faults every program
+    tasks so that a second child fails the comparison, says which child each
+    spawn's key holds, and faults every program
     through its last measured store call. It is
     not part of the invariant library, because that library also judges states
     the poison matrix writes by hand, where no batch could have written the
@@ -3380,7 +3405,9 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   retry of a pass spends none of it. A rollback pass replays as the run that
   failed: `ctx.attempt` reads that run's attempt on every pass, however many
   passes the rollbacks take, because a pass that replayed as a later attempt
-  would find no memo for a step named after the attempt. A handler that names
+  would find no memo for a step named after the attempt. The replay-equivalence
+  harness draws such steps in its sagas, with a rollback that fails once so
+  that a second pass follows the first. A handler that names
   steps after the attempt still cannot register the steps of its earlier
   attempts, which no replay reaches. The saga compensates what it can in
   order and then halts, naming the step it could not reach.

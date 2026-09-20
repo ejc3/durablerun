@@ -200,6 +200,15 @@ a last docs PR gives a live owner to every open bullet that is left.
     one that drops a column from the version, one that makes it rewrite a table
     and one that declares another collation on an index key, are each caught by
     that test.
+18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
+    together and a step named after the attempt, in its plain and its saga
+    generator, and each shape runs at every fault point in a program of its
+    own. This is met. The programs generated for a group the engine refuses
+    were committed failing by name: the engine refused such a group only on the
+    pass that ran its first step, and a replayed step now holds the same guard.
+    Three registered mutations are each caught by a generated program: one
+    drops that guard, one brings back the PR3.4 review's finding 2, and one its
+    finding 6.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1941,9 +1950,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     named for the dialect, with the store's own tests beside them, none failed
     or skipped. A task spawned with a budget of 1,000,000 attempts rolls back
     there as any other does.
-  - The replay-equivalence harness generates sequential programs only. It has
-    no concurrent durable calls, no emit, and no step named after the
-    attempt, which is where three of the review's findings were.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
@@ -1962,6 +1968,71 @@ these three things; nothing else in the system does I/O, time, or randomness.
     pin accepts that walk, and the `rollback_error` subquery runs for every
     result read.
 
+- **PR3.4d the replay-equivalence harness draws concurrent durable calls and a
+  step named after the attempt**: DONE. The PR3.4 review found three defects in
+  the layer this harness covers and outside the programs it drew: two
+  registered steps started together, an emit inside a rollback pass, and a
+  step named after the attempt. Both generators already emitted by the time
+  this was built. This builds the other two shapes, in both generators, and
+  fixes what they found.
+  - A group is durable calls started together and awaited together, which a
+    task writes as `Promise.all`. The plain generator draws two awaits of one
+    event (one that parks the run, and one the program has emitted), two
+    spawns, two awaits of children, two sleeps, a sleep or an await with a step
+    after it, and the three groups the engine refuses: a step and then a step,
+    a sleep, or an await. The saga generator draws a registered step beside a
+    sleep, and two registered steps started together, which the engine refuses.
+    DESIGN.md section 3.2 says what replaying the same means for a group, and
+    what an admitted and a refused group are each held to.
+  - Both generators draw a step named after `ctx.attempt`. The plain one also
+    draws a first attempt that fails, so that such a step runs under two names.
+    The saga one draws a rollback that fails once, so that a second rollback
+    pass follows the first. That rollback asks the store whether it has failed
+    before, so a pass that an outage repeats does what the pass it repeats did.
+  - **What the wider grammar found, which this PR fixes.** The engine refused a
+    durable call made while a step RAN, and raised nothing while a step
+    REPLAYED. So a group that the pass running its first step refused was
+    admitted by a pass that replayed that step. With an outage on the pass's
+    own `fail` call, a task that fails for good with no fault completed, and a
+    saga started, and later rolled back, a step that the run with no fault
+    never started. The four generated programs were committed failing, by
+    name, and a replayed step now holds a guard of its own until it settles.
+    This project's machinery found it, before any review.
+  - **Known cost for a task in flight when the build changes** (DESIGN.md
+    section 3.2 has the whole paragraph). A task that an older build's crash
+    carried past such a group, with both members memoized, fails for good on
+    the first pass of the new build that replays the group, with the refusal as
+    its failure reason. A saga that was already rolling back halts with nothing
+    compensated. It is a change of behaviour for tasks in flight, and it is
+    stated here so that whoever merges this sees it.
+  - Every shape heads a short program of its own, and the file's self-tests
+    fail when a generator stops drawing a shape, when a generated method does
+    not say whether a group holds it, and when a shape is in no program the
+    file runs. Three registered mutations keep the audit checking that the
+    generated programs can fail: `sdk-replayed-step-holds-the-nesting-guard`,
+    `saga-start-marker-is-written-with-the-guard-up`, which brings back the
+    review's finding 2, and `saga-pass-replays-as-the-run-that-failed`, which
+    brings back its finding 6.
+  - Measured: the harness file takes 22.7 s where main's takes 14.2 s, at the median of
+    five interleaved rounds on one machine under a load average of 22 to 28
+    (main 13.7 to 14.3 s, this branch 22.1 to 23.1 s), for 42 tests where main
+    has 27. About 8.5 s are added, and about twice that on CI's slowest runner.
+    A program holds at most one shape and one failed attempt, a program
+    generated for a shape is short, and the file runs six sagas of random ops
+    where it ran eight. Those are the levers, and no shape was dropped.
+  - Open question, recorded and not pursued here: a handler that swallows every
+    rejection can observe an injected store outage and complete with it in its
+    result. The shape is `Promise.allSettled([ctx.awaitEvent('never', {
+    timeoutSeconds: 20 }), ctx.awaitEvent('ext')])` in a handler that returns
+    what settled. With the outage on the second await's store call, which was
+    call 11 and call 16 of that program's 17, the task completes with
+    `StoreUnavailableError: injected outage` in its result, where every other
+    schedule completes with the event's payload. DESIGN.md says task code
+    cannot FORGE a control, and says nothing of a handler that swallows a real
+    one. Trigger: a handler in use that catches every error around a durable
+    call, or a decision that a swallowed control ends the pass anyway.
+  - Not built: `emitEvent` as a member of a group, because it takes no key and
+    the order rule says nothing of it, and a group of three or more calls.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
