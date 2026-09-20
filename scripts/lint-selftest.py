@@ -1458,7 +1458,7 @@ def side_model_ledger() -> dict[str, str]:
         "specs/Side.tla": (
             "---- MODULE Side ----\n"
             "\\* BATCH-LABEL LEDGER -- the batches that implement this model\n"
-            "\\* Modeled (label -> action  [dup-class]):\n"
+            "\\* Modeled (a label and its condition, its actions, its class):\n"
             "\\*   'cancel-task' -> EndChild  [read]  (prose may follow on the entry line,\n"
             "\\*     and continue five spaces in)\n"
             "\\*   'cancel-task', 'sweep:cancel' of the parent -> EndChild / WakeParent\n"

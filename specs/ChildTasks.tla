@@ -98,7 +98,7 @@
 \* is the label's duplicate-semantics class, which Scheduler.tla's ledger
 \* defines and assigns, so an entry that states one must agree with it.
 \*
-\* Modeled (label -> action  [dup-class]):
+\* Modeled (a label and its condition, its actions, its class):
 \*   'spawn' of a child -> SpawnChild  [receipt]  (the insert presents the
 \*     parent's live claim, the one a child await presents.  A replay finds the
 \*     child by its reserved key, with no claim, and creates nothing)

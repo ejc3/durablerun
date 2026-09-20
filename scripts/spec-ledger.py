@@ -211,7 +211,8 @@ if stale_marks:
 LAYOUT = (
     "After `\\*`, one space is prose, three start an entry, and five or more continue it. "
     "An entry is `'label' ... -> Action / Action  [class]`, whole on its line, or "
-    "`Action -- reason` for an action that no batch implements."
+    "`Action -- reason` for an action that no batch implements. A line that is not an "
+    "entry holds no arrow and no bracketed class."
 )
 ACTION = r"[A-Z][A-Za-z0-9_]*"
 ACTIONS = rf"{ACTION}(?: / {ACTION})*"
@@ -291,7 +292,15 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
         shape = re.fullmatch(r"\\\*( *)(.*)", line)
         indent, body = (len(shape.group(1)), shape.group(2)) if shape else (0, line)
         if not body or indent == 1 or indent >= 5:
-            continue  # a blank line, prose, or the continuation of an entry
+            # A blank line, prose, or the continuation of an entry. None of them is read
+            # further, so none may hold what only an entry's own line is read for.
+            if "->" in body or BRACKETED.search(body):
+                problems.append(
+                    f"spec-ledger: this line of {model}.tla's ledger block is not an entry, and "
+                    f"only an entry's own line holds an arrow or a bracketed class:\n"
+                    f"    {line}\n  {LAYOUT}"
+                )
+            continue
         mapping = MAPPING.fullmatch(body) if indent == 3 else None
         unmapped = NO_BATCH.fullmatch(body) if indent == 3 else None
         if mapping:

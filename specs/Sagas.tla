@@ -81,7 +81,7 @@
 \* script reads no guard.  Every guard below has an executable twin on every
 \* dialect: the `sagas` conformance surface and the SDK's saga suite.
 \*
-\* Modeled (label -> action  [dup-class]):
+\* Modeled (a label and its condition, its actions, its class):
 \*   'set-checkpoint' of $started:<step> -> StartStep
 \*   'set-checkpoint' of a step -> FinishStep
 \*   'complete' -> Complete  (refused once the task is rolling back)
