@@ -1,13 +1,16 @@
 import {
   type Clock,
+  PermanentStoreError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
+  StoreUnavailableError,
   encodeRollbackTry,
   parseTaskValueJson,
   systemClock,
 } from '@durablerun/core'
+import { withStoreOverrides } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -59,15 +62,20 @@ async function fixture(
     onWorkAvailable?: () => void | Promise<void>
     scheduleWake?: WakeScheduler
     recordStoreCalls?: string[]
+    storeOverrides?: Partial<SchedulerStore>
   } = {},
 ) {
   const { raw, admin, ids, close } = await openTestDb({ idNamespace: seed })
   await admin.setFakeNowEpochMs(1_000_000)
   const baseStore = new LibsqlSchedulerStore(raw, ids)
-  const store =
+  const recorded =
     options.recordStoreCalls === undefined
       ? baseStore
       : recordingStore(baseStore, options.recordStoreCalls)
+  const store =
+    options.storeOverrides === undefined
+      ? recorded
+      : withStoreOverrides<SchedulerStore>(recorded, options.storeOverrides)
   const base = {
     store,
     ids,
@@ -178,6 +186,42 @@ describe('hosted-alpha Web Request router', () => {
     } finally {
       f.close()
     }
+  })
+
+  describe('a store failure, by kind', () => {
+    const enqueueOver = async (seed: string, failure: Error) => {
+      const f = await fixture(seed, { storeOverrides: { spawn: () => Promise.reject(failure) } })
+      try {
+        const response = await f.router.handle(
+          request('/api/tasks', 'POST', JSON.stringify({ taskName: 'job', params: {} })),
+        )
+        return { status: response.status, body: await responseBody(response) }
+      } finally {
+        f.close()
+      }
+    }
+
+    it('answers 500 for a permanent store error, which no retry repairs, and never 400', async () => {
+      // The store's answer, not a refusal of what the caller sent, so it is no 400. And a 503
+      // would invite a producer to retry a request the store refuses the same way each time.
+      expect(
+        await enqueueOver(
+          'hosted-permanent-store-error',
+          new PermanentStoreError(
+            'batch(spawn) failed permanently (SQLSTATE 23505): duplicate key value',
+          ),
+        ),
+      ).toEqual({ status: 500, body: { error: 'internal_error' } })
+    })
+
+    it('answers 503 for a store outage, which a retry can cure', async () => {
+      expect(
+        await enqueueOver(
+          'hosted-store-outage',
+          new StoreUnavailableError('batch(spawn) failed: connection refused'),
+        ),
+      ).toEqual({ status: 503, body: { error: 'service_unavailable' } })
+    })
   })
 
   it('returns 503 for a failed rearm without rolling back a completed task', async () => {
