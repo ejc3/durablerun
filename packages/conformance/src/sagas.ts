@@ -1011,7 +1011,8 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
     // The names under a reserved prefix are read as a range of the checkpoints key where a
     // name compares by its bytes, and by a test of each name where it does not. Either
     // way the names beside that range are no start marker: the prefix in another case,
-    // the prefix without its colon, the name just below the range, and the first past it.
+    // the prefix without its colon, the name just below the range, the first past it, and
+    // the prefix with an accent in it, which a comparison that folds accents would admit.
     it('owes no rollback to a name that only looks like a start marker', async () => {
       const spawned = await f.store.spawn(Q, 'saga', '{}')
       const run = await claimActivated(f.store, Q, 'w-forward')
@@ -1020,6 +1021,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         SAGA_STARTED_PREFIX.slice(0, -1),
         `${SAGA_STARTED_PREFIX.slice(0, -1)}9`,
         firstNamePast(SAGA_STARTED_PREFIX),
+        '$startéd:a',
       ]) {
         await checkpointOwned(f.store, Q, run, name, '1', 60)
       }
@@ -1033,6 +1035,25 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         failed: { rollingBack: false },
         result: { state: 'failed', failureReasonJson: CAUSE },
       })
+    })
+
+    // The three databases compare a name's bytes, and core's unit test compares them only in
+    // JavaScript. No character after the colon can leave the range, so a step key of two,
+    // three and four byte characters starts a step like any other, and its rollback is
+    // found under the name built from it.
+    it('owes a rollback to a step whose key is multi-byte, and finds that it ran', async () => {
+      const step = 'café € \u{1F600}'
+      const spawned = await f.store.spawn(Q, 'saga', '{}')
+      const forward = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, forward, step, 1)
+      const entered = await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
+      const pass = await claimActivated(f.store, Q, 'w-pass')
+      await checkpointOwned(f.store, Q, pass, rollbackOf(step), 'null', 60)
+      await f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)
+      expect({
+        entered,
+        rollback: (await f.store.getTaskResult(Q, spawned.taskId))?.rollback,
+      }).toEqual({ entered: { rollingBack: true }, rollback: { outcome: 'complete' } })
     })
 
     // A crash between batches changes nothing durable, and the next rollback is a function
