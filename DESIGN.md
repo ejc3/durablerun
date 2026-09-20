@@ -2135,8 +2135,12 @@ not depend on careful reading:
   the spawn statement alone, the column without that call passed 16 of 16
   while a hand-written case failed. `invoke` now makes that call, and an
   inventory of target shapes, whose type asks every optional field of a target
-  for its shape, keeps a second such argument from arriving unseen. A
-  token-taking argument that `invoke` never passes is still outside. It makes
+  for its shape, shows the column a new optional field. That is all the
+  inventory sees. The column finds a claim by the probes it places in a
+  target's `token` and `claimGen`, so a claim that reaches a call through a
+  branch on a required field's value, or through another field of the
+  target, arrives unseen, and so does a token-taking argument that `invoke`
+  never passes. It makes
   each call once, with one set of arguments, from one seed: the immediate
   chain, a `reschedule` with no delay, shares the park's statement and keeps
   its hand-written case. It samples the callers and does not prove equality.
