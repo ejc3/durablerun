@@ -768,11 +768,22 @@ these three things; nothing else in the system does I/O, time, or randomness.
   cases hold both lease sweeps to it, from the claim before and from a claim
   not yet made. Twenty mutations, the first to name core's claimed-run,
   claim-receipt, lease, suspend, complete, fail, checkpoint and sweep
-  statements, are each owned by a case of the column: 913. The hand-written
+  statements, are each owned by a case of the column: 972. The hand-written
   stale-token lines for heartbeat, set-checkpoint, reschedule with a delay,
   suspend, complete, fail and expireLeaseNow are gone, and the immediate chain
-  keeps its own case. The column adds about 0.4 s to libSQL's conformance and
-  about 1.4 s to PostgreSQL's and to MySQL's.
+  keeps its own case. The column adds about 0.5 s to libSQL's conformance,
+  about 1.4 s to PostgreSQL's and about 1.3 s to MySQL's.
+  - An option, not built: seed the lost-launch sweep at the relaunch cap too.
+    The column's lost-launch case reaches the reopen statement, so the cap's
+    statement can lose its generation comparison alone with every case green,
+    which was written and run. The cap's write takes what it needs from the
+    stored row and reports no scanned value, so nothing durable rests on it
+    today.
+  - An option, not built: a second argument form of `fail` in the column, the
+    one that asks for a retry. The column calls `fail` and `failRollback` with
+    none, and the scheduler suite's case of a stale `fail` with budget left
+    holds the retry form by hand. It would move the pinned thirteen calls to
+    fourteen and add a mutation.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

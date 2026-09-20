@@ -2448,9 +2448,13 @@ not depend on careful reading:
   never passes. It makes
   each call once, with one set of arguments, from one seed: the immediate
   chain, a `reschedule` with no delay, shares the park's statement and keeps
-  its hand-written case. It samples the callers and does not prove equality.
-  The column costs about 0.4 s of test time on libSQL and about 1.4 s on
-  PostgreSQL and on MySQL, on a shared machine.
+  its hand-written case, and so does a `fail` that asks for a retry. It
+  samples the callers and does not prove equality: with the token compared
+  against a list that holds it and one token the column does not present,
+  every case passes. The lost-launch case reaches the sweep's reopen and not
+  its cap, so the cap's statement alone can lose its generation comparison
+  with every case green. The column costs about 0.5 s of test time on libSQL,
+  about 1.4 s on PostgreSQL and about 1.3 s on MySQL, on a shared machine.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
   the 23-field inventory above is the sole persisted temporal representation.
