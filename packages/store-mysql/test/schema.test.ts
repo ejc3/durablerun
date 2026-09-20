@@ -43,7 +43,7 @@ describe('MySQL schema', () => {
     // Every other statement creates a table if missing.
     const guardedIndexes = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
-      createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(64))'),
+      createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
     ]
     const statements = [
       META_TABLE_SQL,
@@ -127,7 +127,7 @@ describe('MySQL migrations are append-only', () => {
     4: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     6: '282e8754775295bf61972db61c285b7e3ffd92726bd38dbb6c2b60fdf7250ee9',
-    7: 'a62f49a184939000c4f82f1b421b5b30ce1bca5800c0b2be6ee0afbf614ab26d',
+    7: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

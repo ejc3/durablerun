@@ -272,7 +272,7 @@ describe('MysqlExecutor against a real server', () => {
     try {
       const indexes = [
         ['runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
-        ['runs_stamp', '(fence_stamp(64))', 'fence_stamp'],
+        ['runs_stamp', '(fence_stamp(768))', 'fence_stamp'],
       ] as const
       for (const [name, definition, expected] of indexes) {
         const columns = async () => {
