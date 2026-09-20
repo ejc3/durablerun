@@ -483,9 +483,13 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
     const db = await databaseAt(9, 'null-payload-refused')
     try {
       await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
+      // The type is asserted on purpose: no retry changes this answer until the row is repaired.
       const refusal = await new MysqlStoreAdmin(db.raw).migrate().then(
         () => 'resolved',
-        (error: unknown) => /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+        (error: unknown) => ({
+          name: error instanceof Error ? error.name : typeof error,
+          by: /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+        }),
       )
       const stopped = await observed(db)
       await db.raw.batch('fixture:repair', [
@@ -494,7 +498,7 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
       await new MysqlStoreAdmin(db.raw).migrate()
 
       expect({ refusal, stopped, repaired: await observed(db) }).toEqual({
-        refusal: 'MySQL error 1138',
+        refusal: { name: 'PermanentStoreError', by: 'MySQL error 1138' },
         stopped: { version: '9', column: 'YES', held: null },
         repaired: {
           version: String(CURRENT_SCHEMA_VERSION),
@@ -514,7 +518,9 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
     // sets a strict mode on every connection it takes, but that is session state kept in
     // another file, and a port in another language replays the version's text and not that
     // setup. So the text itself has to refuse. Version 10's statements are sent here as they
-    // are, over a session that the executor did not set up.
+    // are, over a session that the executor did not set up. What is caught is therefore the
+    // driver's own error, and no store type is asserted: through the executor error 1846
+    // would stay an outage, and the executor's strict mode keeps a migration from meeting it.
     const db = await databaseAt(9, 'null-payload-no-strict-mode')
     try {
       await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])

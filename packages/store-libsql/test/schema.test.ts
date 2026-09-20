@@ -266,10 +266,13 @@ describe('an event payload is never SQL NULL', () => {
       )[0]?.rows.map(({ name }) => name),
     })
 
+    // The type is asserted on purpose: no retry changes this answer until the row is repaired.
     const refusal = await admin.migrate().then(
       () => 'resolved',
-      (error: unknown) =>
-        /SQLITE_[A-Z_]+: [^:]+: [a-z.]+/.exec(String(error))?.[0] ?? String(error),
+      (error: unknown) => ({
+        name: error instanceof Error ? error.name : typeof error,
+        by: /SQLITE_[A-Z_]+: [^:]+: [a-z.]+/.exec(String(error))?.[0] ?? String(error),
+      }),
     )
     const stopped = await observed()
     await db.batch('fixture:repair', [
@@ -281,7 +284,10 @@ describe('an event payload is never SQL NULL', () => {
     await admin.migrate()
 
     expect({ refusal, stopped, repaired: await observed() }).toEqual({
-      refusal: 'SQLITE_CONSTRAINT_TRIGGER: NOT NULL constraint failed: events.payload',
+      refusal: {
+        name: 'PermanentStoreError',
+        by: 'SQLITE_CONSTRAINT_TRIGGER: NOT NULL constraint failed: events.payload',
+      },
       stopped: { version: 9, events: [{ event_name: 'held-null', payload: null }], triggers: [] },
       repaired: {
         version: CURRENT_SCHEMA_VERSION,

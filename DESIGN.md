@@ -2803,9 +2803,11 @@ are load-bearing):
    A row that already holds NULL is a foreign writer's or tampering, because
    the port cannot write one. On every dialect it makes version 10 fail by that
    dialect's own refusal (SQLITE_CONSTRAINT_TRIGGER, SQLSTATE 23502, MySQL
-   error 1138), which is the cause of what `migrate()` rejects with, and it
-   leaves version 9, the column as it was and the row as it was. One case a
-   dialect holds that through the real executor. The rows are found with
+   error 1138), which is the cause of the `PermanentStoreError` that `migrate()`
+   rejects with: the store answered, and no retry changes the answer until the
+   row is repaired. It leaves version 9, the column as it was and the row as it
+   was. One case a dialect holds that through the real executor, and asserts
+   the type. The rows are found with
    `SELECT queue, event_name FROM events WHERE payload IS NULL`. Give each the
    payload it should have held, or delete it, and migrate again. On libSQL run
    that query before every migration to version 10, whether or not a row is

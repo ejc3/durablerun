@@ -81,9 +81,13 @@ describe('a PostgreSQL version that failed', () => {
 
       const before = await holdings(db)
       const admin = new PostgresStoreAdmin(db.raw)
+      // The type is asserted on purpose: no retry changes this answer until the row is repaired.
       const refusal = await admin.migrate().then(
         () => 'resolved',
-        (error: unknown) => /SQLSTATE \w+/.exec(String(error))?.[0] ?? String(error),
+        (error: unknown) => ({
+          name: error instanceof Error ? error.name : typeof error,
+          by: /SQLSTATE \w+/.exec(String(error))?.[0] ?? String(error),
+        }),
       )
       const stopped = {
         leftBehind: (await holdings(db)) === before ? 'nothing' : 'something',
@@ -100,7 +104,7 @@ describe('a PostgreSQL version that failed', () => {
         stopped,
         repaired: { version: await admin.schemaVersion(), held: await held() },
       }).toEqual({
-        refusal: 'SQLSTATE 23502',
+        refusal: { name: 'PermanentStoreError', by: 'SQLSTATE 23502' },
         stopped: {
           leftBehind: 'nothing',
           version: 9,
