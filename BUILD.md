@@ -1970,27 +1970,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
   states, because no single corrupt pre-state reaches it: the failure's
   compare-and-set in front of it vouches for the run's ordinal, the task's
   three counters and the relation between them. Five mutations, one for each
-  profile, are each owned by a generated cell of that profile: 977. The
-  successor-carry case is generated from the SQL corpus
-  (`conformance/src/successor-carry.ts`, DESIGN.md §3.8): each of the ten
-  statements that insert a run, across six labels, must be made to insert one
-  by some scenario, through an executor that records which corpus statement
-  inserted which run, and the run is judged as its batch left it. A label with
-  a run insert and no scenario fails, and so does an insert no scenario
-  reaches, and so does a label a scenario drives to which the corpus gives no
-  run insert. The enumeration is the corpus's, which the corpus test holds to
-  what the stores compile, so these cases are closed only together with it. The
-  hand-written case is deleted, the mutation it owned is owned by the generated
-  case of `fail`, and the rollback passes of `fail`, `fail-rollback` and both
-  sweep cap arms are reached for the first time. The new cells and controls
-  cost 0.7 s of test time on libSQL, 4.3 s on PostgreSQL and 2.7 s on MySQL,
-  and the generated carry cases 0.3, 0.7 and 0.6 s, on a shared machine at a
-  load average of 17 to 70. Against that, the matrix's own total moved by less
-  than its noise: over five interleaved rounds the base took 45.6 to 47.3 s on
-  libSQL, 231.9 to 255.2 s on PostgreSQL and 161.8 to 187.4 s on MySQL.
-  `verify` runs the libSQL and PostgreSQL legs, so it gains about 6 s here and
-  about twice that on CI's slowest runner, under a limit that holds the
-  three-times rule until its slowest run reaches 2,400 seconds.
+  profile, are each owned by a generated cell of that profile: 1027, which is
+  the 1022 this work was merged onto and these five. The successor-carry case
+  is generated from the SQL corpus (`conformance/src/successor-carry.ts`,
+  DESIGN.md §3.8): each of the ten statements that insert a run, across six
+  labels, must be made to insert one by some scenario, through an executor that
+  records which corpus statement inserted which run, and the run is judged as
+  its batch left it. A label with a run insert and no scenario fails, and so
+  does an insert no scenario reaches, and so does a label a scenario drives to
+  which the corpus gives no run insert. The enumeration is the corpus's, which
+  the corpus test holds to what the stores compile, so these cases are closed
+  only together with it. The hand-written case is deleted, the mutation it
+  owned is owned by the generated case of `fail`, and the rollback passes of
+  `fail`, `fail-rollback` and both sweep cap arms are reached for the first
+  time. The new cells and controls cost 0.7 s of test time on libSQL, 4.3 s on
+  PostgreSQL and 2.7 s on MySQL, and the generated carry cases 0.3, 0.7 and 0.6
+  s, on a shared machine at a load average of 17 to 70. Against that, the
+  matrix's own total moved by less than its noise: over five interleaved rounds
+  the base took 45.6 to 47.3 s on libSQL, 231.9 to 255.2 s on PostgreSQL and
+  161.8 to 187.4 s on MySQL. `verify` runs the libSQL and PostgreSQL legs, so
+  it gains about 6 s here and about twice that on CI's slowest runner, under a
+  limit that holds the three-times rule until its slowest run reaches 2,400
+  seconds.
   - An option, not built: targeted witnesses for the claim receipt's guards
     that are not counters, the sole live run, the stored retry strategy and
     headers, and the lease. No targeted witness of that kind exists on any arm,
@@ -2029,6 +2030,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a run's ordinal, the companions are a valid failed task on their own, and a
     control over them could show the revival acting. Its trigger is a change to
     either of those two companions, or to the revival's charge relation.
+  - An option, not built: an enumeration of the refusals of the check that a
+    targeted case was seeded as its profile says, held against the oracle meta
+    tests. Seven meta tests now require that check's sentences, and nothing
+    lists the sentences, so a refusal added with no meta test would pass every
+    gate. A registered mutation for each refusal would keep the present tests
+    honest and would not see a new one. Its trigger is the next refusal added
+    to `declaredTargetErrors`.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
