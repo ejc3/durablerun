@@ -2543,14 +2543,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `JOIN_PREFIX` hint that reads the keys first and the written table second,
     and the written table through the index of its key. A keyed `DELETE` reads
     its keys through `runs_stamp`, the index of a run's statement stamp that
-    schema version 7 adds on MySQL, and the compiler refuses a keyed delete
+    schema version 8 adds on MySQL, and the compiler refuses a keyed delete
     whose keys are anything but a generated selection of one plain table fenced
-    on its stamp. libSQL and PostgreSQL hold an empty version 7. `SKIP LOCKED`
+    on its stamp. libSQL and PostgreSQL hold an empty version 8. `SKIP LOCKED`
     in the key source held the same contests at zero and was not taken: InnoDB
     skips by index record, and a transaction skipped a row it had stamped
     itself when another held that row's entry in the index the keys were read
     through. DESIGN.md has the rule, that false negative, the width of the
-    index's prefix, and what version 7 does to a live database: on a million
+    index's prefix, and what version 8 does to a live database: on a million
     runs under traffic from the older build, reads and event batches included,
     the index built in 2.3 s and 2.8 s and no call failed. The surface's MySQL
     excusal is deleted in all three parts, and the claim by distinct claimers

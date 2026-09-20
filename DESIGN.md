@@ -2667,7 +2667,7 @@ realized in the store's compiler, executor, fragments, or schema:
   its attempts. The surface's contest ran beside an empty `waits`, where this
   was hidden. It now runs a second time beside 50 waiters parked through the
   port, where the older statements met a victim in 20 contests of 20, and no
-  contest is excused on any dialect. Version 7 gives `runs` an index of its
+  contest is excused on any dialect. Version 8 gives `runs` an index of its
   statement stamp on MySQL, `runs_stamp`, and the compiler reads a keyed
   delete's keys through it. Every stamping write changes the stamp, so a
   stamped run's entry in that index is its own transaction's, and a search of
@@ -2707,11 +2707,11 @@ realized in the store's compiler, executor, fragments, or schema:
   a failed claim in 5, against none. Beside 10,000 runs in memory the index
   cost a claim and a heartbeat nothing that could be measured, 3.39 ms against
   3.57 and 0.61 ms against 0.62 at the median of 300 calls each, and it held
-  0.43 MB for the 10,000 runs. libSQL and PostgreSQL hold an empty version 7,
+  0.43 MB for the 10,000 runs. libSQL and PostgreSQL hold an empty version 8,
   so the three dialects keep one numbering. Neither has the defect. On
   PostgreSQL an indexed `fence_stamp` would end heap-only updates for every
   stamped write, so it needs a measurement before anyone adds it.
-- **Version 7 on a live MySQL database.** It is one `CREATE INDEX`, in the form
+- **Version 8 on a live MySQL database.** It is one `CREATE INDEX`, in the form
   that is safe to repeat, under the named lock every MySQL migration takes, so
   racing migrators run one after another and the second finds the index there.
   InnoDB builds it online and holds an exclusive metadata lock on `runs` only
@@ -2723,7 +2723,7 @@ realized in the store's compiler, executor, fragments, or schema:
   build took 17 ms, as before it. A metadata lock was pending in 2 of 101
   samples taken 40 ms apart. So the executor's rule that only a write batch is
   run again stands for this version. A process of the older build keeps running
-  against version 7 unchanged: it does not read through the index, and its
+  against version 8 unchanged: it does not read through the index, and its
   writes maintain it. One that starts afterwards fails in `migrate()` with
   `SchemaMismatchError`, as after every migration, and its store still reads
   and writes. In that mix the older build's executor counted 119 and 131
