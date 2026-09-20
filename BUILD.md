@@ -2624,12 +2624,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
   migrations an order: `meta` first committed 69 of 80 with 568 deadlocks and
   13 errors at callers, `meta` last with the tables as declared 80 of 80 with
   339 and 65, and the engine's order 80 of 80 with 126 and 51, every one of
-  the 51 a driver's sweep scan, whose statement names `tasks` first. At scale
+  the 51 a driver's sweep scan, whose statement names `tasks` first. The
+  orders ran one after another under a rising load (64, 114 and 142), over
+  about 38,100, 29,000 and 32,000 calls, so for each thousand calls the
+  deadlocks are 14.9, 11.7 and 3.9: the engine's order's gain stands, and of
+  `meta` last's gain the commits and the median stand and most of the deadlock
+  count does not. Errors at callers of the older build rose from 13 to 51,
+  which is still the right trade: a sweep scan that loses costs a driver one
+  tick, where 2 of the 13 and 18 of the 65 were a worker's checkpoint read,
+  which costs a run its lease, and version 7's own rollout runs under the
+  older build. At scale
   with that mix and order the version committed in 12 of 12 runs at a million
   rows a table (3.9 to 6.4 seconds) and in 6 of 6 at four million (14.1 to
-  16.3), each on its first attempt, and callers saw 4 errors in the 18 runs,
-  each a sweep scan. Under this build's traffic it committed in 6 of 6 at a
-  million rows and no caller saw an error. A batch that loses three deadlocks
+  16.3), on its first attempt in each of the 12 runs whose attempts could be
+  counted (every third run went through the executor, which does not show
+  them), and callers saw 4 errors in the 18 runs, each a sweep scan. Under
+  this build's traffic it committed in 6 of 6 at a million rows and no caller
+  saw an error. A batch that loses three deadlocks
   in a row is still reported: the driver counts an outage, and the run waits
   out its lease. The version itself lost all three in 1 of 160 migrations in
   this order, which leaves version 6 and can be run again.
@@ -2658,11 +2669,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     second table and sees the read hold its first, for each read that names
     two store tables. Their trigger is the next version that locks tables:
     version 7's text is frozen once it is on main.
+  - An option, not built: one definition of the refusal for a schema newer than
+    the build. Each of the three stores builds that message and has a case for
+    it, where main already had the older message three times. A helper in core
+    beside `SchemaMismatchError` would be the single definition. libSQL's
+    `migration-postcondition-old-version` mutation finds its text in that
+    file, so the move needs a re-aim and a line in the base gate's bridge. It
+    fits PR4.4d, which hoists the stores' third copies, and a fourth store is
+    its trigger otherwise.
   - An option, not built: a short `lock_timeout` on the version's lock
     statement, with reruns. The version then gives up its place in every lock
-    queue when it cannot have the locks at once, where today all store traffic
-    queues behind it for as long as an older transaction stays open, and it
-    tries again. Its trigger is a deployment that must migrate under sustained
+    queue when it cannot have the locks at once, where today store traffic
+    queues behind it for as long as an older transaction stays open, all of it
+    at most (the statement takes its tables one at a time, so what queues
+    meanwhile is whatever touches a table it has already taken), and it tries
+    again. Its trigger is a deployment that must migrate under sustained
     traffic, or beside transactions that stay open for long.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was

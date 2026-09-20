@@ -1916,8 +1916,11 @@ are load-bearing):
    `migrate()` runs the version as one transaction, and its first statement
    takes an ACCESS EXCLUSIVE lock on all eight tables. Three things follow.
    The version waits for every transaction that was open when it started and
-   had touched a store table, for as long as that transaction stays open. All
-   store traffic queues behind the version meanwhile, and until it commits.
+   had touched a store table, for as long as that transaction stays open.
+   Store traffic queues behind the version meanwhile, and until it commits:
+   all of it at most. `LOCK TABLE` takes the tables of its list one at a time,
+   so while the version still waits for one of them, what queues is every
+   statement that touches a table the list has already taken.
    And the version can lose a deadlock to a statement that was in flight: the
    executor runs it again, and after three losses `migrate()` fails with
    SQLSTATE 40P01, leaves version 6, and can simply be run again.
@@ -1960,8 +1963,11 @@ are load-bearing):
    batches, read batches and event batches.
    With that traffic sent by a build whose last version is 6, the version
    committed in 12 of 12 runs at a million rows a table (3.9 to 6.4 seconds)
-   and in 6 of 6 at four million (14.1 to 16.3 seconds), each on its first
-   attempt, and every call waited for as long as it ran. Callers saw 4 errors
+   and in 6 of 6 at four million (14.1 to 16.3 seconds), and every call waited
+   for as long as it ran. Two runs in three sent the version over a plain
+   connection that counts attempts, and each of those 12 took one. Every third
+   run went through the store's executor, which does not show its attempts.
+   Callers saw 4 errors
    in those 18 runs, each a driver's sweep scan that lost a deadlock. With the
    same traffic sent by this build the version committed in 6 of 6 at a
    million rows (3.6 to 6.7 seconds, once on its second attempt), and no
@@ -1979,6 +1985,21 @@ are load-bearing):
    driver's sweep scan. Under this build's traffic in the order above: 79 of
    80, 141 deadlocks, and 1 error at a caller, a `complete` that lost three
    times.
+
+   Two things qualify those rows. The three orders ran one after another and
+   not interleaved, under a load that rose (64, 114 and 142 when each began),
+   and the traffic each met differed: about 38,100 calls under `meta` first,
+   29,000 under `meta` last and 32,000 in the order above. For each thousand
+   calls the server counted 14.9, 11.7 and 3.9 deadlocks. So the gain of the
+   order above stands. Of `meta` last's gain over `meta` first, the commits and
+   the median stand, and most of the deadlock count does not.
+   And errors at callers of the older build rose, from 13 to 51. That is still
+   the right trade. All 51 are a driver's sweep scan, which costs a driver one
+   tick, where 2 of the 13 and 18 of `meta` last's 65 were a worker's
+   checkpoint read, which costs a run its lease. Under `meta` first the version
+   itself failed 11 times in 80. And version 7's own rollout runs under the
+   older build, whose reads are not run again, so which reads can lose is what
+   the order decides.
 
    Why the locks come first was measured before the order was, with `meta`
    first and write batches only, under four workers of an older build (one run
