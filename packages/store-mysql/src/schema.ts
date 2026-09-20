@@ -81,6 +81,12 @@ export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
 export const RUNS_STAMP_INDEX = 'runs_stamp'
 
 /**
+ * How much of a claim token `runs_held` holds. A key of `(queue, claimed_by, state)` is 255
+ * and 16 characters of four bytes beside this prefix, 2,104 bytes of the 3,072 InnoDB allows.
+ */
+const HELD_INDEX_PREFIX = 255
+
+/**
  * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
  * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
  * index and before the version would fail its rerun on a duplicate key name. The
@@ -245,6 +251,24 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
       'runs',
       RUNS_STAMP_INDEX,
       `(fence_stamp(${STAMP_INDEX_PREFIX}))`,
+    ),
+  },
+  {
+    // A claim finds what ONE token holds: its held guard asks whether the token holds a run
+    // already, and its receipt read returns the runs it holds. By queue and state alone the
+    // only index was `runs_poll`, so both walked every running run of the queue, on every
+    // tick, the idle ones included: one claim measured 33 ms beside 10,000 running runs and
+    // 638 ms beside 40,000 under the server's default buffer pool, against 4 ms. MySQL has
+    // no partial index, so the state is the last column, as in `runs_woken`. The token is a
+    // LONGTEXT, so the index holds a prefix of it: the engine's own tokens are 32
+    // characters, and a caller's longer one still seeks by its first 255 and is then
+    // compared whole on the row. It is an index and nothing else: a build that predates it
+    // runs against this schema unchanged.
+    version: 9,
+    statements: createIndexIfMissing(
+      'runs',
+      'runs_held',
+      `(queue, claimed_by(${HELD_INDEX_PREFIX}), state)`,
     ),
   },
 ]

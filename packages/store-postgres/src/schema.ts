@@ -284,6 +284,23 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
   // their keys through. PostgreSQL's DELETE takes no lock on the rows its subquery reads.
   // This version holds nothing here, so the three dialects keep one numbering.
   { version: 8, statements: [] },
+  {
+    // A claim finds what ONE token holds three ways: its held guard asks whether the token
+    // holds a run already, its two follow-ons find the runs the batch just took, and its
+    // receipt read returns them. By queue and state alone the only index was `runs_poll`,
+    // so each of those read every running run of the queue, on every tick, the idle ones
+    // included: one claim measured 64 ms beside 100,000 running runs against 7 ms. This
+    // index holds only running runs, by their token. PostgreSQL matches it to a statement
+    // that binds the state only when it plans with the value, which it does for the
+    // unnamed statements the executor sends. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged. Like version 6, it is built under a
+    // lock that blocks writes to `runs` while it builds.
+    version: 9,
+    statements: [
+      `CREATE INDEX runs_held ON runs (queue, claimed_by)
+       WHERE state = 'running'`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
