@@ -34,8 +34,8 @@ Every one of the four was found by the review. The author's own machinery found 
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| The pull request's one review: the built-in code review at high effort, which found points 1 and 5, with the coordinator's probes, which measured point 2, reproduced point 3 side by side, and added error 1203 and the control on main's executor to point 1 | 1, 2, 3, 4 | No |
-| The author's red tests, conformance surface, mutation audit and simplify pass | none of the four | Yes |
+| The pull request's one review: the built-in code review at high effort, which found points 1 and 5, with the coordinator's probes, which measured point 2, reproduced point 3 side by side, and added error 1203 and the control on main's executor to point 1 | 4 | No |
+| The author's red tests, conformance surface, mutation audit and simplify pass | 0 | Yes |
 
 Self-catch rate: 0 of 4, or 0% (previous rounds on main, PR4.4d's and PR3.3d's: 0%). Within the class of finding 1 and 3, counting the 3819 instance the author's simplify pass found before the review, the project's own machinery found one instance of four.
 
