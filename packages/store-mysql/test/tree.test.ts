@@ -6,6 +6,7 @@ import {
   type SqlStatement,
   checkpointWrite,
   claimCas,
+  defineStatement,
   emitEventCas,
   rawSql,
   registerWaitCas,
@@ -258,6 +259,32 @@ describe('MySQL spelling of the shared statement trees', () => {
     )
     expect(sql, 'mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index').toBe(
       'delete /*+ JOIN_PREFIX(`k`@`keys`, `waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select /*+ QB_NAME(`keys`) NO_MERGE(`k`) */ * from (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where `f`.`fence_stamp` = ?) as `k`)',
+    )
+  })
+
+  it("takes the stamp a delete's keys compare on trust, which core does not", async () => {
+    // The compiler reads one statement, and one statement cannot show that the stamp its
+    // keys compare is the batch's own. Keys fenced on another batch's stamp compile, and
+    // read that batch's entries through the index of the stamp. Core's gating rule is what
+    // refuses them, because it knows the batch: the same tree, handed to a batch as a
+    // follow-on, is refused before anything is compiled.
+    const foreign = () =>
+      treeBuilder
+        .deleteFrom('waits')
+        .where((eb) =>
+          eb(
+            'run_id',
+            'in',
+            eb
+              .selectFrom('runs as f')
+              .select('f.run_id')
+              .where('f.fence_stamp', '=', 'another-batch:claim'),
+          ),
+        )
+    expect(compiled(foreign()).sql).toContain('`runs` as `f` force index (runs_stamp) where ')
+    const asAFollowOn = defineStatement('foreign', () => foreign())
+    await expect(sent('followOn', 'foreign', asAFollowOn({}))).rejects.toThrow(
+      /has no fence gating every row it reads or writes/,
     )
   })
 
