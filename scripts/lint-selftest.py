@@ -1449,8 +1449,8 @@ def side_model_ledger() -> dict[str, str]:
         "specs/Scheduler.tla": (
             "---- MODULE Scheduler ----\n"
             "\\* BATCH-LABEL LEDGER\n"
-            "\\* 'cancel-task' -> excluded [read]\n"
-            "\\* 'sweep:cancel' -> excluded [read]\n"
+            "\\* 'cancel-task' [read] -- excluded\n"
+            "\\* 'sweep:cancel' [read] -- excluded\n"
             "\\* --------------------\n\n"
             "====\n"
         ),
@@ -2328,8 +2328,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2351,8 +2351,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2372,8 +2372,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2393,8 +2393,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2414,8 +2414,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2435,8 +2435,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2459,8 +2459,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2489,7 +2489,7 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2535,7 +2535,7 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2572,8 +2572,8 @@ export class S {
         replaced(
             side_model_ledger(),
             "specs/Scheduler.tla",
-            "\\* 'cancel-task' -> excluded [read]\n",
-            "\\* 'cancel-task' -> excluded\n",
+            "\\* 'cancel-task' [read] -- excluded\n",
+            "\\* 'cancel-task' -- excluded\n",
         ),
         "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
         "a label whose line in the main ledger states no class must fail",
@@ -2583,8 +2583,8 @@ export class S {
         replaced(
             side_model_ledger(),
             "specs/Scheduler.tla",
-            "\\* 'cancel-task' -> excluded [read]\n",
-            "\\* 'cancel-task' -> excluded [read] [receipt]\n",
+            "\\* 'cancel-task' [read] -- excluded\n",
+            "\\* 'cancel-task' [read] [receipt] -- excluded\n",
         ),
         "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
         "a label whose line in the main ledger states two classes must fail",
@@ -2594,10 +2594,10 @@ export class S {
         replaced(
             side_model_ledger(),
             "specs/Scheduler.tla",
-            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' -> excluded [read]\n"
-            "\\* 'sweep:cancel' -> excluded [read]\n",
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' [read] -- excluded\n"
+            "\\* 'sweep:cancel' [read] -- excluded\n",
             "\\* prose that names the BATCH-LABEL LEDGER and quotes 'sweep:cancel' [read]\n"
-            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' -> excluded [read]\n",
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' [read] -- excluded\n",
         ),
         "batch label 'sweep:cancel' is not in the ledger block",
         "prose that names the block must not start it, or a label that prose quotes counts as mapped",
@@ -6079,7 +6079,7 @@ ledger_no_bytecode = run(
         "specs/Scheduler.tla": (
             "---- MODULE Scheduler ----\n"
             "\\* BATCH-LABEL LEDGER\n"
-            "\\* 'read-probe' -> excluded [read]\n"
+            "\\* 'read-probe' [read] -- excluded\n"
             "\\* --------------------\n\n"
             "====\n"
         ),
