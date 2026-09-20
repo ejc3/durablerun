@@ -14332,6 +14332,57 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
+# What the one check holds besides a string's domain. A payload that is passed is a string,
+# and what is in it stays its serializer's. A value where an options object belongs is an
+# object: read as one, null, a number, a string and an array have no member, and a spawn
+# went on as if empty options had been passed.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-payload-that-is-not-a-string-is-refused",
+            "packages/core/src/port-strings.ts",
+            "    if (typeof raw !== 'string') {\n      throw new InvalidDurableStringError(`${name} must be a string`)\n    }\n",
+            "    // MUTATION: a payload that is not a string is left to the entry\n",
+            "a spawn or a checkpoint whose payload is a number stores the number, and one whose payload is null is reported as an outage that a driver retries for ever",
+        ),
+        (
+            "port-options-value-that-is-not-an-object-is-refused",
+            "packages/core/src/port-strings.ts",
+            "  if (value !== undefined && (typeof value !== 'object' || value === null || isArray(value))) {\n    throw new InvalidDurableStringError(`${where} must be an object`)\n  }\n",
+            "  // MUTATION: a value that is not an object is read as one\n",
+            "a spawn whose options are a number, a string or an array writes a task as if empty options had been passed, and one whose options are null is a TypeError from inside the entry",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses a payload that is not a string at every place of one, before anything is sent",
+            "mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-payload-that-is-not-a-string-is-refused",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a value where an options object belongs refuses null, a number, a string and an array where a spawn takes its options, and the same inside them",
+            "mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused",
+        ),
+        (
+            "port-options-value-that-is-not-an-object-is-refused",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
 # The local HTTP transport's lifecycle (DESIGN.md S3.9): the launch deadline's abort through the
 # Launcher port, the deadline of the wake ping, the limits of both local servers, and the order
 # in which each of them closes. Every verdict is a case against real loopback servers on ports
@@ -19640,7 +19691,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1025:
+        if len(MUTATIONS) != 1027:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

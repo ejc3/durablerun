@@ -1937,8 +1937,14 @@ are load-bearing):
    - A claim token is held as an identifier is, to the domain and the width.
    - The one other durable string, a task name, is inside the domain. Nothing indexes
      it, so its length is not bounded.
-   - A payload, which is JSON text or the headers object, is its serializer's, and this
-     check leaves it alone.
+   - A payload is JSON text. One that is passed is a string, and what is in the string is
+     its serializer's: this check leaves that alone. A value that is not a string where a
+     payload belongs, null and a number too, is refused as one is where an identifier
+     belongs, and a payload that is left out is refused as any string the port requires
+     is. Left to the entries, null was reported as an outage by two of them and as a
+     RangeError by a third, and a number was stored.
+   - A spawn's headers are a map of strings. The whole map is its serializer's, the
+     strings in it too, and this check leaves it alone.
    - A value that is not a string where the port takes one is refused as a string outside
      the domain is, because the domain is of strings. Null is not a way to leave a
      string out.
@@ -1947,10 +1953,13 @@ are load-bearing):
      options, its idempotency key, its parent and its headers. Every other string the port
      requires, and one that is left out is refused the same way, a payload too, because
      whether a string is there is the port's shape and not the payload's domain. An
-     options object the port requires that is left out, or is not an object, has every
-     string in it left out. Left to the entries, a string that was left out became a
-     TypeError from a bind, or, for a child spawn's replay key, a stored key that ends in
-     the word undefined.
+     options object the port requires that is left out has every string in it left out.
+     Left to the entries, a string that was left out became a TypeError from a bind, or,
+     for a child spawn's replay key, a stored key that ends in the word undefined.
+   - An options object that is passed is an object. Null, an array and every other value
+     are refused, where a spawn takes its options and where the options take a parent:
+     read as an object such a value has no member, so a spawn went on as if empty options
+     had been passed, and null was a TypeError from inside the entry.
    - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
      happens before an id is minted or anything is sent, and it is a rejected promise and
      never a throw.
@@ -1966,11 +1975,11 @@ are load-bearing):
    name the SDK takes, before any store call, as a permanent failure of the task.
 
    The rule is data. Core names every string once (`PORT_STRING_RULES`: each name a
-   caller knows a string by, and whether it is an identifier, a durable string or a
-   payload) and says where each enters (`PORT_STRINGS`: every method, argument by
-   argument). The table's type is computed from the port's, so a method the port gains, a
-   string argument a method gains, and a string inside an options object each stop the
-   build until the table names them. One check is built from the table
+   caller knows a string by, and whether it is an identifier, a durable string, a
+   payload or a map of strings) and says where each enters (`PORT_STRINGS`: every method,
+   argument by argument). The table's type is computed from the port's, so a method the
+   port gains, a string argument a method gains, and a string inside an options object
+   each stop the build until the table names them. One check is built from the table
    (`requirePortStrings`), and every store extends `HeldPort`, whose constructor puts
    that check in front of every method the table names, as an accessor that cannot be
    defined again: a class field that would replace an entry, an assignment and a
@@ -1990,14 +1999,17 @@ are load-bearing):
    The executable twin is the identifier surface, which every dialect runs. It generates
    every place a string enters the port from the same table, 82 of them, and asks each
    held place for a NUL, each kind of lone surrogate, an emoji cut in half, a pair the
-   wrong way round, a number and null, and each identifier's place for three names past
-   the width, over an executor that only records that it was reached. The fuzz walk draws
-   its places and its names from the same source.
+   wrong way round, a number and null, each identifier's place for three names past the
+   width, and each payload's place for null and a number, over an executor that only
+   records that it was reached. It asks every place, and every options object, left out
+   as well. The fuzz walk draws its places and its names from the same source.
 
    What the mechanism does not see, stated so that nobody takes it for more:
-   - Any name fits any string position. `claim`'s queue written as a payload compiles,
-     and the refusal cases, which draw their places from the table, then ask nothing
-     there. So the surface also writes down every place that is NOT an identifier, ten of
+   - Any name of a string fits any string position. `claim`'s queue written as a payload
+     compiles, and the refusal cases, which draw their places from the table, then ask
+     there only that it is a string. (The name of a map of strings does not fit: nothing
+     holds a map, and that stops the build.) So the surface also writes down every place
+     that is NOT an identifier, ten of
      them, and how many places there are of each kind, and a place named a payload in
      core's table fails that list by its name. It is a second, visible edit, and not a
      proof. Two names of one rule that change places, a run id and a claim token, move

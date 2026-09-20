@@ -4,6 +4,7 @@ import type { SchedulerStore } from './ports.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
 const {
+  ArrayIsArray: isArray,
   ObjectCreate: createObject,
   ObjectDefineProperty: defineProperty,
   ObjectFreeze: freeze,
@@ -33,9 +34,14 @@ const {
  * token at any other entry could match nothing. A token that a store changed would be
  * held by every token that changes to the same string, which is why the domain matters
  * most here.
- * - `payload`: JSON text, or the headers object. Its serializer owns its domain, and this
- *   check leaves it alone. It is named so that the table is whole: a string is left
- *   unheld because someone wrote that down here, never because nobody listed it.
+ * - `payload`: JSON text. A payload that is passed is held to being a string, and what is
+ *   in the string is its serializer's: this check leaves that alone. A value that is not a
+ *   string there is refused as one is where an identifier belongs, and a payload that is
+ *   left out is refused as any string the port requires is.
+ * - `map`: a map of strings, which is a spawn's headers. The whole map is its serializer's,
+ *   the strings in it too, and this check leaves it alone. It is named so that the table is
+ *   whole: a value is left unheld because someone wrote that down here, never because
+ *   nobody listed it.
  */
 export const PORT_STRING_RULES = freeze({
   queue: 'identifier',
@@ -63,11 +69,23 @@ export const PORT_STRING_RULES = freeze({
   'checkpoint.stateJson': 'payload',
   'rollbackTry.stateJson': 'payload',
   payloadJson: 'payload',
-  headers: 'payload',
+  headers: 'map',
 } as const)
 
 export type PortStringName = keyof typeof PORT_STRING_RULES
 export type PortStringRule = (typeof PORT_STRING_RULES)[PortStringName]
+
+/** The names the rules hold as `Rule`. */
+type NamesHeldAs<Rule extends PortStringRule> = {
+  [Name in PortStringName]: (typeof PORT_STRING_RULES)[Name] extends Rule ? Name : never
+}[PortStringName]
+
+/**
+ * The name of a map of strings, and the name of one string. Neither fits where the other
+ * belongs: nothing holds a map, so a string named as one would be held to nothing.
+ */
+type MapName = NamesHeldAs<'map'>
+type StringName = Exclude<PortStringName, MapName>
 export type PortMethod = keyof SchedulerStore
 
 /**
@@ -115,10 +133,10 @@ type NamedAt<T, Key extends keyof T> = true extends CarriesStrings<NonNullable<T
  */
 type Named<T> = true extends CarriesStrings<T>
   ? T extends string
-    ? PortStringName
+    ? StringName
     : T extends object
       ? string extends keyof T
-        ? PortStringName
+        ? MapName
         : {
             readonly [Key in keyof T as true extends CarriesStrings<NonNullable<T[Key]>>
               ? Key
@@ -226,22 +244,31 @@ export const PORT_STRINGS = frozenThroughout({
 type NamedStrings = PortStringName | null | { readonly [property: string]: NamedStrings }
 
 /**
- * Hold one named string to its rule. A value that is not a string is refused with the
- * domain's own refusal, because the domain is of strings.
+ * Hold one named value to its rule. A value that is not a string where a string belongs
+ * is refused with the domain's own refusal, because the domain is of strings.
  */
 export function requirePortString(name: PortStringName, raw: unknown): void {
   const rule = PORT_STRING_RULES[name]
-  if (rule === 'payload') return
+  if (rule === 'map') return
+  if (rule === 'payload') {
+    // What is in a payload is its serializer's. That it is a string is the port's shape:
+    // left to an entry, null was reported as an outage and a number was stored.
+    if (typeof raw !== 'string') {
+      throw new InvalidDurableStringError(`${name} must be a string`)
+    }
+    return
+  }
   requireDurableString(name, raw)
   if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })
 }
 
-function requireNamed(named: NamedStrings | undefined, value: unknown): void {
+/** `where` is the place in the call, as a refusal shows it: `spawn[3].childOf`. */
+function requireNamed(named: NamedStrings | undefined, value: unknown, where: string): void {
   if (named === null || named === undefined) return
   if (typeof named !== 'string' && hasOwn(named, '?')) {
     // What the port's type lets a caller leave out is held only when it was passed.
     if (value === undefined) return
-    requireNamed(named['?'], value)
+    requireNamed(named['?'], value, where)
     return
   }
   if (typeof named === 'string') {
@@ -254,27 +281,36 @@ function requireNamed(named: NamedStrings | undefined, value: unknown): void {
     requirePortString(named, value)
     return
   }
-  // An options object the port requires. When it was left out, or is not an object, every
-  // string in it was left out.
-  const members = typeof value === 'object' && value !== null ? value : undefined
+  // An options object. One that is passed is an object: null, an array and every other
+  // value are refused. Read as an object such a value has no member, so whatever may be
+  // left out would seem to have been, and the entry would go on as if `{}` had been passed.
+  if (value !== undefined && (typeof value !== 'object' || value === null || isArray(value))) {
+    throw new InvalidDurableStringError(`${where} must be an object`)
+  }
+  // One the port requires that was left out has every string in it left out.
   const properties = objectKeys(named)
   for (let index = 0; index < properties.length; index++) {
     const property = properties[index]
     if (property === undefined) continue
-    requireNamed(named[property], members === undefined ? undefined : reflectGet(members, property))
+    const member = value === undefined ? undefined : reflectGet(value, property)
+    requireNamed(named[property], member, `${where}.${property}`)
   }
 }
 
 /**
  * The one check of the strings a port call carries: every string the table names is held
- * to its rule, in the order of the arguments, before the entry runs, and a string the port
- * requires is refused when it was left out. The refusal is `InvalidDurableStringError`,
- * and it names what the caller passed or left out.
+ * to its rule, in the order of the arguments, before the entry runs, a string the port
+ * requires is refused when it was left out, and so is a value that is not an object where
+ * an options object belongs. The refusal is `InvalidDurableStringError`, and it names what
+ * the caller passed or left out.
  */
 export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
   const named: readonly NamedStrings[] = PORT_STRINGS[method]
   for (let index = 0; index < named.length; index++) {
-    requireNamed(named[index], args[index])
+    const spec = named[index]
+    // Only an options object shows its place in a refusal, so only one has it written out.
+    const where = typeof spec === 'object' && spec !== null ? `${method}[${index}]` : ''
+    requireNamed(spec, args[index], where)
   }
 }
 

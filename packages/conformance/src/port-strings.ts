@@ -272,11 +272,23 @@ export const PORT_OBJECT_PLACES: readonly PortObjectPlace[] = generated.objects
 /** What generating the places found wrong. The identifier surface holds it empty. */
 export const PORT_STRING_PROBLEMS: readonly string[] = generated.problems
 
-/** The places the port holds to a rule: every place but a payload's. */
-export const HELD_PLACES = PORT_STRING_PLACES.filter(({ rule }) => rule !== 'payload')
+/** The places the port holds to the durable string domain: an identifier's and a task name's. */
+export const HELD_PLACES = PORT_STRING_PLACES.filter(
+  ({ rule }) => rule === 'identifier' || rule === 'durable',
+)
 
 /** The places of an identifier, which are held to the width as well as the domain. */
 export const IDENTIFIER_PLACES = PORT_STRING_PLACES.filter(({ rule }) => rule === 'identifier')
+
+/** The places of a payload, which is held to being a string and no further. */
+export const PAYLOAD_PLACES = PORT_STRING_PLACES.filter(({ rule }) => rule === 'payload')
+
+/**
+ * What is not a string, where a payload belongs. They are written here and not taken from
+ * core. Left to the entries, null was reported as an outage or as a RangeError, and a
+ * number was stored.
+ */
+export const NOT_A_STRING: Readonly<Record<string, unknown>> = { null: null, 'a number': 42 }
 
 /**
  * Names outside the durable string domain (DESIGN.md §3.4 rule 10). They are written here

@@ -314,8 +314,10 @@ a last docs PR gives a live owner to every open bullet that is left.
 22. PR3.3c: every string a caller passes the store port is checked in one
     place, before any statement is sent. An identifier is inside the durable
     string domain and within the width, a claim token is held as an identifier
-    is, a task name is inside the domain, a payload is its serializer's, and a
-    value that is not a string is refused as a string outside the domain is.
+    is, a task name is inside the domain, a payload that is passed is a string
+    whose content is its serializer's, a value that is not a string is refused
+    as a string outside the domain is, and a value that is not an object is
+    refused where an options object belongs.
     Core names every
     string once in a table whose type is computed from the port's, so a method
     the port gains, a string argument a method gains, and a string inside an
@@ -327,12 +329,15 @@ a last docs PR gives a live owner to every open bullet that is left.
     met. One shared case was committed failing on libSQL, PostgreSQL and MySQL,
     where 49 of the 56 places an identifier entered sent their statements for a
     name with a NUL or a lone surrogate. All 25 per-entry checks are gone from
-    each of the three stores. Seventeen type controls each fail to compile for
-    the reason written beside it. Eighteen registered mutations are each caught
+    each of the three stores. Nineteen type controls each fail to compile for
+    the reason written beside it. Twenty-two registered mutations are each caught
     by one case by name: seven that named deleted or renamed lines and moved,
-    and eleven that are new, which bend the check, the table, one for each kind
+    and fifteen that are new, which bend the check, the table, one for each kind
     of string, a queue, a step key, an event name and a claim token, the rule of
-    a claim token, and the four things the one review found at the mechanism.
+    a claim token, the four things the one review found at the mechanism, and
+    four more at the same mechanism: an accessor whose descriptor inherits from
+    `Object.prototype`, a table frozen only at its outer object, an options value
+    that is not an object, and a payload that is not a string.
     Two of the table's four survived their first probes, because a place renamed
     to a payload name its method already had folded into that place and the
     surface did not see it, and the fix was committed after them. The one review
@@ -2132,7 +2137,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   fixture types its store as one that does. The identifier surface generates
   all 82 places from the table and asks each held place for names that are not
   only ASCII, and the fuzz walk draws from the same source. The driver loop
-  asks the port's check of its queue and its id when it is constructed. One
+  asks the port's check of its queue and its id when it is constructed. The
+  same check refuses a string the port requires when it is left out, a payload
+  that is not a string, and a value that is not an object where an options
+  object belongs: left to the entries, a payload of null was reported as an
+  outage and a number was stored, and a spawn whose options were a number went
+  on as if empty options had been passed. The accessor that holds the check is
+  built from a descriptor that inherits nothing, and the table is frozen
+  throughout. One
   hosted answer moved: the inspect route answers 400 where it answered 404 for
   a task id with a NUL in it. Open, each with its reason:
   - Any name fits any string position of the table, so a place written as a

@@ -204,7 +204,9 @@ describe('the strings a port call carries', () => {
         requirePortStrings('spawn', ['q', 't', '{}', { childOf: {} }]),
       ),
       aPayload: refusalOf(() => requirePortStrings('spawn', ['q', 't', undefined])),
-      aPayloadThatIsPassed: refusalOf(() => requirePortStrings('spawn', ['q', 't', 42])),
+      aPayloadThatIsANumber: refusalOf(() => requirePortStrings('spawn', ['q', 't', 42])),
+      aPayloadThatIsNull: refusalOf(() => requirePortStrings('emitEvent', ['q', 'e', null])),
+      aPayloadThatIsNotJson: refusalOf(() => requirePortStrings('spawn', ['q', 't', NUL])),
       noCheckpoint: refusalOf(() =>
         requirePortStrings('suspendRun', ['q', 'r', 'c', null, undefined]),
       ),
@@ -221,11 +223,51 @@ describe('the strings a port call carries', () => {
       aMemberOfAParent: leftOut('childOf.replayKey'),
       anEmptyParent: leftOut('childOf.parentQueue'),
       aPayload: leftOut('paramsJson'),
-      // A payload that is passed is its serializer's, whatever it is.
-      aPayloadThatIsPassed: 'accepted',
+      // A payload that is passed is a string. What is in the string is its serializer's.
+      aPayloadThatIsANumber: 'paramsJson must be a string',
+      aPayloadThatIsNull: 'payloadJson must be a string',
+      aPayloadThatIsNotJson: 'accepted',
       noCheckpoint: leftOut('checkpoint.key'),
-      aCheckpointThatIsNotAnObject: leftOut('checkpoint.key'),
+      aCheckpointThatIsNotAnObject: 'suspendRun[4] must be an object',
       aMemberOfACheckpoint: leftOut('checkpoint.stateJson'),
+    })
+  })
+})
+
+describe('a value where an options object belongs', () => {
+  it('refuses null, a number, a string and an array where a spawn takes its options, and the same inside them', () => {
+    // Read as an object, each of these has no member, so a spawn went on as if `{}` had
+    // been passed, and null was a TypeError from inside the entry.
+    const spawn = (options: unknown) =>
+      refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}', options]))
+    expect(
+      {
+        null: spawn(null),
+        'a number': spawn(42),
+        'a string': spawn('x'),
+        'an array': spawn([]),
+        'a parent that is an array': spawn({ childOf: [] }),
+        'a parent that is null': spawn({ childOf: null }),
+        'a checkpoint that is null': refusalOf(() =>
+          requirePortStrings('suspendRun', ['q', 'r', 'c', null, null]),
+        ),
+        'headers that are null': spawn({ headers: null }),
+        'options left out': spawn(undefined),
+        'empty options': spawn({}),
+      },
+      'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
+    ).toEqual({
+      null: 'spawn[3] must be an object',
+      'a number': 'spawn[3] must be an object',
+      'a string': 'spawn[3] must be an object',
+      'an array': 'spawn[3] must be an object',
+      'a parent that is an array': 'spawn[3].childOf must be an object',
+      'a parent that is null': 'spawn[3].childOf must be an object',
+      'a checkpoint that is null': 'suspendRun[4] must be an object',
+      // A map of strings is its serializer's whole, which refuses this one itself.
+      'headers that are null': 'accepted',
+      'options left out': 'accepted',
+      'empty options': 'accepted',
     })
   })
 })
@@ -520,6 +562,18 @@ describe('the type of the table', () => {
     // @ts-expect-error a member the object does not have
     const extraMember: Parked = { park: ['queue', null, { ...inside, extra: 'queue' }] }
 
+    interface TakesAMap {
+      tag(queue: string, labels: Record<string, string>): void
+    }
+    type Tags = PortStringsOf<TakesAMap>
+    // A map of strings takes a map's name and a string takes a string's. Nothing holds a
+    // map, so a string named as one would be held to nothing.
+    const tags: Tags = { tag: ['queue', 'headers'] }
+    // @ts-expect-error a map of strings named as one string
+    const mapAsAString: Tags = { tag: ['queue', 'queue'] }
+    // @ts-expect-error one string named as a map of strings
+    const stringAsAMap: Tags = { tag: ['headers', 'headers'] }
+
     interface WiderPort extends SchedulerStore {
       renameQueue(queue: string, to: string): Promise<void>
     }
@@ -537,7 +591,7 @@ describe('the type of the table', () => {
     const more = [unknownName, nameForANumber, shorter, extraMember, gained, named, words]
     const options = [optional, optionalGivenNull, optionsGivenNull]
     const marks = [memberUnmarked, argumentUnmarked, requiredMarked, memberMarked]
-    const shapes = [moves, brandUnnamed, templateUnnamed]
-    expect(controls.length + more.length + options.length + marks.length + shapes.length).toBe(23)
+    const shapes = [moves, brandUnnamed, templateUnnamed, tags, mapAsAString, stringAsAMap]
+    expect(controls.length + more.length + options.length + marks.length + shapes.length).toBe(26)
   })
 })

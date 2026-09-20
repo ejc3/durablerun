@@ -17,8 +17,10 @@ import { engineHistoryViolations } from './engine-history.js'
 import {
   HELD_PLACES,
   IDENTIFIER_PLACES,
+  NOT_A_STRING,
   OUTSIDE_THE_DOMAIN,
   PAST_THE_WIDTH,
+  PAYLOAD_PLACES,
   PORT_OBJECT_PLACES,
   PORT_STRING_PLACES,
   PORT_STRING_PROBLEMS,
@@ -76,7 +78,7 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
 const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
   'spawn[1](taskName)': 'durable',
   'spawn[2](paramsJson)': 'payload',
-  'spawn[3].headers(headers)': 'payload',
+  'spawn[3].headers(headers)': 'map',
   'complete[3](resultJson)': 'payload',
   'suspendRun[4].stateJson(checkpoint.stateJson)': 'payload',
   'fail[3](failureJson)': 'payload',
@@ -138,6 +140,21 @@ export function identifierBoundConformance(
         expect(
           { what, refusals, sent: reached },
           'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+        ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
+      }
+    })
+
+    it('refuses a payload that is not a string at every place of one, before anything is sent', async () => {
+      // What is in a payload is its serializer's, and the case of the written list below
+      // holds that. That it is a string is the port's shape. Left to the entries, null was
+      // reported as an outage by two of them and as a RangeError by a third, and a number
+      // was stored.
+      for (const [what, notAString] of Object.entries(NOT_A_STRING)) {
+        const { store, reached } = storeOverRecorder(f)
+        const refusals = await refusalsAt(PAYLOAD_PLACES, store, notAString)
+        expect(
+          { what, refusals, sent: reached },
+          'mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place',
         ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
       }
     })
@@ -204,12 +221,12 @@ export function identifierBoundConformance(
         places: PORT_STRING_PLACES.length,
         identifiers: IDENTIFIER_PLACES.length,
         held: HELD_PLACES.length,
+        payloads: PAYLOAD_PLACES.length,
         distinct: new Set(PORT_STRING_PLACES.map(({ place }) => place)).size,
-      }).toEqual({ places: 82, identifiers: 72, held: 73, distinct: 82 })
+      }).toEqual({ places: 82, identifiers: 72, held: 73, payloads: 8, distinct: 82 })
       // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
       const { store } = storeOverRecorder(f)
-      const payloads = PORT_STRING_PLACES.filter(({ rule }) => rule === 'payload')
-      const answers = await refusalsAt(payloads, store, '{"a":"\u0000"}')
+      const answers = await refusalsAt(PAYLOAD_PLACES, store, '{"a":"\u0000"}')
       expect(Object.entries(answers).filter(([, answer]) => answer === REFUSED)).toEqual([])
     })
 

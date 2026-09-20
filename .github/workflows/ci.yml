@@ -365,9 +365,10 @@ jobs:
               # its string: an emitted event name, a parent's queue and a parent's run id. One
               # more names the line that refuses a reserved key, which reads the caller's key
               # under another local now that the key's own checks are gone from beside it. Seven
-              # entries moved in all. Eleven mutations are new, four of them for what the review
-              # of the one check found at the mechanism, and they answer to six verdict markers
-              # that are newer than the base. No entry was retired.
+              # entries moved in all. Fifteen mutations are new, four of them for what the review
+              # of the one check found at the mechanism and four more at the same mechanism, and
+              # they answer to ten verdict markers that are newer than the base. No entry was
+              # retired.
               repaired = previous
               for name in (
                   'spawn-queue-is-a-durable-string',
@@ -386,6 +387,10 @@ jobs:
                   'mutation-verdict:behavior:port-check-cannot-be-defined-away',
                   'mutation-verdict:behavior:port-constructor-loops-by-index',
                   'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
+                  'mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing',
+                  'mutation-verdict:construction:port-table-frozen-throughout',
+                  'mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place',
+                  'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
