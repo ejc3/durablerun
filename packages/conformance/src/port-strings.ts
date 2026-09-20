@@ -83,15 +83,31 @@ function withAt(value: unknown, path: Path, replacement: unknown): unknown {
 }
 
 /**
- * Every string under `value`, with the path to it from the arguments. The table and a
- * call are walked by this one function, so a path means the same in both, which the
- * comparison of the two relies on.
+ * Every string under `value`, a call's arguments, with the path to it from the arguments.
  */
 function stringsIn(value: unknown, path: Path): { string: string; path: Path }[] {
   if (typeof value === 'string') return [{ string: value, path }]
   if (value === null || typeof value !== 'object') return []
   return Object.entries(value).flatMap(([property, inner]) =>
     stringsIn(inner, [...path, Array.isArray(value) ? Number(property) : property]),
+  )
+}
+
+/**
+ * Every name under `named`, a part of core's table, with the path to it and whether the
+ * table marks it as one the caller may leave out. The mark is not a step of the path, so a
+ * path means in the table what it means in a call.
+ */
+function namesIn(
+  named: unknown,
+  path: Path,
+  mayBeLeftOut = false,
+): { name: PortStringName; path: Path; mayBeLeftOut: boolean }[] {
+  if (typeof named === 'string') return [{ name: named as PortStringName, path, mayBeLeftOut }]
+  if (named === null || typeof named !== 'object') return []
+  if (Object.hasOwn(named, '?')) return namesIn(Reflect.get(named, '?'), path, true)
+  return Object.entries(named).flatMap(([property, inner]) =>
+    namesIn(inner, [...path, Array.isArray(named) ? Number(property) : property]),
   )
 }
 
@@ -116,7 +132,7 @@ function generatePlaces(): { places: readonly PortStringPlace[]; problems: reado
   const problems: string[] = []
   for (const method of PORT_METHODS) {
     const examples: readonly (readonly unknown[])[] = EXAMPLE_CALLS[method]
-    const named = stringsIn(PORT_STRINGS[method], [])
+    const named = namesIn(PORT_STRINGS[method], [])
     // The table's type holds it to the port's types. This holds it to real calls: a
     // string an example passes that the table does not name was left out of the table.
     const unnamed = examples.flatMap((args) =>
@@ -135,13 +151,12 @@ function generatePlaces(): { places: readonly PortStringPlace[]; problems: reado
     }
     // A method names each string once. The place shows where the string stands as well, so
     // two arguments of one name are two places, and this says so in words.
-    const names = named.map(({ string }) => string)
+    const names = named.map(({ name }) => name)
     const twice = names.filter((name, at) => names.indexOf(name) !== at)
     if (twice.length > 0) {
       problems.push(`${method}: the table names ${JSON.stringify(twice)} at more than one argument`)
     }
-    for (const { string, path } of named) {
-      const name = string as PortStringName
+    for (const { name, path } of named) {
       const args = examples.find((example) => valueAt(example, path) !== undefined)
       if (args === undefined) {
         problems.push(`${method}${shown(path)}(${name}): no example call passes this string`)

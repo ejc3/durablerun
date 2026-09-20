@@ -363,12 +363,22 @@ describe('the type of the table', () => {
     interface TakesAnOption {
       enqueue(queue: string, options?: { key?: string; attempts?: number }): void
     }
+    type Enqueues = PortStringsOf<TakesAnOption>
     // An optional string is still a string the table names: null does not excuse it.
-    const optional: PortStringsOf<TakesAnOption> = { enqueue: ['queue', { key: 'idempotencyKey' }] }
+    const leftOut = { '?': { key: { '?': 'idempotencyKey' } } } as const
+    const optional: Enqueues = { enqueue: ['queue', leftOut] }
+    // @ts-expect-error an optional member the table does not mark as one
+    const memberUnmarked: Enqueues = { enqueue: ['queue', { '?': { key: 'queue' } }] }
+    // @ts-expect-error an optional argument the table does not mark as one
+    const argumentUnmarked: Enqueues = { enqueue: ['queue', leftOut['?']] }
+    // @ts-expect-error a required argument marked as one the caller may leave out
+    const requiredMarked: Enqueues = { enqueue: [{ '?': 'queue' }, leftOut] }
+    // @ts-expect-error a required member marked as one the caller may leave out
+    const memberMarked: Parked = { park: ['queue', null, { ...inside, key: { '?': 'queue' } }] }
     // @ts-expect-error an optional member of an options object given null
-    const optionalGivenNull: PortStringsOf<TakesAnOption> = { enqueue: ['queue', { key: null }] }
+    const optionalGivenNull: Enqueues = { enqueue: ['queue', { '?': { key: null } }] }
     // @ts-expect-error an options object with an optional string given null
-    const optionsGivenNull: PortStringsOf<TakesAnOption> = { enqueue: ['queue', null] }
+    const optionsGivenNull: Enqueues = { enqueue: ['queue', null] }
     // @ts-expect-error a member the object does not have
     const extraMember: Parked = { park: ['queue', null, { ...inside, extra: 'queue' }] }
 
@@ -388,6 +398,7 @@ describe('the type of the table', () => {
     const controls = [whole, parks, missingMethod, unnamed, unnamedInside, unnamedObject]
     const more = [unknownName, nameForANumber, shorter, extraMember, gained, named, words]
     const options = [optional, optionalGivenNull, optionsGivenNull]
-    expect(controls.length + more.length + options.length).toBe(16)
+    const marks = [memberUnmarked, argumentUnmarked, requiredMarked, memberMarked]
+    expect(controls.length + more.length + options.length + marks.length).toBe(20)
   })
 })

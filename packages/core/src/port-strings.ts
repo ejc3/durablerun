@@ -5,6 +5,7 @@ import { requireDurableString, requireIdentifiersFit } from './validate.js'
 const {
   ObjectDefineProperty: defineProperty,
   ObjectFreeze: freeze,
+  ObjectHasOwn: hasOwn,
   ObjectGetPrototypeOf: getPrototypeOf,
   ObjectKeys: objectKeys,
   PromiseReject: rejected,
@@ -83,6 +84,27 @@ type CarriesStrings<T> = T extends string
     : false
 
 /**
+ * How the table marks a value the caller may leave out: an optional argument, or an
+ * optional member of an options object. What is not marked the port requires.
+ */
+export type MayBeLeftOut<Spec> = { readonly '?': Spec }
+
+/** Whether the port's type lets the caller leave the argument or the member at `Key` out. */
+type MayLeaveOut<T, Key extends keyof T> = T extends Record<Key, unknown> ? false : true
+
+/**
+ * What the table has to say about the argument or the member at `Key`: null when it
+ * carries no string, and otherwise its names, marked when the caller may leave it out. The
+ * mark is computed from the port's type, so a mark the type does not have, and a mark the
+ * type has that the table lacks, each stop the build.
+ */
+type NamedAt<T, Key extends keyof T> = true extends CarriesStrings<NonNullable<T[Key]>>
+  ? true extends MayLeaveOut<T, Key>
+    ? MayBeLeftOut<Named<NonNullable<T[Key]>>>
+    : Named<NonNullable<T[Key]>>
+  : null
+
+/**
  * What the table has to say about one value of a call: the name of a string, the names
  * of the strings inside an object, or null for a value that carries none.
  */
@@ -95,13 +117,13 @@ type Named<T> = true extends CarriesStrings<T>
         : {
             readonly [Key in keyof T as true extends CarriesStrings<NonNullable<T[Key]>>
               ? Key
-              : never]-?: Named<NonNullable<T[Key]>>
+              : never]-?: NamedAt<T, Key>
           }
       : never
   : null
 
 type NamedArguments<Arguments extends readonly unknown[]> = {
-  readonly [Index in keyof Arguments]-?: Named<NonNullable<Arguments[Index]>>
+  readonly [Index in keyof Arguments]-?: NamedAt<Arguments, Index>
 }
 
 /**
@@ -118,22 +140,29 @@ export type PortStringsOf<Port> = {
 
 export type PortStrings = PortStringsOf<SchedulerStore>
 
-/** Where each named string enters the port: for every method, its arguments in order. */
+/**
+ * Where each named string enters the port: for every method, its arguments in order. A
+ * value under `'?'` is one the caller may leave out. Every other the port requires.
+ */
 export const PORT_STRINGS = freeze({
   spawn: [
     'queue',
     'taskName',
     'paramsJson',
     {
-      idempotencyKey: 'idempotencyKey',
-      childOf: {
-        parentQueue: 'childOf.parentQueue',
-        parentTaskId: 'childOf.parentTaskId',
-        runId: 'childOf.runId',
-        claimToken: 'childOf.claimToken',
-        replayKey: 'childOf.replayKey',
+      '?': {
+        idempotencyKey: { '?': 'idempotencyKey' },
+        childOf: {
+          '?': {
+            parentQueue: 'childOf.parentQueue',
+            parentTaskId: 'childOf.parentTaskId',
+            runId: 'childOf.runId',
+            claimToken: 'childOf.claimToken',
+            replayKey: 'childOf.replayKey',
+          },
+        },
+        headers: { '?': 'headers' },
       },
-      headers: 'headers',
     },
   ],
   claim: ['queue', 'claimToken', null],
@@ -189,6 +218,10 @@ export function requirePortString(name: PortStringName, raw: unknown): void {
 
 function requireNamed(named: NamedStrings | undefined, value: unknown): void {
   if (named === null || named === undefined) return
+  if (typeof named !== 'string' && hasOwn(named, '?')) {
+    requireNamed(named['?'], value)
+    return
+  }
   if (typeof named === 'string') {
     requirePortString(named, value)
     return
