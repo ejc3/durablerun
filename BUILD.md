@@ -2514,7 +2514,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR3.4c the saga port takes the step, and the phase's last two doors**:
   DONE. Four bullets that the saga review left open under PR3.4
-  (`postmortems/pr3.4-sagas-review.md`).
+  (`postmortems/pr3.4-sagas-review.md`). Its own review round is
+  `postmortems/pr3.4c-saga-port-and-freezes-review.md`: three findings, one
+  at a bound no legal history reaches and two in sentences of DESIGN.md.
   - `failRollback` took a rollback's attempt record from its caller, name and
     count, and the store checked only the name. A saga case that hands the
     first failed attempt over as the seventh and the second as the first was
@@ -2585,11 +2587,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     can sit at that bound, and the SDK did the same arithmetic before core
     owned the count. It is never refused there: a failed rollback that could
     not record its failure would fail again for ever. A core case was
-    committed failing, and one registered mutation removes the bound.
-    DESIGN.md §3.10 also says what a direct caller of the port gets over a
-    record the store cannot read, and names a fourth leg of the read's
-    soundness, that the read is current, with what holds it today. An option
-    under PR3.4 records the design question that leaves.
+    committed failing, and one registered mutation removes the bound. A
+    conformance case holds every store to the bound on three dialects, from a
+    record written there with raw SQL, because the scenarios are what a port
+    in another language proves itself against. DESIGN.md §3.10 also says what
+    a direct caller of the port gets over a record the store cannot read, and
+    names a fourth leg of the read's soundness, that the read is current, with
+    what holds it today. An option under PR3.4 records the design question
+    that leaves.
   - The registry gains eleven mutations and retires one. The base gate's arm
     retires that entry of the base registry and exempts seven markers.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
