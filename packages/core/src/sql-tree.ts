@@ -362,7 +362,9 @@ export function fragmentBinds(sql: string): number {
  * Validate a fragment's text for its role and split it at its binds and clock tokens.
  * The text is split without reading SQL beyond plain single-quoted literals, so anything
  * that would hide a token from that reading is refused: a comment, a dollar-quoted or
- * prefixed string, and a token inside a literal.
+ * prefixed string, and a token inside a literal. A semicolon is not refused, so a fragment
+ * can hold a second statement. Inside a transaction the batch's mode still governs it, and
+ * an executor that sends a read core built alone sees that the server takes one statement.
  */
 function parseFragment(sql: string, role: RawRole): ParsedFragment {
   if (sql.includes(STAMP)) {

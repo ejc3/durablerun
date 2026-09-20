@@ -10,6 +10,7 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -19,6 +20,7 @@ import {
   Pool,
   type PoolClient,
   type PoolConfig,
+  type QueryConfig,
   type QueryResult,
 } from 'pg'
 import { compilePostgresPlaceholders } from './placeholders.js'
@@ -209,8 +211,9 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
   )
 }
 
-// A read batch is one REPEATABLE READ snapshot. The canonical schema-version read is the
-// exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
+// A read batch is one REPEATABLE READ snapshot, unless it is one read the executor knows
+// to be a read, which is sent alone (`sentAlone`). The canonical schema-version read is
+// the other exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
 // takes its snapshot before the statement does that, so the read could see a concurrent
 // bootstrap's meta table and not the version row committed with it. READ COMMITTED takes
 // the execution snapshot after the lookup, and one statement needs no snapshot held
@@ -218,6 +221,53 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
 // REPEATABLE READ, and in none of 1800 under READ COMMITTED.
 const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
+
+/**
+ * One statement for the extended query protocol: parse, bind, execute and sync, sent in one
+ * flush, so it costs the round trip the simple protocol costs. The server refuses text
+ * that holds more than one statement there. The driver's types do not name the option.
+ */
+function oneStatement(
+  text: string,
+  values: readonly unknown[],
+): QueryConfig & { readonly queryMode: 'extended' } {
+  return { text, values: [...values], queryMode: 'extended' }
+}
+
+/**
+ * Whether a batch is sent as its one statement alone, outside a transaction block, where
+ * PostgreSQL runs it in a transaction of its own, in one round trip where a read batch's
+ * transaction cost three.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar. How a statement's text begins shows nothing: a text that begins with SELECT can
+ * call `nextval`, and the simple query protocol runs `SELECT 1; DELETE ...` whole. A read
+ * sent as text therefore keeps the read-only transaction, where the server refuses every
+ * write. The schema-version read is text, so it keeps its transaction and the READ
+ * COMMITTED it needs.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, because a read sent alone goes through the extended
+ * protocol (`oneStatement`), which takes one statement. A fragment that CALLS a function
+ * that writes is refused by nothing once the read goes alone. No read of the stores calls
+ * one.
+ *
+ * What the transaction gave such a read still holds: one statement reads through one
+ * snapshot, its subqueries included, at any isolation level. It runs at the session's
+ * default level, which belongs to whoever owns the pool.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * its result is refused, which the executor learns only after the server has run the
+ * statement, and a statement such as LOCK TABLE needs the block.
+ */
+function sentAlone(statements: readonly SqlStatement[], mode: SqlBatchMode): boolean {
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return isTreeBuiltRead(statement)
+}
 
 function isSchemaVersionRead(
   label: string,
@@ -280,10 +330,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over node-postgres. Every batch owns one checked-out client and
- * one transaction, so statements are atomic, ordered, and observe earlier
- * statements from the same batch. Read batches use a repeatable-read,
- * read-only snapshot; write batches use PostgreSQL's read-committed default.
+ * SqlExecutor over node-postgres. Every batch owns one checked-out client. A batch of
+ * more than one statement owns one transaction, so its statements are atomic, ordered,
+ * and observe earlier statements from the same batch: a read batch in a repeatable-read,
+ * read-only snapshot, a write batch at PostgreSQL's read-committed default. One read
+ * that the executor knows to be a read is sent alone, because one statement reads one
+ * snapshot by itself (`sentAlone`).
  */
 export class PgExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
@@ -323,6 +375,7 @@ export class PgExecutor implements SqlExecutor {
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    const alone = sentAlone(statements, mode)
 
     let client: PoolClient
     try {
@@ -347,10 +400,12 @@ export class PgExecutor implements SqlExecutor {
         let transactionStarted = false
         let activeStatementIndex: number | null = null
         try {
-          await client.query(
-            mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
-          )
-          transactionStarted = true
+          if (!alone) {
+            await client.query(
+              mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
+            )
+            transactionStarted = true
+          }
 
           if (transactionLock !== undefined) {
             await acquireTransactionLock(client, transactionLock)
@@ -366,14 +421,20 @@ export class PgExecutor implements SqlExecutor {
               continue
             }
             activeStatementIndex = statementIndex
-            const result = await client.query<Record<string, unknown>>(
-              statement.sql,
-              statement.args,
-            )
+            // A read sent alone goes through the extended protocol, which takes one
+            // statement and refuses a second whatever the text holds. The simple protocol,
+            // which the driver uses for a statement with no bind, runs every statement of
+            // its text, and a read core built can hold a store's fragment that core reads
+            // for clocks and comments only.
+            const result = alone
+              ? await client.query<Record<string, unknown>>(
+                  oneStatement(statement.sql, statement.args),
+                )
+              : await client.query<Record<string, unknown>>(statement.sql, statement.args)
             activeStatementIndex = null
             results.push(normalizeResult(result))
           }
-          await client.query('COMMIT')
+          if (transactionStarted) await client.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {

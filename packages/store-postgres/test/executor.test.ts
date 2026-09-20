@@ -1,13 +1,17 @@
 import { EventEmitter } from 'node:events'
 import {
+  FencedBatch,
   SchemaMismatchError,
   SchemaNotInitializedError,
   StoreUnavailableError,
+  prepareRead,
+  refusalStateRead,
 } from '@durablerun/core'
 import { DatabaseError, type FieldDef, type Pool, type QueryResult } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PgExecutor } from '../src/executor.js'
 import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
+import { TREE_DIALECT } from '../src/tree.js'
 
 const EMPTY_RESULT: QueryResult<Record<string, unknown>> = {
   command: '',
@@ -46,6 +50,8 @@ function databaseError(code: string, message = 'database rejected query'): Datab
 interface QueryCall {
   text: string
   args: unknown[] | undefined
+  /** Set when the statement was sent as a config object that names a protocol. */
+  queryMode?: string
 }
 
 class FakeClient extends EventEmitter {
@@ -61,8 +67,18 @@ class FakeClient extends EventEmitter {
     super()
   }
 
-  async query(text: string, args?: unknown[]): Promise<QueryResult<Record<string, unknown>>> {
-    this.calls.push({ text, args })
+  /** A pg client takes a text with its values, or one config object, as a read sent alone is. */
+  async query(
+    sent: string | { text: string; values?: unknown[]; queryMode?: string },
+    values?: unknown[],
+  ): Promise<QueryResult<Record<string, unknown>>> {
+    const text = typeof sent === 'string' ? sent : sent.text
+    const args = typeof sent === 'string' ? values : sent.values
+    this.calls.push(
+      typeof sent === 'string' || sent.queryMode === undefined
+        ? { text, args }
+        : { text, args, queryMode: sent.queryMode },
+    )
     return this.respond(text, args)
   }
 
@@ -94,6 +110,21 @@ class FakePool {
 function executor(pool: FakePool): PgExecutor {
   return PgExecutor.fromPool(pool as unknown as Pool)
 }
+
+const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+  refusalStateRead(binds),
+)
+
+/** Reads as core's read path builds them, the one kind of statement an executor knows for a read. */
+function readsFromCore(...names: string[]): FencedBatch {
+  const batch = new FencedBatch('reads', 'seed', { now: 'CLOCK', tree: TREE_DIALECT })
+  for (const name of names) batch.readPrepared(name, REFUSAL_STATE, { runId: name })
+  return batch
+}
+
+/** What was sent, with each read that core built named for what it is. */
+const namingReads = (sent: readonly string[]) =>
+  sent.map((sql) => (sql.startsWith('select "state" from "runs"') ? 'a read core built' : sql))
 
 describe('PgExecutor transactions', () => {
   it('runs a write batch sequentially on one checked-out client', async () => {
@@ -136,6 +167,52 @@ describe('PgExecutor transactions', () => {
       'COMMIT',
     ])
     expect(pool.connectCalls).toBe(1)
+  })
+
+  it('sends a read that core built alone, outside a transaction block', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await readsFromCore('first').run(executor(new FakePool(client)))
+    expect(namingReads(client.calls.map(({ text }) => text))).toEqual(['a read core built'])
+    // Through the extended protocol, which takes one statement whatever the text holds.
+    expect(client.calls.map(({ queryMode }) => queryMode)).toEqual(['extended'])
+    expect(client.releases).toEqual([undefined])
+  })
+
+  it('gives two reads that core built one repeatable-read, read-only snapshot', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await readsFromCore('first', 'second').run(executor(new FakePool(client)))
+    expect(
+      namingReads(client.calls.map(({ text }) => text)),
+      'mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch',
+    ).toEqual([
+      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      'a read core built',
+      'a read core built',
+      'COMMIT',
+    ])
+  })
+
+  it('keeps the transaction around a single write', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await executor(new FakePool(client)).batch('single-write', [
+      { sql: 'UPDATE t SET v = ?', args: ['x'] },
+    ])
+    expect(client.calls.map(({ text }) => text)).toEqual(['BEGIN', 'UPDATE t SET v = $1', 'COMMIT'])
+  })
+
+  it('sends nothing after a read sent alone that failed, and releases its client', async () => {
+    // PostgreSQL ran the statement in a transaction of its own and aborted it, so the
+    // client holds no open transaction to roll back.
+    const failure = databaseError('40001', 'serialization failure')
+    const client = new FakeClient(() => {
+      throw failure
+    })
+    await expect(readsFromCore('first').run(executor(new FakePool(client)))).rejects.toMatchObject({
+      name: 'StoreUnavailableError',
+      cause: failure,
+    })
+    expect(namingReads(client.calls.map(({ text }) => text))).toEqual(['a read core built'])
+    expect(client.releases).toEqual([undefined])
   })
 
   it('reads the schema version under READ COMMITTED, whose snapshot follows the name lookup', async () => {
