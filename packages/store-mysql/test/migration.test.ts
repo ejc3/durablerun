@@ -141,6 +141,12 @@ async function plannedBatch(db: TestDb): Promise<SqlStatement[]> {
  * pending and ENDS that transaction. So an advance sent before the first such statement is
  * lost with the session unless that statement was reached, and an advance sent after it
  * finds no transaction open and commits at once, under the session's autocommit.
+ *
+ * The rule is for a FIRST crash, which is all this case cuts: every plan starts from a
+ * database where what it creates is not there yet, so the guarded index form really runs
+ * its DDL. Over an index that is there that form runs a statement that does nothing and
+ * commits nothing, so in a batch that recovers from an earlier crash an advance can stay
+ * pending past it. The state that leaves is one the first crash already makes.
  */
 function versionLeft(from: number, planned: readonly SqlStatement[], ran: number): number {
   const leavesTheTransactionOpen = /^(UPDATE meta |SET @|PREPARE |DEALLOCATE PREPARE )/

@@ -325,7 +325,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'a48070b271307b43e31aa59fde6b4cdbdb38385dc6c6cf71bf4d61f9c2c88ca9':
+          if digest == '375588de1cb5e1fbd9fa5f8b9d412be97d633625439213b167439abef2d505f6':
               # An event's payload is NOT NULL in every dialect's schema from version 10. The
               # mutations that hold it (the two servers' column change, MySQL's guarded form
               # and its refusal outside a strict mode, and the invariant library's condition)

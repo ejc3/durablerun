@@ -144,18 +144,25 @@ a last docs PR gives a live owner to every open bullet that is left.
    Both server executors refuse a lock kind they do not implement, red first,
    where each took every kind that is not an event lock for a claim lock.
    PostgreSQL's version batch names the lock in its control, where its admin
-   sent the lock as a statement, and the server is sent the same 132 protocol
-   messages as before, byte for byte. The half applied case passed when it was
-   written, so it was a missing test and not a bug. It cuts the batch the real
-   admin plans at every statement, from every version a database can be at,
-   58 cuts, by destroying the session that sent them, and it fails once an
-   index is created in a form that is not safe to repeat. A fresh MySQL
-   database costs three version reads and two locked batches whatever the
-   number of versions, where it cost nine and eight, and a current one a
-   single read, where it cost nine. Measured twice over 100 fresh databases a
-   build, interleaved, 32.7 ms became 30.2 and 33.1 became 31.4, beside
-   PostgreSQL unchanged at 37.3 and 36.9, and at 38.5 and 38.9. The registry
-   gained eleven mutations.
+   sent the lock as a statement, and the server is sent the same protocol
+   messages as before, byte for byte: 132 of them at seven versions, and 157
+   at nine. The PostgreSQL executor refuses a migration write that names no
+   lock too, its bootstrap excepted, and MySQL's refuses a `migrate:` batch
+   sent as a read, each red first, after the review showed the first was
+   weaker than the statement it replaced and the second was a hole in the
+   refusal. The half applied case passed when it was written, so it was a
+   missing test and not a bug. It cuts the batch the real admin plans at every
+   statement, from every version a database can be at, 143 cuts at nine
+   versions and 58 at seven, by destroying the session that sent them, and it
+   fails once an index is created in a form that is not safe to repeat. A
+   fresh MySQL database costs three version reads and two locked batches
+   whatever the number of versions, where at nine versions it cost eleven and
+   ten, and a current one a single read, where it cost eleven. The cost was
+   measured over 100 fresh databases a build, interleaved, twice at seven
+   versions and twice at nine: 32.7 ms became 30.2 and 33.1 became 31.4 at
+   seven, 45.2 became 44.2 and 45.9 became 43.8 at nine, and PostgreSQL, which
+   did not change, moved by less than half a millisecond in all four runs. The
+   registry gained thirteen mutations.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free
@@ -185,11 +192,14 @@ a last docs PR gives a live owner to every open bullet that is left.
    claiming one did on all three. Schema version 9 is the index `runs_held`, a
    queue's running runs by their claim token, the two follow-ons name the token
    beside the stamp, and libSQL's receipt read keeps its bounds check off the
-   lease index. One claim beside 10,000 running runs went from 22.1 ms to 4.6 on
-   libSQL, from 12.7 to 7.3 on PostgreSQL and from 33 to 4.0 on MySQL, and no
-   other write was measurably slower. The table of excuses is deleted, a pin on
-   each dialect holds all four statements, and the entry under PR3.14b has the
-   measured table and what a realistic ceiling of running runs is.
+   lease index. One claim beside 10,000 running runs went from a mean of 22.1 ms
+   to 4.6 on libSQL and from 12.7 to 7.3 on PostgreSQL. On MySQL it went from a
+   median of 33 ms, whose means ran from 34 to 61 under the server's default
+   buffer pool, to a mean of 4.0. No other write was measurably slower. `claim`
+   holds its token to an identifier's width, because PostgreSQL's index row is
+   bounded. The table of excuses is deleted, a pin on each dialect holds all
+   four statements, and the entry under PR3.14b has the measured table and what
+   a realistic ceiling of running runs is.
 8. PR4.4e: on MySQL a keyed write takes its key on a table of any size. Inside
    a claim's own batch on a four-row `runs` table the update holds a record
    lock on the rows it claims and on no other row, and the concurrent-claim
@@ -377,6 +387,51 @@ a last docs PR gives a live owner to every open bullet that is left.
     that ignores infrastructure retries the new budget case fails by name
     while the two older ones pass. Eleven registered mutations hold the new
     lines, and the one that mutated the SQL name check is retired.
+21. PR3.2c: removing a counter guard from the claim receipt's admission, from
+    the revival, or from the failure batch fails a targeted cell of the poison
+    matrix by name, the matrix reaches the rollback pass, and every statement
+    of the SQL corpus that inserts a run is held to the carry by a generated
+    case, on three dialects. This is met. Five target profiles seed the
+    poisoned task where its label acts on a target with nothing corrupt: a
+    claim no activation has reached, for `activate` and for `defer-launch`, a
+    task that failed for good, for `retry-task`, and an activated claim whose
+    task has a registered step started, for `fail`, or stands in the
+    rolling-back phase, for `fail-rollback`. The 48 new target cells each fail
+    under one of eleven guards removed by hand, 44 under their own name and the
+    four over `attempts/at-max-with-live-run` under the name of the aggregate
+    that runs them, where the whole matrix stayed green with the receipt's
+    relaunch bound, the revival's bound on infrastructure retries, or the
+    failure batch's guard on the highest owned ordinal removed. The control of
+    `fail` on a started step leaves the rollback pass as the task's second run
+    beside the phase marker. Five registered mutations, one for each profile,
+    are each caught by a generated cell of that profile. Six generated cases
+    hold the ten run inserts of the corpus, and a successor that drops the
+    parked wake step and a revival that carries nothing each fail one by name.
+23. PR3.14c: a check generated from the corpus plans every statement of every
+    label the libSQL store ships, and fails on a statement in which a step that
+    runs once for each row of another is not keyed, or runs once for each row of
+    a step that is neither keyed nor a due range, but for the statements it
+    names. This is met. `store-libsql`'s plan test sends every batch the store
+    builds from one history of real operations, the generated corpus and the
+    list of text statements hold that history to every statement, and the loop
+    nests of each plan are judged. One registered mutation, a read that joins
+    its task by the queue alone, fails it and passes every older pin of the
+    file.
+24. PR2.5a: a broken constraint of each kind the `tasks` table declares, sent
+    through a store's executor, is typed
+    `PermanentStoreError` on libSQL, PostgreSQL and MySQL, a batch on a closed
+    executor is typed `StoreUnavailableError`, and two batches that lock the
+    same rows in opposite orders are both answered, by one shared conformance
+    surface with no dialect fork.
+    A worker pass ends on the new type exactly as on an outage, and a hosted
+    route answers it 500. This is met. The primary key case of
+    `packages/conformance/src/executor-errors.ts` was committed failing on all
+    three dialects, beside two worker pass cases in
+    `packages/sdk/test/run-worker.test.ts`, and the CHECK case was committed
+    failing on MySQL. Every member of every executor's map is held by a
+    registered mutation against the executor's own case, and the
+    self-concurrency surface books a permanent store error with the outages, so
+    a port call that breaks a constraint fails its contest.
 
 25. PR3.1d: an event's payload is never SQL NULL by the schema. One case of
     the shared schema and admin surface writes SQL NULL over a stored event's
@@ -797,9 +852,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   against real processes. The transport-lifecycle deferrals it carried from
   the residual review (the worker's shutdown order, deadlines on the detached
   launch and wake requests, header and request timeouts, body draining) are
-  PR2.5b. It still carries one from that review:
-  splitting permanent SQL errors from transient
-  unavailability in the executor's error typing. Includes the systematic fault MATRIX from the
+  PR2.5b. The last one it carried from that review, splitting permanent SQL
+  errors from transient unavailability in the executor's error typing, is
+  PR2.5a. Includes the systematic fault MATRIX from the
   PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
   with per-operation bounds asserted — curated fault lists missed the
   duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup
@@ -816,6 +871,103 @@ these three things; nothing else in the system does I/O, time, or randomness.
   told that URL. The start helpers take a started worker and refuse a bare
   number. The test determinism review rule flags any port number fixed before
   the bind and passes port 0.
+- **PR2.5a executors type a permanent SQL error apart from an outage**: DONE.
+  A constraint violation, a value out of range and a syntax error read as
+  `StoreUnavailableError` on every dialect, which every consumer retries, so a
+  deterministic failure inside an activated run was retried until its
+  infrastructure budget was gone. Core has a new type, `PermanentStoreError`, a
+  sibling of `StoreUnavailableError` as `SchemaMismatchError` is, and each
+  executor types it from the driver's error code and never from message text
+  (DESIGN.md §3.2): libSQL from the primary SQLite result code, PostgreSQL and
+  MySQL from SQLSTATE classes 22, 23 and 42. MySQL keeps two lists of numbers
+  beside the classes: 1203, 1226 and 1461 are read before the class and stay
+  outages, because they are limits that a retry cures and MySQL files them
+  under class 42, and 1265, 1364, 1366 and 3819 are typed permanent though
+  MySQL files them outside the three classes.
+  A code the map does not know stays an outage, a deadlock victim keeps its
+  retry, and on libSQL a syntax error stays an outage, because SQLite files it
+  under its generic code. One shared conformance surface, `executor-errors`,
+  holds the kinds on three dialects. Its constraint case was committed failing
+  on libSQL, PostgreSQL and MySQL, beside two worker pass cases. The surface
+  first broke one kind of constraint, a primary key. The simplify pass asked
+  why the shared surface held one kind where the schemas declare four, and the
+  CHECK case then failed on MySQL alone, which answers a broken CHECK
+  constraint with error 3819 under HY000: committed failing, then typed by
+  number. Each executor's own cases run on a fake driver, or on a table of the
+  author's own, so they could not show it. The pull request's one review then
+  found the same gap three more times
+  (`postmortems/pr2.5a-permanent-store-errors-review.md`):
+  the three limits under class 42, which this entry's rule
+  by class had turned from outages into permanent errors, a NOT NULL column
+  left out (1364), and text that is no number (1265). Each was committed
+  failing and then fixed, and the class was closed at its source: one
+  real-server case reads the server's own list of error numbers and holds both
+  of the executor's lists to it (DESIGN.md §3.4). Run over the executor as it
+  was before the fold, it fails naming all five numbers.
+  What consumers do was decided before any code. A worker pass treats the new
+  type exactly as an outage, through an internal control kind of its own,
+  because naming an error more precisely must not change who pays for it, and
+  the published `WorkerOutcome` did not change. The one visible change is the
+  hosted answer: 500, where the same failure answered 503. No log line was
+  added, because no log seam exists. The self-concurrency surface books the new
+  type with the outages, so a port call that breaks a constraint still fails
+  its contest, and the SDK's replay equivalence harness fails every store call
+  it samples, the odd calls from the third and the last call, once with an
+  outage and once with a permanent store error, under a floor that fails unless
+  every store method the sweeps failed met both kinds. The harness first drew
+  the kind by the call's number, which landed the permanent kind on two store
+  methods of twelve while this entry said every call: the review measured it,
+  and the floor was committed failing before the draw changed. Twenty-three
+  mutations hold the new conditions: one for the rule of each map, one for each
+  member of a map and of MySQL's two lists, one for the rule that reads a limit
+  before its class, two owned by the case that reads the server's list, and
+  one each for the worker pass and the contest's booking. The registry holds
+  1069.
+  - Option for the worker pass, not built, with its trigger: a run whose store
+    call fails permanently ends at once, as neither the task's failure nor an
+    exhausted infrastructure budget. It needs a terminal reason of its own and
+    a transition that writes it, so it is a spec change first
+    (`specs/Scheduler.tla`, beside FailRunTerminal), and it holds a design
+    question for the maintainer: the write that ends the run goes to the store
+    that has just refused a write. Whoever builds it keeps the admin's
+    convergence out of it: racing migrators meet a constraint violation by
+    design, the loser's sentinel (DESIGN.md §3.4), and `migrate()` has no run to
+    end. Its spec also says what a run does with a unique violation that came
+    from an id collision, which a retry with a new id cures, where no retry
+    cures any other permanent answer. Trigger: the first permanent code met on
+    an activated run in dogfood or CI, or the first `$InfraRetriesExhausted`
+    whose cause was one.
+  - Option for the libSQL executor, not built, with its trigger: type a syntax
+    error permanent on libSQL too. `SQLITE_ERROR` is SQLite's generic code, and
+    it also names a transaction state error that a new connection cures, so the
+    code alone cannot say which, and the executor reads no message text.
+    Trigger: the driver reports a code, or a field, that tells the two apart.
+  - Option for the fault matrix, not built, with its trigger: fail a cell when
+    a port call rejects with a type the cell did not inject. The matrix's
+    driver actor wraps every port call in a bare catch, so that a crash it
+    injected reads as a process that died, and a green matrix therefore says
+    nothing about a port call that met a permanent store error, or any other
+    rejection nobody expected. It was so before this entry. Here the question
+    was answered another way, by counting every `PermanentStoreError` the
+    conformance directory constructs on three dialects, by batch label: no
+    scheduler port batch met one under legal use. Trigger: a port call is found
+    to reject with an unexpected type inside a cell the matrix passed.
+  - Option for the self-concurrency surface, not built, with its trigger: book
+    as a refusal only what the contract names as one, and fail a contest on
+    everything else. Its booking lists what is NOT a refusal, an outage and now
+    a permanent store error, so any other type that fails the same way in both
+    orders of a contest still passes, a `SchemaMismatchError` among them. It
+    was so before this entry, and turning the list around needs every contest's
+    legal refusals enumerated first, the admin's and the spawn's among them.
+    Trigger: a contest is found to pass with an error in both orders.
+  - Option for the executors, not built, with its trigger: widen the maps.
+    `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, and SQLSTATE classes 21 and
+    54 on the two servers, stay outages, because no case here could produce one
+    through a port. On MySQL the case that reads the server's list names every
+    number it leaves an outage though its name says a refused value, and why.
+    A name can miss one: 1153 (`ER_NET_PACKET_TOO_LARGE`, 08S01) stays an
+    outage though the same statement is refused every time, which is main's
+    behaviour and the safe side. Trigger: one of them is met in a run.
 - **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
   `Launcher.launch` takes an optional second argument whose one field is an
   abort signal. The resident driver's launch deadline hands every call a signal
@@ -1898,10 +2050,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `deferLaunch`, so a guard added to one reaches the other. Six registered
     mutations that owned find texts inside activation's SQL now own the
     fragment's.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
-    case generated from every batch that inserts a run, in place of one
-    hand-listed family per path. The model property covers the protocol today,
-    and generating the SQL-side enumeration belongs with this PR's SQL-tree work.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
@@ -1934,14 +2082,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   says. What stays open here: the required attestation
   runs no probe and a red test may name none, so a red commit that holds its
   own fix is seen only by an attester who asks for `--prove-reds`.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
-    profile for a running, unactivated claim, so the `activate` and
-    `defer-launch` cells reach their corruption guards instead of refusing on
-    the receipt.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a poison target
-    profile for a failed task, so the `retry-task` cells reach the counter
-    guards behind its state condition. The conformance cases pin each guard
-    today.
   - Deferred from `postmortems/pr3.3b-hoists-review.md`: a poison case for the
     batch that records an unrecorded ending (`record-task-done`), over rows
     where a run's claim outlives its task or names a task of another queue, so
@@ -2087,6 +2227,119 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its residual is NOT recorded here: each item sits under the named PR that will
   do it, with its source postmortem.
 
+- **PR3.2c poison target profiles and a generated successor-carry case**: DONE.
+  It builds four bullets that merged entries carried, two under PR3.10 from
+  `postmortems/pr3.2a-lifecycle-review.md` and
+  `postmortems/pr3.2b-retry-task-review.md`, one under PR3.4, and one under
+  PR3.9, and takes them out from under those entries. The profiles went into
+  the targeted cells and not the ambient ones, on a measurement: with the
+  poisoned run seeded as a claim no activation had reached, all 292 ambient
+  `activate` and `defer-launch` cells passed, and stayed green with the
+  receipt's relaunch bound, its sole-live-run guard, or its accounting guard
+  removed. An ambient cell requires no refusal, so it holds a guard only where
+  the unguarded write leaves something its oracle objects to, and for the
+  receipt's admission it left nothing. A targeted cell requires the poison's
+  rows unchanged. The arms that name their target, `activate`, `defer-launch`,
+  `retry-task`, `fail` and `fail-rollback`, are a second kind beside `claim`
+  and the lease sweeps, which scan: the call on the poison must be refused and
+  the healthy trigger wins a call of its own. Each profile has a control, the
+  same call with nothing corrupt, which must act on the poison and whose effect
+  is pinned, so that a refusal is the corruption's and not the profile's
+  (DESIGN.md, the poison matrix). The inventory went from 50 target cases and
+  26 declared unreachable targets to 98 and 83, with two new reasons: a receipt
+  names the generation it holds and the port refuses one outside the bounds,
+  and a failed task has no live run for a relation of one to hold of. A failed
+  task's top run is already charged, so its profile isolates a boundary by the
+  revival's own relation, and two boundaries that no live arm can isolate, the
+  budget's lower bound and a run ordinal's, are isolated there by companions of
+  their own. With the receipt's relaunch bound removed the whole libSQL matrix
+  stayed green at the base, 3,082 of 3,082, and six cells fail now, among them
+  `activate-unactivated contains counter-bound/run-relaunch-count`. With the
+  revival's bound on infrastructure retries removed it stayed green and two
+  cells fail now. With the failure batch's guard on the highest owned ordinal
+  removed it stayed green and two fail now, and with its accounting guard
+  removed six ambient cells already failed, by the findings the failure left
+  behind, and twelve targeted cells fail as well, ten of them on boundaries no
+  cell held. The control of `fail` on a started step is how the matrix reaches
+  the rollback pass. The pass's own integer guard, that the budget its batch
+  writes fits, stays with the two saga cases that hold it on valid, extreme
+  states, because no single corrupt pre-state reaches it: the failure's
+  compare-and-set in front of it vouches for the run's ordinal, the task's
+  three counters and the relation between them. Five mutations, one for each
+  profile, are each owned by a generated cell of that profile: 1027, which is
+  the 1022 this work was merged onto and these five. The successor-carry case
+  is generated from the SQL corpus (`conformance/src/successor-carry.ts`,
+  DESIGN.md §3.8): each of the ten statements that insert a run, across six
+  labels, must be made to insert one by some scenario, through an executor that
+  records which corpus statement inserted which run, and the run is judged as
+  its batch left it. A label with a run insert and no scenario fails, and so
+  does an insert no scenario reaches, and so does a label a scenario drives to
+  which the corpus gives no run insert. The enumeration is the corpus's, which
+  the corpus test holds to what the stores compile, so these cases are closed
+  only together with it. The hand-written case is deleted, the mutation it
+  owned is owned by the generated case of `fail`, and the rollback passes of
+  `fail`, `fail-rollback` and both sweep cap arms are reached for the first
+  time. The new cells and controls cost 0.7 s of test time on libSQL, 4.3 s on
+  PostgreSQL and 2.7 s on MySQL, and the generated carry cases 0.3, 0.7 and 0.6
+  s, on a shared machine at a load average of 17 to 70. Against that, the
+  matrix's own total moved by less than its noise: over five interleaved rounds
+  the base took 45.6 to 47.3 s on libSQL, 231.9 to 255.2 s on PostgreSQL and
+  161.8 to 187.4 s on MySQL. `verify` runs the libSQL and PostgreSQL legs, so
+  it gains about 6 s here and about twice that on CI's slowest runner, under a
+  limit that holds the three-times rule until its slowest run reaches 2,400
+  seconds.
+  - An option, not built: targeted witnesses for the claim receipt's guards
+    that are not counters, the sole live run, the stored retry strategy and
+    headers, and the lease. No targeted witness of that kind exists on any arm,
+    and hand-written cases with registered mutations hold each of those guards
+    today. Its trigger is one of those mutations surviving, or a review that
+    finds one of those guards unheld.
+  - An option, not built: the ambient `fail` cells over a task with a started
+    step, with insert authority for the pass. A probe placed a pass on the
+    poisoned task in 101 of 146 such cells, and the ambient oracle objected
+    only that it grants no such authority. It would hold the pass's live-task
+    conditions and nothing else, for about eleven seconds on PostgreSQL. Its
+    trigger is a defect in where a pass is placed over a corrupt pre-state.
+  - An option, not built: a retrying form of `fail-rollback` in the matrix's
+    `invoke`, which would reach the pass that follows a failed rollback from
+    the matrix itself. The generated successor-carry case reaches that pass
+    today.
+  - An option, not built: seed the ambient cells of the labels that `activate`,
+    `deferLaunch` and `retryTask` send over the state in which the label acts.
+    On this head the call changes the poison's rows in none of those 438 cells,
+    so they hold only that a refused call leaves nothing behind. Seeded over a
+    claim no activation had reached, the call acted in 168 of the 292 cells of
+    the first two and every one stayed green, so the change would make those
+    cells audit a write and would hold no guard. Its trigger is a write outside
+    authority, or a finding laundered, by one of those three labels that no
+    cell saw.
+  - An option, not built: a control for the four profiles of the arms that
+    scan. A cell of theirs shows the one call acting on the healthy trigger,
+    and not on the profile. Run with nothing corrupt in the review, each of the
+    four is acted on, so no cell is vacuous today. Its trigger is a change to
+    one of those four seeds, or to the eligibility a scan applies.
+  - An option, not built: controls over companions. Sixteen of the 48 new cells
+    move their profile's seed by companions, and a control runs the seed alone.
+    For fourteen the companions make sense only beside the corrupt value, so no
+    control can exist, and they are held by failing when their guard is
+    removed. For the other two, the lower bounds of the revival's budget and of
+    a run's ordinal, the companions are a valid failed task on their own, and a
+    control over them could show the revival acting. Its trigger is a change to
+    either of those two companions, or to the revival's charge relation.
+  - An option, not built: an enumeration of the refusals of the check that a
+    targeted case was seeded as its profile says, held against the oracle meta
+    tests. Seven meta tests now require that check's sentences, and nothing
+    lists the sentences, so a refusal added with no meta test would pass every
+    gate. A registered mutation for each refusal would keep the present tests
+    honest and would not see a new one. Its trigger is the next refusal added
+    to `declaredTargetErrors`.
+  - PR3.2c's one review found no HIGH, one MEDIUM and four LOW, recorded in
+    `postmortems/pr3.2c-poison-profiles-review.md`. Four are counted there: a
+    sentence in the spec that was false as a universal, three refusals of the
+    matrix's seed check that no test held, and two claims about the new test
+    machinery that said more than is true. All four are folded, and so are a
+    loose registry comment and three missing gate lines, which are not counted.
+
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
@@ -2157,12 +2410,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and a port's event name to the durable string domain, each where it enters.
     A queue or a step name at the other ports is not checked at the port. One
     check for the whole port is its own change.
-  - A plan check over every write of the libSQL corpus. `query-plans.test.ts`
-    pins the statements someone chose, so the terminal wake had no pin when it
-    moved into six batches, and the keyed follow-ons below scan `tasks` today
-    with every test green. The property is that no write scans a table once
-    for each row of another, and a check generated from the corpus would hold
-    it for every statement. It is its own change.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -2423,11 +2670,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stopped whether or not the step there registered a rollback. The review
   round is `postmortems/pr3.4-sagas-review.md`.
   Open, and owned by this entry until it merges:
-  - The poison matrix seeds no task with a started step, so it never reaches
-    the rollback pass. The pass's one integer guard is that the budget its
-    batch writes fits. Two cases in the `sagas` surface hold it: a run at the
-    largest user ordinal gets no pass, and a task spawned with the largest
-    budget rolls back.
   - The store counts a rollback's failed attempts since PR3.4c, and it does
     not know a rollback's budget: it is told whether another pass follows,
     so the one cap it holds itself is the run ordinal's bound on a pass.
@@ -2972,7 +3214,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   and the receipt read each discarded every running run, 12.1, 35.2 and 13.8 ms
   at 100,000. Its delete is driven from `waits` while that table is empty and
   from the running runs once it holds rows, so beside 100,000 parked waits a
-  claim cost what it cost beside none, 8.2 and 8.9 ms against 8.2, and the
+  claim took 8.2 and 8.9 ms in two rounds against 7.6 and 8.2 beside none, about
+  8 percent more in each round and inside the noise between rounds, and the
   delete became a fifth read of the same backlog. On MySQL the follow-on and the
   delete have found their runs by the statement stamp since version 8, 9 and 3
   rows walked, and the held guard and the receipt read each walked every running
@@ -3024,15 +3267,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   | MySQL | 6.56, 5.56 | 4.20, 3.26 | 33, 32 (medians) | 4.03, 3.17 |
 
   At 100,000 a claim costs 5.0 ms on libSQL and 7.2 to 7.7 on PostgreSQL, and at
-  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows in its
-  four statements at every size. What the index costs the other writes, mean ms
-  before and after at 10,000 running runs: activate 2.54 and 2.19, heartbeat
-  1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on libSQL;
-  4.61 and 4.62, 1.32 and 1.37, 5.06 and 5.34, 2.51 and 2.58 on PostgreSQL; 2.94
-  and 2.32, 0.83 and 0.77, 3.81 and 3.62, 1.98 and 1.88 on MySQL. The same call
-  moves 5 to 7 percent from round to round, and the index's cost is inside that.
-  One PostgreSQL round at 10,000 is left out of its mean, because every call of
-  it was 1.7 times slower, activate included.
+  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows
+  in its four statements at every size. What the index costs the other writes,
+  mean ms before and after at 10,000 running runs: activate 2.54 and 2.19,
+  heartbeat 1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on
+  libSQL; 4.61 and 4.62, 1.32 and 1.37, 5.06 and 5.34, 2.51 and 2.58 on
+  PostgreSQL; 2.94 and 2.32, 0.83 and 0.77, 3.81 and 3.62, 1.98 and 1.88 on
+  MySQL. The same call moves 5 to 7 percent from round to round, and the index's
+  cost is inside that. One PostgreSQL round at 10,000 is left out of its mean,
+  because every call of it was 1.7 times slower, activate included.
 
   The three `claim` entries of `EXCUSED_SOURCE_WALKS` are deleted with the
   table, and that pin excuses nothing. A second libSQL pin allows a claim to
@@ -3042,7 +3285,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   statement walks beside 400, with a run due and with none. Four mutations are
   registered: the token term on libSQL and on PostgreSQL, libSQL's unary plus,
   and the receipt's bounds check, which a new conformance case holds at both
-  ends of its range on every dialect. The registry holds 1002.
+  ends of its range on every dialect. A fifth holds the claim token to an
+  identifier's width at `claim`. The review of this change found that
+  PostgreSQL's index of the token cannot hold a row past about 2,700 bytes, so a
+  claim under 3,000 characters that do not compress answered as an outage there
+  and took its run on the other two, where before the index every dialect took
+  it. `claim` now holds its token with the check it already made for its queue,
+  one shared conformance case shows all three dialects refusing such a token
+  alike, the identifier surface sends an identifier past the width in the
+  token's place too, and a `store-postgres` test holds the one edge that leaves:
+  a database an older build left with a run still running under such a token
+  fails version 9 whole, stays at version 8, and takes the version once that run
+  has ended and no transaction that was open at that moment still holds a
+  snapshot in that database or a transaction id of its own anywhere on the
+  server, because PostgreSQL's index build also indexes a dead row version that
+  an open snapshot can still see, and the building session's own snapshot
+  reaches back to the server's oldest running transaction id. The test runs in a
+  database of its own and holds both halves: refused while a snapshot it opens
+  is open, and built, asked once, after the server's oldest running transaction
+  id has passed the moment the run ended. Its first two forms each passed alone
+  and failed beside other tests' transactions, which is how the gate found both
+  halves of that sentence. PostgreSQL's pin parks one wait, because with `waits`
+  empty the delete never reaches `runs`, and with the token term removed from
+  the delete alone the pin fails by that statement's name. The registry holds
+  1033.
   - Limit, measured: PostgreSQL matches the partial index to the bound state of
     the held guard and of the receipt read only when it plans with the values,
     as it does for the unnamed statements the executor sends. With the server
@@ -3050,11 +3316,134 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to the plan they had, and a claim beside 100,000 running runs costs 32.6 ms
     against 7.4, where it cost 64. The pin plans with real binds and cannot see
     it.
-  - For whichever of this PR and PR3.14c merges second: the plan check excuses
-    the claim's task follow-on and its delete by name, and names the receipt
-    read in its list of due ranges, with this PR as the owner. All three come
-    out, and its tests pass without them. Its option of a clause that refuses a
-    lone walk in any statement has this merge as its trigger.
+  - At this PR's merge of main, which holds the plan check (PR3.14c), its rule
+    read a seek of `runs_held (queue=? AND claimed_by=?)` as a walk. Over this
+    PR's statements it still faulted seven nests, in the claim's task follow-on,
+    its delete and its receipt read, and its two excuses for the first two no
+    longer matched, because their pattern named the old walk. So its names did
+    not simply come out. Its reader's list of columns that name one entity
+    gained `claimed_by`, because one token holds at most one claim's limit of
+    runs, with the reason in DESIGN.md. Then its two excuses and its name for
+    the receipt read among the due ranges came out, and its plan test passes
+    with nothing of the claim excused. With `claimed_by` taken out of that list
+    again the test fails on those seven nests, which was tried. Its option of a
+    clause that refuses a lone walk in any statement had this merge as its
+    trigger.
+  - Option, not built, with its trigger: `taken`, the declaration of the runs a
+    claim took, is a byte-identical copy in the three stores, and no mutation
+    holds MySQL's copy, because the term changes no plan there. Hoisting it
+    beside core's claim statement was declined here: the third copies across the
+    stores have an owner, it is a store text fragment, and a hoist re-aims the
+    two store-anchored mutations this PR registers. Trigger: the next change to
+    `taken`.
+  - Option, not built, with its trigger: a check that reads each dialect's
+    catalog for every indexed text column and requires each to be declared with
+    the bound on what enters it. The identifier surface holds what its table
+    names, and nothing ties a column that gains an index to that table, which is
+    how `runs_held` indexed a claim token that no entry held to a width: on
+    PostgreSQL a btree row may not pass about 2,700 bytes, and a claim under a
+    longer token answered as an outage until `claim` held its token. The same
+    shape is open for any text column no entry bounds, a task name for one: with
+    an index on it, a spawn under 3,000 characters that do not compress fails on
+    PostgreSQL with SQLSTATE 54000 and the identifier surface passes. Every
+    indexed text column a caller feeds today is an identifier held to the width.
+    Trigger: the next index over a text column.
+  - Option, not built, with its trigger: renaming the plan check's test `reads
+    no table once for each row of a backlog, but for the claim it names`. The
+    exception it names is empty since this PR, so the title is loose and not
+    false. A registered verdict names that title, so the rename re-aims a base
+    registry entry and needs a helper in the base gate's bridge step. Trigger:
+    the next pull request that re-aims that entry for another reason.
+  - Option, not built, with its trigger: `store-postgres`'s saga plan test
+    judges plans over tiny tables that have no statistics, so a database-wide
+    ANALYZE from any other session can flip them. Alone it passed 4 times of 4,
+    and beside a database-wide ANALYZE issued ten times a second from another
+    session it failed 3 times of 6. This PR's pin analyzes only the two tables
+    it loads, in its own schema. Trigger: the first time that test flakes, or
+    the next test that analyzes a whole database.
+- **PR3.14c the plan check generated from the corpus**: `query-plans.test.ts`
+  pinned the statements someone chose, and its block over writes planned the
+  UPDATE and DELETE of fourteen labels listed by hand, so a read, or the SELECT
+  of an INSERT, was planned only where someone chose it, as three reads were,
+  and a new label's writes only if someone listed it. One scripted history of
+  real operations now sends every batch the libSQL store builds, in every
+  variant, recorded once for the file. Every statement of
+  `conformance/corpus/libsql.json` must be one that history sent, by its exact
+  text, and every label of `scripts/text-statements.json` is sent or named with
+  why it is not the store's. The block over writes takes its statements from the
+  same history, so its hand list is gone and it plans the writes of every label.
+  Each statement is planned under the binds it was sent with, as the tree
+  `EXPLAIN QUERY PLAN` returns, and every send of it is held to plan alike. A
+  reader beside the test judges the loop nests of each plan: a step that runs
+  once for each row of another must be keyed, and every step it runs once for
+  each row of must be keyed or a due range. DESIGN.md §3.4 has the reading, the
+  two declared lists of column names, why a due range may drive, what the rule
+  cannot see, as five statements that were run, and what it refuses though it is
+  sound. A step is judged by its constraints whatever it is named, a read of a
+  subquery's rows as a read of a table is, and a plan line the reader cannot
+  read or place is a fault. Two statements of `claim` broke the rule, the task
+  update and the delete of expired waits, and were excused by name, for that
+  walk alone, until PR3.14b keyed them. Nothing is excused now. A plan prints a
+  range the same way whichever way it points and never prints a LIMIT, so every
+  statement in which a due range drives another step is named with the lines
+  that drive and with what bounds them, a LIMIT its text holds or a recorded
+  open question. Four were: the claim's candidate legs, the two sweep scans, and
+  the claim's read of the runs it took, whose range was every lease of its queue
+  that had not expired, under no LIMIT. That read had no pin, and it showed that
+  plan only under its real binds, because SQLite plans from bound values. Three
+  are named now. All four statements of `claim` were PR3.14b's, and it has keyed
+  them. The reader read its seek of `runs_held` by the claim token as a walk and
+  still faulted seven nests, so the reader's list of columns that name one
+  entity gained `claimed_by`, because one token holds at most one claim's limit
+  of runs. Then the claim's two excuses and its name in the list of due ranges
+  came out. As measured before PR3.14b: one claim of one run on libSQL, median
+  of 7, on a file database, beside running runs of its queue that another worker
+  holds, then each of its statements alone in a transaction that is rolled back,
+  with `activate` as the keyed control:
+
+  | Running runs | Claim | Runs update | Task update | Waits delete | Read | `activate` |
+  |---|---|---|---|---|---|---|
+  | 8 | 7.3 ms | 2.1 ms | 0.2 ms | 0.1 ms | 0.8 ms | 4.9 ms |
+  | 10,008 | 25.5 ms | 5.8 ms | 4.2 ms | 3.8 ms | 4.6 ms | 5.9 ms |
+  | 100,008 | 206.9 ms | 38.2 ms | 41.0 ms | 39.1 ms | 40.9 ms | 4.6 ms |
+
+  One registered mutation owns the red: the sweep's read of expired leases,
+  joined to its task by the queue alone, scans `tasks` once for each lease it
+  reads. It fails the nest check by name and passes every older pin of the file,
+  the pin of that same read among them.
+  - Option, not a deferral of this PR: a clause that refuses a walk in any
+    statement, alone or not. A lone walk drives nothing and nothing drives it,
+    so the nest rule does not see it. In an UPDATE or a DELETE the two pins over
+    writes refuse it, and a read, or an INSERT ... SELECT, that walks a protocol
+    table alone passes every plan test today. Before PR3.14b the clause would
+    have found exactly the four statements of `claim`, beside
+    `EXCUSED_SOURCE_WALKS`, which is deleted now. Its trigger was PR3.14b
+    merging, which has come: the clause can now replace the two pins over
+    writes, and would not be a second list beside them.
+  - Option, not a deferral of this PR: the same generated check on PostgreSQL
+    and MySQL, whose plan tests hold chosen statements. Each needs its own
+    reading of its own plan format, and MySQL's test already measures rows
+    walked from inside the batch, which a plan cannot give. Its trigger is a
+    statement found to walk on a server that those chosen pins do not hold.
+  - Option, not a deferral of this PR: one history for the corpus generator and
+    this check. `sql-corpus.test.ts` scripts the same operations to record the
+    corpus, in another package, so a new label or variant is scripted twice, and
+    each test fails until it is. One history over the store's two ports, in a
+    testing entry both packages can import, would serve both, and a server's
+    generated check too. Its trigger is that check being built for a server, or
+    the second variant that has to be scripted in both.
+  - Option, not a deferral of this PR: a generated surface for the plan reader.
+    Its review found the reader blind to a read of a subquery's rows inside a
+    nest, and not failing closed at three seams, and every such finding lay
+    where no shipped plan goes and no case picked by hand went. The surface
+    would make every kind of line the reader knows stand as the step that drives
+    and as the step that is driven, under each reach, with the expected reading
+    derived and not written by hand. The postmortem of that review names it as
+    the mechanism its root cause asks for. Its trigger is the next finding
+    against the reader.
+  - Recorded, and not planned: a statement inside a trigger is never planned.
+    libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
+    scans `drivers`, a table of one row for each live driver.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It
@@ -3250,13 +3639,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
       and refuse one that runs under no migration lock. That needs a reader of
       MySQL statement text, which is a proxy of its own: a prepared DDL
       statement's text is held in a session variable, where no reader of the
-      batch sees it. The trigger is the first statement that
+      batch sees it. It would also close the path the label cannot see: DDL
+      under a label that does not start with `migrate:`, in either mode. The
+      trigger is the first statement that
       commits by itself sent under a label that does not start with `migrate:`.
     - Option, not a deferral of this PR: libSQL's and PostgreSQL's
       `fencedBatch` are the same function now that PostgreSQL's lock left its
       statement list: the sentinel, the version's statements, and the guarded
       advance. One definition in core would hoist two copies. The trigger is
       the next change to either.
+    - Option, not a deferral of this PR: a stale MySQL plan replays every
+      version that was pending when it read the version, so DESIGN.md forbids
+      a version that undoes or reshapes what an earlier version's repeatable
+      statement would put back. A guard statement for each version that has
+      statements, matched only at the version before it, with the version's
+      statements gated on it, would make a stale batch send nothing and lift
+      the rule. It changes what the runner sends. The trigger is the first
+      version that needs to undo or reshape what an earlier one creates.
+    - Option, not a deferral of this PR: every MySQL batch is labelled with
+      the last version, and an executor's error carries only the label, so a
+      failure in version 1 reads as the last version's batch. Saying which
+      version's statement failed needs the executor to report a statement's
+      index, which changes every batch's messages, or the batch to carry more
+      than it does. The trigger is the first failed migration an operator has
+      to read.
+    - Option, not a deferral of this PR: the rule that an executor refuses a
+      lock kind it does not implement is held by two unit cases and by no
+      conformance case, so a port in another language can pass the suite
+      without it. libSQL ignores every lock by design, so a shared case needs
+      the fixture contract to say whether a dialect implements locks.
+    - Option, not a deferral of this PR: `versionBatch(migration)` keeps the
+      text the batch lint names, so a list is called `migration`. The base
+      gate runs the base's copy of the lint, so an honest rename cannot land
+      in one pull request. It can in two: first a lint that accepts both
+      texts, then the rename. The trigger is the next change to that call.
     - Option, not a deferral of this PR: PostgreSQL's bootstrap names no
       migration lock, because that lock lives on the table the bootstrap
       creates. A lock that lives elsewhere, an advisory lock, would change what
@@ -3549,12 +3965,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     compiler alone refuses both, because its rule takes one plain table that
     declares an index of its stamp. Trigger: the first statement of either
     shape, which fails when its batch is built in `conformance-mysql`.
-  - Option for the MySQL executor, not built, with its trigger: classify the
-    server's permanent answers by SQLSTATE class in place of error numbers kept
-    by hand. A value too long for its column has a branch of its own by number,
-    error 1176 joined the schema mismatch set in PR4.4e's fold, and error 1064,
-    a statement the server will never accept, is still answered as an outage
-    that callers retry. Trigger: another number is added by hand.
+  - The option this entry recorded for the MySQL executor is built, as PR2.5a:
+    the server's permanent answers are typed by SQLSTATE class in place of
+    error numbers kept by hand, and error 1064, a statement the server will
+    never accept, is no longer answered as an outage. A value too long for its
+    column and the schema mismatch numbers keep their branches by number,
+    because each has a type of its own.
   - Option for the conformance surface, not built, with its trigger: run every
     labeled batch against a database stopped at each earlier schema version and
     expect a typed mismatch or success, never an outage. MySQL's version 8 is

@@ -2648,6 +2648,19 @@ MUTATION_SPECS = [
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
+        # Not correctness either: the access path of a read. Joined to its task
+        # by the queue alone, the sweep's read of expired leases scans tasks once
+        # for each lease it reads, and every pin of a chosen statement still
+        # passes. Only the nests of every shipped statement's plan see it.
+        "expired-claims-read-keys-its-task",
+        "packages/store-libsql/src/store.ts",
+        "      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "      taskOwnsRun: sqlFragment('t.queue = r.queue'),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "every sweep scans tasks once for each expired lease it reads",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
@@ -3919,6 +3932,13 @@ MUTATION_SPECS = [
         "      return refuseUnknownLockKind(lock)\n",
         "      return async () => undefined // MUTATION\n",
         "a lock of a kind that a later build of core added is ignored, and the batch runs under no lock",
+    ),
+    (
+        "postgres-migration-write-names-its-lock",
+        "packages/store-postgres/src/executor.ts",
+        "  if (needsTheLock && lock?.kind !== 'migration') {\n",
+        "  if (needsTheLock && lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+        "a version's batch whose control was dropped runs with no lock on meta, where at the commit before the lock was a statement of the batch that no wrapper could drop",
     ),
     (
         "postgres-version-batch-names-the-migration-lock",
@@ -7551,9 +7571,16 @@ MUTATION_SPECS.extend(
         (
             "mysql-migration-write-names-its-lock",
             "packages/store-mysql/src/executor.ts",
-            "  if (mode === 'write' && label.startsWith('migrate:') && lock?.kind !== 'migration') {\n",
-            "  if (mode === 'read' && label.startsWith('migrate:') && lock?.kind !== 'migration') { // MUTATION\n",
+            "  if (lock?.kind !== 'migration') {\n",
+            "  if (lock?.kind !== 'migration' && label === '') { // MUTATION\n",
             "a migration write under a label that no list knows runs its DDL under no lock, beside another migrator, and MySQL cannot undo what it did",
+        ),
+        (
+            "mysql-migration-batch-sent-as-a-read-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode === 'read') {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "  if (mode === 'read' && lock !== undefined) {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "a migrate: batch sent as a read runs its DDL with no lock, because a DDL statement's own commit ends the read-only transaction first",
         ),
         (
             "mysql-lock-of-an-unknown-kind-is-refused",
@@ -9661,6 +9688,12 @@ VERDICTS = {
         "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
         "mutation-verdict:behavior:emit-index-driver",
     ),
+    "expired-claims-read-keys-its-task": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -9684,7 +9717,7 @@ VERDICTS = {
     "successor-carries-every-column": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule fail: every run it inserts carries what its parent carried",
         "mutation-verdict:behavior:successor-carries-every-column",
         "packages/conformance/src/suite.ts",
     ),
@@ -10512,6 +10545,12 @@ VERDICTS = {
         "packages/store-postgres/test/executor.test.ts",
         "PgExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
         "mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused",
+    ),
+    "postgres-migration-write-names-its-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing",
+        "mutation-verdict:construction:postgres-migration-write-names-its-lock",
     ),
     "postgres-version-batch-names-the-migration-lock": ExpectedVerdict(
         "construction",
@@ -12059,6 +12098,12 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions refuses a migration write that names no migration lock, and sends nothing",
             "mutation-verdict:construction:mysql-migration-write-names-its-lock",
+        ),
+        "mysql-migration-batch-sent-as-a-read-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration batch sent as a read, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused",
         ),
         "mysql-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
             "construction",
@@ -14338,6 +14383,13 @@ MUTATION_SPECS.extend(
             "a step that started under an older build and never persisted, under a stored key past the width, runs its body again on every remaining attempt before a write that can never succeed",
         ),
         (
+            "claim-token-held-to-the-width",
+            "packages/store-libsql/src/store.ts",
+            "    requireIdentifiersFit({ queue, claimToken })\n",
+            "    requireIdentifiersFit({ queue }) // MUTATION: the claim token is not held\n",
+            "a claim under a token too long for PostgreSQL's index of it answers as an outage there and takes its run on the other two dialects",
+        ),
+        (
             "driver-identifiers-held-at-construction",
             "packages/driver/src/loop.ts",
             "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
@@ -14359,6 +14411,7 @@ for _verdict, _names in (
             "identifier-past-the-width-refused",
             "parent-queue-held-to-the-width",
             "parent-run-id-held-to-the-width",
+            "claim-token-held-to-the-width",
         ),
     ),
     (
@@ -15215,6 +15268,120 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The poison matrix's target profiles for the arms that name their target (DESIGN.md, the
+# poison matrix; packages/conformance/src/poison-matrix.ts). A profile seeds the poisoned
+# target in the state in which its label acts on a target with nothing corrupt, so its cells
+# reach the guards behind the label's state condition. One mutation for each profile removes
+# a guard its cells reach, and one generated cell of that profile owns it, so the audit keeps
+# showing that the profile's cells can fail. The first two edits are the ones
+# `activate-requires-relaunch-bound` and `defer-launch-requires-claim-receipt-admission` make,
+# which hand-written cases own. The third is narrower than `retry-task-requires-counters-in-range`,
+# which removes three conjuncts at once where this removes the one on infrastructure retries.
+# The last two are one edit, which each failure label's own cell owns.
+MUTATION_SPECS.extend(
+    (
+        (
+            "poison-target-activate-holds-relaunch-bound",
+            "packages/store-libsql/src/store.ts",
+            "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n",
+            "    AND 1 = 1\n",
+            "the poison matrix's activate target activates a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+            "packages/store-libsql/src/store.ts",
+            "        admission: sqlFragment(claimReceiptAdmission()),",
+            "        admission: sqlFragment('1 = 1'),",
+            "the poison matrix's defer-launch target parks a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+            "packages/store-libsql/src/store.ts",
+            "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n",
+            "         AND 1 = 1\n",
+            "the poison matrix's retry-task target revives a failed task whose infrastructure retries are out of range",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail target places a rollback pass for a run below a higher owned ordinal",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail-rollback target ends a task for a run below a higher owned ordinal",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment activate-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-activate-holds-relaunch-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment defer-launch-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment retry-task-failed contains counter-bound/task-infra-retries",
+            "mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-started-step contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-rollback-rolling-back contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -15958,6 +16125,278 @@ for _verdict, _names in (
             "task-state-takes-no-fragment",
             "task-state-fragment-refuses",
         ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# Executor error typing: what each store's executor types permanent, from the driver's
+# code and never from message text, and what a worker pass does with the type.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-permanent-result-code-is-typed",
+            "packages/store-libsql/src/executor.ts",
+            "      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "      if (false && error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "a broken constraint is answered as an outage, which every consumer retries until a run's infrastructure budget is gone",
+        ),
+        (
+            "postgres-permanent-sqlstate-class-is-typed",
+            "packages/store-postgres/src/executor.ts",
+            "    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "    if (false && error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "a constraint violation, a value out of range and a syntax error are answered as outages, which every consumer retries and no retry repairs",
+        ),
+        (
+            "mysql-permanent-sqlstate-class-is-typed",
+            "packages/store-mysql/src/executor.ts",
+            "      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||\n",
+            "      false || // MUTATION: no state is permanent\n",
+            "a duplicate entry, a value out of range and a statement the server will never accept are answered as outages, which every consumer retries",
+        ),
+        (
+            "mysql-wrong-value-for-field-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column\n",
+            "  // MUTATION: a value of the wrong type for its column is an outage\n",
+            "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
+        ),
+        (
+            "contest-books-a-permanent-store-error-as-an-outage",
+            "packages/conformance/src/self-concurrency.ts",
+            "      error instanceof StoreUnavailableError || error instanceof PermanentStoreError\n",
+            "      error instanceof StoreUnavailableError // MUTATION: a permanent store error is a refusal\n",
+            "a port call that breaks a constraint in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
+        ),
+        (
+            "sdk-permanent-store-error-aborts-the-pass",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
+            "    // MUTATION: a permanent store error is no control of the pass\n",
+            "a permanent store error from a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "libsql-permanent-result-code-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/executor.test.ts",
+            "error typing, by the result code and never by the message types a broken constraint and a datatype mismatch permanent, and every other code an outage",
+            "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+        ),
+        "postgres-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage",
+            "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage",
+            "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types the permanent answers MySQL files outside the three classes by their numbers",
+            "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+        ),
+        "contest-books-a-permanent-store-error-as-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/self-concurrency-settle.test.ts",
+            "how a contest of the self-concurrency surface books what a copy threw keeps a permanent store error with the outages, which fail a contest in either order",
+            "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
+        ),
+        "sdk-permanent-store-error-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a permanent store error at a context store call aborts the pass and is never billed to the task",
+            "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+        ),
+    }
+)
+
+# MySQL files a broken CHECK constraint under its general state, as it files a value of the
+# wrong type, so both are typed by number, and the case that holds the one holds the other.
+MUTATION_SPECS.append(
+    (
+        "mysql-broken-check-constraint-is-permanent",
+        "packages/store-mysql/src/executor.ts",
+        "  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint\n",
+        "  // MUTATION: a broken CHECK constraint is an outage\n",
+        "a broken CHECK constraint is answered as an outage on MySQL and retried, where libSQL and PostgreSQL answer the same write as permanent",
+    )
+)
+VERDICTS["mysql-broken-check-constraint-is-permanent"] = VERDICTS[
+    "mysql-wrong-value-for-field-is-permanent"
+]
+
+# Each member of a map is a condition of its own. With one member removed, the registered
+# case of its executor fails at the codes that member typed, under the verdict of its rule.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-constraint-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_MISMATCH'])\n",
+            "a broken primary key, unique, not null or check constraint is answered as an outage and retried",
+        ),
+        (
+            "libsql-mismatch-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT'])\n",
+            "a value of the wrong type for a column that enforces one is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-22-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-23-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-42-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-22-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-23-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-42-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+    )
+)
+for _verdict, _names in (
+    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
+    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
+    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+# A limit that a retry cures is read before the class MySQL files it under, two more numbers
+# are typed permanent outside the classes, and one real-server case holds both lists to the
+# server's own list of error numbers.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-limit-under-a-permanent-class-is-an-outage",
+            "packages/store-mysql/src/executor.ts",
+            "    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)\n",
+            "    const stateClass = false // MUTATION: a limit is typed by the class MySQL files it under\n",
+            "a limit on connections or on prepared statements, which another session's release lifts, is answered as permanent because MySQL files it under class 42, so a hosted route answers 500 where a 503 invites the retry that works",
+        ),
+        (
+            "mysql-limit-1203-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections\n",
+            "  // MUTATION: error 1203 is typed by its class\n",
+            "MySQL error 1203, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1226-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits\n",
+            "  // MUTATION: error 1226 is typed by its class\n",
+            "MySQL error 1226, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-limit-1461-is-read-before-its-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: error 1461 is typed by its class\n",
+            "MySQL error 1461, a limit that a retry cures, is answered as permanent because its SQLSTATE class is 42",
+        ),
+        (
+            "mysql-number-1265-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column\n",
+            "  // MUTATION: error 1265 is an outage\n",
+            "MySQL error 1265, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-number-1364-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: error 1364 is an outage\n",
+            "MySQL error 1364, a refused value or row that MySQL files outside the three classes, is answered as an outage and retried, where the other dialects answer the same write as permanent",
+        ),
+        (
+            "mysql-error-list-holds-the-limits-under-a-permanent-class",
+            "packages/store-mysql/src/executor.ts",
+            "  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count\n",
+            "  // MUTATION: the prepared statement limit leaves the list the server's own names are held to\n",
+            "a limit leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+        (
+            "mysql-error-list-holds-the-refused-values-outside-the-classes",
+            "packages/store-mysql/src/executor.ts",
+            "  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default\n",
+            "  // MUTATION: a column left out leaves the list the server's own names are held to\n",
+            "a refused row leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "mysql-limit-under-a-permanent-class-is-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class",
+            "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+        ),
+        "mysql-error-list-holds-the-limits-under-a-permanent-class": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a number permanent, by its class or by hand, only when no retry lifts what its name says",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+        ),
+        "mysql-error-list-holds-the-refused-values-outside-the-classes": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/error-typing.test.ts",
+            "the numbers MySQL files apart from what their names say types a refused value or row permanent whatever state MySQL files it under, or says why not",
+            "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+        ),
+    }
+)
+for _verdict, _names in (
+    (
+        VERDICTS["mysql-limit-under-a-permanent-class-is-an-outage"],
+        ("mysql-limit-1203-is-read-before-its-class", "mysql-limit-1226-is-read-before-its-class", "mysql-limit-1461-is-read-before-its-class",),
+    ),
+    (
+        VERDICTS["mysql-wrong-value-for-field-is-permanent"],
+        ("mysql-number-1265-is-permanent", "mysql-number-1364-is-permanent",),
     ),
 ):
     for _name in _names:
@@ -19859,7 +20298,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1043:
+        if len(MUTATIONS) != 1075:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

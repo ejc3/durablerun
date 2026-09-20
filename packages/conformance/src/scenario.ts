@@ -198,3 +198,11 @@ export function describeFailure(error: unknown): string {
   }
   return lines.join('\n')
 }
+
+/** Puts a task at `retries` infrastructure retries and its run at the matching ordinal. */
+export function infraRetrySeed(taskId: string, runId: string, retries: number) {
+  return [
+    { sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`, args: [retries, taskId] },
+    { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
+  ]
+}

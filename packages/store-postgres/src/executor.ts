@@ -1,4 +1,5 @@
 import {
+  PermanentStoreError,
   RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
@@ -41,6 +42,20 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
   '42P01', // undefined_table
   '42P07', // duplicate_table/relation
 ])
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. The same batch fails the same way on every retry. The schema
+ * mismatch states above are read first, because a migration repairs those and they keep
+ * their own type.
+ *
+ * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
+ * serialization failure, and a deadlock victim, which the executor runs again before it
+ * reports one), 53 insufficient resources, 57 operator intervention, 58 system error, and
+ * any class this list does not name.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 type PoolPort = Pick<Pool, 'connect' | 'end'>
 
@@ -169,6 +184,29 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
  */
 const MIGRATION_LOCK_SQL = 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE'
 
+/**
+ * A write whose label begins with `migrate:` is a migration write, and every one but the
+ * bootstrap has to name the migration lock in its control. The label is read here only to
+ * REFUSE: the lock a batch runs under is the one its control names. The lock was a
+ * statement of the batch once, which no wrapper could drop. A control can be dropped, by a
+ * wrapper that rebuilds it from a mode, and the batch would then run with no lock on meta,
+ * where a second migrator deadlocks with a version that locks the table. The bootstrap names
+ * no lock, because the lock lives on the table it creates.
+ */
+function refuseMigrationWriteWithoutItsLock(
+  label: string,
+  mode: SqlBatchMode,
+  lock: SqlTransactionLock | undefined,
+): void {
+  const needsTheLock =
+    mode === 'write' && label.startsWith('migrate:') && label !== 'migrate:bootstrap'
+  if (needsTheLock && lock?.kind !== 'migration') {
+    throw new TypeError(
+      `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
+    )
+  }
+}
+
 type LockAcquisition = (client: PoolClient) => Promise<void>
 
 /**
@@ -237,8 +275,6 @@ async function acquireTransactionLock(
     )
     return
   }
-
-  if (lock.kind !== 'claim') return refuseUnknownLockKind(lock)
 
   // Claim tokens are fresh per tick, so a durable row sentinel would grow
   // without bound. A transaction-scoped advisory lock has exactly the needed
@@ -365,6 +401,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
+    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (SQLSTATE ${error.code}): ${error.message}`,
+        { cause: error },
+      )
+    }
   }
 
   const state =
@@ -418,7 +460,8 @@ export class PgExecutor implements SqlExecutor {
     const prepared = prepareStatements(label, statements)
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
-    // Refused before anything is sent, and before an empty batch is answered.
+    // Both refusals come before a connection is taken, and before an empty batch is answered.
+    refuseMigrationWriteWithoutItsLock(label, mode, transactionLock)
     const acquireLock =
       transactionLock === undefined ? undefined : transactionLockAcquisition(transactionLock)
     if (prepared.length === 0) return []
