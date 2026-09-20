@@ -1435,22 +1435,11 @@ def tree_store_with_a_typed_fragment(fragment: str) -> dict[str, str]:
     )
 
 
-SIDE_LEDGER_ENTRIES = (
-    "\\* Modeled (label -> action  [dup-class]):\n"
-    "\\*   'cancel-task' -> EndChild  [read]  (prose may follow on the entry line,\n"
-    "\\*     and continue five spaces in)\n"
-    "\\*   'cancel-task', 'sweep:cancel' of the parent -> EndChild / WakeParent\n"
-    "\\* No batch (action -- reason):\n"
-    "\\*   LateEmit -- exists only for a probe\n"
-)
-
-
-def side_model_ledger(entries: str = SIDE_LEDGER_ENTRIES) -> dict[str, str]:
+def side_model_ledger() -> dict[str, str]:
     """Two batches of a store, the main ledger that accounts for them, and a side model.
 
     `scripts/tla.sh` enrols a side model by the mutant list beside it, and
-    `spec-ledger.py` reads the same enrolment. `entries` is the body of Side.tla's
-    ledger block.
+    `spec-ledger.py` reads the same enrolment.
     """
     return {
         "packages/store-libsql/src/probe.ts": (
@@ -1469,7 +1458,12 @@ def side_model_ledger(entries: str = SIDE_LEDGER_ENTRIES) -> dict[str, str]:
         "specs/Side.tla": (
             "---- MODULE Side ----\n"
             "\\* BATCH-LABEL LEDGER -- the batches that implement this model\n"
-            f"{entries}"
+            "\\* Modeled (label -> action  [dup-class]):\n"
+            "\\*   'cancel-task' -> EndChild  [read]  (prose may follow on the entry line,\n"
+            "\\*     and continue five spaces in)\n"
+            "\\*   'cancel-task', 'sweep:cancel' of the parent -> EndChild / WakeParent\n"
+            "\\* No batch (action -- reason):\n"
+            "\\*   LateEmit -- exists only for a probe\n"
             "\\* --------------------\n\n"
             "Next ==\n"
             "  \\/ \\E o \\in Outcomes : EndChild(o) \\/ WakeParent(o)\n"
@@ -1477,6 +1471,11 @@ def side_model_ledger(entries: str = SIDE_LEDGER_ENTRIES) -> dict[str, str]:
             "====\n"
         ),
     }
+
+
+def side_ledger_with(before: str, after: str) -> dict[str, str]:
+    """That fixture with one fragment of Side.tla changed."""
+    return replaced(side_model_ledger(), "specs/Side.tla", before, after)
 
 
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
@@ -2592,81 +2591,67 @@ export class S {
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(
-            SIDE_LEDGER_ENTRIES.replace(
-                "\\* No batch", "\\*   'renamed-away' -> EndChild\n\\* No batch"
-            )
-        ),
+        side_ledger_with("\\* No batch", "\\*   'renamed-away' -> EndChild\n\\* No batch"),
         "'renamed-away', which is not a batch label of any store",
         "a label renamed or deleted in the stores must not leave a side model's mapping reading as current",
     ),
     (
         "spec-ledger.py",
-        replaced(side_model_ledger(), "specs/Side.tla", "EndChild(o) \\/", "EndedChild(o) \\/"),
+        side_ledger_with("EndChild(o) \\/", "EndedChild(o) \\/"),
         "names action 'EndChild', which is not an action of",
         "an action renamed in a side model and not in its ledger block leaves a mapping onto nothing",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(
-            SIDE_LEDGER_ENTRIES.replace("\\*   LateEmit -- exists only for a probe\n", "")
-        ),
+        side_ledger_with("\\*   LateEmit -- exists only for a probe\n", ""),
         "action 'LateEmit' of Side.tla's next-state relation is not in its ledger block",
         "every action of a side model's next-state relation is mapped from a batch or listed as having none",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(SIDE_LEDGER_ENTRIES.replace("[read]  (prose", "[read] [receipt]  (prose")),
+        side_ledger_with("[read]  (prose", "[read] [receipt]  (prose"),
         "states at most one duplicate-semantics class",
         "a side model's entry that states two classes states none",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(SIDE_LEDGER_ENTRIES.replace("[read]", "[raed]")),
+        side_ledger_with("[read]", "[raed]"),
         "states at most one duplicate-semantics class",
         "a misspelt class on a side model's entry must not read as an entry that states no class",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(SIDE_LEDGER_ENTRIES.replace("[read]", "[receipt]")),
+        side_ledger_with("[read]", "[receipt]"),
         "so the two must agree",
         "a label's class is the main ledger's, and a side model's copy of it must not drift",
     ),
     (
         "spec-ledger.py",
-        replaced(side_model_ledger(), "specs/Side.tla", "BATCH-LABEL LEDGER", "Ledger"),
+        side_ledger_with("BATCH-LABEL LEDGER", "Ledger"),
         "Side.tla has no BATCH-LABEL LEDGER block",
         "a side model that tla.sh checks must not keep its mapping where nothing reads it",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(
-            SIDE_LEDGER_ENTRIES.replace(
-                "-> EndChild / WakeParent\n", "-> EndChild /\n\\*     WakeParent\n"
-            )
-        ),
+        side_ledger_with("-> EndChild / WakeParent\n", "-> EndChild /\n\\*     WakeParent\n"),
         "cannot read this line of Side.tla's ledger block",
         "an action list wrapped onto a continuation line must fail, because a line-oriented reader would drop its tail",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(SIDE_LEDGER_ENTRIES.replace("\\*   LateEmit --", "\\*    LateEmit --")),
+        side_ledger_with("\\*   LateEmit --", "\\*    LateEmit --"),
         "cannot read this line of Side.tla's ledger block",
         "an entry indented as neither an entry nor its continuation must not pass as prose",
     ),
     (
         "spec-ledger.py",
-        replaced(
-            side_model_ledger(), "specs/Side.tla", "  \\/ LateEmit\n", "  \\/ (LateEmit /\\ TRUE)\n"
-        ),
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ (LateEmit /\\ TRUE)\n"),
         "cannot read Side.tla's next-state relation",
         "a next-state relation the reader cannot enumerate must fail closed, not read as a model with fewer actions",
     ),
     (
         "spec-ledger.py",
-        side_model_ledger(
-            SIDE_LEDGER_ENTRIES.replace("LateEmit -- exists", "LateEmit / EndChild -- exist")
-        ),
+        side_ledger_with("LateEmit -- exists", "LateEmit / EndChild -- exist"),
         "and also lists it as having no batch",
         "an action cannot both be mapped from a batch and have no batch",
     ),

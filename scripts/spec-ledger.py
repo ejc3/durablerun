@@ -148,7 +148,7 @@ if missing:
 # nobody thought about.
 TAGS = ("[cas-fenced]", "[receipt]", "[read]", "[setup]")
 label_class: dict[str, str] = {}
-for label in sorted(labels):
+for label in labels:
     line = next((ln for ln in block.splitlines() if f"'{label}'" in ln), "")
     stated = [t for t in TAGS if t in line]
     if len(stated) == 1:
@@ -204,11 +204,13 @@ if stale_marks:
 # this script can see: its labels are the stores', its actions are the module's, and a
 # class it states is the one the main ledger gives the label. No guard is read here.
 #
-# The block is line-oriented, so that nothing is guessed. After `\*`, one space is
-# prose, three start an entry, and five or more continue the entry above. An entry is a
-# mapping, which begins with a quoted label and keeps its labels, ` -> `, its actions,
-# and any class on that one line, or it is `Action -- reason`, an action that no batch
-# implements.
+# The block is line-oriented, so that nothing is guessed. LAYOUT is the whole rule, and
+# a line that breaks it is answered with it.
+LAYOUT = (
+    "After `\\*`, one space is prose, three start an entry, and five or more continue it. "
+    "An entry is `'label' ... -> Action / Action  [class]`, whole on its line, or "
+    "`Action -- reason` for an action that no batch implements."
+)
 ACTION = r"[A-Z][A-Za-z0-9_]*"
 ACTIONS = rf"{ACTION}(?: / {ACTION})*"
 MAPPING = re.compile(rf"(?P<left>'[^'\s]+'.*?) -> (?P<actions>{ACTIONS})(?:  .*)?")
@@ -219,16 +221,10 @@ BRACKETED = re.compile(r"\[[^\]\s]*\]")
 
 def next_state_actions(module_text: str) -> set[str] | None:
     """The actions Next is a disjunction of, or None when it is anything else."""
-    lines = module_text.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.startswith("Next ==")), None)
-    if start is None:
+    body = re.search(r"^Next ==(.*(?:\n .*)*)", module_text, re.M)
+    if not body:
         return None
-    body = [lines[start][len("Next ==") :]]
-    for ln in lines[start + 1 :]:
-        if not ln.startswith(" "):
-            break
-        body.append(ln)
-    flat = " ".join(re.sub(r"\\\*.*", "", ln) for ln in body)
+    flat = re.sub(r"\\\*.*", "", body.group(1))
     actions = set()
     for disjunct in re.sub(r"\\E[^:]*:", " ", flat).split("\\/"):
         named = re.fullmatch(rf"\s*({ACTION})(?:\([^()]*\))?\s*", disjunct)
@@ -277,7 +273,7 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
     for line in side_block.splitlines()[1:]:
         shape = re.fullmatch(r"\\\*( *)(.*)", line)
         indent, body = (len(shape.group(1)), shape.group(2)) if shape else (0, line)
-        if not body or (shape and (indent == 1 or indent >= 5)):
+        if not body or indent == 1 or indent >= 5:
             continue  # a blank line, prose, or the continuation of an entry
         mapping = MAPPING.fullmatch(body) if indent == 3 else None
         unmapped = NO_BATCH.fullmatch(body) if indent == 3 else None
@@ -292,7 +288,7 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
                 )
                 continue
             for label in QUOTED.findall(mapping["left"]):
-                if stated and label_class.get(label, stated[0]) != stated[0]:
+                if stated and label in label_class and label_class[label] != stated[0]:
                     problems.append(
                         f"spec-ledger: {model}.tla's ledger block gives '{label}' the class "
                         f"{stated[0]}, and Scheduler.tla's ledger gives it "
@@ -303,10 +299,7 @@ for mutants in sorted((root / "specs").glob("*.mutants.json")):
         else:
             problems.append(
                 f"spec-ledger: cannot read this line of {model}.tla's ledger block:\n"
-                f"    {line}\n"
-                f"  After `\\*`, one space is prose, three start an entry, and five or more "
-                f"continue it. An entry is `'label' ... -> Action / Action  [class]`, whole "
-                f"on its line, or `Action -- reason` for an action that no batch implements."
+                f"    {line}\n  {LAYOUT}"
             )
     named = mapped | no_batch
     for action in sorted(named - next_actions):
