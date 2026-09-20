@@ -14146,6 +14146,13 @@ MUTATION_SPECS.extend(
             "  heartbeat: ['queue', 'runId', 'paramsJson', null],\n",
             "a heartbeat under a token that differs from the claim's only in a lone surrogate holds the claim, so two workers hold one run",
         ),
+        (
+            "port-rules-hold-a-claim-token-to-the-width",
+            "packages/core/src/port-strings.ts",
+            "  claimToken: 'identifier',\n",
+            "  claimToken: 'durable',\n",
+            "a claim is made under a token of a few thousand characters, which one dialect cannot index, so the claim fails on that dialect alone",
+        ),
     )
 )
 for _verdict, _names in (
@@ -14175,6 +14182,7 @@ for _verdict, _names in (
             "port-table-holds-a-step-key",
             "port-table-holds-an-event-name",
             "port-table-holds-a-claim-token",
+            "port-rules-hold-a-claim-token-to-the-width",
             "parent-queue-held-to-the-width",
             "parent-run-id-held-to-the-width",
         ),
@@ -19492,7 +19500,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1018:
+        if len(MUTATIONS) != 1019:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

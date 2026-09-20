@@ -74,29 +74,14 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
 const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
   'spawn[1](taskName)': 'durable',
   'spawn[2](paramsJson)': 'payload',
-  'spawn[3].childOf.claimToken(childOf.claimToken)': 'durable',
   'spawn[3].headers(headers)': 'payload',
-  'claim[1](claimToken)': 'durable',
-  'activate[2](claimToken)': 'durable',
-  'claimedTaskName[2](claimToken)': 'durable',
-  'deferLaunch[2](claimToken)': 'durable',
-  'heartbeat[2](claimToken)': 'durable',
-  'reschedule[2](claimToken)': 'durable',
-  'complete[2](claimToken)': 'durable',
   'complete[3](resultJson)': 'payload',
-  'suspendRun[2](claimToken)': 'durable',
   'suspendRun[4].stateJson(checkpoint.stateJson)': 'payload',
-  'fail[2](claimToken)': 'durable',
   'fail[3](failureJson)': 'payload',
-  'failRollback[2](claimToken)': 'durable',
   'failRollback[3](failureJson)': 'payload',
   'failRollback[5].stateJson(rollbackTry.stateJson)': 'payload',
-  'expireLeaseNow[2](claimToken)': 'durable',
-  'setCheckpoint[3](claimToken)': 'durable',
   'setCheckpoint[5](stateJson)': 'payload',
   'emitEvent[2](payloadJson)': 'payload',
-  'awaitEvent[3](claimToken)': 'durable',
-  'awaitTaskDone[3](claimToken)': 'durable',
 }
 
 export function identifierBoundConformance(
@@ -179,7 +164,7 @@ export function identifierBoundConformance(
         identifiers: IDENTIFIER_PLACES.length,
         held: HELD_PLACES.length,
         distinct: new Set(PORT_STRING_PLACES.map(({ place }) => place)).size,
-      }).toEqual({ places: 82, identifiers: 57, held: 73, distinct: 82 })
+      }).toEqual({ places: 82, identifiers: 72, held: 73, distinct: 82 })
       // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
       const { store } = storeOverRecorder(f)
       const payloads = PORT_STRING_PLACES.filter(({ rule }) => rule === 'payload')

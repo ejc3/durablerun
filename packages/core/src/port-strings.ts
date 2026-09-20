@@ -19,9 +19,16 @@ const {
  * - `identifier`: a string a store indexes. It is held to the durable string domain, the
  *   strings every store keeps exactly as they were passed, and to the width of a durable
  *   identifier.
- * - `durable`: a string a store keeps and compares and does not index, so its length is
- *   not bounded. It is held to the domain alone. A claim token is one: a token that a
- *   store changed would be held by every token that changes to the same string.
+ * - `durable`: a string a store keeps and does not index, so its length is not bounded.
+ *   It is held to the domain alone. A task name is the one such string.
+ *
+ * A claim token is an identifier. One dialect indexes it whole, and an index row has a
+ * size limit, so a token is held to the width the narrowest dialect sets for every
+ * indexed string. It is held at every place that takes one, so the table says one thing
+ * about a token: `claim` refuses one past the width, so no row holds one, and a longer
+ * token at any other entry could match nothing. A token that a store changed would be
+ * held by every token that changes to the same string, which is why the domain matters
+ * most here.
  * - `payload`: JSON text, or the headers object. Its serializer owns its domain, and this
  *   check leaves it alone. It is named so that the table is whole: a string is left
  *   unheld because someone wrote that down here, never because nobody listed it.
@@ -42,9 +49,9 @@ export const PORT_STRING_RULES = freeze({
   'childOf.parentTaskId': 'identifier',
   'childOf.runId': 'identifier',
   'childOf.replayKey': 'identifier',
+  claimToken: 'identifier',
+  'childOf.claimToken': 'identifier',
   taskName: 'durable',
-  claimToken: 'durable',
-  'childOf.claimToken': 'durable',
   paramsJson: 'payload',
   resultJson: 'payload',
   failureJson: 'payload',

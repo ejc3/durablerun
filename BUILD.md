@@ -313,9 +313,10 @@ a last docs PR gives a live owner to every open bullet that is left.
     in the registry self-test hold that.
 22. PR3.3c: every string a caller passes the store port is checked in one
     place, before any statement is sent. An identifier is inside the durable
-    string domain and within the width, a task name and a claim token are
-    inside the domain, a payload is its serializer's, and a value that is not a
-    string is refused as a string outside the domain is. Core names every
+    string domain and within the width, a claim token is held as an identifier
+    is, a task name is inside the domain, a payload is its serializer's, and a
+    value that is not a string is refused as a string outside the domain is.
+    Core names every
     string once in a table whose type is computed from the port's, so a method
     the port gains, a string argument a method gains, and a string inside an
     options object each stop the build, and every store extends one class whose

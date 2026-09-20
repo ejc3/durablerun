@@ -1911,9 +1911,15 @@ are load-bearing):
    `InvalidDurableStringError`, whatever the excess is, trailing spaces
    included. A driver holds its queue and its id the same way when it is
    constructed, because a refused tick reads as an outage and a refused
-   registry beat is swallowed. A task name, a claim token, and a payload are
-   not identifiers: nothing indexes them, and the port does not bound their
-   length. A child's task name is still bounded through `ctx.spawn`, which
+   registry beat is swallowed. A claim token is held to the width as an
+   identifier is, at every entry that takes one: one dialect indexes it whole,
+   and an index row has a size limit, so a claim under a token of a few thousand
+   characters failed on that dialect alone. `claim` refuses one past the width,
+   so no row holds one, and a longer token at another entry could match nothing:
+   refusing it there changes no answer but the error's name. The engine's own
+   tokens are 32 characters. A task name and a payload are not identifiers:
+   nothing indexes them, and the port does not bound their length. A child's
+   task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
 
    **Every string a caller passes the port is checked in one place, before any statement
@@ -1921,8 +1927,9 @@ are load-bearing):
    - An identifier that enters the port is inside the durable string domain and within
      the width. The domain is the strings every store keeps exactly as they were passed:
      no NUL, and no UTF-16 surrogate that is not half of a pair.
-   - Every other durable string, which is a task name and a claim token, is inside the
-     domain. Nothing indexes it, so its length is not bounded.
+   - A claim token is held as an identifier is, to the domain and the width.
+   - The one other durable string, a task name, is inside the domain. Nothing indexes
+     it, so its length is not bounded.
    - A payload, which is JSON text or the headers object, is its serializer's, and this
      check leaves it alone.
    - A value that is not a string where the port takes one is refused as a string outside
@@ -1982,7 +1989,10 @@ are load-bearing):
    **A rolling deploy.** Nothing is migrated. A row written before this rule keeps the
    name a driver gave it: U+FFFD is inside the domain, and a name libSQL ended at a NUL
    is the shorter name. Only a direct caller of the port could have written one, because
-   the SDK refused such a name already. A caller that passes one now is refused where it
+   the SDK refused such a name already. A run that a direct caller claimed under a token
+   past the width keeps its row: its holder's next write is refused, its lease runs out, and
+   the sweep hands the run to a claim under another token, which is how the engine recovers
+   any run whose holder went away. A caller that passes one now is refused where it
    was stored under another name, or reported as an outage.
 
    The width also holds the names the engine derives from an identifier, which

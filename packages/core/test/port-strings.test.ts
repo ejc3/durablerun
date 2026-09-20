@@ -28,7 +28,8 @@ function refusalOf(call: () => unknown): string {
 
 describe('the strings a port call carries', () => {
   it('holds an identifier to the domain and the width, a durable string to the domain alone, and leaves a payload', () => {
-    const answers = (name: 'queue' | 'claimToken' | 'paramsJson') => ({
+    // A claim token is an identifier, held as a queue is, at every place that takes one.
+    const answers = (name: 'queue' | 'claimToken' | 'taskName' | 'paramsJson') => ({
       nul: refusalOf(() => requirePortString(name, NUL)),
       loneHigh: refusalOf(() => requirePortString(name, LONE_HIGH)),
       loneLow: refusalOf(() => requirePortString(name, LONE_LOW)),
@@ -41,7 +42,9 @@ describe('the strings a port call carries', () => {
       `${name} must be a string without NUL or lone UTF-16 surrogates`
     expect({
       identifier: answers('queue'),
-      durable: answers('claimToken'),
+      durable: answers('taskName'),
+      // A claim token is an identifier: one dialect indexes it whole.
+      token: answers('claimToken'),
       payload: answers('paramsJson'),
     }).toEqual({
       identifier: {
@@ -52,10 +55,17 @@ describe('the strings a port call carries', () => {
         atTheWidthOutsideTheBasicPlane: 'accepted',
       },
       durable: {
+        nul: outsideTheDomain('taskName'),
+        loneHigh: outsideTheDomain('taskName'),
+        loneLow: outsideTheDomain('taskName'),
+        pastTheWidth: 'accepted',
+        atTheWidthOutsideTheBasicPlane: 'accepted',
+      },
+      token: {
         nul: outsideTheDomain('claimToken'),
         loneHigh: outsideTheDomain('claimToken'),
         loneLow: outsideTheDomain('claimToken'),
-        pastTheWidth: 'accepted',
+        pastTheWidth: 'claimToken is longer than the 255 characters a durable identifier holds',
         atTheWidthOutsideTheBasicPlane: 'accepted',
       },
       payload: {
