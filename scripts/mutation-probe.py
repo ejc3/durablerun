@@ -15413,6 +15413,76 @@ VERDICTS["mysql-broken-check-constraint-is-permanent"] = VERDICTS[
     "mysql-wrong-value-for-field-is-permanent"
 ]
 
+# Each member of a map is a condition of its own. With one member removed, the registered
+# case of its executor fails at the codes that member typed, under the verdict of its rule.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-constraint-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_MISMATCH'])\n",
+            "a broken primary key, unique, not null or check constraint is answered as an outage and retried",
+        ),
+        (
+            "libsql-mismatch-code-is-permanent",
+            "packages/store-libsql/src/executor.ts",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])\n",
+            "const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT'])\n",
+            "a value of the wrong type for a column that enforces one is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-22-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-23-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "postgres-sqlstate-class-42-is-permanent",
+            "packages/store-postgres/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-22-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['23', '42'])\n",
+            "a value its column cannot hold, which the server files under SQLSTATE class 22, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-23-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '42'])\n",
+            "a broken constraint, which the server files under SQLSTATE class 23, is answered as an outage and retried",
+        ),
+        (
+            "mysql-sqlstate-class-42-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])\n",
+            "const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23'])\n",
+            "a statement the server will never accept, which the server files under SQLSTATE class 42, is answered as an outage and retried",
+        ),
+    )
+)
+for _verdict, _names in (
+    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
+    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
+    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -19179,7 +19249,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1005:
+        if len(MUTATIONS) != 1013:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
