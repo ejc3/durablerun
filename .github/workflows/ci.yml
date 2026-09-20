@@ -313,33 +313,49 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def exempt(repaired, candidate, markers):
-              # Exempt verdict markers this tree registers and the base registry predates.
-              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(table) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              entries = ''.join(
-                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                  for marker in markers
-              )
-              return repaired.replace(table, table + entries)
-          if digest == '8ff5869b24a87aed0ee73017957fd5d7fe52380d5fd60faa12365d0749627b2f':
-              # The saga reads changed shape. A rollback error is the record the task's last
-              # run wrote, the names under a prefix are a range of the checkpoints key on
-              # libSQL and MySQL, and on PostgreSQL the attempt records are read only for a
-              # failed task whose saga began. No base entry's text moved. Eight mutations
-              # hold the new lines. Seven of them answer to five verdict markers that are
-              # newer than the base, and the eighth joins a marker the base already has.
-              repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
-                  "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
-                  "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
-                  "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
-                  "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
-              ))
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a store's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
+              def span(text):
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+          if digest == 'b0f8b83f7d309c4fbcc40118c16f5f5d049751af37d2ca2800778d8df4dc5a7d':
+              # Five base entries name text this tree rewrote, and each mutant bends the same
+              # condition as before. An event name carries the task of a completion event, so
+              # the two messages about a stored payload that is not text are built from its
+              # display form, and the line that mints a caller's name passes a null task. A
+              # port's refusal of a reserved name or key is a class of its own, so the refusal
+              # of a key together with childOf names that class, and the hosted route's
+              # reserved-key answer moved from a rule of its own to the one mapping of the
+              # family. No marker is new, and no entry was added or retired.
+              repaired = previous
+              for name in (
+                  'child-await-hit-error-names-the-task',
+                  'child-await-recording-error-names-the-task',
+                  'event-name-is-a-durable-string',
+                  'hosted-enqueue-refuses-reserved-key',
+                  'spawn-child-key-excludes-a-caller-key',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
