@@ -13,6 +13,14 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineHistoryViolations } from './engine-history.js'
+import {
+  HELD_PLACES,
+  IDENTIFIER_PLACES,
+  OUTSIDE_THE_DOMAIN,
+  PAST_THE_WIDTH,
+  PORT_STRING_PLACES,
+  type PortStringPlace,
+} from './port-strings.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
 /**
@@ -37,112 +45,20 @@ function storeOverRecorder(f: StoreFixture) {
   return { store: f.storeOver(db), reached }
 }
 
-type Entry = (s: SchedulerStore, id: string) => Promise<unknown>[]
-
-/** A parent as a child spawn names it. Each identifier in it enters the port too. */
-const PARENT = { parentQueue: 'q', parentTaskId: 'p', runId: 'r', claimToken: 'c', replayKey: 'k' }
-
-/**
- * For every method of the port, one call for each place an identifier enters it. The
- * type makes a port method with no entry here a compile error, so a new method cannot
- * arrive unchecked.
- */
-const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
-  spawn: (s, id) => [
-    s.spawn(id, 't', '{}'),
-    s.spawn('q', 't', '{}', { idempotencyKey: id }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentQueue: id } }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentTaskId: id } }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, runId: id } }),
-  ],
-  claim: (s, id) => [s.claim(id, 'w', { leaseSeconds: 30, limit: 1 })],
-  activate: (s, id) => [s.activate(id, 'r', 'c', 1), s.activate('q', id, 'c', 1)],
-  claimedTaskName: (s, id) => [
-    s.claimedTaskName(id, 'r', 'c', 1),
-    s.claimedTaskName('q', id, 'c', 1),
-  ],
-  deferLaunch: (s, id) => [s.deferLaunch(id, 'r', 'c', 1, 5), s.deferLaunch('q', id, 'c', 1, 5)],
-  heartbeat: (s, id) => [s.heartbeat(id, 'r', 'c', 30), s.heartbeat('q', id, 'c', 30)],
-  reschedule: (s, id) => [s.reschedule(id, 'r', 'c', wake), s.reschedule('q', id, 'c', wake)],
-  complete: (s, id) => [s.complete(id, 'r', 'c', '{}'), s.complete('q', id, 'c', '{}')],
-  suspendRun: (s, id) => [
-    s.suspendRun(id, 'r', 'c', wake, { key: 'k', stateJson: '{}' }),
-    s.suspendRun('q', id, 'c', wake, { key: 'k', stateJson: '{}' }),
-    s.suspendRun('q', 'r', 'c', wake, { key: id, stateJson: '{}' }),
-  ],
-  fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
-  failRollback: (s, id) => [
-    s.failRollback(id, 'r', 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', id, 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', 'r', 'c', '{}', null, { key: id, stateJson: '{}' }),
-  ],
-  sweep: (s, id) => [s.sweep(id, 10)],
-  expireLeaseNow: (s, id) => [s.expireLeaseNow(id, 'r', 'c'), s.expireLeaseNow('q', id, 'c')],
-  getCheckpoints: (s, id) => [s.getCheckpoints(id, 't', 1), s.getCheckpoints('q', id, 1)],
-  setCheckpoint: (s, id) => [
-    s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', id, 'r', 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', 't', id, 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', 't', 'r', 'c', id, '{}', 30),
-  ],
-  emitEvent: (s, id) => [s.emitEvent(id, 'e', '{}'), s.emitEvent('q', id, '{}')],
-  awaitEvent: (s, id) => [
-    s.awaitEvent(id, 't', 'r', 'c', 's', 'e', null),
-    s.awaitEvent('q', id, 'r', 'c', 's', 'e', null),
-    s.awaitEvent('q', 't', id, 'c', 's', 'e', null),
-    s.awaitEvent('q', 't', 'r', 'c', id, 'e', null),
-    s.awaitEvent('q', 't', 'r', 'c', 's', id, null),
-  ],
-  awaitTaskDone: (s, id) => [
-    s.awaitTaskDone(id, 't', 'r', 'c', 's', 'child', null),
-    s.awaitTaskDone('q', id, 'r', 'c', 's', 'child', null),
-    s.awaitTaskDone('q', 't', id, 'c', 's', 'child', null),
-    s.awaitTaskDone('q', 't', 'r', 'c', id, 'child', null),
-    s.awaitTaskDone('q', 't', 'r', 'c', 's', id, null),
-  ],
-  getTaskResult: (s, id) => [s.getTaskResult(id, 't'), s.getTaskResult('q', id)],
-  nextWakeAtEpochMs: (s, id) => [s.nextWakeAtEpochMs(id)],
-  driverHeartbeat: (s, id) => [s.driverHeartbeat(id, 'd', 30), s.driverHeartbeat('q', id, 30)],
-  cancelTask: (s, id) => [s.cancelTask(id, 't'), s.cancelTask('q', id)],
-  retryTask: (s, id) => [s.retryTask(id, 't'), s.retryTask('q', id)],
-}
-
-/** The refusal of every entry, keyed by the method and the position the identifier took. */
-async function refusalsAtEveryEntry(
+/** What every place in `places` answers for `value`, keyed by the place. */
+async function refusalsAt(
+  places: readonly PortStringPlace[],
   store: SchedulerStore,
-  id: string,
+  value: unknown,
 ): Promise<Record<string, string>> {
   const refusals: Record<string, string> = {}
-  for (const [method, entry] of Object.entries(ENTRIES)) {
-    for (const [position, call] of entry(store, id).entries()) {
-      refusals[`${method}#${position}`] = await refusalName(call)
-    }
-  }
+  for (const { place, call } of places) refusals[place] = await refusalName(call(store, value))
   return refusals
 }
 
-/**
- * A store whose calls start when they are awaited and not when they are made. An entry
- * makes all its calls at once, which is right over a recorder and wrong over a database:
- * there they would race, and one that refused while another was awaited would be
- * reported as unhandled. Over this store they run one at a time, in the order read.
- * The store itself answers no `then`: a proxy that answered one would be a thenable, and
- * awaiting it, or returning it from an async function, would never resolve.
- */
-function oneAtATime(store: SchedulerStore): SchedulerStore {
-  return new Proxy(store, {
-    get: (target, method) =>
-      method === 'then'
-        ? undefined
-        : (...args: unknown[]) => ({
-            // biome-ignore lint/suspicious/noThenProperty: a call that starts when it is awaited is a thenable
-            then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
-              (Reflect.get(target, method) as (...values: unknown[]) => Promise<unknown>)
-                .apply(target, args)
-                .then(resolve, reject),
-          }),
-  })
-}
+/** Every place refused, as the expectation of a case that asks all of them. */
+const allRefused = (refusals: Record<string, string>) =>
+  Object.fromEntries(Object.keys(refusals).map((place) => [place, REFUSED]))
 
 /** What one call answered over the recorder: its error, or 'accepted', and whether anything was sent. */
 async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<unknown>) {
@@ -174,21 +90,13 @@ export function identifierBoundConformance(
     })
 
     it('refuses an identifier past 255 characters at every entry of the port, before anything is sent', async () => {
-      for (const tooLong of [
-        'x'.repeat(WIDTH + 1),
-        // Excess that is only trailing spaces is the excess one dialect would cut silently.
-        `${'x'.repeat(WIDTH)} `,
-        '\u{1F600}'.repeat(WIDTH + 1),
-      ]) {
+      for (const tooLong of Object.values(PAST_THE_WIDTH)) {
         const { store, reached } = storeOverRecorder(f)
-        const refusals = await refusalsAtEveryEntry(store, tooLong)
+        const refusals = await refusalsAt(IDENTIFIER_PLACES, store, tooLong)
         expect(
           { refusals, sent: reached },
           'mutation-verdict:behavior:identifier-past-the-width-refused-at-every-entry',
-        ).toEqual({
-          refusals: Object.fromEntries(Object.keys(refusals).map((entry) => [entry, REFUSED])),
-          sent: [],
-        })
+        ).toEqual({ refusals: allRefused(refusals), sent: [] })
       }
     })
 
@@ -198,7 +106,7 @@ export function identifierBoundConformance(
       const fits = '\u{1F600}'.repeat(200)
       expect(fits.length).toBe(400)
       const { store, reached } = storeOverRecorder(f)
-      const refusals = await refusalsAtEveryEntry(store, fits)
+      const refusals = await refusalsAt(IDENTIFIER_PLACES, store, fits)
       expect(
         Object.entries(refusals).filter(([, refusal]) => refusal === REFUSED),
         'mutation-verdict:behavior:identifier-width-counts-code-points',
@@ -207,18 +115,65 @@ export function identifierBoundConformance(
     })
 
     it('refuses a name outside the durable string domain at every entry of the port, before anything is sent', async () => {
-      // No dialect keeps such a name as it was passed. A NUL ends the name on one dialect,
-      // is stored whole on another, and is refused by the third as an outage. A lone
-      // surrogate is replaced by every driver, so two names that differ only in one are
-      // stored as one name, and a claim token that differs only in one holds the claim.
-      for (const undurable of ['a\u0000b', 'a\uD800b', 'a\uDC00b']) {
+      // No dialect keeps such a name as it was passed. A NUL ends the name where one
+      // dialect stores it, is stored whole by another, and is refused by the third as an
+      // outage. A lone surrogate is replaced by every driver, so two names that differ
+      // only in one are stored as one name, and a claim token that differs only in one
+      // holds the claim. A task name and a claim token are held as an identifier is.
+      for (const [what, undurable] of Object.entries(OUTSIDE_THE_DOMAIN)) {
         const { store, reached } = storeOverRecorder(f)
-        const refusals = await refusalsAtEveryEntry(store, undurable)
-        expect({ refusals, sent: reached }).toEqual({
-          refusals: Object.fromEntries(Object.keys(refusals).map((entry) => [entry, REFUSED])),
-          sent: [],
-        })
+        const refusals = await refusalsAt(HELD_PLACES, store, undurable)
+        expect(
+          { what, refusals, sent: reached },
+          'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+        ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
       }
+    })
+
+    it('leaves a payload to its serializer, at exactly the places that are written here', async () => {
+      // The places the port does not hold as an identifier. The cases above draw their
+      // places from core's table, so a place named there as a payload, or as a durable
+      // string with no width, is asked nothing by them. It has to be written here too,
+      // which makes that choice a second, visible edit.
+      const notAnIdentifier = Object.fromEntries(
+        PORT_STRING_PLACES.filter(({ rule }) => rule !== 'identifier').map(({ place, rule }) => [
+          place,
+          rule,
+        ]),
+      )
+      expect(notAnIdentifier).toEqual({
+        'spawn(taskName)': 'durable',
+        'spawn(paramsJson)': 'payload',
+        'spawn(childOf.claimToken)': 'durable',
+        'spawn(headers)': 'payload',
+        'claim(claimToken)': 'durable',
+        'activate(claimToken)': 'durable',
+        'claimedTaskName(claimToken)': 'durable',
+        'deferLaunch(claimToken)': 'durable',
+        'heartbeat(claimToken)': 'durable',
+        'reschedule(claimToken)': 'durable',
+        'complete(claimToken)': 'durable',
+        'complete(resultJson)': 'payload',
+        'suspendRun(claimToken)': 'durable',
+        'suspendRun(checkpoint.stateJson)': 'payload',
+        'fail(claimToken)': 'durable',
+        'fail(failureJson)': 'payload',
+        'failRollback(claimToken)': 'durable',
+        'failRollback(failureJson)': 'payload',
+        'failRollback(rollbackTry.stateJson)': 'payload',
+        'expireLeaseNow(claimToken)': 'durable',
+        'setCheckpoint(claimToken)': 'durable',
+        'setCheckpoint(stateJson)': 'payload',
+        'emitEvent(payloadJson)': 'payload',
+        'awaitEvent(claimToken)': 'durable',
+        'awaitTaskDone(claimToken)': 'durable',
+      })
+      expect(PORT_STRING_PLACES).toHaveLength(82)
+      // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
+      const { store } = storeOverRecorder(f)
+      const payloads = PORT_STRING_PLACES.filter(({ rule }) => rule === 'payload')
+      const answers = await refusalsAt(payloads, store, '{"a":"\u0000"}')
+      expect(Object.entries(answers).filter(([, answer]) => answer === REFUSED)).toEqual([])
     })
 
     it('holds the names the engine derives from an identifier to the same width, and names what the caller passed', async () => {
@@ -328,11 +283,13 @@ export function identifierBoundConformance(
       // never read as part of it: every entry answers such a word as it answers a word
       // that spells nothing. It reads and writes, so it has a migrated fixture of its own.
       withFixture(makeFixture, 'identifier-bound-state-words', async (live) => {
-        const store = oneAtATime(live.store)
-        const ordinary = await refusalsAtEveryEntry(store, 'spells-nothing')
+        // Each place's call is made when it is asked for and awaited before the next, so
+        // over a database they run one at a time, in the table's order.
+        const store = live.store
+        const ordinary = await refusalsAt(IDENTIFIER_PLACES, store, 'spells-nothing')
         const answers: Record<string, Record<string, string>> = {}
         for (const word of [...LIVE_STATES, ...TERMINAL_STATES]) {
-          answers[word] = await refusalsAtEveryEntry(store, word)
+          answers[word] = await refusalsAt(IDENTIFIER_PLACES, store, word)
         }
         expect(answers).toEqual(
           Object.fromEntries(Object.keys(answers).map((word) => [word, ordinary])),
