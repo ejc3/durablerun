@@ -263,8 +263,14 @@ interface Named {
  */
 const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
 
+/**
+ * What a refused clock leaves a statement to write. Every call of `age` is refused, the form with
+ * two arguments too, which reads no clock, so the refusal names what stands in for it.
+ */
+const SPAN_ADVICE =
+  'A span between two stored instants is a subtraction of the two columns, which reads no clock, so age() is refused with two arguments as with one'
 const clockReadRule = (at: string): string =>
-  `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8)`
+  `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8). ${SPAN_ADVICE}`
 const blindCounterRule = (at: string): string =>
   `${at} bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped rows and counts twice; derive the value from the winning row's post-state instead`
 
@@ -1063,7 +1069,7 @@ export class FencedBatch {
     }
     if (spelledClock) {
       throw new Error(
-        `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression`,
+        `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression. ${SPAN_ADVICE}`,
       )
     }
     // A fragment's binds equal its placeholders by construction. An operator or an

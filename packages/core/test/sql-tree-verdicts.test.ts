@@ -907,7 +907,10 @@ describe('the tree rules', () => {
       refuses('mutation-verdict:construction:tree-clock-function-age', READS, () =>
         startedAt('age(created_at)'),
       )
-      expect(() => startedAt('age(created_at, updated_at)')).toThrow(READS)
+      // The form with two arguments is the one a subtraction replaces, and the refusal says so.
+      expect(() => startedAt('age(created_at, updated_at)')).toThrow(
+        /reads the clock.*a subtraction of the two columns/,
+      )
     })
 
     const KEYWORDS = [
