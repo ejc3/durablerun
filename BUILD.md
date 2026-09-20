@@ -954,22 +954,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
     add NOT NULL to a column that exists. The rebuild that would declare it was
     measured and refused: on a million events of 1 KB it took 48 and 56 s,
     doubled a 4.5 GB file, and a fifth to a third of the calls of a worker of
-    the older build failed, its writes once its busy timeout ran out and its
-    reads behind them (PR3.15). Two triggers hold the
-    payload there, and the version's third statement makes the update trigger
-    check the rows already there.
+    the older build failed, few of them by waiting out its busy timeout and most
+    by the defect that PR3.15 names. Two triggers hold the payload there, and
+    the version's third statement makes the update trigger check the rows
+    already there.
   - Measured on a million events under the traffic of a build whose last
     version is 9 (DESIGN.md has the traffic and every run): PostgreSQL 85 to
     129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 s and 2.5 to 2.6
     s, libSQL 90 and 430 ms with nothing else running. No call of the older
     build failed on any dialect. Those are warm figures. On a libSQL file that
     is not in the page cache the version's check is a scan under the writer
-    lock: on a cold 4.5 GB file `migrate()` took 14.9 s and other connections'
-    calls failed once their busy timeout ran out. The finding query run first,
-    under no write lock, took it to 0.3 to 0.4 s with no call failing, and
-    DESIGN.md's operator note says to run it. Each server's statement queues
-    behind an older transaction that holds `events`, and MySQL's rebuilds the
-    whole table in place, holding the named migration lock throughout.
+    lock: on a cold 4.5 GB file `migrate()` took 14.9 s and 24 of another
+    connection's calls failed, at most three of them by waiting out its busy
+    timeout and the rest by PR3.15's defect. The finding query run first, under
+    no write lock, took it to 0.3 to 0.4 s with no call failing, and DESIGN.md's
+    operator note says to run it. Each server's statement queues behind an older
+    transaction that holds `events`, and MySQL's rebuilds the whole table in
+    place, holding the named migration lock throughout.
   - A row that already holds NULL is a foreign writer's or tampering. On each
     dialect a case through the real executor holds that `migrate()` fails by
     the dialect's own refusal, leaves version 9 and leaves the row as it was.
@@ -1025,25 +1026,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     three versions under the present runner, and it does not remove the queue
     behind an older transaction. Trigger: a deployment where the scan under
     ACCESS EXCLUSIVE is measured to matter.
-- **PR3.15 a libSQL write that fails busy fails the read that follows it on
-  its connection**: NOT STARTED. Older than any version here, met twice on
-  2026-09-20 while PR3.1d was measured and reviewed, and owned by nobody until
-  this entry. What is known: when a write batch on a file database fails with
-  SQLITE_BUSY, once the executor's five second busy timeout runs out, a read
-  that follows it on the same `LibsqlExecutor` fails with `SQLITE_BUSY: cannot
-  commit transaction - SQL statements in progress`, where a read takes no
-  write lock and should have answered. Beside a long write transaction a
-  worker lost one read for every emit it lost, 108 and 160 of each in two
-  runs. A write that follows fails on the lock itself while it is held, so
-  whether it would meet the same message was not isolated, and calls succeed
-  again once the lock is free. The same message comes back when an
-  `EXPLAIN QUERY PLAN` is sent inside a read batch, which leaves a statement
-  unfinished, so the likely cause is a statement of the failed batch that is
-  never reset before the batch's transaction is ended. That cause is read from
-  the symptom and was not confirmed in the client. A red test: hold the write
-  lock from a second connection for longer than the busy timeout (the test
-  lowers it), let one write batch fail, and require the next read on that
-  executor to succeed. Not built in PR3.1d, which changes no executor.
+- **PR3.15 a libSQL write that fails busy fails the calls that follow it on its
+  connection**: IN PROGRESS as its own pull request, which rewrites this entry
+  when it merges. Older than any version here, and met while PR3.1d was measured
+  and reviewed. After a write batch on a file database fails with SQLITE_BUSY,
+  calls that follow it on the same `LibsqlExecutor`, writes among them, fail
+  with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`,
+  and they keep failing for about 70 ms after the lock is free. The cause is a
+  statement the client library leaves in progress after a busy failure, which is
+  an open bug upstream. Not built in PR3.1d, which changes no executor.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

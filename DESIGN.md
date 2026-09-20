@@ -2486,44 +2486,51 @@ are load-bearing):
    build on a connection of its own, 1.3 to 1.4 s with 64 B payloads, and 48
    and 56 s with 1 KB, where a row past about 1 KB spills to an overflow page
    and costs 4.7 KB. That rebuild doubled a 4.5 GB file, wrote 4.5 GB of
-   write-ahead log, and a fifth to a third of the worker's calls failed: its
-   writes once the executor's five second busy timeout ran out, and its reads
-   because each came on the connection whose write had just failed. A libSQL
-   write that fails with SQLITE_BUSY makes the read that follows it on its
-   connection fail with `cannot commit transaction - SQL statements in
-   progress`, which is older than this version and is BUILD.md's PR3.15. A
-   reader on a connection of its own was not measured. So version 10 is two
-   triggers, `BEFORE INSERT` and `BEFORE UPDATE OF payload`, each `WHEN
-   NEW.payload IS NULL` raising ABORT with SQLite's own words for a NOT NULL
-   failure, and then `UPDATE events SET payload = payload WHERE payload IS
-   NULL`, which is the constraint checking its own past: it touches only rows
-   that hold NULL, and the update trigger installed two statements before it
-   refuses each one. Measured on the same million events through the real
-   `migrate()`: 90 ms with 64 B payloads and 428 ms with 1 KB
+   write-ahead log, and a fifth to a third of the worker's calls failed. Few of
+   them waited out the executor's five second busy timeout: the worker is one
+   loop, and the 216 writes that failed in the first run do not fit inside its
+   48.5 s at five seconds each. Measured in review beside a held lock, with the
+   worker in a process of its own: the first write waited out the five seconds
+   and failed with `database is locked`, the next got the lock when it was
+   released and failed at its commit with `cannot commit transaction - SQL
+   statements in progress`, and calls that began after the lock was free kept
+   failing with that message within milliseconds, writes among them, until the
+   first success 72 ms after the release. That defect is older than this version
+   and is BUILD.md's PR3.15. A reader on a connection of its own was not
+   measured. So version 10 is two triggers, `BEFORE INSERT` and `BEFORE UPDATE
+   OF payload`, each `WHEN NEW.payload IS NULL` raising ABORT with SQLite's own
+   words for a NOT NULL failure, and then `UPDATE events SET payload = payload
+   WHERE payload IS NULL`, which is the constraint checking its own past: it
+   touches only rows that hold NULL, and the update trigger installed two
+   statements before it refuses each one. Measured on the same million events
+   through the real `migrate()`: 90 ms with 64 B payloads and 428 ms with 1 KB
    with nothing else running, and 86 to 98 ms and 301 to 725 ms beside that
    worker, the 725 under a load average of 70. The worker's longest call that
    overlapped the version waited as long as it ran, and none of its calls
-   failed. It is a scan and not a rewrite: its plan is one scan of
-   `events`, the write-ahead log grew by 12 KB, which is the two triggers and
-   the version's rows in `meta`, and the file did not grow.
+   failed. It is a scan and not a rewrite: its plan is one scan of `events`, the
+   write-ahead log grew by 12 KB, which is the two triggers and the version's
+   rows in `meta`, and the file did not grow.
    Those are warm figures: the table had just been written, so it was in the
    page cache. Rows of `events` are written once and rarely read again, so a
    real table is mostly cold, and the check is a full scan inside the version's
    write transaction, which holds SQLite's one writer lock for as long as the
    scan reads from disk. Measured on the same million events of 1 KB, a 4.47 GB
-   file dropped from the page cache: `migrate()` took 14.9 s, and of the
-   worker's calls that overlapped it 8 of 9 emits, 8 of 8 spawns and 8 of 8
-   clock reads failed, the writes once the busy timeout ran out and each read
-   behind a failed write. The review's own cold run took 12.2 s, and 3 of 685
-   writes failed. This is the failure
-   the rebuild was refused for, far milder here, transient and loud, and it has
-   a remedy that takes no write lock: run the finding query below first. It
-   reads the same pages. Measured twice on the same cold file, the query took
-   14.8 s both times while 983 and 976 rounds of the worker's three calls ran
-   beside it, the longest took 5 ms and none failed. `migrate()` then took 442
-   and 277 ms, the one emit that overlapped it waited 534 and 333 ms, and no
-   call failed. The scan reads the table's tree and not the overflow pages that
-   hold most of a 1 KB payload, so it left 1.06 GB of the file cached.
+   file dropped from the page cache before each run with `posix_fadvise` and
+   read back with `fincore` as 0 MB cached right before the timed call, under a
+   load average of 20 to 22. The control is one run: `migrate()` took 14.9 s,
+   and of the worker's calls that overlapped it 8 of 9 emits, 8 of 8 spawns and
+   8 of 8 clock reads failed. At most three of those 24 can have waited out the
+   five second busy timeout inside 14.9 s, and the rest are the defect above.
+   The first review's own cold run took 12.2 s, and 3 of 685 writes failed. This
+   is the failure the rebuild was refused for, far milder here, transient and
+   loud, and it has a remedy that takes no write lock: run the finding query
+   below first. It reads the same pages. Measured twice on the same cold file,
+   the query took 14.8 s both times while 983 and 976 rounds of the worker's
+   three calls ran beside it, the longest took 5 ms and none failed. `migrate()`
+   then took 442 and 277 ms, the one emit that overlapped it waited 534 and 333
+   ms, and no call failed. The scan reads the table's tree and not the overflow
+   pages that hold most of a 1 KB payload, so it left 1.06 GB of the file
+   cached.
    Nothing here was measured against a hosted libSQL server: not the code a
    trigger's refusal carries over the remote protocol, and not the scan under
    a hosted server's statement limits.
