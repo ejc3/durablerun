@@ -7503,7 +7503,7 @@ MUTATION_SPECS.extend(
             "mysql-keyed-delete-names-the-stamp-index",
             "packages/store-mysql/src/tree.ts",
             "    if (node === this.#keysFrom?.from) this.append(` force index (${this.#keysFrom.index})`)\n",
-            "    // MUTATION: the table of the keys is read through whatever index the server picks\n",
+            "    if (node === this.#keysFrom?.from) this.append('') // MUTATION: the table of the keys is read through whatever index the server picks\n",
             "the server reads a delete's keys through the index it picks, which is the queue's poll index once waits holds a few dozen rows",
         ),
         (
@@ -7531,7 +7531,7 @@ MUTATION_SPECS.extend(
             "mysql-keyed-delete-keys-join-nothing",
             "packages/store-mysql/src/tree.ts",
             "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
-            "  if (source === null || table === null || more.length > 0) { // MUTATION\n",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 99) { // MUTATION\n",
             "a delete whose keys join a second table is compiled, and that table is read with shared locks through any index",
         ),
         (
