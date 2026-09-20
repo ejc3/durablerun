@@ -48,11 +48,17 @@ export interface FuzzBatchCoordinates {
  * 50 steps and in 386 of 3,720 walks of 100 steps, and 121 of 300 shards of twenty walks
  * of 50 steps named none. At the size of `verify:fuzz`, 62 walks of 100 steps, that rate
  * misses in about one shard of nine hundred, which is one run in thirty. So the floor
- * starts at 20,000 steps, where a miss is under one in a billion at the rate measured for
- * the longer walks. The check itself runs at the end of every walk of every size. Only
- * the floor waits for a shard large enough.
+ * starts at 20,000 steps. The rate grows faster than a walk's length, so what a shard of
+ * that size misses depends on its walks: about five in a hundred million for walks of 50
+ * steps, and under one in a billion for walks of 100 steps or more. Nothing but the
+ * nightly plan test ties the nightly's batch to this size: it holds every batch at or
+ * above it, so a batch count or a seed count that would switch this floor off fails there.
+ * The check itself runs at the end of every walk of every size. Only the floor waits for
+ * a shard large enough.
  */
-const RARE_STAT_FLOOR_STEPS: Partial<Record<keyof FuzzStats, number>> = { haltsNamed: 20_000 }
+export const RARE_STAT_FLOOR_STEPS: Partial<Record<keyof FuzzStats, number>> = {
+  haltsNamed: 20_000,
+}
 
 /**
  * The single seed-ownership definition for ordinary and bounded-process fuzz.
