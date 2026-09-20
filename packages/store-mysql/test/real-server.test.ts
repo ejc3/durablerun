@@ -9,9 +9,9 @@ import { MysqlExecutor } from '../src/executor.js'
 import {
   META_BOOTSTRAP_SQL,
   META_TABLE_SQL,
+  MIGRATIONS,
   RUNS_STAMP_INDEX,
   createIndexIfMissing,
-  setNotNullWhileNullable,
 } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -323,14 +323,12 @@ describe('MysqlExecutor against a real server', () => {
     // that is not nullable is left as it stands, whatever else has become of it.
     const db = await openMysqlTestDb({ idNamespace: 'column-repeat' })
     try {
-      const declaration = 'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'
-      const column = async () => {
+      const catalog = async (columns: string) => {
         const [read] = await db.raw.batch(
           'fixture:read',
           [
             {
-              sql: `SELECT is_nullable AS nullable, column_comment AS comment
-                      FROM information_schema.columns
+              sql: `SELECT ${columns} FROM information_schema.columns
                      WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
               args: [],
             },
@@ -339,10 +337,17 @@ describe('MysqlExecutor against a real server', () => {
         )
         return read?.rows[0]
       }
-      const version = setNotNullWhileNullable('events', 'payload', declaration).map((sql) => ({
-        sql,
-        args: [],
-      }))
+      const column = () => catalog('is_nullable AS nullable, column_comment AS comment')
+      // The form under test is version 10 as it ships, and what this case restates of the
+      // column it reads from the catalog, so it holds no copy of the schema's text.
+      const version = (
+        MIGRATIONS.find((migration) => migration.version === 10)?.statements ?? []
+      ).map((sql) => ({ sql, args: [] }))
+      expect(version).toHaveLength(4)
+      const declared = await catalog(
+        'column_type AS type, character_set_name AS charset, collation_name AS collation',
+      )
+      const declaration = `${String(declared?.type)} CHARACTER SET ${String(declared?.charset)} COLLATE ${String(declared?.collation)}`
       const seen: unknown[] = [await column()]
       await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
       seen.push(await column())

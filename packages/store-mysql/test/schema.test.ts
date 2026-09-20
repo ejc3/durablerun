@@ -6,7 +6,6 @@ import {
   META_TABLE_SQL,
   MIGRATIONS,
   createIndexIfMissing,
-  setNotNullWhileNullable,
 } from '../src/schema.js'
 
 function escapeRegExp(value: string): string {
@@ -42,17 +41,14 @@ describe('MySQL schema', () => {
     // is carried by the real-server test, which runs it again over an index that exists
     // and twice over one that was dropped, and by the frozen hashes of versions 6, 8 and 9.
     // A column that becomes NOT NULL has no IF form either and goes through a guarded form
-    // of its own, which the real-server test repeats the same way, under version 10's hash.
+    // of its own, read here from the version that ships it, which the real-server test
+    // repeats the same way, under version 10's hash.
     // Every other statement creates a table if missing.
     const guardedForms = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
       createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
       createIndexIfMissing('runs', 'runs_held', '(queue, claimed_by(255), state)'),
-      setNotNullWhileNullable(
-        'events',
-        'payload',
-        'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin',
-      ),
+      MIGRATIONS.find((migration) => migration.version === 10)?.statements ?? [],
     ]
     const statements = [
       META_TABLE_SQL,
