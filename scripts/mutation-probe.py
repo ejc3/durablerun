@@ -6787,7 +6787,7 @@ MUTATION_SPECS.extend(
         (
             "spawn-refuses-reserved-idempotency-key",
             "packages/core/src/child-tasks.ts",
-            "  refuseReservedIdempotencyKey('spawn', key)\n",
+            "  refuseReservedIdempotencyKey('spawn', callerKey)\n",
             "  // MUTATION: a caller may take any key\n",
             "a caller places its own task under the key a parent's spawn will use, and the parent adopts it and its result",
         ),

@@ -362,7 +362,9 @@ jobs:
               # second copy of a check that stood behind the one check in core, where no
               # mutant of it could be seen through the port once the one check answered first.
               # The copies are deleted, and each of the three moved to the table's place for
-              # its string: an emitted event name, a parent's queue and a parent's run id. Six
+              # its string: an emitted event name, a parent's queue and a parent's run id. One
+              # more names the line that refuses a reserved key, which reads the caller's key
+              # under another local now that the key's own checks are gone from beside it. Six
               # mutations are new, and they answer to two verdict markers that are newer than
               # the base. No entry was retired.
               repaired = previous
@@ -373,6 +375,7 @@ jobs:
                   'event-name-is-a-durable-string',
                   'parent-queue-held-to-the-width',
                   'parent-run-id-held-to-the-width',
+                  'spawn-refuses-reserved-idempotency-key',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
               repaired = exempt(repaired, candidate, (
