@@ -1172,6 +1172,19 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       sql(`UPDATE tasks SET attempts = 1, infra_retries = -1 WHERE task_id = ?`, [TASK]),
     ],
   },
+  {
+    // A name past the width, as an older build could leave one on libSQL and PostgreSQL.
+    // MySQL's column refuses the write, so there the witness is structurally rejected.
+    id: 'identifier/over-width',
+    covers: ['identifier/over-width'],
+    statements: [],
+    storageCorruption: {
+      table: 'tasks',
+      taskId: TASK,
+      column: 'idempotency_key',
+      invalidRepresentation: 'over-width',
+    },
+  },
 ]
 
 export const POISON_WITNESS_COUNT = POISON_WITNESSES.length

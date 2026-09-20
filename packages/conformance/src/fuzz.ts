@@ -1,6 +1,8 @@
 import {
   ChildAwaitRefusedError,
   type ClaimedRun,
+  IDENTIFIER_CHARACTERS,
+  InvalidDurableStringError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -52,6 +54,8 @@ export interface FuzzStats {
   rollbackFailures: number
   /** Tasks that ended from inside the phase by a pass's own write. */
   sagasEnded: number
+  /** Names one character past the width that the port refused (DESIGN.md §3.4 rule 10). */
+  overWidthRefusals: number
 }
 
 /**
@@ -103,6 +107,7 @@ async function runWalk(
     rollbacks: 0,
     rollbackFailures: 0,
     sagasEnded: 0,
+    overWidthRefusals: 0,
   }
   /** What the walk knows of each task's saga: its steps in start order, and what ran. */
   const sagas = new Map<
@@ -209,7 +214,54 @@ async function runWalk(
     }
   }
 
+  // Names past the width come from a stream of their own, so this op's draws never move
+  // another op's, and the rest of a seed's walk does not depend on it.
+  const widthRng = new Rng(`fuzz-width-${seed}`)
+  /**
+   * Pass the port a name one character past the width (DESIGN.md §3.4 rule 10): an event
+   * name, an idempotency key, and, under a held run, a checkpoint name and a child's call
+   * site that fits while the child key built from it does not. The port refuses each
+   * before it sends anything, so the walk goes on as if this had not run. An accepted
+   * name does not fail the walk here. The row it leaves is what the invariant library's
+   * width condition reports, on the two dialects whose columns do not bound a name, and
+   * the walk's next check of the invariants is what fails. The count is of refusals by their
+   * class. MySQL's executor gives the column's own refusal, error 1406, that same class, so
+   * there the count could not tell an entry's refusal from the column's. Every caller of this
+   * walk runs libSQL.
+   */
+  const passNamePastTheWidth = async (): Promise<void> => {
+    const past = 'w'.repeat(IDENTIFIER_CHARACTERS + 1)
+    const run = held[widthRng.int(held.length + 1)]
+    const passes: (() => Promise<unknown>)[] = [
+      () => f.store.emitEvent(Q, past, '{}'),
+      () => f.store.spawn(Q, 'past-the-width', '{}', { idempotencyKey: past }),
+    ]
+    if (run !== undefined) {
+      passes.push(
+        () => checkpointOwned(f.store, Q, run, past, '1', 60),
+        () =>
+          f.store.spawn(Q, 'past-the-width', '{}', {
+            childOf: {
+              parentQueue: Q,
+              parentTaskId: run.taskId,
+              runId: run.runId,
+              claimToken: run.claimToken,
+              replayKey: 'w'.repeat(IDENTIFIER_CHARACTERS),
+            },
+          }),
+      )
+    }
+    try {
+      await passes[widthRng.int(passes.length)]?.()
+    } catch (error) {
+      if (error instanceof InvalidDurableStringError) stats.overWidthRefusals++
+      // A store that let the name by may still refuse the write for a lost lease.
+      else if (!isRefusedWrite(error)) throw error
+    }
+  }
+
   for (let step = 0; step < steps; step++) {
+    if (widthRng.next() < 0.1) await passNamePastTheWidth()
     const roll = rng.next()
     if (roll < 0.03) {
       // Invalid-numeric corpus: the port MUST refuse these (§3.4 rule 7) —

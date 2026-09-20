@@ -311,6 +311,7 @@ describe('ambiguous legacy wait registrations', () => {
  * only hands back stays readable and its task finishes. A name a caller must pass to
  * reach the row, a queue above all, is refused like any other, so the row is out of the
  * port's reach until it is renamed in SQL. DESIGN.md states both, and this holds both.
+ * The invariant library reports each such row, and nothing else about it.
  */
 describe('names stored before an identifier had a width', () => {
   const LONG = 300
@@ -354,7 +355,10 @@ describe('names stored before an identifier had a width', () => {
         respawn: 'InvalidDurableStringError',
         rewrite: 'InvalidDurableStringError',
         result: { state: 'completed', completedPayloadJson: '"done"' },
-        violations: [],
+        violations: [
+          `identifier-over-width: checkpoints.checkpoint_name of checkpoints/${spawned.taskId}/${longStep}`,
+          `identifier-over-width: tasks.idempotency_key of tasks/${spawned.taskId}`,
+        ],
       })
     } finally {
       await f.close()
@@ -389,6 +393,7 @@ describe('names stored before an identifier had a width', () => {
       expect({
         reached,
         row: rows?.rows.map((row) => [String(row.state), Number(row.width)]),
+        violations: await engineInvariantViolations(f.raw),
       }).toEqual({
         reached: {
           claim: 'InvalidDurableStringError',
@@ -397,6 +402,11 @@ describe('names stored before an identifier had a width', () => {
           cancelTask: 'InvalidDurableStringError',
         },
         row: [['pending', LONG]],
+        // Nothing reaches the rows, and the invariant library names each one.
+        violations: [
+          `identifier-over-width: runs.queue of runs/${spawned.runId}`,
+          `identifier-over-width: tasks.queue of tasks/${spawned.taskId}`,
+        ],
       })
     } finally {
       await f.close()

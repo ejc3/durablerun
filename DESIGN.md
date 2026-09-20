@@ -1810,10 +1810,13 @@ are load-bearing):
      longer be woken by an emit.
    - A task in a longer queue is out of the port's reach, because claim,
      sweep, read, and cancel all refuse its queue, until its rows are renamed
-     in SQL. Nothing detects such rows: no invariant and no admin check reads
-     the length of a name.
+     in SQL. The invariant library reports each such row, and any other stored
+     name past the width, as `identifier-over-width`. That is a check of the
+     table snapshots that tests, sims, and fuzz walks read. It is not an admin
+     check: nothing reads the length of a name in a production database, and
+     no command lists such rows.
 
-   Three things hold this. The `identifier-bound` conformance surface runs on
+   This is what holds it. The `identifier-bound` conformance surface runs on
    every dialect: a table typed by the port, so a method without an entry does
    not compile, with a call for each place an identifier enters each method,
    refused before anything is sent; the code point count; each derived name at
@@ -1822,7 +1825,28 @@ are load-bearing):
    `packages/sdk/test/identifier-width.test.ts` runs on libSQL and PostgreSQL:
    each SDK key one past its room fails its task on the first pass, and the
    task and the saga in flight finish. Two cases in `legacy-rows.test.ts` hold
-   the readable row and the unreachable queue at the port.
+   the readable row and the unreachable queue at the port, and the violations
+   the invariant library reports for exactly those rows. The
+   replay-equivalence harness runs every generated call that passes a name
+   with a name one character under its room, at its room, and one past it,
+   each room computed from the width and what the engine adds to the name:
+   under and at its room a program replays like any other, and past it the
+   task fails for good before the body runs, and the SDK then makes no store
+   call but the one that records the failure. That harness and the table case
+   of `identifier-width.test.ts` take every length from one table of what the
+   engine adds to a name, `packages/sdk/test/name-rooms.ts`. The invariant
+   library's `identifier/over-width` condition is this rule's executable twin
+   on libSQL and PostgreSQL, whose columns do not bound a name. It reads every
+   identifier column of the six table snapshots, counted with core's function.
+   Its inventory of columns is described with the invariant library, below.
+   The operation fuzz passes the port names one character past the width,
+   drawn from a random stream of its own so that no other op's draws move, and
+   leaves an accepted one for the condition to report at the walk's next
+   check. It is the one op that builds a name that long, so it is what lets
+   the condition fail in a walk. Two registered mutations keep the audit checking
+   that these two generated surfaces can fail: one of the SDK's hold names the
+   harness as the test that catches it, and one of a store entry's hold names
+   a pinned case of eight such walks.
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
@@ -1973,7 +1997,7 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 113 typed condition IDs for every semantic arm. The eight durable
+  one of 115 typed condition IDs for every semantic arm. The eight durable
   counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
@@ -1993,11 +2017,18 @@ not depend on careful reading:
   dialect-owned—libSQL projects real `PRAGMA table_info` rows—but the shared
   runner executes, validates, and compares the evidence.
   Snapshot results are assembled by each projection's declared table key,
-  never by a second hard-coded positional table list.
+  never by a second hard-coded positional table list. One identifier inventory,
+  `IDENTIFIER_COLUMNS`, names every column of those tables that holds a durable
+  identifier (§3.4 rule 10): it selects them into the snapshot, the `identifier/over-width`
+  condition reads each, one checker case plants a name past the width in
+  every one, and a test holds every VARCHAR column of MySQL's schema, by name
+  and width, to that inventory or to a short named list of bounded columns
+  that are not identifiers. The test's reader refuses a migration statement
+  that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 19 classified
-  write labels with 145 corrupt-state witnesses covering that exact
-  condition inventory: 2,755 generated cells,
+  keep the poison matrix complete. The poison surface crosses the 21 classified
+  write labels with 146 corrupt-state witnesses covering that exact
+  condition inventory: 3,066 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

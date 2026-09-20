@@ -7,7 +7,11 @@ export type {
   StoreFixtureFactory,
   StoreFixtureOptions,
 } from './fixture.js'
-export { executeStorageCorruption } from './fixture.js'
+export {
+  executeStorageCorruption,
+  overWidthWrite,
+  unboundedOverWidthAttempt,
+} from './fixture.js'
 export {
   assertEngineInvariants,
   ENGINE_INVARIANT_CONDITION_NAMES,
