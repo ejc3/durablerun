@@ -55,8 +55,12 @@ export class PostgresStoreAdmin implements StoreAdmin {
 
     const version = await this.schemaVersion()
     if (version !== CURRENT_SCHEMA_VERSION) {
+      // A recorded version past this build's newest is a healthy schema that a newer build
+      // migrated. It is refused like any other mismatch, with the advice that fits it.
       throw new SchemaMismatchError(
-        `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
+        version > CURRENT_SCHEMA_VERSION
+          ? `the schema is recorded at version ${version} and this build knows versions up to ${CURRENT_SCHEMA_VERSION}: a newer build migrated this database, which needs no repair. Run that build or a later one`
+          : `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
       )
     }
   }
@@ -153,6 +157,15 @@ export class PostgresStoreAdmin implements StoreAdmin {
 
 function fencedBatch(migration: PostgresMigration): SqlStatement[] {
   return [
+    // One migrator at a time, and the second one waits. This lock conflicts with itself and
+    // with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
+    // holding nothing, and when the first has committed it loses to that sentinel. Without
+    // it the second blocks on the first one's uncommitted sentinel while it holds its own
+    // row-exclusive lock on meta, and a version that then locks the table deadlocks with
+    // it, which PostgreSQL ends only after its deadlock timeout. A read does not conflict
+    // with this lock, so it stops no statement's clock read. A version that locks meta
+    // itself, as version 7 does, stops every statement from its own lock until it commits.
+    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },
     // Plain INSERT is the transaction fence. A stale or concurrent re-apply
     // raises unique_violation and rolls back its DDL with it.
     {

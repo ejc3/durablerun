@@ -29,7 +29,8 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
 1. **`pnpm verify` green** — includes the determinism lint (no ambient
    time/randomness/timers in engine packages; entropy enters only via
    `IdSource`, `NOW_MS`, or a port) and the spec ledger (every batch label
-   mapped to a TLA action or excluded with a reason, block-scoped).
+   mapped to a TLA action or excluded with a reason, block-scoped, and each
+   side model's block held to the stores' labels and its module's actions).
 2. **TLC green** — if the diff touches any protocol transition and the spec
    was not updated, stop: that violates spec-first (below).
 3. **Fuzz green** — includes the progress floor; a vacuous or stalled walk

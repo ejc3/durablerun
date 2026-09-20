@@ -130,7 +130,7 @@ a last docs PR gives a live owner to every open bullet that is left.
    the label match allows today. A test on MySQL builds a version that was half
    applied, some of its statements run and its version row absent, runs
    `migrate()` again, and holds the schema and the version: no test has that
-   case. On MySQL `migrate()` crosses the four empty versions with one version
+   case. On MySQL `migrate()` crosses the five empty versions with one version
    read and one locked batch, where today each costs a read and the lock, and
    the counts are pinned.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
@@ -149,13 +149,24 @@ a last docs PR gives a live owner to every open bullet that is left.
    contest of PR4.4c's surface meets no deadlock victim. That surface found the
    defect: at five rows or fewer the claim's update scans `runs` and locks
    every row, so concurrent claimers deadlock.
-9. PR3.4b: `rollback_error` names the rollback that failed when a cancellation
-   follows a failed attempt that had budget left, held by a case on three
-   dialects that was committed failing. Saga reads on libSQL and MySQL are
-   ranges the checkpoint key serves, and their plan pins refuse the walk.
-   PostgreSQL keeps the walk, which is keyed by task, because a range over a
-   name is not sound under a linguistic collation. The hosted inspect route
-   shows the rollback outcome.
+9. PR3.4b: `rollback_error` names a rollback only when that rollback's failure
+   ended the task, so it names none when a cancellation or a cap follows a
+   failed attempt that had budget left, held by a case on three dialects that
+   was committed failing. Saga reads on libSQL and MySQL are ranges the
+   checkpoint key serves, and their plan pins refuse the walk. PostgreSQL
+   keeps the walk, which is keyed by task, because a range over a name is not
+   sound under a linguistic collation. The hosted inspect route shows the
+   rollback outcome. This is met. PR3.4b reads the attempt record that the
+   task's last run wrote: a `sagas` case committed failing holds it on three
+   dialects, and the fuzz walk holds it over every task it spawns. What an
+   operator loses is the last failed attempt's error in the result of a saga
+   that something else halted. It stays readable through `getCheckpoints`, in
+   the `$rollback-tries:<step>` record. The plan pins of `store-libsql` and
+   `store-mysql` refuse the walk. The one in `store-postgres` accepts the
+   task-keyed walk, and refuses a checkpoint name ordered or compared by
+   order, in an index condition or in a saga statement's text, where it reads
+   spellings and lists the ones it misses. A hosted router case holds the
+   inspect route.
 10. PR3.10a: the attestation refuses a postmortem that the pull request adds
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
@@ -187,6 +198,39 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+12. `scripts/spec-ledger.py` reads the ledger blocks of ChildTasks.tla and
+    Sagas.tla, the side models that `scripts/tla.sh` enrols. A label in either
+    block that no store sends, an action that is not in the module's
+    next-state relation, an action of that relation the block leaves out, and
+    a class that disagrees with Scheduler.tla's ledger each fail
+    `pnpm lint:ledger`. Nothing in a block goes unread: `Next` is read to the
+    end of its definition, and a line that is not an entry may hold no arrow
+    and no class. The main ledger is held one way too: an action it names is
+    a disjunct of Scheduler's `Next`, or the action a side block maps from the
+    same label. This is met. Twenty-seven cases in
+    `scripts/lint-selftest.py`, each committed failing, hold the refusals. Writing
+    the two blocks for the reader showed what had gone stale unread:
+    ChildTasks.tla's mapped `AwaitMaterialize` from `await-event` where the
+    stores send `record-task-done`, left out `fail-rollback` and five of the
+    model's fourteen actions, and gave `claim` a class the main ledger does
+    not, and Sagas.tla's left out `Complete`. The main ledger had mapped `fail`
+    and `fail-rollback` to `FailRun`, which no module defines, with one marker
+    standing for the two actions behind it. Both lines now name
+    `FailRunWithRetry` and `FailRunTerminal`, and a case refuses a stale `fail`
+    on each.
+13. PR4.6: `getCheckpoints` returns a caller's names in byte order on every
+    dialect. CI's PostgreSQL service is created with a linguistic collation, so
+    the suite sees what a managed server may show. The order case writes names
+    that separate the orders and was committed failing on PostgreSQL alone.
+    Version 7 of the PostgreSQL schema declares every text column
+    `COLLATE "C"`, and a test that reads the catalog fails for a text column or
+    an index key that does not, and for a version that rewrites a table.
+    This is met. The case was seen red by name against a server created with
+    ICU's `en-US` and green against the same image without it, the PostgreSQL
+    conformance leg passes against both servers, and three registered mutations,
+    one that drops a column from the version, one that makes it rewrite a table
+    and one that declares another collation on an index key, are each caught by
+    that test.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1629,10 +1673,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   implementation then maps every terminal batch onto the model's ChildTerminal, takes the dialect's event
   lock in each of them, reserves the `$task-done:` name at the store's
   `emitEvent` port, and adds `ctx.spawn` and an internal child await to the
-  SDK. Nothing reads the model's ledger block, because `scripts/spec-ledger.py`
-  reads Scheduler.tla only. So the implementation adds one conformance case
-  per terminal batch, six of them, generated from the batch labels: the batch
-  writes the completion event and wakes a registered waiter, on both dialects.
+  SDK. Nothing read the model's ledger block then, because
+  `scripts/spec-ledger.py` read Scheduler.tla only. So the implementation adds
+  one conformance case per terminal batch, six of them, generated from the
+  batch labels: the batch writes the completion event and wakes a registered
+  waiter, on both dialects. The script reads the block now, its labels and its
+  actions and no guard, so those cases still hold the guards.
   Event cleanup, when it is built, must not remove a completion event whose
   task can still be awaited. The spec's review round is
   `postmortems/pr3.3-child-tasks-spec-review.md`.
@@ -1778,9 +1824,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   step's body, enters the phase in the same batch as the terminal decision in
   `fail` and in both sweep caps, admits rollback passes past the user attempt
   budget, and changed `retry-task`'s admission, because reviving a task whose
-  saga ran was unsound. `scripts/spec-ledger.py` reads Scheduler.tla
-  only, so nothing checks this model's ledger block, and the implementation
-  gave every guard an executable twin on every dialect. Beyond the conformance
+  saga ran was unsound. `scripts/spec-ledger.py` read Scheduler.tla only then,
+  so nothing checked this model's ledger block, and the implementation gave
+  every guard an executable twin on every dialect. The script reads the block
+  now, its labels and its actions and no guard. Beyond the conformance
   cases above those are: the start marker commits before the body runs; the
   decision and the phase marker are one batch in `fail` and in both sweep
   caps; no forward step starts or commits in the phase; `retry-task` refuses a
@@ -1934,20 +1981,195 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The SDK freezes each durable call with a line of its own, and only the
     sleep's and the emit's have a test. The store does not freeze a child
     spawn inside the phase, so that call's freeze is the SDK's alone.
+  - An option, not built: executable-twin markers for the side models.
+    `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
+    that shows a refusal, for every action a `[cas-fenced]` line of the main
+    ledger names. It reads the ledger blocks of ChildTasks.tla and Sagas.tla
+    too, and it could demand `fenceTwin('Sagas.UserTerminal')` of them the
+    same way, the module in the name so that two models may share an action
+    name. It was weighed when the script began to read the blocks. The
+    registry already takes the SQL of both models apart one condition at a
+    time, each mutation naming the case that must fail, which a comment token
+    does not do. And an action can refuse nothing that a stale or repeated
+    caller could try, as a cancellation does under the rule the maintainer
+    chose, so its marker would need a wider meaning or a new case on three
+    dialects. Trigger: a guard of a side model is found with no case and no
+    registered mutation behind it.
+  - Options for the ledger script, not built, each with its trigger:
+    - Hold the main ledger to Scheduler's `Next` the other way. `Next` has 24
+      disjuncts and the main ledger names 19 of them. It names neither sweep
+      cap arm, `SweepRelaunchExhausted` and `SweepInfraExhausted`, which both
+      side blocks map from the caps of `sweep:lost-launch` and
+      `sweep:claim-timeout`, and `Drop`, `WorkerCrash`, and `TimeAdvance`
+      would need exclusion lines. Trigger: an action joins Scheduler's `Next`
+      with no ledger line, or a defect is found at a sweep cap that a twin
+      asked of the main ledger would have met.
+    - Hold the main block to the rule that every quoted token is a label. It
+      quotes `duplicate` once and `running` three times, so four comment
+      lines would be reworded. Trigger: a label deleted from the stores is
+      found still quoted in the main ledger.
+    - A side block does not notice a label line that is removed while another
+      line still maps the action: without its `fail-rollback` line the block
+      of ChildTasks.tla still passes. Nothing knows which labels ought to map
+      to an action. For `ChildTerminal` the list exists, as
+      `TERMINAL_BATCH_LABELS`. Trigger: a label that ends a task is added to
+      the stores and the block is found without it.
+    - The script passes over a module that no mutant list enrols. The
+      structure check of `scripts/tla.sh` refuses such a module, inside the
+      required `tla` check. Trigger: that check is moved, narrowed, or made
+      to depend on the scope.
   - `failRollback` takes the attempt record's name and count from its caller.
     The name is now checked in SQL. A port that takes the step and derives
     both would make a foreign name unwritable and close the limit above.
   - The pass's budget guard is held at the bound by two cases whose tasks
     have no infrastructure retries, so a guard that ignored them would pass.
-  - `rollback_error` is the latest attempt record of any step not rolled
-    back, which names the wrong rollback when a cancellation follows a failed
-    attempt that had budget left.
-  - The rollback outcome reaches `getTaskResult` only. A parent that awaits
-    the child and the hosted inspect route do not see it.
-  - Saga reads find checkpoints by a prefix test that cannot use the key's
-    second column, so `rollbackPending` walks a task's checkpoints, the plan
-    pin accepts that walk, and the `rollback_error` subquery runs for every
-    result read.
+  - A parent that awaits a child does not see the child's rollback outcome.
+    PR3.4b put the outcome on the hosted inspect route and left this half
+    open, because the obstacle is the writer and not the wire: a terminal
+    batch binds its completion payload before it runs, and the outcome is a
+    fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
+    and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
+    and attempt records are found by a test of each name among the task's own
+    checkpoints, because a range of names is not sound under the database's
+    collation (DESIGN.md §3.4). Two partial indexes would make each read one
+    seek: `checkpoints (task_id, checkpoint_name) WHERE
+    substr(checkpoint_name, 1, 9) = '$started:'`, and the same for
+    `$rollback-tries:`. Each predicate is the text the fragments already
+    spell, so no statement changes and the planner proves it. Measured on
+    PostgreSQL 17 beside 10,000 checkpoints of the task, without the indexes
+    and then with them, three interleaved processes a side: the result of a
+    rolled back saga 6.2 ms and 0.76 ms, of a halted saga 4.5 ms and 0.77 ms,
+    and the rollback-owed predicate of a plain task's failure 4.2 ms and
+    0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
+    every dialect, an empty one on libSQL and MySQL. The trigger is a real
+    task with thousands of checkpoints, or result reads showing up in a
+    profile. The other way out is the column's collation: once
+    `checkpoint_name` is declared to compare by byte on PostgreSQL, the range
+    is sound there, PostgreSQL can read it as the other two stores do, and the
+    PostgreSQL pin's text check, which reads spellings, is deleted with the
+    walk it guards.
+  - Option, not a deferral of this entry: hold a stored value to JSON on the
+    way in, at the port entries that take one: `fail` for a failure reason,
+    `failRollback` for the error in its attempt record, and `complete` for a
+    result. The port takes any text today, and the SDK is the only caller that
+    always hands it JSON. The hosted inspect route answers such a value as
+    its text since PR3.4b, where it answered 500, so nothing is lost today.
+    Refusing the text at the entry would make the state unwritable. It also
+    changes what `fail` accepts from a caller that is not the SDK, so it is a
+    change of the port's contract and a PR of its own. The trigger is a reader
+    of these values outside the SDK besides the inspect route, which would
+    have to repeat the route's care, or such text seen in a real store. The
+    SDK reads bare what it wrote: its rollback pass parses the saga's cause
+    before it calls a rollback, so a cause that another caller stored as text
+    that is not JSON fails that parse on every attempt.
+  - Option, not a deferral of this entry: measure the shard runner's common
+    floors. They switch on at twenty walks of 50 steps, a size that was chosen
+    and never measured. Measured on libSQL with a correct store, for PR3.4b's
+    halt count: of 300 shards of that size, six older stats each stayed at
+    zero in about 2 to 6 percent (`rollbacks`, `rollbackFailures`,
+    `checkpoints`, `childAwaits`, `awaits` and `recordedEndings`, 5 to 18
+    shards each over three measurements), and `sagasEnded` in under 1 percent.
+    At the sizes the configured runs use, 62 walks of 100 steps and up, none
+    did. So no configured run fails a correct store today, and a run sized
+    near the threshold would, in up to one shard of five. The trigger is any
+    new fuzz size between the threshold and the size `verify:fuzz` runs, or a
+    common floor that fails on a run whose store is right. The fix is a
+    measured size for each rare stat, which `RARE_STAT_FLOOR_STEPS` in the
+    shard runner already holds for the halt count.
+
+- **PR3.4b saga reads and results**: DONE. Three findings of the saga review
+  that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,
+  findings 10 to 12). Its own review round is
+  `postmortems/pr3.4b-saga-reads-review.md`.
+  - The rollback error named the wrong rollback. It was the latest attempt
+    record of any step not rolled back, so a rollback that failed with budget
+    left was read as the halt when a cancellation or a capped failure ended
+    the task afterwards. An attempt record is written only by the batch that
+    fails its run, and a failure with budget left places a pass, which becomes
+    the task's last run. The read now names the record the task's last run
+    wrote, on all three stores. A case in the `sagas` surface builds both
+    histories, and it failed on three dialects before the change. The fuzz
+    walk now reads the result of every task it spawned at its end, and
+    requires a rollback error exactly when a rollback's failure ended the
+    task, and that rollback's: the class ran green under the fuzz before,
+    because no row invariant can see a value that is derived when it is read.
+    The read takes one record under a limit of one and no order, which rests
+    on a run writing one attempt record at most, and the saga row checker now
+    holds that over every history the suite builds. What an operator loses is
+    the last failed attempt's error in the result of a saga that something
+    else halted. It stays readable through `getCheckpoints`, in the
+    `$rollback-tries:<step>` record. The walk counts the results that named a
+    halt, and the shard runner holds that count above zero only from 20,000
+    walked steps in a shard. A halt is one pass move in ten. Measured with a
+    correct store, a shard of twenty walks of 50 steps names none two times in
+    five, and a shard of the size `verify:fuzz` runs names none about once in
+    nine hundred, which the common floor would have turned into a false
+    failure in one run of thirty. The nightly plan test holds every nightly
+    batch at or above that size, because nothing else ties the two. The walk
+    also refuses a failed rollback's answer other than what it asked for, so
+    a store that ends a saga it was asked to retry fails the walk.
+  - A saga's start markers and attempt records were found by a test of each
+    name, which the checkpoints key cannot serve, so the failure of any task
+    and every read of a result walked all the checkpoints the task has. libSQL
+    and MySQL now read the names under a prefix as a range of the key, from
+    the prefix to the first name past it, which core derives once
+    (`firstNamePast`). MySQL keeps its byte comparison: a column compares in
+    its own collation, which is binary, so the literals are plain, and a
+    binary cast was measured to stop the key from serving the range.
+    PostgreSQL keeps the test of each name, because a name there orders under
+    the database's collation and the range is not sound. DESIGN.md §3.4
+    records that difference with the measured miss, which neither the local
+    server nor CI's can show, because both sort by byte. On PostgreSQL the
+    attempt record is read only for a failed task whose saga began, which
+    spares every other result read the walk. libSQL and MySQL read a range of
+    the key and carry no such guard, because there it would change no result
+    of a history the store can reach and spare no walk, and nothing could hold
+    it. On rows no history builds the three differ, and DESIGN.md §3.10 says
+    how. The plan pins hold each
+    dialect to what it does. libSQL's refuses the walk it used to accept and
+    lets nothing sort. MySQL's counts the rows walked beside 2,000 checkpoints
+    of the task, which was 2,030 for a plain task's failure. PostgreSQL's
+    accepts a walk keyed by the task, refuses a checkpoint name ordered or
+    compared by order, in an index condition or in a saga statement's text,
+    and requires that no attempt record is read when no saga began or a
+    cancellation ended it. Its text check reads spellings: its table of
+    controls holds the ones it refuses, the legal ones it passes, and the ones
+    it misses, which are a name ordered behind a parenthesis, a row
+    comparison, a comparison behind a COLLATE or a cast, and MIN or MAX.
+    Medians in ms beside the task's own checkpoints,
+    main and then this change, from one harness run in a worktree of each,
+    five processes a side, interleaved, 200 timed reads in each:
+
+    | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
+    |---|---|---|---|
+    | result of a plain task, 10 | 0.130, 0.118 | 0.819, 0.703 | 0.360, 0.341 |
+    | result of a plain task, 1,000 | 0.198, 0.111 | 0.962, 0.702 | 0.733, 0.311 |
+    | result of a plain task, 10,000 | 0.880, 0.108 | 2.692, 0.833 | 3.886, 0.290 |
+    | result of a rolled back saga, 10,000 | 1.551, 0.112 | 5.736, 5.133 | 9.681, 0.303 |
+    | result of a halted saga, 10,000 | 0.987, 0.115 | 4.199, 3.654 | 12.558, 0.298 |
+    | rollback owed, plain task, 10,000 | 0.753, 0.060 | 3.750, 3.607 | 1.998, 0.257 |
+    | rollback owed, rolled back saga, 10,000 | 0.756, 0.060 | 3.720, 3.691 | 6.265, 0.263 |
+
+    Beside 10 checkpoints every read is the same on both sides. "Rollback
+    owed" is the predicate a failure evaluates, read alone. On PostgreSQL what
+    moved is the plain task's result, by the guard. The walk stays, and the
+    option under PR3.4 above says what would remove it.
+  - The rollback outcome reached `getTaskResult` only. The hosted inspect
+    route now shows it: `rollback.outcome`, and `rollback.error` when a
+    rollback's failure ended the task. A stored value that is not JSON, which
+    the store's port accepts from a caller that is not the SDK, is answered as
+    its text under a key of its own, where the route answered 500: for a
+    rollback's error on this entry's first version, and on main for a failure
+    reason and a result. A value that parses and cannot be serialized, as JSON
+    nested deeper than the serializer can walk, is answered the same way, with
+    every stored value of the answer as its text. A stored `1e999` parses and
+    is answered as `null`, which is left as it is. The parent's view stays
+    open under PR3.4 above, with the reason.
+  - Eight mutations hold the new lines and checks, and the registry holds 939.
+    The base gate's one live arm is this entry's, keyed on main's registry,
+    and it exempts five verdict markers the base predates. It must be keyed
+    again if main's registry changes before this entry merges.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
@@ -2067,6 +2289,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
   request runs `verify` took 1,096 to 1,767 seconds and `base-gate` 187 to 316,
   and their limits are now 90 and 20 minutes, each at least three times its
   slowest run, the margin the per-test limits have.
+  PR4.6 raised three limits by that rule. Three times a recorded 1,767 s plus
+  PR4.4c's projected 21 s is 5,364 of the 5,400 seconds that 90 minutes hold.
+  PR4.6 adds about 17 ms to each fresh PostgreSQL fixture of a run, 3,342 of
+  them when it was measured: about a minute there and about two on CI's
+  slowest runner, which takes three times the slowest run to about 5,720
+  seconds. `verify`'s
+  limit is now 120 minutes, which holds the rule until its slowest run reaches
+  2,400 seconds. `mutations` had a limit of 60 minutes and no arithmetic on
+  record: over its last 38 successful runs it took 988 to 1,754 seconds, so
+  three times its slowest is 5,262 seconds where the limit held 3,600, and its
+  limit is 120 minutes as well. `conformance-mysql` took 356 to 630 seconds
+  over the same runs, three times which is 1,890 seconds where 30 minutes hold
+  1,800, and PR4.6's empty version adds about 4 ms to each of its fixtures. Its
+  limit is 45 minutes. `base-gate` at 342 seconds and `tla` at 463 hold the
+  rule under their limits of 20 and 30 minutes. A limit is not latency: no job
+  runs longer for it, and a job that hangs holds its runner longer before it
+  is stopped.
 
 - **PR3.14 keyed generated follow-ons**: on libSQL, eleven shipped writes
   scanned the table they wrote: the task update of claim, activate,
@@ -2289,6 +2528,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     coordinate. With it goes the case no test has: a version that was half
     applied, rerun through `migrate()`. It changes core's batch control and
     every executor, which PR3.9e part 3b and the child-task fold are editing.
+    PostgreSQL's runner takes its own lock as a statement, `LOCK TABLE meta IN
+    SHARE ROW EXCLUSIVE MODE` ahead of each version's sentinel (PR4.6). Once
+    the migration lock travels as a coordinate, PostgreSQL's coordinate can
+    replace that statement.
   - Done in PR4.4a: one read that the executor knows to be a read is sent
     alone, under the session's autocommit, where a read batch cost four round
     trips. The executor knows because core brands what its read path
@@ -2357,10 +2600,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
       pool's default isolation level once for each client. DESIGN.md states
       what a read sent alone asks of it, and nothing refuses a pool set to
       SERIALIZABLE.
-  - Deferred from PR4.3: `migrate()` reads the version before each of the four
-    empty versions and takes the lock for each. One read and one locked batch
-    would do, which matters most to the conformance suite, which migrates a
-    database for every case.
+  - Deferred from PR4.3: `migrate()` reads the version before each of the five
+    empty versions (2, 3, 4, 5 and 7) and takes the lock for each. One read and
+    one locked batch would do, which matters most to the conformance suite,
+    which migrates a database for every case.
   - Done in PR4.4a: the claim's candidate legs have a measured plan test in
     `store-mysql/test/query-plans.test.ts`, with rows in the table. Beside 800
     due runs, and as many that are not due or belong to another queue, the
@@ -2660,6 +2903,169 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An option, not built: read PostgreSQL's `event_locks`, which holds
     identifiers outside the six snapshot tables. Each of its rows has a sibling
     row in `events` or `waits` that the condition reads.
+
+- **PR4.6 PostgreSQL compares and orders names by bytes**: DONE. `getCheckpoints`
+  returned a caller's names in byte order on libSQL, on MySQL, and on a
+  PostgreSQL whose C library sorts by bytes, in glibc's order on an
+  `en_US.UTF-8` PostgreSQL, and in a third order under ICU. The identical suite
+  could not see it. CI's PostgreSQL image sorts by bytes whatever locale its
+  database names, and the one order case wrote `a-step` and `b-step`, which
+  every collation orders alike. Measured before anything changed: against
+  glibc's `en_US.UTF-8`, against ICU's `en-US` on the Debian image, and against
+  ICU's `en-US` on the image CI uses, the PostgreSQL store's suite, the corpus
+  case, and the PostgreSQL conformance leg passed with the counts of the
+  byte-ordered control, 42, 7, and 3,395 tests.
+  The rule is DESIGN.md §3.4 rule 11: a name compares and orders by its bytes
+  on every dialect, as it already did on libSQL, which compares bytes, and on
+  MySQL, whose schema declares a binary collation on every string column.
+  CI's three PostgreSQL service blocks and the README's command create the
+  database with ICU's `en-US`. The order case writes eight names that separate
+  the orders and was committed failing on PostgreSQL alone: red by name against
+  the ICU server, and green against the same image without the arguments, on
+  libSQL, and on MySQL. Version 7 of the PostgreSQL schema declares
+  `COLLATE "C"` on all 48 text columns of its eight tables, and libSQL and MySQL
+  take an empty version 7 so the numbering stays aligned.
+  `store-postgres/test/text-collation.test.ts` reads the catalog: no text
+  column and no index key keeps its database's collation, and no version
+  rewrites a table. Three registered mutations hold it: one drops a column
+  from the version, one makes it rewrite a table, and one declares another
+  collation on an index key. A case in the same file holds CI's server to the
+  collation provider the workflows declare. No statement changed, so the
+  corpus is main's.
+  What it costs, measured on one machine. With a million rows in each of
+  `tasks`, `runs` and `checkpoints` and the data directory in memory, version 7
+  commits in 3.2 seconds with nothing else running: no table is rewritten and
+  all fifteen indexes are rebuilt. The `CHECK` constraint on `state` costs a
+  scan and little else, 1,449 ms against 1,390 ms for the same table without
+  it. The version's first statement takes every table's lock before any index
+  is built, and that was measured as well, with `meta` first and write batches
+  only. Under four workers of an older build (one run in each sixteen used
+  eight) it committed in 16 of 16 runs at a million rows a table and in 6 of
+  6 at four million, and the same version without that statement committed in
+  15 of 16 and in 0 of 6, because the migration was then the deadlock victim
+  after it had built indexes. Those runs sent no read batch and no event
+  batch, so they could not show what a read that loses a deadlock costs.
+  On a fresh database the version and the runner's lock, one statement in each
+  of the seven versions, cost PostgreSQL 17 ms together where
+  opening and migrating a fixture took 27, about a minute over the 3,342
+  fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
+  read and one more locked batch, 4 ms where it took 39. That cost is PR4.4b's
+  to remove: its exit test counts MySQL's five empty versions, and this is the
+  fifth. libSQL showed no difference. Creating CI's database with ICU
+  cost the conformance leg nothing one run could show, 471 seconds against
+  465. With version 7 the leg took 554 and 556 seconds in one run and 609 and
+  612 in another, on a byte-ordered and an ICU server each time and under more
+  load than the runs before, so the fixture figure is the comparison to trust.
+  Version 7 is the first version to lock `meta`, and as first built two racing
+  migrators deadlocked there: the second blocked on the first one's uncommitted
+  sentinel while it held its own lock on `meta`, and PostgreSQL took its one
+  second timeout to abort one of them. With warmed migrators racing on a fresh
+  schema for 100 rounds, the server counted 61 deadlocks with four migrators
+  and 121 with eight, and 46 and 33 rounds took over a second. Every version's
+  batch now takes `meta`'s lock in SHARE ROW EXCLUSIVE mode ahead of its
+  sentinel, so a second migrator waits holding nothing. The same probe then
+  counts no deadlock, a round takes 40 ms with four migrators and 47 with
+  eight, where main's six versions take 23, and none took over 77 ms. A case
+  that replays each version's batch on two connections holds it: the second
+  migrator must wait for `meta`'s lock while it holds no lock on a relation of
+  the schema, which fails at every version without the lock, and a registered
+  mutation removes the lock.
+  A read batch can lose a deadlock to the version's table locks, and the
+  executor reported it where it ran a write again. It now runs a read again
+  too, three attempts in all, held without a race by
+  `store-postgres/test/deadlocked-read.test.ts` and by a registered mutation.
+  That reaches builds from this one on: workers of an older build still report
+  a read of theirs that loses to version 7. The version's lock list is in the
+  order the engine's own statements take their locks, `event_locks` first and
+  `meta` last, so a statement that arrives while the version waits holds
+  nothing while it waits, held by
+  `store-postgres/test/version-lock-order.test.ts` and a registered mutation.
+  The order was measured on an empty schema under write batches, read batches
+  and event batches from four workers and two drivers of the older build, 80
+  migrations an order: `meta` first committed 69 of 80 with 568 deadlocks and
+  13 errors at callers, `meta` last with the tables as declared 80 of 80 with
+  339 and 65, and the engine's order 80 of 80 with 126 and 51, every one of
+  the 51 a driver's sweep scan, whose statement names `tasks` first. The
+  orders ran one after another under a rising load (64, 114 and 142), over
+  about 38,100, 29,000 and 32,000 calls, so for each thousand calls the
+  deadlocks are 14.9, 11.7 and 3.9: the engine's order's gain stands, and of
+  `meta` last's gain the commits and the median stand and most of the deadlock
+  count does not. Errors at callers of the older build rose from 13 to 51,
+  which is still the right trade: a sweep scan that loses costs a driver one
+  tick, where 2 of the 13 and 18 of the 65 were a worker's checkpoint read,
+  which costs a run its lease, and version 7's own rollout runs under the
+  older build. At scale
+  with that mix and order the version committed in 12 of 12 runs at a million
+  rows a table (3.9 to 6.4 seconds) and in 6 of 6 at four million (14.1 to
+  16.3), on its first attempt in each of the 12 runs whose attempts could be
+  counted (every third run went through the executor, which does not show
+  them), and callers saw 4 errors in the 18 runs, each a sweep scan. Under
+  this build's traffic it committed in 6 of 6 at a million rows and no caller
+  saw an error. A batch that loses three deadlocks
+  in a row is still reported: the driver counts an outage, and the run waits
+  out its lease. The version itself lost all three in 1 of 160 migrations in
+  this order, which leaves version 6 and can be run again.
+  The registry moves from 925 to 931. The per-fixture cost
+  is also why this PR raises the limits of three CI jobs, by the rule and with
+  the arithmetic in the PR3.13 entry. An
+  operator's own view, materialized view, trigger with a column list or a
+  `WHEN` clause, row security policy or generated column over a store table
+  stops the version: PostgreSQL refuses to change the type of a column such an
+  object reads, `migrate()` fails and leaves version 6, and it commits once
+  the object is dropped. A build older than the schema now hears from
+  `migrate()`, on every dialect, that a newer build migrated the database and
+  that it should run that build, where it was told to repair the database by
+  hand.
+  - The task result's tie between two attempt records of one attempt is broken
+    by the bytes of the checkpoint name from version 7 on, like every other
+    order. No way to reach such a tie was found: the batch that fails a
+    rollback writes one record and ends its run.
+  - An option, not built: hold the order of a version's lock list among the
+    store tables. `store-postgres/test/version-lock-order.test.ts` holds that
+    `meta` comes last, for two arrivals, a sweep and a spawn, and a list that
+    ends in `meta` and crosses a worker's read passes it: the order among the
+    store tables was chosen by measurement. Two cases would hold it. One is
+    that case over every call of the store's two ports, generated as the
+    self-concurrency surface's contests are. The other blocks a worker read's
+    second table and sees the read hold its first, for each read that names
+    two store tables. Their trigger is the next version that locks tables:
+    version 7's text is frozen once it is on main.
+  - An option, not built: run a deadlocked read batch again on MySQL. Its
+    executor runs only a write batch again, which is safe today: a consistent
+    read takes no InnoDB lock, and MySQL commits each DDL statement on its own,
+    so no MySQL version holds a lock on one table while it waits for another.
+    Its trigger is a MySQL version that takes locks on more than one table at
+    once, and `store-postgres/test/deadlocked-read.test.ts` is the shape to
+    port.
+  - An option, not built: one definition of the refusal for a schema newer than
+    the build. Each of the three stores builds that message and has a case for
+    it, where main already had the older message three times. A helper in core
+    beside `SchemaMismatchError` would be the single definition. libSQL's
+    `migration-postcondition-old-version` mutation finds its text in that
+    file, so the move needs a re-aim and a line in the base gate's bridge. It
+    fits PR4.4d, which hoists the stores' third copies, and a fourth store is
+    its trigger otherwise.
+  - An option, not built: a short `lock_timeout` on the version's lock
+    statement, with reruns. The version then gives up its place in every lock
+    queue when it cannot have the locks at once, where today store traffic
+    queues behind it for as long as an older transaction stays open, all of it
+    at most (the statement takes its tables one at a time, so what queues
+    meanwhile is whatever touches a table it has already taken), and it tries
+    again. Its trigger is a deployment that must migrate under sustained
+    traffic, or beside transactions that stay open for long.
+  - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
+    key. Those reads walk a task's checkpoints because a range over a name was
+    not sound under a linguistic collation. From version 7 on the range is
+    sound on PostgreSQL too. It is another PR's to build.
+  - An option, not built: a test that fails when the server under test sorts
+    by bytes. After version 7 nothing fails if CI's service loses its ICU
+    arguments, and the suite then no longer sees a statement that orders by
+    the database's collation without going through a column. It waits for the
+    local default server to be linguistic too, because until then the
+    PostgreSQL leg must pass on both kinds of server.
+  - An option, not built: a check of the database's encoding. Byte order is
+    code point order for UTF-8 text, which is the encoding of every server
+    this was run against, and nothing reads `server_encoding`.
 
 ## Phase 5 — operations + sharding
 

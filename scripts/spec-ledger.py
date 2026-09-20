@@ -4,6 +4,13 @@ labeled batch in the store must be accounted for INSIDE the spec's ledger
 block, as a quoted 'label'. Multiline-tolerant harvest; dynamic labels are
 declared here and asserted present in the source so they cannot rot.
 
+Each side model that scripts/tla.sh enrols keeps a ledger block of its own, and
+it is read too: its quoted labels are labels the stores send, its actions are
+the actions of the module's next-state relation, all of them, and a class it
+states is the class the main ledger gives that label. Every action the main ledger
+names is a disjunct of Scheduler.tla's Next, or the action a side block maps from the
+same label.
+
 `--labels` prints every static label. `--text-labels` prints, for each store, the
 labels of its raw batches, which are the statements it sends as SQL text and not
 as trees; a template label is its prefix and a star."""
@@ -122,7 +129,10 @@ spec = (root / "specs" / "Scheduler.tla").read_text()
 
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.
-match = re.search(r"BATCH-LABEL LEDGER.*?-{20,}\n\n", spec, re.S)
+# The block starts at the comment line that begins with its name. Prose that
+# names the block starts nothing, or what it quotes would count as mapped.
+LEDGER_BLOCK = re.compile(r"^\\\* BATCH-LABEL LEDGER.*?-{20,}\n\n", re.S | re.M)
+match = LEDGER_BLOCK.search(spec)
 if not match:
     sys.exit("spec-ledger: BATCH-LABEL LEDGER block not found in Scheduler.tla")
 block = match.group(0)
@@ -141,11 +151,13 @@ if missing:
 # replay semantics nobody classified is a label whose replay semantics
 # nobody thought about.
 TAGS = ("[cas-fenced]", "[receipt]", "[read]", "[setup]")
-untagged = []
-for label in sorted(labels):
+label_class: dict[str, str] = {}
+for label in labels:
     line = next((ln for ln in block.splitlines() if f"'{label}'" in ln), "")
-    if sum(1 for t in TAGS if t in line) != 1:
-        untagged.append(label)
+    stated = [t for t in TAGS if t in line]
+    if len(stated) == 1:
+        label_class[label] = stated[0]
+untagged = sorted(labels - label_class.keys())
 if untagged:
     for label in untagged:
         print(
@@ -160,11 +172,17 @@ if untagged:
 # refusal (zombie or replay gets zero rows / an error, never success).
 # Per-ACTION, not per-label, is load-bearing: 'await-event' had a twin for
 # its miss branch while the hit branch shipped an unfenced success read.
+# main_pairs is every mapping of the block, whatever its class, for the check further down
+# that each name is an action.
 fenced_actions = set()
+main_pairs: set[tuple[str, str]] = set()
 for ln in block.splitlines():
-    m = re.search(r"'[a-zA-Z0-9:_-]+'\s*->\s*([A-Za-z0-9_/ ]+?)\s*\[cas-fenced\]", ln)
+    m = re.search(r"'([a-zA-Z0-9:_-]+)'\s*->\s*([A-Za-z0-9_/ ]+?)\s*(\[[a-z-]+\])", ln)
     if m:
-        fenced_actions.update(a.strip() for a in m.group(1).split("/"))
+        names = {a.strip() for a in m.group(2).split("/")}
+        main_pairs.update((m.group(1), name) for name in names)
+        if m.group(3) == "[cas-fenced]":
+            fenced_actions.update(names)
 tests = ""
 for path in sorted(root.glob("packages/*/test/**/*.ts")):
     tests += path.read_text()
@@ -190,8 +208,187 @@ if stale_marks:
         )
     sys.exit(1)
 
+# The side models. scripts/tla.sh enrols a side model by the mutant list beside it,
+# <Model>.mutants.json, and the same list enrols the model's ledger block here, so a
+# model that is checked is a model whose mapping is read. A side block is held to what
+# this script can see: its labels are the stores', its actions are the module's, and a
+# class it states is the one the main ledger gives the label. No guard is read here.
+#
+# The block is line-oriented, so that nothing is guessed. LAYOUT is the whole rule, and
+# a line that breaks it is answered with it.
+LAYOUT = (
+    "After `\\*`, one space is prose, three start an entry, and five or more continue it. "
+    "An entry is `'label' ... -> Action / Action  [class]`, whole on its line, or "
+    "`Action -- reason` for an action that no batch implements. A line that is not an "
+    "entry holds no arrow and no bracketed class."
+)
+ACTION = r"[A-Z][A-Za-z0-9_]*"
+ACTIONS = rf"{ACTION}(?: / {ACTION})*"
+MAPPING = re.compile(rf"(?P<left>'[^'\s]+'.*?) -> (?P<actions>{ACTIONS})(?:  .*)?")
+NO_BATCH = re.compile(rf"(?P<actions>{ACTIONS}) -- \S.*")
+QUOTED = re.compile(r"'([^'\s]+)'")
+BRACKETED = re.compile(r"\[[^\]\s]*\]")
+
+
+DEFINITION = re.compile(r"[A-Za-z_]\w*(?:\([^)]*\))? *==")
+RULE = re.compile(r"-{4,}|={4,}")
+
+
+def next_state_actions(module_text: str) -> tuple[set[str], str | None]:
+    """The actions Next is a disjunction of, and why the reading stopped, when it did.
+
+    Next runs to the next definition or to a rule of the module. Blank lines and comments
+    inside it are passed over. Whatever else stands there is a disjunct, a named action
+    under its quantifiers, or the reading stops and says what it met.
+    """
+    lines = module_text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("Next ==")), None)
+    if start is None:
+        return set(), "the module defines no Next"
+    body = [lines[start][len("Next ==") :]]
+    for ln in lines[start + 1 :]:
+        if DEFINITION.match(ln) or RULE.match(ln):
+            break
+        body.append(ln)
+    flat = " ".join(re.sub(r"\\\*.*", "", ln) for ln in body)
+    actions = set()
+    for disjunct in re.sub(r"\\E[^:]*:", " ", flat).split("\\/"):
+        named = re.fullmatch(rf"\s*({ACTION})(?:\([^()]*\))?\s*", disjunct)
+        if named:
+            actions.add(named.group(1))
+        elif disjunct.strip():
+            met = " ".join(disjunct.split())[:80]
+            return set(), f"this part of Next is not a named action under its quantifiers: {met}"
+    return actions, None if actions else "Next names no action"
+
+
+problems: list[str] = []
+side_models: list[str] = []
+side_pairs: set[tuple[str, str]] = set()
+for mutants in sorted((root / "specs").glob("*.mutants.json")):
+    model = mutants.name.removesuffix(".mutants.json")
+    module = root / "specs" / f"{model}.tla"
+    if not module.is_file():
+        problems.append(
+            f"spec-ledger: specs/{mutants.name} enrols {model}.tla, which does not exist"
+        )
+        continue
+    module_text = module.read_text()
+    found = LEDGER_BLOCK.search(module_text)
+    if not found:
+        problems.append(
+            f"spec-ledger: {model}.tla has no BATCH-LABEL LEDGER block, and scripts/tla.sh "
+            f"checks the model (specs/{mutants.name} enrols it), so its mapping onto the "
+            f"stores' batches must be written where this script reads it"
+        )
+        continue
+    next_actions, unreadable = next_state_actions(module_text)
+    if unreadable:
+        problems.append(
+            f"spec-ledger: cannot read {model}.tla's next-state relation: {unreadable}"
+        )
+        continue
+    side_block = found.group(0)
+    for token in sorted(set(QUOTED.findall(side_block)) - labels):
+        problems.append(
+            f"spec-ledger: {model}.tla's ledger block quotes '{token}', which is not a "
+            f"batch label of any store (a label that was renamed or deleted leaves a "
+            f"mapping that reads as current)"
+        )
+    mapped: set[str] = set()
+    no_batch: set[str] = set()
+    for line in side_block.splitlines():
+        shape = re.fullmatch(r"\\\*( *)(.*)", line)
+        indent, body = (len(shape.group(1)), shape.group(2)) if shape else (0, line)
+        if not body or indent == 1 or indent >= 5:
+            # A blank line, prose, or the continuation of an entry. None of them is read
+            # further, so none may hold what only an entry's own line is read for.
+            if "->" in body or BRACKETED.search(body):
+                problems.append(
+                    f"spec-ledger: this line of {model}.tla's ledger block is not an entry, and "
+                    f"only an entry's own line holds an arrow or a bracketed class:\n"
+                    f"    {line}\n  {LAYOUT}"
+                )
+            continue
+        mapping = MAPPING.fullmatch(body) if indent == 3 else None
+        unmapped = NO_BATCH.fullmatch(body) if indent == 3 else None
+        if mapping:
+            actions = mapping["actions"].split(" / ")
+            mapped.update(actions)
+            side_pairs.update(
+                (label, action) for label in QUOTED.findall(mapping["left"]) for action in actions
+            )
+            stated = BRACKETED.findall(body)
+            if len(stated) > 1 or not set(stated) <= set(TAGS):
+                problems.append(
+                    f"spec-ledger: {model}.tla's ledger entry states {' '.join(stated)}: an "
+                    f"entry states at most one duplicate-semantics class, one of "
+                    f"{', '.join(TAGS)}\n    {line}"
+                )
+                continue
+            for label in QUOTED.findall(mapping["left"]):
+                if stated and label in label_class and label_class[label] != stated[0]:
+                    problems.append(
+                        f"spec-ledger: {model}.tla's ledger block gives '{label}' the class "
+                        f"{stated[0]}, and Scheduler.tla's ledger gives it "
+                        f"{label_class[label]}: the class is the label's, so the two must agree"
+                    )
+        elif unmapped:
+            no_batch.update(unmapped["actions"].split(" / "))
+        else:
+            problems.append(
+                f"spec-ledger: cannot read this line of {model}.tla's ledger block:\n"
+                f"    {line}\n  {LAYOUT}"
+            )
+    named = mapped | no_batch
+    for action in sorted(named - next_actions):
+        problems.append(
+            f"spec-ledger: {model}.tla's ledger block names action '{action}', which is not "
+            f"an action of the module's next-state relation"
+        )
+    for action in sorted(next_actions - named):
+        problems.append(
+            f"spec-ledger: action '{action}' of {model}.tla's next-state relation is not in "
+            f"its ledger block (map it from a batch label, or list it as having no batch, "
+            f"with the reason)"
+        )
+    for action in sorted(mapped & no_batch):
+        problems.append(
+            f"spec-ledger: {model}.tla's ledger block maps action '{action}' from a batch "
+            f"and also lists it as having no batch"
+        )
+    side_models.append(f"{model}.tla ({len(next_actions)} actions)")
+
+# The main ledger names actions too, and a name that is no action takes a twin that proves
+# nothing: 'fail' was mapped to FailRun, which no module defines, and one marker under that
+# name stood for the two actions behind it. Each name is an action of Scheduler.tla's Next,
+# or the action a side model's block maps from the same label, which is how
+# 'record-task-done' names AwaitMaterialize of ChildTasks.tla. One direction only: Next may
+# hold an action that no line names.
+if main_pairs:
+    scheduler_actions, unreadable = next_state_actions(spec)
+    if unreadable:
+        problems.append(
+            f"spec-ledger: cannot read Scheduler.tla's next-state relation: {unreadable}"
+        )
+    for label, action in sorted(main_pairs - side_pairs):
+        if not unreadable and action not in scheduler_actions:
+            problems.append(
+                f"spec-ledger: Scheduler.tla's ledger maps '{label}' to '{action}', which is not "
+                f"an action of its next-state relation, and no side model's block maps "
+                f"'{label}' to it"
+            )
+if problems:
+    print("\n".join(problems))
+    sys.exit(1)
+
 print(
     f"spec-ledger: all {len(labels)} batch labels accounted for and "
     f"duplicate-classified; all {len(fenced_actions)} fenced actions "
     f"have executable twins (block-scoped)"
 )
+if side_models:
+    print(
+        f"spec-ledger: side model blocks read: {', '.join(side_models)}; their labels "
+        f"are the stores' and their actions are their modules'"
+    )

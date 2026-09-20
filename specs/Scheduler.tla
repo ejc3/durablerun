@@ -258,11 +258,13 @@
 \*     legal fresh heartbeat; after fence loss it is zero-row)
 \*   'complete' -> CompleteRun  [cas-fenced]  (replay finds state #
 \*     'running': zero-row)
-\*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
+\*   'fail' -> FailRunWithRetry / FailRunTerminal  [cas-fenced]  (two arms of
+\*     one batch, Terminal at the budget; replay zero-row; the successor
 \*     insert keys on the CAS stamp, so no double successor)
-\*   'fail-rollback' -> FailRun  [cas-fenced]  (the same transition of the run,
-\*     taken by a failed rollback of a task that is rolling back; what it means
-\*     for the saga is Sagas.tla's RollbackRetry and RollbackHalts)
+\*   'fail-rollback' -> FailRunWithRetry / FailRunTerminal  [cas-fenced]  (the
+\*     same transition of the run, either arm, taken by a failed rollback of a
+\*     task that is rolling back; what it means for the saga is Sagas.tla's
+\*     RollbackRetry and RollbackHalts)
 \*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
 \*   'defer-launch' -> DeferLaunch  [cas-fenced]  (fenced on the claim receipt:
 \*     a replay finds the run parked, or activated, and matches nothing)

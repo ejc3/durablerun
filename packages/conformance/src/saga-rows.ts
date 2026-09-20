@@ -24,12 +24,16 @@ async function rowsOf(raw: SqlExecutor, sql: string): Promise<SqlRow[]> {
  * - ReverseOrder: a step is rolled back only once every step that started after it is.
  * - ForwardFrozenInSaga: no forward checkpoint is as new as the phase marker, and a task
  *   in the phase never completed.
+ * - OneAttemptRecordPerRun: no two attempt records of a task share an owning run. The
+ *   model has no runs, so this one is the engine's own. A run fails once, so it writes one
+ *   record at most, and the task result reads the record its last run wrote, with no
+ *   order to choose among several.
  */
 export async function sagaViolations(raw: SqlExecutor): Promise<string[]> {
   const tasks = await rowsOf(raw, 'SELECT task_id, state FROM tasks')
   const checkpoints = await rowsOf(
     raw,
-    'SELECT task_id, checkpoint_name, state, owner_attempt FROM checkpoints',
+    'SELECT task_id, checkpoint_name, state, owner_run_id, owner_attempt FROM checkpoints',
   )
   const violations: string[] = []
   const byTask = new Map<string, SqlRow[]>()
@@ -74,6 +78,10 @@ export async function sagaViolations(raw: SqlExecutor): Promise<string[]> {
       if (decodeRollbackTry(String(row.state)) === null) {
         violations.push(`saga/attempt-record-undecodable: ${taskId}/${row.checkpoint_name}`)
       }
+    }
+    const owners = named(SAGA_TRIES_PREFIX).map((row) => String(row.owner_run_id))
+    if (new Set(owners).size !== owners.length) {
+      violations.push(`saga/attempt-records-share-a-run: ${taskId}`)
     }
     if (marker === undefined) {
       if (rolledBack.size > 0 || named(SAGA_TRIES_PREFIX).length > 0) {

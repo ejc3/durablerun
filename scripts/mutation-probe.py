@@ -3830,6 +3830,48 @@ MUTATION_SPECS = [
         "the schema-version read keeps a snapshot older than its name lookup and rejects a cold-start migrator",
     ),
     (
+        "postgres-text-column-keeps-database-collation",
+        "packages/store-postgres/src/schema.ts",
+        "        ALTER COLUMN checkpoint_name TYPE TEXT COLLATE \"C\",\n",
+        "",
+        "a text column keeps the collation of its database, so a caller's names come back in an order no other dialect returns",
+    ),
+    (
+        "postgres-collation-migration-rewrites-a-table",
+        "packages/store-postgres/src/schema.ts",
+        "        ALTER COLUMN owner_run_id TYPE TEXT COLLATE \"C\"`,\n",
+        "        ALTER COLUMN owner_run_id TYPE TEXT COLLATE \"C\" USING owner_run_id || ''`,\n",
+        "a migration rewrites a table, which a read batch's older snapshot then sees as empty",
+    ),
+    (
+        "postgres-migrator-locks-meta-before-its-sentinel",
+        "packages/store-postgres/src/admin.ts",
+        "    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },\n",
+        "",
+        "a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
+        "postgres-deadlocked-read-runs-again",
+        "packages/store-postgres/src/executor.ts",
+        "          const runAgain =\n            attempt < DEADLOCK_VICTIM_ATTEMPTS &&\n",
+        "          const runAgain =\n            mode !== 'read' &&\n            attempt < DEADLOCK_VICTIM_ATTEMPTS &&\n",
+        "a read batch that loses a deadlock to a schema version's table locks is reported to its caller and never run again",
+    ),
+    (
+        "postgres-index-key-keeps-another-collation",
+        "packages/store-postgres/src/schema.ts",
+        "      `CREATE INDEX runs_woken ON runs (queue, wake_event)\n",
+        "      `CREATE INDEX runs_woken ON runs (queue, wake_event COLLATE \"POSIX\")\n",
+        "an index key declares a collation of its own, which the column's change to the byte collation does not reach, so the index orders by another rule than its column",
+    ),
+    (
+        "postgres-version-locks-meta-before-the-store-tables",
+        "packages/store-postgres/src/schema.ts",
+        "      `LOCK TABLE event_locks, events, waits, checkpoints, runs, tasks, drivers, meta\n",
+        "      `LOCK TABLE meta, event_locks, events, waits, checkpoints, runs, tasks, drivers\n",
+        "a statement that arrives while the version waits takes its own table and queues for meta behind the version, which then asks for that table, and PostgreSQL ends the deadlock by aborting one of them",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -9945,6 +9987,42 @@ VERDICTS = {
         "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
         "mutation-verdict:construction:postgres-version-read-isolation",
     ),
+    "postgres-text-column-keeps-database-collation": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation declares the byte collation on every text column and every index key",
+        "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
+    ),
+    "postgres-collation-migration-rewrites-a-table": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation migrates without rewriting a table",
+        "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
+    ),
+    "postgres-migrator-locks-meta-before-its-sentinel": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/racing-migrators.test.ts",
+        "racing PostgreSQL migrators make the second wait for the first at every version, and never deadlock",
+        "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
+    ),
+    "postgres-deadlocked-read-runs-again": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/deadlocked-read.test.ts",
+        "a read batch that loses a deadlock is run again and returns",
+        "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
+    ),
+    "postgres-index-key-keeps-another-collation": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/text-collation.test.ts",
+        "PostgreSQL text collation declares the byte collation on every text column and every index key",
+        "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
+    ),
+    "postgres-version-locks-meta-before-the-store-tables": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/version-lock-order.test.ts",
+        "a statement that arrives while a version waits for an older transaction waits holding no store table, so it cannot deadlock with the version",
+        "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
+    ),
     "postgres-lone-statement-is-the-whole-batch": ExpectedVerdict(
         "construction",
         "packages/store-postgres/test/executor.test.ts",
@@ -12425,6 +12503,55 @@ MUTATION_SPECS.extend(
             "a step stays owed a rollback after its rollback ran",
         ),
         (
+            "saga-error-is-the-last-runs-record",
+            "packages/store-libsql/src/fragments.ts",
+            "       AND st.owner_run_id = ${task}.last_attempt_run\n",
+            "       AND 1 = 1\n",
+            "a failed attempt that had budget left is read as the rollback that halted the saga",
+        ),
+        (
+            "saga-names-begin-at-the-prefix",
+            "packages/store-libsql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "a name below a reserved prefix is read as a name under it",
+        ),
+        (
+            "saga-names-end-before-the-first-name-past-the-prefix",
+            "packages/store-libsql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'`\n",
+            "every name past a reserved prefix is read as a name under it",
+        ),
+        (
+            "mysql-saga-name-range-keeps-plain-literals",
+            "packages/store-mysql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= ${exactly(prefix)}\n   AND ${alias}.checkpoint_name < ${exactly(firstNamePast(prefix))}`\n",
+            "a binary operand stops the key from serving a saga's name range, so the task's checkpoints are walked",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-failed-task",
+            "packages/store-postgres/src/fragments.ts",
+            "  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${sagaBegan(task)}\n",
+            "the attempt records are read for a saga that a cancellation ended",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-saga",
+            "packages/store-postgres/src/fragments.ts",
+            "  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${task}.state = 'failed'\n",
+            "the attempt records are read for a failed task whose saga never began",
+        ),
+        (
+            "saga-first-name-past-needs-a-colon",
+            "packages/core/src/sagas.ts",
+            "  if (prefix[last] !== ':') {\n",
+            "  if (prefix[last] === undefined) {\n",
+            "a prefix that does not end in a colon is given a range end, which bounds other names",
+        ),
+        (
             "saga-task-update-binds-its-queue",
             "packages/store-libsql/src/store.ts",
             "      // for every task row, and the update then walks the table to find one task.\n      queue,\n",
@@ -12556,6 +12683,13 @@ MUTATION_SPECS.extend(
             "      if (!ofThePhase && Number(row.owner_attempt) >= Number(marker.owner_attempt)) {\n",
             "      if (false) {\n",
             "the saga row checker passes rows with the defect saga/forward-checkpoint-in-the-phase",
+        ),
+        (
+            "saga-row-checker-attempt-records-share-a-run",
+            "packages/conformance/src/saga-rows.ts",
+            "    if (new Set(owners).size !== owners.length) {\n",
+            "    if (false) {\n",
+            "the saga row checker passes rows with the defect saga/attempt-records-share-a-run",
         ),
         (
             "saga-replay-harness-reports-the-order",
@@ -12897,6 +13031,17 @@ for _verdict, _names in (
     (
         ExpectedVerdict(
             "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/attempt-records-share-a-run, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-attempt-records-share-a-run",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
             "packages/sdk/test/replay-equivalence.test.ts",
             "saga replay equivalence (generated programs x fault points across the phase) says what a fixed program rolls back, in what order, and what each rollback is handed",
             "mutation-verdict:behavior:saga-replay-harness-reports-the-order",
@@ -13060,6 +13205,65 @@ for _verdict, _names in (
         ),
         (
             "mysql-saga-reserved-name-is-compared-exactly",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names no rollback error when a cancellation or a cap halts the saga after a failed attempt that had budget left",
+            "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-error-is-the-last-runs-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] owes no rollback to a name that only looks like a start marker",
+            "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-names-begin-at-the-prefix",
+            "saga-names-end-before-the-first-name-past-the-prefix",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the saga reads beside their own task's checkpoints, on MySQL fails a task, and reads a result, without walking the checkpoints the task has",
+            "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
+        ),
+        (
+            "mysql-saga-name-range-keeps-plain-literals",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/query-plans.test.ts",
+            "walks a saga's names among one task's rows of the key, and reads no attempt record when no saga began",
+            "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-failed-task",
+            "postgres-saga-attempt-records-need-a-saga",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "the names under a reserved saga prefix, as a range of names compared by bytes refuses a prefix that does not end in a colon",
+            "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
+        ),
+        (
+            "saga-first-name-past-needs-a-colon",
         ),
     ),
 ):
@@ -15457,6 +15661,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-row-checker-forward-checkpoint-in-the-phase": (
         "one test is generated for each condition of the checker, and its title carries the condition"
     ),
+    "saga-row-checker-attempt-records-share-a-run": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
     "saga-nesting-guard-covers-the-start-marker": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -17836,7 +18043,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 925:
+        if len(MUTATIONS) != 939:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
