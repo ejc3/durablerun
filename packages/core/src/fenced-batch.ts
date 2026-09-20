@@ -264,14 +264,15 @@ interface Named {
 const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
 
 /**
- * The last sentence of both clock refusals: what to write in place of `age(a, b)`. Every call of
- * `age` is refused, the form with two arguments too, which reads no clock, so whoever wrote that
- * form is told what stands in for it.
+ * The last sentence of a clock refusal where a clock was spelled: what to write in place of
+ * `age(a, b)`. Every call of `age` is refused, the form with two arguments too, which reads no
+ * clock, so whoever wrote that form is told what stands in for it. A statement refused for holding
+ * the batch clock's token spelled nothing, and is told nothing of it.
  */
 const SPAN_ADVICE =
   'A span between two stored instants is a subtraction of the two columns, which reads no clock, so age() is refused with two arguments as with one'
 const clockReadRule = (at: string): string =>
-  `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8). ${SPAN_ADVICE}`
+  `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8)`
 const blindCounterRule = (at: string): string =>
   `${at} bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped rows and counts twice; derive the value from the winning row's post-state instead`
 
@@ -1066,7 +1067,8 @@ export class FencedBatch {
     // The clock token compiles to the batch clock's own text, so one comparison finds
     // the token and that text written into a fragment alike.
     if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {
-      throw new Error(clockReadRule(at))
+      const advice = spelledClock ? `. ${SPAN_ADVICE}` : ''
+      throw new Error(`${clockReadRule(at)}${advice}`)
     }
     if (spelledClock) {
       throw new Error(

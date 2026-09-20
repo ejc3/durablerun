@@ -1447,6 +1447,13 @@ MUTATION_SPECS = [
         "a listed aggregate spelled in upper case is refused",
     ),
     (
+        "tree-clock-advice-only-where-spelled",
+        "packages/core/src/fenced-batch.ts",
+        "      const advice = spelledClock ? ",
+        "      const advice = true ? ",
+        "a follow-on refused for holding the batch clock's token is told about age() and a subtraction, which it never wrote",
+    ),
+    (
         "tree-clock-spelling-case-fold",
         "packages/core/src/sql-tree.ts",
         "  ].join('|'),\n"
@@ -8166,6 +8173,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the statement grammar reads an aggregate name in any case",
         "mutation-verdict:construction:tree-grammar-aggregate-case-fold",
+    ),
+    "tree-clock-advice-only-where-spelled": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock says nothing about a span to a follow-on that spelled no clock",
+        "mutation-verdict:construction:tree-clock-advice-only-where-spelled",
     ),
     "tree-clock-spelling-case-fold": ExpectedVerdict(
         "construction",
@@ -18099,7 +18112,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 936:
+        if len(MUTATIONS) != 937:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

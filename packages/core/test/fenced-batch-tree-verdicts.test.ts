@@ -1102,8 +1102,11 @@ describe('the tree path', () => {
             statement(taskFollowOn().set({ first_started_at_ms: nowValue })),
             'one',
           )
+      expect(
+        refusal,
+        'mutation-verdict:construction:tree-clock-advice-only-where-spelled',
+      ).not.toThrow(/subtraction/)
       expect(refusal).toThrow(/reads the clock/)
-      expect(refusal).not.toThrow(/subtraction/)
     })
 
     it('says a follow-on that spells a clock reads the clock', () => {
