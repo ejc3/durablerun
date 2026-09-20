@@ -123,19 +123,23 @@ a last docs PR gives a live owner to every open bullet that is left.
    contest of PR4.4c's surface meets no deadlock victim. That surface found the
    defect: at five rows or fewer the claim's update scans `runs` and locks
    every row, so concurrent claimers deadlock.
-9. PR3.4b: `rollback_error` names the rollback that failed when a cancellation
-   follows a failed attempt that had budget left, held by a case on three
-   dialects that was committed failing. Saga reads on libSQL and MySQL are
-   ranges the checkpoint key serves, and their plan pins refuse the walk.
-   PostgreSQL keeps the walk, which is keyed by task, because a range over a
-   name is not sound under a linguistic collation. The hosted inspect route
-   shows the rollback outcome. This is met. PR3.4b reads the attempt record
-   that the task's last run wrote, so a cancellation or a cap after a failed
-   attempt with budget left names no rollback: a `sagas` case committed
-   failing holds it on three dialects, and the fuzz walk holds it over every
-   saga it ends. The plan pins of `store-libsql` and `store-mysql` refuse the
-   walk, the one in `store-postgres` accepts the task-keyed walk and refuses a
-   name compared by order, and a hosted router case holds the inspect route.
+9. PR3.4b: `rollback_error` names a rollback only when that rollback's failure
+   ended the task, so it names none when a cancellation or a cap follows a
+   failed attempt that had budget left, held by a case on three dialects that
+   was committed failing. Saga reads on libSQL and MySQL are ranges the
+   checkpoint key serves, and their plan pins refuse the walk. PostgreSQL
+   keeps the walk, which is keyed by task, because a range over a name is not
+   sound under a linguistic collation. The hosted inspect route shows the
+   rollback outcome. This is met. PR3.4b reads the attempt record that the
+   task's last run wrote: a `sagas` case committed failing holds it on three
+   dialects, and the fuzz walk holds it over every task it spawns. What an
+   operator loses is the last failed attempt's error in the result of a saga
+   that something else halted. It stays readable through `getCheckpoints`, in
+   the `$rollback-tries:<step>` record. The plan pins of `store-libsql` and
+   `store-mysql` refuse the walk. The one in `store-postgres` accepts the
+   task-keyed walk, and refuses a checkpoint name ordered or compared by
+   order, in an index condition or in a saga statement's text. A hosted router
+   case holds the inspect route.
 10. PR3.10a: the attestation refuses a postmortem that the pull request adds
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
@@ -1789,10 +1793,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the task's last run. The read now names the record the task's last run
     wrote, on all three stores. A case in the `sagas` surface builds both
     histories, and it failed on three dialects before the change. The fuzz
-    walk now reads the result of every saga task at its end, and requires a
-    rollback error exactly when a rollback's failure ended the task, and that
-    rollback's: the class ran green under the fuzz before, because no row
-    invariant can see a value that is derived when it is read.
+    walk now reads the result of every task it spawned at its end, and
+    requires a rollback error exactly when a rollback's failure ended the
+    task, and that rollback's: the class ran green under the fuzz before,
+    because no row invariant can see a value that is derived when it is read.
+    The read takes one record under a limit of one and no order, which rests
+    on a run writing one attempt record at most, and the saga row checker now
+    holds that over every history the suite builds. What an operator loses is
+    the last failed attempt's error in the result of a saga that something
+    else halted. It stays readable through `getCheckpoints`, in the
+    `$rollback-tries:<step>` record.
   - A saga's start markers and attempt records were found by a test of each
     name, which the checkpoints key cannot serve, so the failure of any task
     and every read of a result walked all the checkpoints the task has. libSQL
@@ -1804,18 +1814,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     PostgreSQL keeps the test of each name, because a name there orders under
     the database's collation and the range is not sound. DESIGN.md §3.4
     records that difference with the measured miss, which neither the local
-    server nor CI's can show, because both sort by byte. The attempt record is
-    read only for a failed task whose saga began, on every dialect, so the
-    result read of a plain task touches no checkpoint but the phase marker's
-    row. The plan pins hold each dialect to what it does. libSQL's refuses the
-    walk it used to accept and lets nothing sort. MySQL's counts the rows
-    walked beside 2,000 checkpoints of the task, which was 2,030 for a plain
-    task's failure. PostgreSQL's accepts a walk keyed by the task, refuses a
-    name compared by order, and requires that no attempt record is read when
-    no saga began or a cancellation ended it. Medians in ms beside the task's
-    own checkpoints, main and then this change, from one harness run in a
-    worktree of each, three processes a side, interleaved, 200 timed reads in
-    each:
+    server nor CI's can show, because both sort by byte. On PostgreSQL the
+    attempt record is read only for a failed task whose saga began, which
+    spares every other result read the walk. libSQL and MySQL read a range of
+    the key and carry no such guard, because there it would change no result
+    and spare no walk, and nothing could hold it. The plan pins hold each
+    dialect to what it does. libSQL's refuses the walk it used to accept and
+    lets nothing sort. MySQL's counts the rows walked beside 2,000 checkpoints
+    of the task, which was 2,030 for a plain task's failure. PostgreSQL's
+    accepts a walk keyed by the task, refuses a checkpoint name ordered or
+    compared by order, in an index condition or in a saga statement's text,
+    and requires that no attempt record is read when no saga began or a
+    cancellation ended it. Medians in ms beside the task's own checkpoints,
+    main and then this change, from one harness run in a worktree of each,
+    three processes a side, interleaved, 200 timed reads in each:
 
     | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
     |---|---|---|---|
@@ -1833,12 +1845,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     option under PR3.4 above says what would remove it.
   - The rollback outcome reached `getTaskResult` only. The hosted inspect
     route now shows it: `rollback.outcome`, and `rollback.error` when a
-    rollback's failure ended the task. The parent's view stays open under
-    PR3.4 above, with the reason.
-  - Six mutations hold the new lines, and the registry holds 879. The base
-    gate's one live arm is this entry's, keyed on main's registry, and it
-    exempts four verdict markers the base predates. It must be keyed again if
-    main's registry changes before this entry merges.
+    rollback's failure ended the task. A stored value that is not JSON, which
+    the store's port accepts from a caller that is not the SDK, is answered as
+    its text under a key of its own, where the route answered 500: for a
+    rollback's error on this entry's first version, and on main for a failure
+    reason and a result. The parent's view stays open under PR3.4 above, with
+    the reason.
+  - Eight mutations hold the new lines and checks, and the registry holds 883.
+    The base gate's one live arm is this entry's, keyed on main's registry,
+    and it exempts five verdict markers the base predates. It must be keyed
+    again if main's registry changes before this entry merges.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent

@@ -2908,7 +2908,9 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   only by the batch that fails its run, and a failure with budget left places
   a pass, which becomes the task's last run. So an attempt that ended nothing
   is never named, and a saga that a cancellation or a cap halts after such an
-  attempt names no rollback error. The outcome cannot disagree with the
+  attempt names no rollback error. What an operator loses is that attempt's
+  error in the task's result. It is still in the `$rollback-tries:<step>`
+  record, which `getCheckpoints` reads. The outcome cannot disagree with the
   checkpoints, and no checkpoint of an ended task changes.
 - **Who sees the rollback outcome.** `getTaskResult` reads it, and the hosted
   inspect route shows it beside the state. A parent that awaits the child does
