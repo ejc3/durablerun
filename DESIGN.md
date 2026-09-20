@@ -2436,8 +2436,9 @@ are load-bearing):
    longest took 17 and 114 ms, none failed, and a metadata lock was pending in
    at most 3 of 59 samples taken 40 ms apart.
    In place does not mean that nothing is rewritten: InnoDB rebuilds the whole
-   table, where PostgreSQL's statement rewrites nothing. In review the table's id and its
-   tablespace changed across the version in four runs of four. So the change
+   table, where PostgreSQL's statement rewrites nothing. In review the table's
+   id and its tablespace changed across the version in four runs of four. So
+   the change
    costs by the byte, as libSQL's refused rebuild does, and needs free disk of
    about the table's size. While it rebuilds, InnoDB keeps other sessions'
    changes in an online log, 128 MB by default
