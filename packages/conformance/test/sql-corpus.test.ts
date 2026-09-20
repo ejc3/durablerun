@@ -15,9 +15,9 @@ import {
   withFixture,
 } from '../src/scenario.js'
 import {
+  CORPUS_VARIANT_NAMERS,
   type CorpusDescriptor,
   type CorpusSignature,
-  type VariantNamers,
   enrolCorpus,
   recordingTreeBatches,
 } from '../src/sql-corpus.js'
@@ -37,29 +37,6 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
 const DESCRIPTOR: CorpusDescriptor = JSON.parse(
   readFileSync(new URL('../corpus/labels.json', import.meta.url), 'utf8'),
 )
-
-/**
- * A label with more than one variant names each signature by what it holds, never by
- * the order the scenario happened to reach it in.
- */
-const VARIANT_OF: VariantNamers = {
-  spawn: (signature) =>
-    signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
-      ? 'spawned-child'
-      : 'spawned',
-  // Every failure carries the rollback pass, and only a retrying one a successor run too.
-  fail: (signature) =>
-    signature.filter(({ sql }) => /insert into ["`]runs["`]/.test(sql)).length > 1
-      ? 'retrying'
-      : 'final',
-  // Only a failed rollback with budget left inserts a run, the pass that retries it.
-  'fail-rollback': (signature) =>
-    signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
-  'await-event': (signature) =>
-    signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
-      ? 'registered-child'
-      : 'registered',
-}
 
 describe('generated SQL corpus', () => {
   for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
@@ -211,7 +188,7 @@ describe('generated SQL corpus', () => {
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
       })
-      const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, VARIANT_OF)
+      const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, CORPUS_VARIANT_NAMERS)
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)
       const text = `${JSON.stringify(corpus, null, 2)}\n`
       if (process.env.DURABLERUN_UPDATE_CORPUS === '1') writeFileSync(path, text)

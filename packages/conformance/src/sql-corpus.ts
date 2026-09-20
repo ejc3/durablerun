@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 
 /**
@@ -15,6 +16,37 @@ export type Corpus = Record<string, Record<string, CorpusSignature>>
 
 /** Names a signature by what it holds, for a label with more than one variant. */
 export type VariantNamers = Readonly<Record<string, (signature: CorpusSignature) => string>>
+
+/**
+ * A label with more than one variant names each signature by what it holds, never by
+ * the order a scenario happened to reach it in.
+ */
+export const CORPUS_VARIANT_NAMERS: VariantNamers = {
+  spawn: (signature) =>
+    signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
+      ? 'spawned-child'
+      : 'spawned',
+  // Every failure carries the rollback pass, and only a retrying one a successor run too.
+  fail: (signature) =>
+    signature.filter(({ sql }) => /insert into ["`]runs["`]/.test(sql)).length > 1
+      ? 'retrying'
+      : 'final',
+  // Only a failed rollback with budget left inserts a run, the pass that retries it.
+  'fail-rollback': (signature) =>
+    signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
+  'await-event': (signature) =>
+    signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
+      ? 'registered-child'
+      : 'registered',
+}
+
+/** The descriptor, `corpus/labels.json`. */
+export const readCorpusDescriptor = (): CorpusDescriptor =>
+  JSON.parse(readFileSync(new URL('../corpus/labels.json', import.meta.url), 'utf8'))
+
+/** The committed corpus of one dialect, `corpus/<dialect>.json`. */
+export const readCorpus = (dialect: string): Corpus =>
+  JSON.parse(readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'))
 
 /**
  * Record the distinct signatures of every tree-built batch that passes through. `isTreeBuilt`
