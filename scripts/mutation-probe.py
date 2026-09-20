@@ -7450,6 +7450,97 @@ MUTATION_SPECS.extend(
             "  if (index === null) { // MUTATION: a key with no declared index is let through\n",
             "a write keyed by a column with no declared index compiles, and the server plans it alone",
         ),
+        (
+            "mysql-keyed-delete-reads-its-keys-by-their-stamp",
+            "packages/store-mysql/src/tree.ts",
+            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }\n",
+            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_poll' }\n",
+            "a delete reads its keys through the queue's poll index, takes shared locks on the runs other claimers hold, and a second claimer waits for the first",
+        ),
+        (
+            "mysql-stamp-index-holds-the-token",
+            "packages/store-mysql/src/schema.ts",
+            "const STAMP_INDEX_PREFIX = 768\n",
+            "const STAMP_INDEX_PREFIX = 16\n",
+            "the stamp's index holds half a token, so the entries of two calls can share a key and a search for one call's stamp touches another's",
+        ),
+        (
+            "mysql-keyed-delete-names-the-stamp-index",
+            "packages/store-mysql/src/tree.ts",
+            "    if (node === this.#keysFrom?.from) this.append(` force index (${this.#keysFrom.index})`)\n",
+            "    // MUTATION: the table of the keys is read through whatever index the server picks\n",
+            "the server reads a delete's keys through the index it picks, which is the queue's poll index once waits holds a few dozen rows",
+        ),
+        (
+            "mysql-keyed-delete-keys-table-is-aliased",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (table === null || more.length > 0 || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys come from a table read under no alias is not refused where the rule stands",
+        ),
+        (
+            "mysql-keyed-delete-keys-table-is-plain",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || more.length > 0 || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys come from a derived table is refused for a missing index and not for its shape",
+        ),
+        (
+            "mysql-keyed-delete-keys-name-one-table",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || table === null || (selection?.joins ?? []).length > 0) { // MUTATION\n",
+            "a delete whose keys are selected from two tables is compiled, and the second is read with shared locks through any index",
+        ),
+        (
+            "mysql-keyed-delete-keys-join-nothing",
+            "packages/store-mysql/src/tree.ts",
+            "  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {\n",
+            "  if (source === null || table === null || more.length > 0) { // MUTATION\n",
+            "a delete whose keys join a second table is compiled, and that table is read with shared locks through any index",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-the-stamp",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return operator === '=' && table === alias // MUTATION: any column stands for the stamp\n",
+            "an equality on any column of the keys' table counts as its fence, so keys that are not this batch's are read through the stamp's index",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-the-sources",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return operator === '=' && name === 'fence_stamp' // MUTATION: any table's stamp stands for the keys'\n",
+            "the written table's stamp counts as the fence of the keys, which are then not fenced at all",
+        ),
+        (
+            "mysql-keyed-delete-fence-is-an-equality",
+            "packages/store-mysql/src/tree.ts",
+            "  return operator === '=' && table === alias && name === 'fence_stamp'\n",
+            "  return table === alias && name === 'fence_stamp' // MUTATION: any comparison stands for the equality\n",
+            "an inequality on the stamp counts as the fence, and it selects every other batch's rows",
+        ),
+        (
+            "mysql-keyed-delete-unfenced-keys-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (!fenced) {\n",
+            "  if (fenced === null) { // MUTATION: keys with no fence are let through\n",
+            "a delete whose keys are not fenced is compiled, and reads every run of the table with shared locks",
+        ),
+        (
+            "mysql-keyed-delete-unindexed-stamp-refused",
+            "packages/store-mysql/src/tree.ts",
+            "  if (through === undefined) {\n",
+            "  if (through === null) { // MUTATION: a table with no index of its stamp is let through\n",
+            "a delete whose keys come from a table with no index of its stamp is compiled with an index hint that names nothing",
+        ),
+        (
+            "mysql-keyed-write-key-stands-under-parentheses",
+            "packages/store-mysql/src/tree.ts",
+            "  if (ParensNode.is(node)) return requiredConditions(node.node)\n",
+            "  // MUTATION: a condition under parentheses is not read\n",
+            "a write keyed under parentheses is compiled as any other, so the server plans it and a delete of that shape slips past the rule for its keys",
+        ),
     )
 )
 
@@ -11567,6 +11658,84 @@ VERDICTS.update(
             "packages/store-mysql/test/tree.test.ts",
             "MySQL spelling of the shared statement trees refuses a write keyed by a column that names no index",
             "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
+        ),
+        "mysql-keyed-delete-reads-its-keys-by-their-stamp": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL lets a second claimer take its run beside a claim still open, waiting for no lock, beside an empty waits table and beside parked waiters",
+            "mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp",
+        ),
+        "mysql-stamp-index-holds-the-token": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL indexes a run's statement stamp by a prefix that holds what tells one call's stamp from another's",
+            "mutation-verdict:behavior:mysql-stamp-index-holds-the-token",
+        ),
+        "mysql-keyed-delete-names-the-stamp-index": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees writes a keyed delete in the form that takes an index, and reads its keys through the index of their stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index",
+        ),
+        "mysql-keyed-delete-keys-table-is-aliased": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased",
+        ),
+        "mysql-keyed-delete-keys-table-is-plain": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain",
+        ),
+        "mysql-keyed-delete-keys-name-one-table": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table",
+        ),
+        "mysql-keyed-delete-keys-join-nothing": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are anything but a selection of one plain table",
+            "mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing",
+        ),
+        "mysql-keyed-delete-fence-is-the-stamp": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp",
+        ),
+        "mysql-keyed-delete-fence-is-the-sources": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources",
+        ),
+        "mysql-keyed-delete-fence-is-an-equality": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees takes for a fence of the keys only an equality on the stamp of the table they come from",
+            "mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality",
+        ),
+        "mysql-keyed-delete-unfenced-keys-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose keys are not fenced on the stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
+        ),
+        "mysql-keyed-delete-unindexed-stamp-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a delete whose fenced keys come from a table that declares no index of its stamp",
+            "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
+        ),
+        "mysql-keyed-write-key-stands-under-parentheses": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees finds the key of a write wherever it stands among the conditions",
+            "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
         ),
     }
 )
@@ -17376,7 +17545,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 899:
+        if len(MUTATIONS) != 912:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

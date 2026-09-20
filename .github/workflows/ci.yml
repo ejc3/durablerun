@@ -310,10 +310,12 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'f08a8c8d9f2d8ed7d375a3c15a9738910b3a429711e40424b8224817194751cb':
+          if digest == '918b8d397f1cf4fbcc129effd45509abaf5c3898c63089e7f07af82db83b8c31':
               # On MySQL a write keyed by a subquery reads its table last, through the index
-              # of its key. The compiler's conditions register mutations the base predates,
-              # so their verdict markers are exempted. No base entry is re-aimed.
+              # of its key, and a delete reads its keys through the index of their stamp.
+              # The compiler's conditions, the index's width and the two server cases
+              # register mutations the base predates, so their verdict markers are
+              # exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last",
                   "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
@@ -321,6 +323,19 @@ jobs:
                   "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
                   "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
                   "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
+                  "mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp",
+                  "mutation-verdict:behavior:mysql-stamp-index-holds-the-token",
+                  "mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality",
+                  "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
+                  "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
+                  "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
