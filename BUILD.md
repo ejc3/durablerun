@@ -2474,7 +2474,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     completion walked 1,204 rows under statistics the server had not
     recalculated. The class survey had checked only how a keyed write reaches
     the table it writes, so plan cases now count the rows every statement of a
-    batch walks, from inside the batch. Twenty-three mutations hold the rule.
+    batch walks, from inside the batch. Twenty-four mutations hold the rule.
     For PR3.14b: with every fenced read of `runs` forced through `runs_stamp` a
     claim was 7 percent faster beside 2,000 running runs on MySQL, 3.31 ms
     against 3.57, so the walk it removes is small at that size; libSQL's three

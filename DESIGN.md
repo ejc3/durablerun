@@ -2375,40 +2375,42 @@ realized in the store's compiler, executor, fragments, or schema:
   The compiler refuses a keyed `DELETE` whose keys are anything else: not a
   selection, a table read under no alias, a derived table, more than one table,
   a join, a fence that is not an equality on the `fence_stamp` of the table the
-  keys come from, or a table that declares no index of its stamp. Each
-  condition has a case and a registered mutation. That the stamp compared is
-  the batch's own is not the compiler's to know, because it reads one
-  statement. Keys fenced on another batch's stamp compile, and core's gating
-  rule refuses the batch that holds them, which a case shows both ways. `SKIP
-  LOCKED` in the key source held the same contests at zero and was not taken,
-  because InnoDB skips by index record and not by row. One transaction stamped
-  a run by its primary key. Another locked that run's `runs_task_attempt` entry
-  and blocked on the row. The first transaction's delete, reading its keys
-  through that index with `FOR SHARE SKIP LOCKED`, deleted 0 of 1 waits: it
-  skipped a row it had stamped itself, and reported nothing. With no `SKIP
-  LOCKED` it deleted 1 of 1 and the other transaction was the deadlock victim.
-  Through the stamp's index it deleted 1 of 1 and nothing waited, also when the
-  other transaction locked through the stamp's index itself. The stamp is a
-  LONGTEXT, so the index is a prefix, and a search touches every entry that
-  shares the prefix. The prefix is 768 characters, all an InnoDB index holds,
-  because it has to hold what tells two calls' stamps apart. A stamp opens with
-  its call's token. Production's token is 32 characters, and a test's id source
-  draws longer ones that differ at their end: at 64 characters the four
-  claimers of one conformance fixture shared every entry and deadlocked on each
-  other's rows, and the older native claim case failed 5 times of 5. An entry
-  is as long as its stamp, so the width costs a short stamp nothing, and a
-  server case reads the width from the server and holds the production token
-  inside it. Measured on MySQL 8.4 with four claimers at limit 1 over 20
-  contests, main's statements against these: beside an empty `waits`, victims
-  in 19 contests and 55 in all against none, and beside 1,000 waits with 40
-  runs due, victims in all 20 and 86 in all with a failed claim in 5, against
-  none. Beside 10,000 runs in memory the index cost a claim and a heartbeat
-  nothing that could be measured, 3.39 ms against 3.57 and 0.61 ms against 0.62
-  at the median of 300 calls each, and it held 0.43 MB for the 10,000 runs.
-  libSQL and PostgreSQL hold an empty version 7, so the three dialects keep one
-  numbering. Neither has the defect. On PostgreSQL an indexed `fence_stamp`
-  would end heap-only updates for every stamped write, so it needs a
-  measurement before anyone adds it.
+  keys come from, or a table that declares no index of its stamp. A delete that
+  no subquery keys, or that is keyed in a way the compiler does not read, by
+  `EXISTS` for one, is refused too, so the rule reaches every delete a tree
+  sends. Each condition has a case and a registered mutation. That the stamp
+  compared is the batch's own is not the compiler's to know, because it reads
+  one statement. Keys fenced on another batch's stamp compile, and core's
+  gating rule refuses the batch that holds them, which a case shows both ways.
+  `SKIP LOCKED` in the key source held the same contests at zero and was not
+  taken, because InnoDB skips by index record and not by row. One transaction
+  stamped a run by its primary key. Another locked that run's
+  `runs_task_attempt` entry and blocked on the row. The first transaction's
+  delete, reading its keys through that index with `FOR SHARE SKIP LOCKED`,
+  deleted 0 of 1 waits: it skipped a row it had stamped itself, and reported
+  nothing. With no `SKIP LOCKED` it deleted 1 of 1 and the other transaction
+  was the deadlock victim. Through the stamp's index it deleted 1 of 1 and
+  nothing waited, also when the other transaction locked through the stamp's
+  index itself. The stamp is a LONGTEXT, so the index is a prefix, and a search
+  touches every entry that shares the prefix. The prefix is 768 characters, all
+  an InnoDB index holds, because it has to hold what tells two calls' stamps
+  apart. A stamp opens with its call's token. Production's token is 32
+  characters, and a test's id source draws longer ones that differ at their
+  end: at 64 characters the four claimers of one conformance fixture shared
+  every entry and deadlocked on each other's rows, and the older native claim
+  case failed 5 times of 5. An entry is as long as its stamp, so the width
+  costs a short stamp nothing, and a server case reads the width from the
+  server and holds the production token inside it. Measured on MySQL 8.4 with
+  four claimers at limit 1 over 20 contests, main's statements against these:
+  beside an empty `waits`, victims in 19 contests and 55 in all against none,
+  and beside 1,000 waits with 40 runs due, victims in all 20 and 86 in all with
+  a failed claim in 5, against none. Beside 10,000 runs in memory the index
+  cost a claim and a heartbeat nothing that could be measured, 3.39 ms against
+  3.57 and 0.61 ms against 0.62 at the median of 300 calls each, and it held
+  0.43 MB for the 10,000 runs. libSQL and PostgreSQL hold an empty version 7,
+  so the three dialects keep one numbering. Neither has the defect. On
+  PostgreSQL an indexed `fence_stamp` would end heap-only updates for every
+  stamped write, so it needs a measurement before anyone adds it.
 - **Version 7 on a live MySQL database.** It is one `CREATE INDEX`, in the form
   that is safe to repeat, under the named lock every MySQL migration takes, so
   racing migrators run one after another and the second finds the index there.
