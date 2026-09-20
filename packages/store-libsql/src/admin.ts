@@ -77,8 +77,12 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     // every other cause without having to enumerate them.
     const version = await this.schemaVersion()
     if (version !== CURRENT_SCHEMA_VERSION) {
+      // A recorded version past this build's newest is a healthy schema that a newer build
+      // migrated. It is refused like any other mismatch, with the advice that fits it.
       throw new SchemaMismatchError(
-        `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
+        version > CURRENT_SCHEMA_VERSION
+          ? `the schema is recorded at version ${version} and this build knows versions up to ${CURRENT_SCHEMA_VERSION}: a newer build migrated this database, which needs no repair. Run that build or a later one`
+          : `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
       )
     }
   }

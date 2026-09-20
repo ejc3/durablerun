@@ -399,9 +399,10 @@ describe('every batch a saga touches', () => {
   /**
    * A saga's state is checkpoints under reserved names, and the batches that read it are
    * the ones every task pays: a failure, a completion, a checkpoint, a suspension, an
-   * await, a sweep cap. Each read must reach its rows by the checkpoints' primary key
-   * with the task bound, and each statement a saga adds must find its source run and
-   * its target task by key. The statements are recovered from the real operations, so a
+   * await, a sweep cap. Each read must reach its rows by the checkpoints' primary key,
+   * the task and the name: one name is one row of it, and the names under a prefix are
+   * one range of it. Each statement a saga adds must find its source run and its target
+   * task by key. The statements are recovered from the real operations, so a
    * pin cannot drift from the SQL it protects, and the rules below run over every
    * statement of every touched label, so a statement added later is held without being
    * listed.
@@ -515,8 +516,15 @@ describe('every batch a saga touches', () => {
     const lines = plan.split('\n')
     for (const line of lines) {
       if (!SAGA_ALIAS.test(line)) continue
-      if (!/^SEARCH (sp|ss|sr|st) USING PRIMARY KEY \(task_id=\?/.test(line)) {
-        faults.push(`a saga read does not reach checkpoints by key with the task bound: ${line}`)
+      // The task alone is a walk of every checkpoint the task has, which the failure of
+      // any task and every read of a result would pay in proportion to the task's steps.
+      const byTaskAndName =
+        /^SEARCH (sp|sr) USING PRIMARY KEY \(task_id=\? AND checkpoint_name=\?\)/.test(line) ||
+        /^SEARCH (ss|st) USING PRIMARY KEY \(task_id=\? AND checkpoint_name>\? AND checkpoint_name<\?\)/.test(
+          line,
+        )
+      if (!byTaskAndName) {
+        faults.push(`a saga read does not reach its checkpoints by task and name: ${line}`)
       }
     }
     // The statements a saga adds: the rollback pass, the phase marker, the attempt record,
@@ -551,13 +559,10 @@ describe('every batch a saga touches', () => {
         faults.push('its target task is not found by key')
       }
     }
-    // Of the statements a saga reads through or adds, one sorts: the task result, and
-    // what it sorts is one task's attempt records. A batch's other statements are not
-    // this pin's to hold.
+    // None of the statements a saga reads through or adds sorts. A batch's other
+    // statements are not this pin's to hold.
     const sagaStatement = added || lines.some((line) => SAGA_ALIAS.test(line))
-    if (sagaStatement && plan.includes('TEMP B-TREE') && label !== 'task-result') {
-      faults.push('it sorts')
-    }
+    if (sagaStatement && plan.includes('TEMP B-TREE')) faults.push('it sorts')
     return faults
   }
 
@@ -591,7 +596,7 @@ describe('every batch a saga touches', () => {
     })
   })
 
-  it('refuses the two shapes it exists to refuse', async () => {
+  it('refuses the three shapes it exists to refuse', async () => {
     // A task update whose source names the target's queue, which is the shape a generated
     // write has when its queue is correlated and not bound: the table is walked.
     const correlated = await writePlan(
@@ -614,20 +619,32 @@ describe('every batch a saga touches', () => {
                                     WHERE sp.checkpoint_name = '$rolling-back')`,
       ['r'],
     )
+    // A saga read that finds its names by a test of each one. The task is bound and the
+    // key is used, and every checkpoint the task has is walked.
+    const walked = await writePlan(
+      `update "runs" set "state" = 'failed'
+       WHERE run_id = ? AND EXISTS (SELECT 1 FROM checkpoints ss
+                                    WHERE ss.task_id = runs.task_id
+                                      AND substr(ss.checkpoint_name, 1, 9) = '$started:')`,
+      ['r'],
+    )
     const sqlOf = (kind: string) => `update "${kind}" set "max_attempts" = 2`
     expect({
       correlated: planFaults('fail', sqlOf('tasks'), correlated).length > 0,
       bound: planFaults('fail', sqlOf('tasks'), bound.replace('SEARCH f', 'SEARCH f')),
       unbound: planFaults('fail', 'update "runs"', unbound).length > 0,
+      walked: planFaults('fail', 'update "runs"', walked).length > 0,
     }).toEqual({
       correlated: true,
       // The bound shape has no fault but the one this literal cannot avoid: it names no fence.
       bound: planFaults('fail', sqlOf('tasks'), bound),
       unbound: true,
+      walked: true,
     })
     expect(correlated).toContain('SCAN tasks')
     expect(bound).toContain('SEARCH tasks USING PRIMARY KEY (task_id=?)')
     expect(unbound).toMatch(/SCAN sp|SEARCH sp USING (?!PRIMARY KEY \(task_id)/)
+    expect(walked).toMatch(/^SEARCH ss USING PRIMARY KEY \(task_id=\?\)$/m)
   })
 })
 
