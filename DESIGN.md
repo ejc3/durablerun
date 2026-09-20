@@ -3167,9 +3167,9 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   store error is the store's answer. A limit on connections or on prepared
   statements is an outage and answers 503, though MySQL files it under a
   permanent class (§3.2), because there the retry works. Before the executors
-  typed the error, these failures answered 503. No durable state depends on the status, and an
-  at-least-once tick host retries any answer that is not a success. Neither
-  answer carries the error's message.
+  typed the error, these failures answered 503. No durable state depends on the
+  status, and an at-least-once tick host retries any answer that is not a
+  success. Neither answer carries the error's message.
 - **Driver hosting**: the hosted alpha is fully serverless. Each accepted
   mutation gives the host a best-effort opportunity to run the same bounded
   inline tick, and an independent cron recovers a lost hint. Vercel itself

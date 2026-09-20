@@ -720,8 +720,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   constraint with error 3819 under HY000: committed failing, then typed by
   number. Each executor's own cases run on a fake driver, or on a table of the
   author's own, so they could not show it. The pull request's one review then
-  found the same gap three more times (postmortems/pr2.5a-permanent-store-
-  errors-review.md): the three limits under class 42, which this entry's rule
+  found the same gap three more times
+  (`postmortems/pr2.5a-permanent-store-errors-review.md`):
+  the three limits under class 42, which this entry's rule
   by class had turned from outages into permanent errors, a NOT NULL column
   left out (1364), and text that is no number (1265). Each was committed
   failing and then fixed, and the class was closed at its source: one
@@ -758,8 +759,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     design, the loser's sentinel (DESIGN.md §3.4), and `migrate()` has no run to
     end. Its spec also says what a run does with a unique violation that came
     from an id collision, which a retry with a new id cures, where no retry
-    cures any other permanent answer. Trigger: the first permanent code met on an activated run in dogfood
-    or CI, or the first `$InfraRetriesExhausted` whose cause was one.
+    cures any other permanent answer. Trigger: the first permanent code met on
+    an activated run in dogfood or CI, or the first `$InfraRetriesExhausted`
+    whose cause was one.
   - Option for the libSQL executor, not built, with its trigger: type a syntax
     error permanent on libSQL too. `SQLITE_ERROR` is SQLite's generic code, and
     it also names a transaction state error that a new connection cures, so the
