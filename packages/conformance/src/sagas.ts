@@ -35,6 +35,8 @@ import {
 } from './scenario.js'
 
 const Q = 'q'
+/** Where a saga case puts a task's children, so the next claim in `Q` is never one of them. */
+const KIDS = 'kids'
 const START_MS = 1_000_000
 const CAUSE = '{"name":"ForwardBoom"}'
 const ROLLBACK_BOOM = '{"name":"RollbackBoom"}'
@@ -373,6 +375,42 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         task: 'running',
         checkpoints: [SAGA_PHASE_CHECKPOINT, rollbackOf('a'), startMarker('a')].sort(),
       })
+    })
+
+    // A child spawn is forward progress, as a step is: inside the phase the store creates no
+    // child, whoever asks. A child the forward phase spawned is still found, which is what a
+    // replay asks, and a replay creates nothing.
+    it('refuses a child spawn inside the phase, and still finds a child the forward phase spawned', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}')
+      const forward = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, forward, 'a', 1)
+      const childOf = (run: ClaimedRun, replayKey: string) => ({
+        parentQueue: Q,
+        parentTaskId: spawned.taskId,
+        runId: run.runId,
+        claimToken: run.claimToken,
+        replayKey,
+      })
+      // The children live in a queue of their own, so the next claim in `Q` is the pass.
+      const before = await f.store.spawn(KIDS, 'child', '{}', {
+        childOf: childOf(forward, '$spawn:before'),
+      })
+      await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
+      const pass = await claimActivated(f.store, Q, 'w-pass')
+      const inThePhase = await refusalName(
+        f.store.spawn(KIDS, 'child', '{}', { childOf: childOf(pass, '$spawn:late') }),
+      )
+      const replayed = await f.store.spawn(KIDS, 'child', '{}', {
+        childOf: childOf(pass, '$spawn:before'),
+      })
+      const [children] = await rowsOf(f.raw, 'SELECT COUNT(*) AS n FROM tasks WHERE queue = ?', [
+        KIDS,
+      ])
+      expect({
+        inThePhase,
+        replayFindsTheChild: replayed.taskId === before.taskId && !replayed.created,
+        children: Number(children?.n),
+      }).toEqual({ inThePhase: 'LeaseLostError', replayFindsTheChild: true, children: 1 })
     })
 
     // FinishSaga: OutcomeHonest, SagaEndsFailed, and the completion event written once,
