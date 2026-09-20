@@ -1,5 +1,6 @@
 import { Client } from 'pg'
 import { describe, expect, it } from 'vitest'
+import { PgExecutor } from '../src/executor.js'
 import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
@@ -16,7 +17,8 @@ import { openPostgresTestDb } from '../src/testing.js'
  * waiting for `tasks`, and then the connection asks for `runs`. That is a deadlock, and the
  * read is the victim, because the other side's deadlock timeout is set far past the read's
  * one second. Only the read's abort can give the connection `runs`, which is how the case
- * knows the deadlock happened. The read must then return. If the read's statement ever takes
+ * knows the deadlock happened. The read must then return, and its executor must have counted
+ * one victim, as it counts a write's. If the read's statement ever takes
  * its tables in the other order, the case fails at its wait and says so. This needs a
  * server, and a user that may set `deadlock_timeout`, which the test servers' user is.
  */
@@ -24,6 +26,7 @@ describe('a read batch that loses a deadlock', () => {
   it('is run again and returns', async () => {
     const db = await openPostgresTestDb({ idNamespace: 'deadlocked-read' })
     const clients: Client[] = []
+    const executors: PgExecutor[] = []
     const connect = async (options: string): Promise<Client> => {
       const client = new Client({
         connectionString: process.env.DURABLERUN_POSTGRES_URL,
@@ -39,7 +42,12 @@ describe('a read batch that loses a deadlock', () => {
       await version.query('BEGIN')
       await version.query('LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE')
 
-      const store = new PostgresSchedulerStore(db.raw, db.ids)
+      const executor = PgExecutor.open({
+        connectionString: process.env.DURABLERUN_POSTGRES_URL,
+        options: `-c search_path=${db.schemaName}`,
+      })
+      executors.push(executor)
+      const store = new PostgresSchedulerStore(executor, db.ids)
       const read = store.nextWakeAtEpochMs('q').then(
         () => 'returned',
         (error: unknown) =>
@@ -71,8 +79,11 @@ describe('a read batch that loses a deadlock', () => {
       expect(await read, 'mutation-verdict:behavior:postgres-deadlocked-read-runs-again').toBe(
         'returned',
       )
+      // The victim is counted as a write's is, so whoever watches the count sees this one.
+      expect(executor.deadlocks).toBe(1)
     } finally {
       await Promise.all(clients.map((client) => client.end().catch(() => undefined)))
+      await Promise.all(executors.map((executor) => executor.close().catch(() => undefined)))
       await db.close()
     }
   }, 30_000)
