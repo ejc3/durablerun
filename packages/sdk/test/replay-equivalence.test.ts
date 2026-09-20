@@ -7,6 +7,7 @@ import {
   EventTimeoutError,
   FatalTaskError,
   type IdSource,
+  PermanentStoreError,
   SAGA_STARTED_PREFIX,
   type SchedulerStore,
   StoreUnavailableError,
@@ -369,6 +370,16 @@ interface Watch {
 /** The trace's mark for the store call the harness failed. */
 const INJECTED_OUTAGE = 'injected outage'
 
+/**
+ * The store fault a run injects at one call. A permanent answer of the store must end a pass
+ * exactly as an outage does, at every store call of every generated program, so the harness
+ * draws either kind, by the call it fails, and the number of runs does not grow.
+ */
+const injectedFault = (failAtCall: number): Error =>
+  failAtCall % 2 === 0
+    ? new PermanentStoreError('injected permanent answer')
+    : new StoreUnavailableError('injected outage')
+
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
   /** Every generated program completes. A name past its room fails its task for good. */
@@ -435,7 +446,7 @@ async function runProgram(
           watch?.trace.push(String(prop))
           if (calls === failAtCall) {
             watch?.trace.push(INJECTED_OUTAGE)
-            return Promise.reject(new StoreUnavailableError('injected outage'))
+            return Promise.reject(injectedFault(failAtCall))
           }
           if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
           try {
@@ -1010,8 +1021,7 @@ async function runSagaProgram(
         if (typeof value !== 'function' || prop === 'constructor') return value
         return (...args: unknown[]) => {
           calls++
-          if (calls === failAtCall)
-            return Promise.reject(new StoreUnavailableError('injected outage'))
+          if (calls === failAtCall) return Promise.reject(injectedFault(failAtCall))
           return (value as (...a: unknown[]) => unknown).apply(target, args)
         }
       },
