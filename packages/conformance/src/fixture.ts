@@ -3,7 +3,7 @@ import {
   IDENTIFIER_CHARACTERS,
   type PersistedCounterFieldDescriptor,
   type PersistedTemporalFieldDescriptor,
-  type SchedulerStore,
+  type HeldSchedulerStore,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -142,7 +142,13 @@ export interface StorageCorruptionAttempt {
  * spec).
  */
 export interface StoreFixture {
-  store: SchedulerStore
+  /**
+   * A store that extends core's held port, where every string a call carries is checked
+   * before the entry runs. The type is nominal, so a class that implements the port on
+   * its own does not type as a fixture's store: a dialect reaches the suite, and so is
+   * done, only through the one check.
+   */
+  store: HeldSchedulerStore
   admin: StoreAdmin
   /** Construct the dialect's real admin over an injected executor. */
   adminOver(db: SqlExecutor): StoreAdmin
@@ -180,7 +186,7 @@ export interface StoreFixture {
    * this fixture's database and id stream — how sims run N concurrent
    * actors against one database.
    */
-  storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
+  storeOver(db: SqlExecutor, buggify?: Buggify): HeldSchedulerStore
   /**
    * How many times the server has chosen one of this fixture's batches as a deadlock
    * victim, read from the fixture's own executor. The executor runs a victim again, which
