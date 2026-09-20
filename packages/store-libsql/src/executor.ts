@@ -28,7 +28,7 @@ const MISSING_META_TABLE = /no such table:\s*meta$/i
  * SQLITE_ERROR is deliberately absent. SQLite files a syntax error under that generic code,
  * and files a transaction state error there too, which a new connection cures, and the code
  * is all this executor may read: it never reads message text to type an error. A code that
- * is not listed here stays an outage, which is what every code was before this list.
+ * is not listed here is an outage.
  */
 const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
 

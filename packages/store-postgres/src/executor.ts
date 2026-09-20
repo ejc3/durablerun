@@ -49,10 +49,10 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
  * mismatch states above are read first, because a migration repairs those and they keep
  * their own type.
  *
- * Every other class stays an outage, which is what every code was before this list: 08
- * connection exception, 40 transaction rollback (a serialization failure, and a deadlock
- * victim, which the executor runs again before it reports one), 53 insufficient resources,
- * 57 operator intervention, 58 system error, and any class this list does not name.
+ * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
+ * serialization failure, and a deadlock victim, which the executor runs again before it
+ * reports one), 53 insufficient resources, 57 operator intervention, 58 system error, and
+ * any class this list does not name.
  */
 const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 

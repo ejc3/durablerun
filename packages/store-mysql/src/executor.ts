@@ -54,17 +54,16 @@ const ER_DATA_TOO_LONG = 1406
 /**
  * SQLSTATE classes whose every code says the statement was refused for good, with these
  * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
- * access rule violation. MySQL sends the state beside its error number, and these are the
- * classes the PostgreSQL executor reads, so the two servers type by one rule. A class takes
- * in every number MySQL files under it, where a list of numbers kept by hand lacked 1064, a
- * statement the server will never accept, and answered it as an outage.
+ * access rule violation. MySQL sends the state beside its error number, and a class takes
+ * in every number MySQL files under it, 1064 among them, a statement the server will never
+ * accept. The PostgreSQL executor reads the same three classes, and nothing holds the two
+ * lists together: each is its own server's rule.
  *
  * The answers above keep a branch by number and are read first, because each has a type of
  * its own: a missing `meta` on the version read, a value too long for its column, and the
- * schema mismatch numbers. Every other state stays an outage, which is what every number
- * was before this list: a deadlock victim (1213, state 40001), which the executor runs again
- * before it reports one, a lock wait timeout (1205, HY000), and an error with no state at
- * all, as a lost connection or a closed pool is.
+ * schema mismatch numbers. Every other state is an outage: a deadlock victim (1213, state
+ * 40001), which the executor runs again before it reports one, a lock wait timeout (1205,
+ * HY000), and an error with no state at all, as a lost connection or a closed pool is.
  */
 const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 

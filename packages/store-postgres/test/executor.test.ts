@@ -647,16 +647,16 @@ describe('PgExecutor error classification', () => {
   })
 
   it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage', async () => {
-    const typed = (code: string) => {
+    const thrownFor = (code: string, message?: string): Promise<Error> => {
       const client = new FakeClient((text) => {
-        if (text === 'UPDATE t SET v = 1') throw databaseError(code)
+        if (text === 'UPDATE t SET v = 1') throw databaseError(code, message)
         return EMPTY_RESULT
       })
       return executor(new FakePool(client))
         .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
         .then(
-          () => 'answered',
-          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+          () => new Error('answered'),
+          (error: unknown) => error as Error,
         )
     }
     const codes = {
@@ -677,7 +677,7 @@ describe('PgExecutor error classification', () => {
       internalError: 'XX000',
     }
     const observed: Record<string, string> = {}
-    for (const [name, code] of Object.entries(codes)) observed[name] = await typed(code)
+    for (const [name, code] of Object.entries(codes)) observed[name] = (await thrownFor(code)).name
     expect(
       observed,
       'mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed',
@@ -697,17 +697,7 @@ describe('PgExecutor error classification', () => {
       featureNotSupported: 'StoreUnavailableError',
       internalError: 'StoreUnavailableError',
     })
-    const refusal = await executor(
-      new FakePool(
-        new FakeClient((text) => {
-          if (text === 'UPDATE t SET v = 1') throw databaseError('23505', 'duplicate key')
-          return EMPTY_RESULT
-        }),
-      ),
-    )
-      .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
-      .catch((error: unknown) => error)
-    expect(refusal).toMatchObject({
+    expect(await thrownFor('23505', 'duplicate key')).toMatchObject({
       message: 'batch(typed) failed permanently (SQLSTATE 23505): duplicate key',
       cause: { code: '23505' },
     })

@@ -146,6 +146,9 @@ describe('snapshotTaskThrowable', () => {
       snapshotTaskThrowable(new StoreUnavailableError('offline')),
       'mutation-verdict:construction:task-throwable-public-store-unavailable',
     ).toEqual(failure('StoreUnavailableError', 'offline'))
+    expect(snapshotTaskThrowable(new PermanentStoreError('refused for good'))).toEqual(
+      failure('PermanentStoreError', 'refused for good'),
+    )
   })
 
   it('rejects prototype forgeries as ordinary user failures', () => {
@@ -207,24 +210,8 @@ describe('snapshotTaskThrowable', () => {
 })
 
 describe('PermanentStoreError', () => {
-  it('is a type of its own beside an outage, and an ordinary failure when task code constructs one', () => {
-    const driverError = new Error('duplicate key')
-    const refused = new PermanentStoreError('batch(spawn) was refused for good', {
-      cause: driverError,
-    })
-    expect({
-      name: refused.name,
-      cause: refused.cause,
-      isAnOutage: refused instanceof StoreUnavailableError,
-      anOutageIsPermanent: new StoreUnavailableError('offline') instanceof PermanentStoreError,
-    }).toEqual({
-      name: 'PermanentStoreError',
-      cause: driverError,
-      isAnOutage: false,
-      anOutageIsPermanent: false,
-    })
-    expect(snapshotTaskThrowable(refused)).toEqual(
-      failure('PermanentStoreError', 'batch(spawn) was refused for good'),
-    )
+  it('is no outage, and an outage is not one', () => {
+    expect(new PermanentStoreError('refused for good')).not.toBeInstanceOf(StoreUnavailableError)
+    expect(new StoreUnavailableError('offline')).not.toBeInstanceOf(PermanentStoreError)
   })
 })

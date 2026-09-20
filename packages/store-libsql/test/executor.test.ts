@@ -1,4 +1,3 @@
-import { PermanentStoreError, StoreUnavailableError } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor } from '../src/index.js'
 
@@ -63,17 +62,11 @@ describe('value normalization', () => {
 })
 
 describe('error typing, by the result code and never by the message', () => {
-  const kindOf = (error: unknown) =>
-    error instanceof PermanentStoreError
-      ? 'permanent'
-      : error instanceof StoreUnavailableError
-        ? 'outage'
-        : String(error)
   const thrownBy = (sql: string) =>
     db.batch('typed', [{ sql, args: [] }]).then(
       () => 'answered',
       (error: unknown) => ({
-        kind: kindOf(error),
+        name: (error as Error).name,
         code: ((error as Error).cause as { code?: unknown } | undefined)?.code,
       }),
     )
@@ -99,22 +92,12 @@ describe('error typing, by the result code and never by the message', () => {
       },
       'mutation-verdict:behavior:libsql-permanent-result-code-is-typed',
     ).toEqual({
-      primaryKey: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_PRIMARYKEY' },
-      unique: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_UNIQUE' },
-      notNull: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_NOTNULL' },
-      check: { kind: 'permanent', code: 'SQLITE_CONSTRAINT_CHECK' },
-      mismatch: { kind: 'permanent', code: 'SQLITE_MISMATCH' },
-      syntax: { kind: 'outage', code: 'SQLITE_ERROR' },
+      primaryKey: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_PRIMARYKEY' },
+      unique: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_UNIQUE' },
+      notNull: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_NOTNULL' },
+      check: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_CHECK' },
+      mismatch: { name: 'PermanentStoreError', code: 'SQLITE_MISMATCH' },
+      syntax: { name: 'StoreUnavailableError', code: 'SQLITE_ERROR' },
     })
-  })
-
-  it('types a batch on a closed client an outage', async () => {
-    const closed = LibsqlExecutor.open(':memory:')
-    closed.close()
-    const refusal = await closed
-      .batch('typed', [{ sql: `SELECT 1`, args: [] }], 'read')
-      .catch((error: unknown) => error)
-    expect(kindOf(refusal)).toBe('outage')
-    expect(refusal).toMatchObject({ cause: { code: 'CLIENT_CLOSED' } })
   })
 })

@@ -390,9 +390,9 @@ type Settled =
  * executor should have absorbed, and its causes say which.
  *
  * A permanent store error is kept with the outages. It is no answer of the contract
- * either: a legal call of the ports, alone or beside itself, never breaks a constraint.
- * Before the executors typed it, such an error WAS an outage here and failed its contest.
- * Counted as a refusal it could pass, by failing the same way in both orders.
+ * either: a legal call of a scheduler port, alone or beside itself, never breaks a
+ * constraint. Counted as a refusal it could pass, by failing the same way in both orders,
+ * because refusals are compared between the orders and an outage fails a contest outright.
  */
 export function settle(call: Promise<unknown>): Promise<Settled> {
   return call.then(
