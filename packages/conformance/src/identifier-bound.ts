@@ -206,6 +206,21 @@ export function identifierBoundConformance(
       expect(reached.length).toBeGreaterThan(0)
     })
 
+    it('refuses a name outside the durable string domain at every entry of the port, before anything is sent', async () => {
+      // No dialect keeps such a name as it was passed. A NUL ends the name on one dialect,
+      // is stored whole on another, and is refused by the third as an outage. A lone
+      // surrogate is replaced by every driver, so two names that differ only in one are
+      // stored as one name, and a claim token that differs only in one holds the claim.
+      for (const undurable of ['a\u0000b', 'a\uD800b', 'a\uDC00b']) {
+        const { store, reached } = storeOverRecorder(f)
+        const refusals = await refusalsAtEveryEntry(store, undurable)
+        expect({ refusals, sent: reached }).toEqual({
+          refusals: Object.fromEntries(Object.keys(refusals).map((entry) => [entry, REFUSED])),
+          sent: [],
+        })
+      }
+    })
+
     it('holds the names the engine derives from an identifier to the same width, and names what the caller passed', async () => {
       // `$task-done:` is 11 characters, so 244 is the longest child id whose event name fits.
       const awaited = (childTaskId: string) =>
