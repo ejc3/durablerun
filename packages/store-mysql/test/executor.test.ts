@@ -247,6 +247,27 @@ describe('MysqlExecutor transactions', () => {
     })
   })
 
+  it('refuses a migration batch sent as a read, and sends nothing', async () => {
+    // A read batch runs in a read-only transaction, which refuses DML. It does not refuse
+    // DDL: a DDL statement commits by itself, and that commit ends the read-only
+    // transaction first. So a `migrate:` batch sent as a read would run its DDL with no
+    // lock. The one read under that label is the canonical version read, which is known by
+    // its whole text.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }], 'read')
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect({ refusal, sent: connection.sent }).toEqual({
+      refusal: expect.stringContaining('sent as a read'),
+      sent: [],
+    })
+  })
+
   it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
     // A lock kind is added by a later build of core, and an executor of this build can
     // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
