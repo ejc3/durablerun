@@ -2694,13 +2694,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     table: with a limit of one at five rows and fewer, and with a limit of
     half the table at 20, 120, and 400 rows, where a quarter of the table
     was still read by key. The plan tests say so and do not pin it.
-  - PR4.4d, DONE. The third copies the PR4.3 review named each exist once,
-    where a fourth dialect inherits them. The test id source is in core's
+  - PR4.4d, DONE. The third copies this bullet deferred from PR4.3 each exist
+    once, where a fourth dialect inherits them. The test id source is in core's
     testing entry. The admin's version read, its versioned write and
     `migrate()`'s closing check are in core's `schema-version.ts`: the read
     takes the dialect's own labeled batch as a closure, so the label and the
-    SQL text stay in each `admin.ts`, where the label harvest and the two
-    server executors read them. libSQL wrote the versioned write inline, as
+    SQL text stay in each `admin.ts`, where the label harvest and each
+    dialect's executor read them. libSQL wrote the versioned write inline, as
     the shared function at a minimum of 0 and of N, and now calls it. The
     fixtures' corruption-table switch is `corruptionTarget` in the conformance
     package. Eleven declarations of `store.ts` that held no SQL text and
@@ -2712,6 +2712,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     member of the three store classes. `migrate()` keeps its control flow for
     PR4.4b. Sixteen registered mutations follow their lines, carried by the
     base gate's arm, and the pull request registers none.
+  - An option, not built: a check that a re-aim cannot widen a mutant or make
+    two entries one. PR4.4d's hoist put four entries of three files on one
+    shared line. Two became one mutant and one grew wider, and only the review
+    saw it, because a replacement's text says nothing of its reach on a line
+    with more callers. The check is differential: apply the base's entry at
+    the base and the re-aimed entry at the head, run both against one recorded
+    set of scenarios, and require the same scenarios to break, and different
+    ones for entries that share a find. Its trigger is the next hoist that
+    moves registered lines of several files onto one line.
   - PR4.4c, DONE. The generated surface, `self-concurrency`, in the shared
     suite on all three dialects, races every call of the store's two ports
     against copies of itself. PR #50 and PR4.3 had each found a transition no
