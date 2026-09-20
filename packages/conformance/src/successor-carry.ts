@@ -230,6 +230,12 @@ const SCENARIOS: Readonly<Record<string, readonly Scenario[]>> = {
 }
 
 /**
+ * The labels the scenarios drive. Each must have a run insert in the corpus: a label whose
+ * insert the corpus stopped recognising would lose its generated case and fail nothing.
+ */
+export const labelsWithACarryScenario = (): string[] => Object.keys(SCENARIOS)
+
+/**
  * A run some witnessed batch inserted, with the statement that inserted it, and the rows as
  * that batch left them: the run, the run before it if its task has one, and its task. A
  * scenario goes on to park and fail the run, so it is judged as it was inserted.
@@ -266,8 +272,11 @@ function witnessing(
   const descriptor = readCorpusDescriptor()
   return {
     batch: async (label, statements, control) => {
-      // Every batch is watched, and not only the labels the corpus gives a run insert: a
-      // batch that inserts a run from a statement the corpus does not hold fails below.
+      // Every batch a scenario sends is watched, and not only the labels the corpus gives a
+      // run insert, so a scenario's batch that inserts a run from a statement the corpus does
+      // not hold fails below. A statement that no scenario runs is not seen here. The corpus
+      // test holds the corpus to what the stores compile, and the suite holds the labels the
+      // scenarios drive to the corpus, and only the three together close the enumeration.
       const ofLabel = inserts.filter((insert) => insert.label === label)
       const before = await runIdsOf(raw)
       const results = await raw.batch(label, statements, control)

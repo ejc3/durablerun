@@ -35,7 +35,11 @@ import {
   warmConnections,
   withFixture,
 } from './scenario.js'
-import { labelsThatInsertARun, witnessRunInserts } from './successor-carry.js'
+import {
+  labelsThatInsertARun,
+  labelsWithACarryScenario,
+  witnessRunInserts,
+} from './successor-carry.js'
 
 const Q = 'q'
 /** The fake clock every suite fixture starts at. */
@@ -2454,6 +2458,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // Generated from the SQL corpus: one case for each label that inserts a run, over every
       // statement of its that does (successor-carry.ts). A new batch that inserts a run
       // fails here until a scenario reaches it, and then its run must carry.
+      // A label whose run insert the corpus stopped recognising would lose its case below
+      // and fail nothing, so the labels the scenarios drive are held to the corpus as well.
+      it('gives a generated successor-carry case to every label a scenario drives', () => {
+        expect(labelsThatInsertARun(dialect).sort()).toEqual(labelsWithACarryScenario().sort())
+      })
+
       for (const label of labelsThatInsertARun(dialect)) {
         it(`${label}: every run it inserts carries what its parent carried`, async () => {
           const report = await witnessRunInserts(f, dialect, label, START_MS)
