@@ -580,6 +580,16 @@ describe('the tree rules', () => {
       ).toBeNull()
     })
 
+    it('is refused when a subquery on the right selects a bound value', () => {
+      // A subquery's own WHERE is another statement's business. What it selects is the value
+      // the state is compared with, so a bind among its selections stands beside the state.
+      const bound = (eb: Loose) => eb.selectFrom('tasks as t').select(eb.val('running').as('s'))
+      const underIn = (eb: Loose) => eb('r.state', 'in', bound(eb))
+      const asAScalar = (eb: Loose) => eb('r.state', '=', bound(eb).limit(1))
+      expect(String(problem(runs().where(underIn)))).toMatch(BOUND)
+      expect(String(problem(runs().where(asAScalar)))).toMatch(BOUND)
+    })
+
     it('is refused under a cast, a call, a CASE or a fragment on the right', () => {
       // The bound value is found wherever it stands below the right side, as the column is
       // found below the left. A cast of a bind is an ordinary thing to write for PostgreSQL.
