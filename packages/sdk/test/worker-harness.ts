@@ -63,12 +63,14 @@ export async function passOver(
   const f = await fx(seed)
   try {
     let failCalls = 0
+    // The count wraps a case's own `fail`, so an override of it is still counted.
+    const failOf = overrides.fail ?? (() => Promise.resolve({ rollingBack: false }))
     const store = withStoreOverrides<SchedulerStore>(f.store, {
-      fail: () => {
-        failCalls++
-        return Promise.resolve({ rollingBack: false })
-      },
       ...overrides,
+      fail: (...args) => {
+        failCalls++
+        return failOf(...args)
+      },
     })
     await f.store.spawn(Q, 'job', '{}')
     const invocation = await claimInvocation(f, 'w1')
