@@ -127,6 +127,13 @@ describe('migrate reports success only when the schema is current', () => {
    * This test changes only that real version-bump statement to miss. A
    * malformed stored value would be rejected before migration starts and
    * would therefore prove the decoder, not this post-condition.
+   *
+   * The version whose bump misses is the newest one, and the newest one can be
+   * empty, as version 7 is on this dialect. Its batch then commits a sentinel
+   * and no DDL, and the case holds what it is named for: `migrate()` refuses
+   * when the recorded version did not advance, whatever the version's
+   * statements were. The column read at the end shows that the versions before
+   * it stayed applied. It never showed the missed version's own DDL.
    */
   it('fails when the recorded version did not advance', async () => {
     await migrateTo(CURRENT_SCHEMA_VERSION - 1)
@@ -350,7 +357,12 @@ describe('migrate reports success only when the schema is current', () => {
       },
     ])
 
-    await expect(admin.migrate()).rejects.toBeInstanceOf(SchemaMismatchError)
+    // A newer build migrated this database and nothing in it is broken, so the refusal
+    // says which build to run, and never to repair the database by hand.
+    const refusal = await admin.migrate().catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(SchemaMismatchError)
+    expect((refusal as Error).message).toMatch(/a newer build migrated this database/)
+    expect((refusal as Error).message).not.toMatch(/repaired by hand/)
   })
 
   it('is unaffected on a healthy database', async () => {

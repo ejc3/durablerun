@@ -233,6 +233,13 @@ export const MIGRATIONS: Migration[] = [
        WHERE wake_event IS NOT NULL AND state = 'pending'`,
     ],
   },
+  {
+    // PostgreSQL's version 7 declares a byte collation on every text column. SQLite
+    // compares text by its bytes unless a column says otherwise, and none here does, so
+    // this version holds nothing and keeps the numbering of the dialects aligned.
+    version: 7,
+    statements: [],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
