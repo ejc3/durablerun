@@ -556,9 +556,11 @@ One invocation executes one claimed run to its next suspension point:
   exception), 23 (integrity constraint violation) and 42 (syntax error or
   access rule violation) are permanent. MySQL reads the same three classes from
   the SQLSTATE the server sends beside its error number, after the numbers that
-  have a type of their own, and adds error 1366 by number, because MySQL files
-  a value of the wrong type under its general state HY000, beside a lock wait
-  timeout. One difference between dialects is deliberate: a syntax error is
+  have a type of their own, and adds two numbers, 1366, a value of the wrong
+  type for its column, and 3819, a broken CHECK constraint, because MySQL files
+  both under its general state HY000, beside a lock wait timeout, where no
+  class can name them. One difference between dialects is deliberate: a syntax
+  error is
   permanent on the two servers, which give it a code of its own, and an outage
   on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
   together with a transaction state error that a new connection cures, and
@@ -582,7 +584,10 @@ One invocation executes one claimed run to its next suspension point:
   once, under a terminal reason of its own, needs a new reason and a new
   transition, which is a spec change first (BUILD.md, PR2.5a). The driver loop,
   the tick, the launch reconciler, the inline launcher and the HTTP worker
-  treat every throw alike, and none of them changed.
+  treat every throw alike, and none of them changed. The SDK's replay
+  equivalence harness holds "exactly as an outage" at every store call of every
+  program it generates: the fault it injects at a call is an outage or a
+  permanent store error, drawn by the call it fails.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -2519,15 +2524,23 @@ not depend on careful reading:
   about 1.4 s on PostgreSQL and about 1.3 s on MySQL, on a shared machine.
 - *The executor error surface* (`conformance/src/executor-errors.ts`): what an
   executor throws, by kind, through each fixture's real executor, with
-  statements all three dialects read alike (§3.2). A task row inserted again
-  under its own primary key is a `PermanentStoreError` and writes nothing. A
-  batch sent after the executor closed is a `StoreUnavailableError`. Two write
-  batches that update the same two rows in opposite orders, started together,
-  are both answered with each update applied once: PostgreSQL and MySQL make
-  one of them a deadlock victim and run it again, and libSQL runs one after the
-  other. The case does not require that a deadlock happened, because libSQL
-  cannot have one. Measured over three rounds, PostgreSQL ran a victim again in
-  two, MySQL in three, and libSQL in none. A syntax error is not in the surface,
+  statements all three dialects read alike (§3.2). One refused write for each
+  kind of constraint the `tasks` table declares on every dialect, a primary
+  key, the unique index of an idempotency key, a NOT NULL column and the CHECK
+  on a task's state, is a `PermanentStoreError` and writes nothing. The kinds
+  are generated from one table, because a dialect can file one kind apart from
+  the rest: MySQL answers a broken CHECK constraint under its general state,
+  and an executor case on a fake driver is fed only the codes its author
+  listed. A batch sent after the executor closed is a `StoreUnavailableError`.
+  Two write batches that update the same two rows in opposite orders, started
+  together on connections that are already open, are both answered with each
+  update applied once: PostgreSQL and MySQL make one of them a deadlock victim
+  and run it again, and libSQL runs one after the other. The case does not
+  require that a deadlock happened, because libSQL cannot have one and a server
+  need not. Measured over five fresh fixtures on each dialect, PostgreSQL ran a
+  victim again in four, MySQL in five, and libSQL in none, and the case takes
+  about a second on PostgreSQL, which waits its `deadlock_timeout` before it
+  looks for a deadlock. A syntax error is not in the surface,
   because libSQL types it differently by design. The self-concurrency surface
   books a permanent store error with the outages, so a port call that breaks a
   constraint fails its contest in either order, as it did while that error was

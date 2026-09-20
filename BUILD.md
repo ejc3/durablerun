@@ -264,18 +264,20 @@ a last docs PR gives a live owner to every open bullet that is left.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
-24. PR2.5a: a constraint violation sent through a store's executor is typed
+24. PR2.5a: a broken constraint of each kind the `tasks` table declares, sent
+    through a store's executor, is typed
     `PermanentStoreError` on libSQL, PostgreSQL and MySQL, a batch on a closed
     executor is typed `StoreUnavailableError`, and two batches that deadlock
     are both answered, by one shared conformance surface with no dialect fork.
     A worker pass ends on the new type exactly as on an outage, and a hosted
-    route answers it 500. This is met. The constraint case of
+    route answers it 500. This is met. The primary key case of
     `packages/conformance/src/executor-errors.ts` was committed failing on all
     three dialects, beside two worker pass cases in
-    `packages/sdk/test/run-worker.test.ts`. Each executor's map is held by a
-    registered mutation against its own unit test, and the self-concurrency
-    surface books a permanent store error with the outages, so a port call that
-    breaks a constraint fails its contest.
+    `packages/sdk/test/run-worker.test.ts`, and the CHECK case was committed
+    failing on MySQL. Every member of every executor's map is held by a
+    registered mutation against the executor's own case, and the
+    self-concurrency surface books a permanent store error with the outages, so
+    a port call that breaks a constraint fails its contest.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -701,12 +703,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   sibling of `StoreUnavailableError` as `SchemaMismatchError` is, and each
   executor types it from the driver's error code and never from message text
   (DESIGN.md §3.2): libSQL from the primary SQLite result code, PostgreSQL and
-  MySQL from SQLSTATE classes 22, 23 and 42, and MySQL's error 1366 by number.
+  MySQL from SQLSTATE classes 22, 23 and 42, and MySQL's errors 1366 and 3819
+  by number, because MySQL files them under its general state.
   A code the map does not know stays an outage, a deadlock victim keeps its
   retry, and on libSQL a syntax error stays an outage, because SQLite files it
   under its generic code. One shared conformance surface, `executor-errors`,
   holds the kinds on three dialects. Its constraint case was committed failing
-  on libSQL, PostgreSQL and MySQL, beside two worker pass cases.
+  on libSQL, PostgreSQL and MySQL, beside two worker pass cases. The surface
+  first broke one kind of constraint, a primary key. The simplify pass asked
+  why the shared surface held one kind where the schemas declare four, and the
+  CHECK case then failed on MySQL alone, which answers a broken CHECK
+  constraint with error 3819 under HY000: committed failing, then typed by
+  number. Each executor's own cases run on a fake driver, or on a table of the
+  author's own, so they could not show it.
   What consumers do was decided before any code. A worker pass treats the new
   type exactly as an outage, through an internal control kind of its own,
   because naming an error more precisely must not change who pays for it, and
@@ -714,8 +723,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   hosted answer: 500, where the same failure answered 503. No log line was
   added, because no log seam exists. The self-concurrency surface books the new
   type with the outages, so a port call that breaks a constraint still fails
-  its contest. Six mutations hold the new conditions, and the registry holds
-  1004.
+  its contest, and the SDK's replay equivalence harness draws an outage or a
+  permanent store error at every call it fails, so "exactly as an outage" is
+  held at every store call of every generated program. Fifteen mutations hold
+  the new conditions, one for the rule of each map, one for each member of a
+  map, and one each for the worker pass and the contest's booking, and the
+  registry holds 1013.
   - Option for the worker pass, not built, with its trigger: a run whose store
     call fails permanently ends at once, as neither the task's failure nor an
     exhausted infrastructure budget. It needs a terminal reason of its own and
@@ -742,6 +755,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     conformance directory constructs on three dialects, by batch label: no
     scheduler port batch met one under legal use. Trigger: a port call is found
     to reject with an unexpected type inside a cell the matrix passed.
+  - Option for the self-concurrency surface, not built, with its trigger: book
+    as a refusal only what the contract names as one, and fail a contest on
+    everything else. Its booking lists what is NOT a refusal, an outage and now
+    a permanent store error, so any other type that fails the same way in both
+    orders of a contest still passes, a `SchemaMismatchError` among them. It
+    was so before this entry, and turning the list around needs every contest's
+    legal refusals enumerated first, the admin's and the spawn's among them.
+    Trigger: a contest is found to pass with an error in both orders.
   - Option for the executors, not built, with its trigger: widen the maps.
     `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, SQLSTATE class 21 on the two
     servers, and MySQL numbers under HY000 other than 1366 stay outages,
