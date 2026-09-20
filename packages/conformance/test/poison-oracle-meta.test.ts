@@ -1348,7 +1348,16 @@ describe('poison/invariant mechanism self-tests', () => {
         claimed,
         `UPDATE runs SET claimed_by = 'another-worker' WHERE run_id = 'poison-run'`,
       ),
-    }).toEqual({ leaseRanOut: sentence, anotherWorkersClaim: sentence })
+      // libSQL stores what it is given, so a deadline that is no integer can be written here.
+      noReadableDeadline: await refusalOf(
+        claimed,
+        `UPDATE runs SET claim_expires_at_ms = 'soon' WHERE run_id = 'poison-run'`,
+      ),
+    }).toEqual({
+      leaseRanOut: sentence,
+      anotherWorkersClaim: sentence,
+      noReadableDeadline: sentence,
+    })
   })
 
   it('rejects a saga target whose checkpoints do not stand where its profile says', async () => {
@@ -1364,7 +1373,18 @@ describe('poison/invariant mechanism self-tests', () => {
         'counter-bound/task-max-attempts/fail-rollback-rolling-back',
         withoutCheckpoint(SAGA_PHASE_CHECKPOINT),
       ),
-    }).toEqual({ noStepStarted: sentence, outsideThePhase: sentence })
+      insideThePhaseTooSoon: await refusalOf(
+        'counter-bound/task-max-attempts/fail-started-step',
+        `INSERT INTO checkpoints
+           (task_id, checkpoint_name, queue, state, status, owner_run_id, owner_attempt, updated_at_ms)
+         VALUES ('poison-task', '${SAGA_PHASE_CHECKPOINT}', 'q', '{"name":"Forged"}', 'committed',
+                 'poison-run', 1, 1000000)`,
+      ),
+    }).toEqual({
+      noStepStarted: sentence,
+      outsideThePhase: sentence,
+      insideThePhaseTooSoon: sentence,
+    })
   })
 
   it('seeds a sleeping claim target from a prior activated generation', async () => {
