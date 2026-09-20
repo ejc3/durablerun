@@ -344,7 +344,10 @@ jobs:
               # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
               # and the admin's version read, versioned write and post-condition into core's
               # schema-version.ts. Each is the mutant it was. The four that guard a lost bootstrap
-              # share the one line that now decides it for every dialect. This tree registers no
+              # share the one line that now decides it for every dialect. A seventeenth entry stays in
+              # libSQL's store and changes its replacement only. Its mutant handed the ambient
+              # JSON.stringify a value from core's captured parser, which that file imported for the
+              # decoder that left, and now hands it the caller's headers. This tree registers no
               # mutation the base predates, so nothing is exempted and that helper left the step.
               repaired = previous
               for name in (
@@ -364,6 +367,7 @@ jobs:
                   'postgres-bootstrap-loss-forgiven',
                   'mysql-bootstrap-loss-forgiven',
                   'migration-postcondition-old-version',
+                  'spawn-headers-captured-serializer',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
           else:

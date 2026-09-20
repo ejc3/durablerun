@@ -3947,11 +3947,7 @@ MUTATION_SPECS = [
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
         "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
-        "      headersInput === undefined\n"
-        "        ? null\n"
-        "        : JSON.stringify(\n"
-        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
-        "          )",
+        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
         "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
