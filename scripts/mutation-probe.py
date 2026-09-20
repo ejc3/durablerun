@@ -14115,8 +14115,8 @@ MUTATION_SPECS.extend(
         (
             "port-check-runs-before-the-entry",
             "packages/core/src/port-strings.ts",
-            "            requirePortStrings(method, args)\n",
-            "            // MUTATION: the entry is reached with nothing checked\n",
+            "          requirePortStrings(method, args)\n",
+            "          // MUTATION: the entry is reached with nothing checked\n",
             "no store holds any string of any call: every entry of every dialect is reached with whatever its caller passed",
         ),
         (
