@@ -22,9 +22,8 @@ import { describeFailure, withFixture } from './scenario.js'
  * claim receipt the claim's generation too (DESIGN.md §3.4 rules 4 and 5). Each
  * compare-and-set composes that comparison by its own choice, and the rules that read a
  * batch read the fences between its statements, not which binds a statement compares.
- * A statement that leaves the token out passes all of them. Stale-caller tests were
- * written by hand, one operation at a time, and `failRollback` had none: with its token
- * comparison removed a stale caller ended a saga and every test stayed green.
+ * A statement that leaves the token out passes all of them, and a stale-caller test
+ * written by hand holds one operation, so an operation nobody wrote one for is unheld.
  *
  * So the cases are generated. The poison matrix's `invoke` is called for every write
  * label, over every shape of target it tells apart, on a store that records the call.
@@ -54,10 +53,10 @@ interface CallForm {
   /** The label, and what the target's shape adds to it: `complete`, `spawn of a child`. */
   readonly name: string
   readonly label: WriteLabel
-  /** The caller that holds the claim, as the label's healthy seed leaves it. */
-  readonly target: InvocationTarget
+  /** The caller that holds the claim. The label's healthy seed is laid down for it. */
+  readonly holder: InvocationTarget
   /** The port method the call reaches. */
-  readonly method: string
+  readonly method: keyof SchedulerStore
   /** The parts of its claim the call presents, in the order the case checks them. */
   readonly parts: readonly ClaimPart[]
 }
@@ -70,12 +69,12 @@ const carries = (value: unknown, probe: string | number): boolean =>
 
 /** The one port call `invoke` makes for `label` on `target`. */
 function recordedCall(label: WriteLabel, target: InvocationTarget) {
-  const calls: { method: string; args: readonly unknown[] }[] = []
+  const calls: { method: keyof SchedulerStore; args: readonly unknown[] }[] = []
   const recorder = new Proxy({} as SchedulerStore, {
     get:
       (_store, method) =>
       (...args: unknown[]) => {
-        calls.push({ method: String(method), args })
+        calls.push({ method: String(method) as keyof SchedulerStore, args })
         return Promise.resolve(undefined)
       },
   })
@@ -107,17 +106,15 @@ function callFormsOf(label: WriteLabel): CallForm[] {
     const parts: ClaimPart[] = []
     if (carries(call.args, TOKEN_PROBE)) parts.push('token')
     if (carries(call.args, GENERATION_PROBE)) parts.push('generation')
-    forms.push({ name: `${label}${shape.form}`, label, target, method: call.method, parts })
+    // A claim receipt is also presented under the generation of the claim before it, and
+    // a generation is at least one, so its holder is a run that was claimed a second time.
+    const holder = parts.includes('generation')
+      ? { ...target, claimGen: target.claimGen + 1 }
+      : target
+    forms.push({ name: `${label}${shape.form}`, label, holder, method: call.method, parts })
   }
   return forms
 }
-
-const CALL_FORMS = MATRIX_WRITE_LABELS.flatMap(callFormsOf)
-
-/** The column: every call that presents a part of its claim. */
-export const STALE_CALLER_CASES: readonly CallForm[] = CALL_FORMS.filter(
-  ({ parts }) => parts.length > 0,
-)
 
 /**
  * The registered mutation that removes each comparison, by the call it removes it from.
@@ -159,85 +156,61 @@ const outcomeOf = (call: Promise<unknown>): Promise<Outcome> =>
   )
 
 /**
- * The calls whose port method reports a lost lease in its answer, with that answer.
- * Every other call refuses by throwing LeaseLostError, and never RunCancelledError: no
- * task here is cancelled.
+ * The port methods that report a lost lease in their answer, with that answer. Every
+ * other method refuses by throwing LeaseLostError, and never RunCancelledError: no task
+ * here is cancelled.
  */
-const ANSWERED_REFUSALS: Readonly<Record<string, unknown>> = {
+const ANSWERED_REFUSALS: Partial<Record<keyof SchedulerStore, unknown>> = {
   activate: null,
   heartbeat: { held: false, remainingMs: 0, reason: 'lease-lost' },
-  'expire-lease-now': false,
+  expireLeaseNow: false,
 }
 
 const refusalOf = (form: CallForm): Outcome =>
-  form.name in ANSWERED_REFUSALS
-    ? { kind: 'resolved', value: ANSWERED_REFUSALS[form.name] }
+  form.method in ANSWERED_REFUSALS
+    ? { kind: 'resolved', value: ANSWERED_REFUSALS[form.method] }
     : { kind: 'rejected', error: 'LeaseLostError' }
 
 /**
  * The callers that do not hold the claim, for each part of it, given the caller that does.
- * They are chosen against what a statement can spell. The statement grammar lists no
- * function, so a comparison that folds the token's case or reads part of it cannot be
- * written. An ordering comparison can, and it admits every value on one side of the
- * claim's, so each part is presented from both sides, as near as a value can stand.
+ * Each names only what it presents in place of the holder's, so the claim presented is
+ * the one difference between a stale call and the holder's. They are chosen against what
+ * a statement can spell. The statement grammar lists no function, so a comparison that
+ * folds the token's case or reads part of it cannot be written. An ordering comparison
+ * can, and it admits every value on one side of the claim's, so each part is presented
+ * from both sides, as near as a value can stand.
  */
 const STALE_CALLERS: Record<
   ClaimPart,
-  (holder: InvocationTarget) => Record<string, InvocationTarget>
+  (holder: InvocationTarget) => Record<string, Partial<InvocationTarget>>
 > = {
   token: (holder) => ({
     'the token of this claim with its last character dropped': {
-      ...holder,
       token: holder.token.slice(0, -1),
     },
-    'the token of this claim with a character added': { ...holder, token: `${holder.token}~` },
+    'the token of this claim with a character added': { token: `${holder.token}~` },
     // A comparison that asks whether any run is held under the token, and not whether
     // this run is, refuses the two callers above and admits this one.
-    'the token of another live claim': { ...holder, token: POISON_INVOCATION.token },
+    'the token of another live claim': { token: POISON_INVOCATION.token },
   }),
   generation: (holder) => ({
-    'the generation of the claim before': { ...holder, claimGen: holder.claimGen - 1 },
-    'the generation of a claim not yet made': { ...holder, claimGen: holder.claimGen + 1 },
+    'the generation of the claim before': { claimGen: holder.claimGen - 1 },
+    'the generation of a claim not yet made': { claimGen: holder.claimGen + 1 },
   }),
-}
-
-/** Seeds the call's healthy target and answers with the caller that holds its claim. */
-async function seedHolder(f: StoreFixture, form: CallForm): Promise<InvocationTarget> {
-  await seedBase(f)
-  await seedHealthyTrigger(f.raw, form.label, form.target)
-  if (!form.parts.includes('generation')) return form.target
-  // The stale caller of a claim receipt is the claim before it, so the run is one that
-  // was claimed a second time.
-  await f.raw.batch(
-    'stale-token:claimed-again',
-    [
-      {
-        sql: 'UPDATE runs SET claim_gen = claim_gen + 1 WHERE run_id = ?',
-        args: [form.target.runId],
-      },
-    ],
-    'write',
-  )
-  return { ...form.target, claimGen: form.target.claimGen + 1 }
 }
 
 type SweepLabel = Extract<WriteLabel, `sweep:${string}`>
 
 /**
- * Whether a sweep's scan hands its write the generation of the claim it found. The type
- * asks every sweep label for an answer, and each case checks that answer against the
- * scan the store sends.
+ * The registered mutation that removes the scanned generation from each sweep's write, or
+ * null for a sweep whose scan hands its write no generation. The type asks every sweep
+ * label for an answer, and each case checks that answer against the scan the store sends.
  */
-const SCAN_READS_A_GENERATION = {
-  'sweep:cancel': false,
-  'sweep:lost-launch': true,
-  'sweep:claim-timeout': true,
-} as const satisfies Record<SweepLabel, boolean>
-
-const SCAN_VERDICTS: Partial<Record<SweepLabel, string>> = {
+const SCAN_VERDICTS = {
+  'sweep:cancel': null,
   'sweep:lost-launch': 'mutation-verdict:behavior:stale-scan-sweep-lost-launch',
   'sweep:claim-timeout': 'mutation-verdict:behavior:stale-scan-sweep-claim-timeout',
-}
+} as const satisfies Record<SweepLabel, string | null>
 
 /** An executor whose sweep scan reports `runId` one claim later than the run stands. */
 function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
@@ -265,18 +238,30 @@ function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
   return { executor, rewritten: () => rewritten }
 }
 
-const fixtureName = (kind: string, name: string) => `${kind}-${name.replaceAll(' ', '-')}`
+/** Runs `label`'s sweep over its healthy seed, through a scan of a later claim. */
+async function sweepOverALaterScan(f: StoreFixture, label: SweepLabel) {
+  await seedBase(f)
+  await seedHealthyTrigger(f.raw, label)
+  expect(await engineInvariantViolations(f.raw)).toEqual([])
+  const before = await snapshot(f.raw)
+  const scan = scanOfALaterClaim(f.raw, HEALTHY_INVOCATION.runId)
+  const swept = await outcomeOf(invoke(label, f.storeOver(scan.executor), HEALTHY_INVOCATION))
+  return { before, swept, rewritten: scan.rewritten() }
+}
 
 export function staleTokenConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`stale-token column [${dialect}] (write label x caller that does not hold the claim)`, () => {
+    const callForms = MATRIX_WRITE_LABELS.flatMap(callFormsOf)
+    /** The column: every call that presents a part of its claim. */
+    const cases = callForms.filter(({ parts }) => parts.length > 0)
+
     it('enrolls exactly the calls that present a claim', () => {
       const presenting = (part: ClaimPart) =>
-        STALE_CALLER_CASES.filter(({ parts }) => parts.includes(part))
+        cases
+          .filter(({ parts }) => parts.includes(part))
           .map(({ name }) => name)
           .sort()
-      expect(
-        Object.fromEntries(STALE_CALLER_CASES.map(({ name, parts }) => [name, parts])),
-      ).toEqual({
+      expect(Object.fromEntries(cases.map(({ name, parts }) => [name, parts]))).toEqual({
         'spawn of a child': ['token'],
         activate: ['token', 'generation'],
         'defer-launch': ['token', 'generation'],
@@ -291,42 +276,41 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
         'expire-lease-now': ['token'],
         'set-checkpoint': ['token'],
       })
-      expect(STALE_CALLER_CASES).toHaveLength(13)
+      expect(cases).toHaveLength(13)
       expect({
         token: Object.keys(VERDICTS.token).sort(),
         generation: Object.keys(VERDICTS.generation).sort(),
         answeredRefusalsOutsideTheColumn: Object.keys(ANSWERED_REFUSALS).filter(
-          (name) => !STALE_CALLER_CASES.some((form) => form.name === name),
+          (method) => !cases.some((form) => form.method === method),
         ),
-        sweeps: CALL_FORMS.filter(({ method }) => method === 'sweep')
+        sweeps: callForms
+          .filter(({ method }) => method === 'sweep')
           .map(({ name }) => name)
           .sort(),
-        scanVerdicts: Object.keys(SCAN_VERDICTS).sort(),
       }).toEqual({
         token: presenting('token'),
         generation: presenting('generation'),
         answeredRefusalsOutsideTheColumn: [],
-        sweeps: Object.keys(SCAN_READS_A_GENERATION).sort(),
-        scanVerdicts: Object.entries(SCAN_READS_A_GENERATION)
-          .filter(([, reads]) => reads)
-          .map(([label]) => label)
-          .sort(),
+        sweeps: Object.keys(SCAN_VERDICTS).sort(),
       })
     })
 
     // fenceTwin('Heartbeat') fenceTwin('FailRun') fenceTwin('SleepSuspend'): these cases are
     // the executable twins of those modeled guards. Each refuses a caller whose token is
     // not the claim's, and leaves the rows as they were.
-    for (const form of STALE_CALLER_CASES) {
+    for (const form of cases) {
       it(`${form.name} refuses a caller that does not hold the claim`, () =>
-        withFixture(makeFixture, fixtureName('stale-token', form.name), async (f) => {
-          const holder = await seedHolder(f, form)
+        withFixture(makeFixture, `stale-token ${form.name}`, async (f) => {
+          await seedBase(f)
+          await seedHealthyTrigger(f.raw, form.label, form.holder)
           expect(await engineInvariantViolations(f.raw)).toEqual([])
           const before = await snapshot(f.raw)
           for (const part of form.parts) {
             const answers: Record<string, Outcome> = {}
-            for (const [who, caller] of Object.entries(STALE_CALLERS[part](holder))) {
-              answers[who] = await outcomeOf(invoke(form.label, f.store, caller))
+            for (const [who, stale] of Object.entries(STALE_CALLERS[part](form.holder))) {
+              answers[who] = await outcomeOf(
+                invoke(form.label, f.store, { ...form.holder, ...stale }),
+              )
             }
             expect({ answers, rows: await snapshot(f.raw) }, VERDICTS[part][form.name]).toEqual({
               answers: Object.fromEntries(
@@ -338,7 +322,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
           // The same call under the claim itself wins from the rows the refusals left. If
           // it did not, the seed would be one in which the call is refused whoever makes
           // it, and the refusals above would hold with the comparison removed.
-          const held = await outcomeOf(invoke(form.label, f.store, holder))
+          const held = await outcomeOf(invoke(form.label, f.store, form.holder))
           expect(held.kind, `${form.name} under its own claim: ${JSON.stringify(held)}`).toBe(
             'resolved',
           )
@@ -350,26 +334,20 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
         }))
     }
 
-    for (const [label, reads] of Object.entries(SCAN_READS_A_GENERATION) as [
-      SweepLabel,
-      boolean,
-    ][]) {
-      const title = reads
-        ? `${label} acts on nothing when its scan read another generation`
-        : `${label} is handed no generation by its scan`
-      it(title, () =>
-        withFixture(makeFixture, fixtureName('stale-scan', label), async (f) => {
-          await seedBase(f)
-          await seedHealthyTrigger(f.raw, label)
-          expect(await engineInvariantViolations(f.raw)).toEqual([])
-          const before = await snapshot(f.raw)
-          const scan = scanOfALaterClaim(f.raw, HEALTHY_INVOCATION.runId)
-          const swept = await outcomeOf(
-            invoke(label, f.storeOver(scan.executor), HEALTHY_INVOCATION),
-          )
-          expect(scan.rewritten() > 0, 'whether the scan handed the write a generation').toBe(reads)
-          if (!reads) return
-          expect({ swept, rows: await snapshot(f.raw) }, SCAN_VERDICTS[label]).toEqual({
+    for (const [label, verdict] of Object.entries(SCAN_VERDICTS) as [SweepLabel, string | null][]) {
+      if (verdict === null) {
+        it(`${label} is handed no generation by its scan`, () =>
+          withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
+            const { swept, rewritten } = await sweepOverALaterScan(f, label)
+            expect({ swept: swept.kind, rewritten }).toEqual({ swept: 'resolved', rewritten: 0 })
+          }))
+        continue
+      }
+      it(`${label} acts on nothing when its scan read another generation`, () =>
+        withFixture(makeFixture, `stale-scan ${label}`, async (f) => {
+          const { before, swept, rewritten } = await sweepOverALaterScan(f, label)
+          expect(rewritten, 'the scan handed the write no generation to present').toBeGreaterThan(0)
+          expect({ swept, rows: await snapshot(f.raw) }, verdict).toEqual({
             swept: { kind: 'resolved', value: [] },
             rows: before,
           })

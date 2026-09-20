@@ -1578,6 +1578,8 @@ function triggerTask(
 
 function triggerRun(options: {
   state: 'pending' | 'running' | 'sleeping'
+  /** The generation of the claim that holds a running run. One unless the caller says. */
+  claimGen?: number
   activatedGen?: number
   expiresAt?: number | null
   availableAt?: number | null
@@ -1597,7 +1599,7 @@ function triggerRun(options: {
       TRIGGER_TASK,
       options.state,
       running ? TRIGGER_TOKEN : null,
-      running ? 1 : 0,
+      running ? (options.claimGen ?? 1) : 0,
       running ? (options.activatedGen ?? 1) : 0,
       running ? 60_000 : null,
       running ? (options.expiresAt ?? NOW + 60_000) : null,
@@ -1643,12 +1645,12 @@ const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
 export async function seedHealthyTrigger(
   raw: SqlExecutor,
   label: string,
-  target?: InvocationTarget,
+  target: InvocationTarget = HEALTHY_INVOCATION,
 ): Promise<void> {
   // A task of its own needs no rows. A child is spawned by a run that is running under
   // its claim, which is what the default arm seeds.
   if (label === 'driver-heartbeat') return
-  if (label === 'spawn' && target?.childReplayKey === undefined) return
+  if (label === 'spawn' && target.childReplayKey === undefined) return
   let statements: readonly SqlStatement[]
   switch (label) {
     case 'claim':
@@ -1656,7 +1658,11 @@ export async function seedHealthyTrigger(
       break
     case 'activate':
     case 'defer-launch':
-      statements = [triggerTask('running'), triggerRun({ state: 'running', activatedGen: 0 })]
+      // A claim receipt names its generation, so the run is seeded at the target's.
+      statements = [
+        triggerTask('running'),
+        triggerRun({ state: 'running', activatedGen: 0, claimGen: target.claimGen }),
+      ]
       break
     case 'record-task-done':
       // The awaiting run is running, and each invocation's child ended with nothing recorded.
