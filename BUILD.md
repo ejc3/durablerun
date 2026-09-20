@@ -169,6 +169,19 @@ a last docs PR gives a live owner to every open bullet that is left.
     a port by number: it takes over the port the killed worker reported. This is
     met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
+15. PR2.5b: a launch the resident driver stopped waiting for is aborted through
+    the Launcher port and reconciles exactly as a timed-out launch does, held by
+    a case in which the worker receives the launch, the driver aborts, and the
+    run completes once. The detached launch and wake requests end at a deadline,
+    both local servers set header and request limits, and the worker server's
+    `close()` lets a launch on the wire finish, within a bound, before it
+    force-closes what is left. This is met. Eight cases were committed failing,
+    seven of them in `packages/driver/test/http-lifecycle.test.ts` against real
+    local servers on ports the OS picks, with the driver or the worker on a
+    hand-cranked clock, and one in `loop.test.ts`. A request rejected with a
+    body was expected to leave its kept-alive connection unusable and does not,
+    because the platform discards what is left of such a body, so two cases pin
+    that and no code changed.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -557,18 +570,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
-  enqueue → done; kill-worker chaos → sweep recovers. Carries two deferrals
+  enqueue → done; kill-worker chaos → sweep recovers. Carries one deferral
   from the loop review: the `/wake` HTTP endpoint (producers currently
   cannot reach the in-process wake(); it rides the worker server's process
-  entry), and an abort signal through the Launcher port so a timed-out
-  transport call can actually be cancelled instead of abandoned.
+  entry). The other one it carried, an abort signal through the Launcher
+  port, is PR2.5b.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
-  against real processes. Also carries the transport-lifecycle deferrals
-  from the residual review: graceful worker shutdown that drains queued
-  acks before force-closing sockets, deadlines + abort on the detached
-  launch and wake fetches, connection/header timeouts and body draining on
-  every route, and splitting permanent SQL errors from transient
+  against real processes. The transport-lifecycle deferrals it carried from
+  the residual review (the worker's shutdown order, deadlines on the detached
+  launch and wake requests, header and request timeouts, body draining) are
+  PR2.5b. It still carries one from that review:
+  splitting permanent SQL errors from transient
   unavailability in the executor's error typing. Includes the systematic fault MATRIX from the
   PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
   with per-operation bounds asserted — curated fault lists missed the
@@ -586,6 +599,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   told that URL. The start helpers take a started worker and refuse a bare
   number. The test determinism review rule flags any port number fixed before
   the bind and passes port 0.
+- **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
+  `Launcher.launch` takes an optional second argument whose one field is an
+  abort signal. The resident driver's launch deadline hands every call a signal
+  and fires it once the failed launch is decided, and the HTTP launcher ends its
+  request with it. A worker that accepts a connection and never answers now
+  holds the driver's connection until the deadline, where it held it for
+  fetch's own five minutes. An aborted launch is reconciled exactly as a call
+  that never settles, and nothing a launcher answers after the abort is read: a
+  case compares task rows, run rows and loop counters, under one seed, between
+  a launcher that never hears the abort and one that lets go and then claims
+  the launch was taken. The worker's wake ping carries a deadline of five
+  seconds on the injected clock. The worker server's `close()` stops accepting,
+  lets a request that is on the wire finish with an answer that ends its
+  connection, waits at most five seconds on the injected clock, force-closes
+  the rest, and then waits for the passes in flight. Before, it destroyed every
+  connection at once, so a launch on the wire was never answered, or ran with
+  its ack dropped. The wake server's `close()` ends every connection at once.
+  Before, a client that connected and sent nothing held it open for as long as
+  it liked. Both servers give a connection ten seconds for its headers and
+  thirty for its whole request. A request rejected with a body was expected to
+  leave its kept-alive connection unusable, and does not: the platform discards
+  what is left of the body once the response has finished, on every route
+  tried, so two cases pin that and no code changed. Eleven mutations hold the
+  new lines, and the registry goes from 880 to 891.
 
 ## Phase 3 — full Absurd semantics
 
