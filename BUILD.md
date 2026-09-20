@@ -656,7 +656,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   to the row, and the claim-timeout batch once trusted a scanned attempt. Two
   cases hold both lease sweeps to it. Seventeen mutations, the first to name
   core's claim-receipt, lease, suspend, complete, fail, checkpoint and sweep
-  statements, are each owned by their call's case: 897. The hand-written
+  statements, are each owned by their call's case: 910. The hand-written
   stale-token lines for heartbeat, set-checkpoint, reschedule with a delay,
   suspend, complete, fail and expireLeaseNow are gone, and the immediate chain
   keeps its own case. The column adds about 0.4 s to libSQL's conformance and
