@@ -279,6 +279,10 @@ it('reads of runs no more than a claim takes, beside the running runs other work
       if (label === 'claim') claims.push(statement)
     })
     await cloneRunning(client, db.schemaName, await started('held-by-another-worker'), OTHERS)
+    // One parked wait. With `waits` empty the delete of timed-out waits never reaches
+    // `runs`, and its scans would be judged without having run.
+    const parked = await started('parked-on-an-event')
+    await store.awaitEvent('q', parked.taskId, parked.runId, parked.claimToken, 's', 'e', null)
     await client.query('ANALYZE runs, tasks')
     // The claim whose statements run again. Its run completes first, so its token holds
     // nothing when those statements claim the next due run under it.
