@@ -1447,6 +1447,13 @@ MUTATION_SPECS = [
         "a listed aggregate spelled in upper case is refused",
     ),
     (
+        "tree-clock-advice-only-where-spelled",
+        "packages/core/src/fenced-batch.ts",
+        "      const advice = spelledClock ? `. ${SPAN_ADVICE}` : ''\n",
+        "      const advice = true ? `. ${SPAN_ADVICE}` : ''\n",
+        "a follow-on refused for holding the batch clock's token is told about age() and a subtraction, which it never wrote",
+    ),
+    (
         "tree-clock-spelling-case-fold",
         "packages/core/src/sql-tree.ts",
         "  ].join('|'),\n"
@@ -1582,6 +1589,13 @@ MUTATION_SPECS = [
         "  'unix_timestamp',\n",
         "",
         "the clock function unix_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-age",
+        "packages/core/src/sql-tree.ts",
+        "  'age',\n",
+        "",
+        "PostgreSQL's age, which measures from the current date when it is given one argument, goes unseen in a tree",
     ),
     (
         "tree-clock-keyword-current-timestamp",
@@ -2441,14 +2455,14 @@ MUTATION_SPECS = [
     (
         "tree-read-state-literal-admitted",
         "packages/core/src/sql-tree.ts",
-        "  if (!isBind(node.rightOperand)) return false\n",
+        "  if (!holdsBind(bound)) return false\n",
         "  if (false) return false\n",
         "a read is refused a state written inline, the one form a partial index matches",
     ),
     (
         "tree-read-state-names-the-column",
         "packages/core/src/sql-tree.ts",
-        "  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))\n",
+        "  return STATE_COLUMNS.some((column) => namesColumn(named, column))\n",
         "  return true\n",
         "a read is refused every bound comparison, whatever column it names",
     ),
@@ -2472,6 +2486,55 @@ MUTATION_SPECS = [
         "const STATE_COLUMNS = ['state', 'status']\n",
         "const STATE_COLUMNS = ['state']\n",
         "a read may bind the status it compares, which the checkpoints' partial index cannot match",
+    ),
+    (
+        "tree-read-state-either-side",
+        "packages/core/src/sql-tree.ts",
+        "    bindsState(node.rightOperand, node.leftOperand) ||\n    bindsState(node.leftOperand, node.rightOperand)\n",
+        "    bindsState(node.rightOperand, node.leftOperand)\n",
+        "a read may bind the state it compares by writing the bound value on the left of the test",
+    ),
+    (
+        "tree-read-state-stops-at-a-subquery",
+        "packages/core/src/sql-tree.ts",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "",
+        "a bind inside a subquery on the right, which stands beside no state, refuses the read",
+    ),
+    (
+        "tree-read-state-reads-a-subquery-selection",
+        "packages/core/src/sql-tree.ts",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "  if (SelectQueryNode.is(node)) return false\n",
+        "a read may bind the state it compares by selecting the bound value in a subquery",
+    ),
+    (
+        "tree-read-state-bare-value-is-a-bind",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "a bound value counts only inside a list of plain values, so a read may bind the state it compares anywhere else",
+    ),
+    (
+        "tree-read-state-plain-list-is-bound",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || children(node).some(holdsBind)\n",
+        "a list of plain values, every one of which the builder binds, passes for a list that binds nothing",
+    ),
+    (
+        "tree-read-state-list-holds-a-bind",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || (children(node).length > 0 && children(node).every(holdsBind))\n",
+        "a list passes when one inline member stands beside the bound one",
+    ),
+    (
+        "tree-read-state-bind-in-parentheses",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || false\n",
+        "a read may bind the state it compares by standing the value in parentheses, or under a cast or a call",
     ),
     (
         "tree-raw-fragment-unminted-message",
@@ -8314,6 +8377,12 @@ VERDICTS = {
         "the tree rules the statement grammar reads an aggregate name in any case",
         "mutation-verdict:construction:tree-grammar-aggregate-case-fold",
     ),
+    "tree-clock-advice-only-where-spelled": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock says nothing about a span to a follow-on that spelled no clock",
+        "mutation-verdict:construction:tree-clock-advice-only-where-spelled",
+    ),
     "tree-clock-spelling-case-fold": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
@@ -8427,6 +8496,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses unix_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-unix-timestamp",
+    ),
+    "tree-clock-function-age": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses age in a fragment, with one argument and with two",
+        "mutation-verdict:construction:tree-clock-function-age",
     ),
     "tree-clock-keyword-current-timestamp": ExpectedVerdict(
         "construction",
@@ -9159,6 +9234,48 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules a state a read compares holds a checkpoint status to a literal as well",
         "mutation-verdict:construction:tree-read-status-is-a-state",
+    ),
+    "tree-read-state-either-side": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused with the bound value on the left of the test",
+        "mutation-verdict:construction:tree-read-state-either-side",
+    ),
+    "tree-read-state-stops-at-a-subquery": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is admitted with a subquery on the right, which is its own statement",
+        "mutation-verdict:construction:tree-read-state-stops-at-a-subquery",
+    ),
+    "tree-read-state-reads-a-subquery-selection": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when a subquery on the right selects a bound value",
+        "mutation-verdict:construction:tree-read-state-reads-a-subquery-selection",
+    ),
+    "tree-read-state-bare-value-is-a-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused as a bare bound value, whatever the operator",
+        "mutation-verdict:construction:tree-read-state-bare-value-is-a-bind",
+    ),
+    "tree-read-state-plain-list-is-bound": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused in a list of plain values, every one of which the builder binds",
+        "mutation-verdict:construction:tree-read-state-plain-list-is-bound",
+    ),
+    "tree-read-state-list-holds-a-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused in a list that holds one bound value among inline ones",
+        "mutation-verdict:construction:tree-read-state-list-holds-a-bind",
+    ),
+    "tree-read-state-bind-in-parentheses": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when the bound value stands in parentheses",
+        "mutation-verdict:construction:tree-read-state-bind-in-parentheses",
     ),
     "tree-raw-fragment-unminted-message": ExpectedVerdict(
         "construction",
@@ -14644,6 +14761,12 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "tree-read-state-stops-at-a-subquery": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
+    "tree-read-state-reads-a-subquery-selection": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
     "stale-token-expire-lease-now": (
         "replacement removes the claim token's comparison together with its one SQL bind"
     ),
@@ -16839,6 +16962,29 @@ TREE_CONDITION_TOKEN = re.compile(
     r"\bif \(|&&|\|\||(?<!\?)\? |\.every\(|\.some\(|=== |!== |\.includes\(|\.filter\("
 )
 TREE_STRING_LITERAL = re.compile(r"`[^`]*`|'[^']*'|\"[^\"]*\"")
+TREE_SPELLING_ARM = re.compile(r"String\.raw`(.*)`")
+TREE_SPELLING_GROUP = re.compile(r"\(\?:([^()]*)\)")
+
+
+def spelling_entries(line: str) -> list[str]:
+    """The spellings one line of a spelling list holds.
+
+    A list is written two ways. An array line holds its quoted strings. A `String.raw`
+    arm of a pattern holds the alternatives of its first group, one or many, once
+    anything it interpolates is set aside, and an arm with no group holds itself. A group
+    a mutant has left with one alternative is still a group: read as the whole arm, the
+    mutant that dropped one of two spellings would look as if it had dropped both.
+
+    This reads text, not a pattern: a spelling written some other way, such as several
+    operators inside one character class, is one entry here however many it spells. See
+    the self-test's false negative.
+    """
+    arm = TREE_SPELLING_ARM.search(line)
+    if arm is None:
+        return [literal[1:-1] for literal in TREE_STRING_LITERAL.findall(line)]
+    pattern = re.sub(r"\$\{[^}]*\}", "", arm.group(1))
+    group = TREE_SPELLING_GROUP.search(pattern)
+    return [pattern] if group is None else group.group(1).split("|")
 
 
 def tree_condition_lines(
@@ -16910,39 +17056,69 @@ def tree_condition_lines(
 def tree_rule_coverage_problems(
     file: str,
     text: str,
-    finds: list[tuple[str, str]],
+    finds: list[tuple[str, str, str]],
     regions: tuple[tuple[str | None, str | None], ...],
     blocks: tuple[tuple[str, str], ...],
     listed: dict[str, str],
 ) -> list[str]:
     """Hold every condition of a tree rule to a registered mutation or a listed reason.
 
+    A line of a spelling list that holds two or more entries is held by entry and not by
+    a count. Each entry needs a mutation whose replacement drops that entry and no other
+    from the line. A count of the mutations that touch the line is not that: a mutation
+    that blanks a whole arm touches the line too, so eight entries and nine mutations can
+    leave one entry with none.
+
     The remainder is derived here, from the finds themselves, because a hand-kept list
     of what has no mutation was read as complete when it was not.
     """
     lines = text.split("\n")
+    # The lines of the spelling lists, by the one reading of a block's span.
+    block_lines = set(tree_condition_lines(text, (), blocks))
     touching: dict[int, set[str]] = {}
-    for name, find in finds:
+    dropped: dict[int, set[str]] = {}
+    for name, find, replace in finds:
         at = text.find(find)
         if at < 0:
             continue
         first = text.count("\n", 0, at) + 1
-        for number in range(first, first + find.rstrip("\n").count("\n") + 1):
-            touching.setdefault(number, set()).add(name)
+        found, replaced = find.rstrip("\n").split("\n"), replace.rstrip("\n").split("\n")
+        for offset, line in enumerate(found):
+            touching.setdefault(first + offset, set()).add(name)
+            if first + offset not in block_lines:
+                continue
+            # The line as the mutant leaves it. A replacement of another length has
+            # moved the line, and a line that is gone has dropped every entry.
+            after = replaced[offset] if len(replaced) == len(found) else ""
+            gone = set(spelling_entries(line)) - set(spelling_entries(after))
+            if len(gone) == 1:
+                dropped.setdefault(first + offset, set()).update(gone)
     wanted = tree_condition_lines(text, regions, blocks)
     problems: list[str] = []
     short: set[str] = set()
     for number in sorted(wanted):
-        have = len(touching.get(number, ()))
-        if have >= wanted[number]:
-            continue
         line = lines[number - 1].strip()
+        entries = spelling_entries(line) if number in block_lines else []
+        unheld = [entry for entry in entries if entry not in dropped.get(number, ())]
+        have = len(touching.get(number, ()))
+        shortfall = None
+        if len(entries) > 1 and unheld:
+            shortfall = (
+                f"holds {len(entries)} spellings and no registered mutation drops "
+                f"{', '.join(repr(entry) for entry in unheld)} alone; register one for each entry"
+            )
+        if len(entries) <= 1 and have < wanted[number]:
+            shortfall = (
+                f"holds {wanted[number]} condition(s) and {have} registered mutation(s) "
+                "touch it; register one for each"
+            )
+        if shortfall is None:
+            continue
         short.add(line)
         if line not in listed:
             problems.append(
-                f"{file}:{number}: `{line}` holds {wanted[number]} condition(s) and "
-                f"{have} registered mutation(s) touch it; register one for each, or list "
-                "the line in TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
+                f"{file}:{number}: `{line}` {shortfall}, or list the line in "
+                "TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
             )
     for line, reason in sorted(listed.items()):
         if not reason.strip():
@@ -18640,11 +18816,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "every condition has a mutation or a reason",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18652,10 +18828,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "one mutation on a line of two conditions",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             ("fixture.ts:2:",),
@@ -18663,10 +18839,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "a spelling with no mutation",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             ("fixture.ts:13:",),
@@ -18674,11 +18850,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "a stale listing and an empty reason",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": " ", "if (node.c) {": "covered now"},
             (
@@ -18692,11 +18868,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             # `node.a` leave `node.b` unheld, and the check is clean.
             "false negative: two mutations of one operand",
             [
-                ("drops-a", "  if (node.a && node.b) return null"),
-                ("drops-a-again", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("drops-a", "  if (node.a && node.b) return null", ""),
+                ("drops-a-again", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18707,11 +18883,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             # return here, no mutation touches it, and the check is clean.
             "false negative: a condition the token list does not name",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18729,6 +18905,68 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         )
         if len(got) != len(wanted_prefixes) or any(
             not problem.startswith(prefix) for problem, prefix in zip(got, wanted_prefixes)
+        ):
+            failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
+    # A line that holds two or more spellings is held by entry: each needs a mutation
+    # whose replacement drops that spelling and no other.
+    spelling_entry_source = (
+        "const OPERATORS = ['+', '-']\n"
+        "const ARMS = [\n"
+        "  String.raw`\\b(?:date|time)\\(\\)`,\n"
+        "  String.raw`[+*]`,\n"
+        "]\n"
+    )
+    spelling_entry_blocks = (("const OPERATORS = ", "\n"), ("const ARMS = [\n", "]\n"))
+    operators = "const OPERATORS = ['+', '-']"
+    arm = "  String.raw`\\b(?:date|time)\\(\\)`,\n"
+    held = [
+        ("plus", operators, "const OPERATORS = ['-']"),
+        ("minus", operators, "const OPERATORS = ['+']"),
+        ("date", arm, "  String.raw`\\b(?:time)\\(\\)`,\n"),
+        ("time", arm, "  String.raw`\\b(?:date)\\(\\)`,\n"),
+        ("class", "  String.raw`[+*]`,\n", "  String.raw`[^\\s\\S]`,\n"),
+    ]
+    whole_arm = ("whole-arm", arm, "  String.raw`[^\\s\\S]`,\n")
+    spelling_entry_cases = (
+        ("every spelling has a mutation that drops it alone", held, ()),
+        (
+            "a spelling of a one-line list that lost its mutation",
+            [find for find in held if find[0] != "minus"],
+            (("fixture.ts:1:", "drops '-' alone"),),
+        ),
+        (
+            "a spelling of a two-spelling arm that lost its mutation",
+            [find for find in held if find[0] != "date"],
+            (("fixture.ts:3:", "drops 'date' alone"),),
+        ),
+        (
+            # What a count of the mutations on the line cannot see. The mutant that blanks
+            # the arm touches the line, so two mutations touch a line of two spellings
+            # while `time` has none of its own.
+            "a mutant that blanks a whole arm holds none of its spellings",
+            [find for find in held if find[0] != "time"] + [whole_arm],
+            (("fixture.ts:3:", "drops 'time' alone"),),
+        ),
+        (
+            # The false negative, kept on purpose: spellings are read as quoted strings and
+            # as the alternatives of a group. A character class that spells two operators
+            # is one entry, so the one mutant here, which drops `+` from the class, holds
+            # the line, and nothing asks for a mutant that drops `*`.
+            "false negative: two spellings inside one character class",
+            [find for find in held if find[0] != "class"]
+            + [("class-plus", "  String.raw`[+*]`,\n", "  String.raw`[*]`,\n")],
+            (),
+        ),
+    )
+    for label, finds, wanted_prefixes in spelling_entry_cases:
+        got = tree_rule_coverage_problems(
+            "fixture.ts", spelling_entry_source, finds, ((None, None),), spelling_entry_blocks, {}
+        )
+        # Each problem is held to its line AND to the spellings it names: a problem at the
+        # right line that names the wrong spelling is the defect these cases first found.
+        if len(got) != len(wanted_prefixes) or any(
+            not problem.startswith(prefix) or names not in problem
+            for problem, (prefix, names) in zip(got, wanted_prefixes)
         ):
             failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
     target_checker = mutation_target_diagnostic
@@ -19062,7 +19300,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     tree_rule_file,
                     (ROOT / tree_rule_file).read_text(),
                     [
-                        (mutation.name, mutation.find)
+                        (mutation.name, mutation.find, mutation.replace)
                         for mutation in MUTATIONS
                         if mutation.file == tree_rule_file
                     ],
@@ -19075,7 +19313,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 998:
+        if len(MUTATIONS) != 1007:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

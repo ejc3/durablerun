@@ -520,6 +520,135 @@ describe('the tree rules', () => {
         'mutation-verdict:construction:tree-read-status-is-a-state',
       ).toMatch(BOUND)
     })
+
+    it('is refused as a bare bound value, whatever the operator', () => {
+      expect(
+        String(problem(runs().where('r.state', '<>', 'failed'))),
+        'mutation-verdict:construction:tree-read-state-bare-value-is-a-bind',
+      ).toMatch(BOUND)
+    })
+
+    it('is refused in a one-state list under IN', () => {
+      expect(String(problem(runs().where('r.state', 'in', ['running'])))).toMatch(BOUND)
+    })
+
+    it('is refused in a list of plain values, every one of which the builder binds', () => {
+      expect(
+        String(problem(runs().where('r.state', 'not in', ['running', 'pending']))),
+        'mutation-verdict:construction:tree-read-state-plain-list-is-bound',
+      ).toMatch(BOUND)
+    })
+
+    it('is refused in a list that holds one bound value among inline ones', () => {
+      const mixed = (eb: Loose) => eb('r.state', 'in', [literalValue('pending'), 'running'])
+      expect(
+        String(problem(runs().where(mixed))),
+        'mutation-verdict:construction:tree-read-state-list-holds-a-bind',
+      ).toMatch(BOUND)
+    })
+
+    it('is admitted in a list of inline literals', () => {
+      const inline = (eb: Loose) =>
+        eb('r.state', 'in', [literalValue('pending'), literalValue('running')])
+      expect(problem(runs().where(inline))).toBeNull()
+    })
+
+    it('is refused when the bound value stands in parentheses', () => {
+      const wrapped = (eb: Loose) => eb('r.state', '=', eb.parens(eb.val('running')))
+      expect(
+        String(problem(runs().where(wrapped))),
+        'mutation-verdict:construction:tree-read-state-bind-in-parentheses',
+      ).toMatch(BOUND)
+    })
+
+    it('is refused with the bound value on the left of the test', () => {
+      // `? = state` reads the same to a partial index as `state = ?`, and the builder writes both.
+      const mirrored = (eb: Loose) => eb(eb.val('running'), '=', eb.ref('r.state'))
+      const underACall = (eb: Loose) =>
+        eb(eb.fn('coalesce', [eb.val('running'), eb.val('x')]), '=', eb.ref('r.state'))
+      expect(
+        String(problem(runs().where(mirrored))),
+        'mutation-verdict:construction:tree-read-state-either-side',
+      ).toMatch(BOUND)
+      expect(String(problem(runs().where(underACall)))).toMatch(BOUND)
+    })
+
+    it('is admitted with a subquery on the right, which is its own statement', () => {
+      // The subquery binds a queue. That bind stands in another statement, beside no state.
+      const queued = (eb: Loose) =>
+        eb(
+          'r.state',
+          'in',
+          eb.selectFrom('tasks as t').select('t.state').where('t.queue', '=', 'q'),
+        )
+      expect(
+        problem(runs().where(queued)),
+        'mutation-verdict:construction:tree-read-state-stops-at-a-subquery',
+      ).toBeNull()
+    })
+
+    it('is refused when a subquery on the right selects a bound value', () => {
+      // A subquery's own WHERE is another statement's business. What it selects is the value
+      // the state is compared with, so a bind among its selections stands beside the state.
+      const bound = (eb: Loose) => eb.selectFrom('tasks as t').select(eb.val('running').as('s'))
+      const underIn = (eb: Loose) => eb('r.state', 'in', bound(eb))
+      const asAScalar = (eb: Loose) => eb('r.state', '=', bound(eb).limit(1))
+      expect(
+        String(problem(runs().where(underIn))),
+        'mutation-verdict:construction:tree-read-state-reads-a-subquery-selection',
+      ).toMatch(BOUND)
+      expect(String(problem(runs().where(asAScalar)))).toMatch(BOUND)
+    })
+
+    it('is refused under a cast, a call, a CASE or a fragment on the right', () => {
+      // The bound value is found wherever it stands below the right side, as the column is
+      // found below the left. A cast of a bind is an ordinary thing to write for PostgreSQL.
+      const rights: ((eb: Loose) => unknown)[] = [
+        (eb) => eb.cast(eb.val('running'), 'text'),
+        (eb) => eb.fn('coalesce', [eb.val('running'), eb.val('pending')]),
+        // Its WHEN is inline, so only the values of THEN and ELSE can refuse it.
+        (eb) =>
+          eb.case().when('r.attempt', '>', literalValue(1)).then('running').else('pending').end(),
+        () => value<string>('lower(?)', ['RUNNING']),
+      ]
+      for (const right of rights) {
+        const compared = (eb: Loose) => eb('r.state', '=', right(eb))
+        expect(String(problem(runs().where(compared)))).toMatch(BOUND)
+      }
+      // The control for the CASE above: with its values inline too, nothing in it is bound.
+      const inline = (eb: Loose) =>
+        eb.case().when('r.attempt', '>', literalValue(1)).then(literalValue('running')).end()
+      expect(problem(runs().where((eb: Loose) => eb('r.state', '=', inline(eb))))).toBeNull()
+    })
+    it('refuses more than its property and reads less, in the shapes DESIGN.md names', () => {
+      // More. The test names a state column only inside a CASE whose value is a number, beside
+      // arithmetic on a bound value. No index on the state is concerned, and it is refused.
+      const flagged = (eb: Loose) =>
+        eb
+          .case()
+          .when('r.state', '=', literalValue('running'))
+          .then(literalValue(1))
+          .else(literalValue(0))
+          .end()
+      const beside = (eb: Loose) => eb(flagged(eb), '=', eb(eb.val(1), '+', eb.ref('r.attempt')))
+      expect(String(problem(runs().where(beside)))).toMatch(BOUND)
+      // An empty list binds nothing and is refused with the same message.
+      expect(String(problem(runs().where('r.state', 'in', [])))).toMatch(BOUND)
+      // Less. A simple CASE on the state with a bound WHEN is no test of the state's column.
+      const simple = (eb: Loose) =>
+        eb(
+          eb.case(eb.ref('r.state')).when(eb.val('running')).then(literalValue(1)).end(),
+          '=',
+          literalValue(1),
+        )
+      expect(problem(runs().where(simple))).toBeNull()
+      // A subquery that selects the state is its own statement, so the column is not found in it.
+      const selectsState = (eb: Loose) =>
+        eb(eb.selectFrom('runs as x').select('x.state').limit(1), '=', eb.val('running'))
+      expect(problem(runs().where(selectsState))).toBeNull()
+      // A comparison written whole inside a fragment is text, which no tree rule reads.
+      expect(problem(runs().where(predicate('r.state = ?', ['running'])))).toBeNull()
+    })
   })
 
   describe('the shape of an INSERT', () => {
@@ -780,6 +909,7 @@ describe('the tree rules', () => {
   describe('the spellings of a clock', () => {
     const READS = /reads the clock/
     // A name that is also a bare keyword below has no row: the keyword arm refuses its call too.
+    // `age` has a case of its own below, which shows what it is given.
     const CALLED = [
       ['unixepoch', 'mutation-verdict:construction:tree-clock-function-unixepoch'],
       ['julianday', 'mutation-verdict:construction:tree-clock-function-julianday'],
@@ -857,6 +987,19 @@ describe('the tree rules', () => {
     it('refuses the literal now in a fragment, whatever function takes it', () => {
       refuses('mutation-verdict:construction:tree-clock-now-literal', READS, () =>
         startedAt("timediff('now', '2000-01-01')"),
+      )
+    })
+
+    it('refuses age in a fragment, with one argument and with two', () => {
+      // PostgreSQL's age() with one argument measures from the current date, so it reads
+      // the clock. With two it reads none and is refused all the same: no statement calls
+      // it, and telling the two apart would mean reading SQL.
+      refuses('mutation-verdict:construction:tree-clock-function-age', READS, () =>
+        startedAt('age(created_at)'),
+      )
+      // The form with two arguments is the one a subtraction replaces, and the refusal says so.
+      expect(() => startedAt('age(created_at, updated_at)')).toThrow(
+        /reads the clock.*a subtraction of the two columns/,
       )
     })
 
