@@ -8,6 +8,7 @@ import { parseDialectSelection } from './packages/conformance/test/dialect-selec
 const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
   postgres: [
     'packages/conformance/test/postgres-bootstrap-window.test.ts',
+    'packages/store-postgres/test/deadlocked-read.test.ts',
     'packages/store-postgres/test/query-plans.test.ts',
     'packages/store-postgres/test/racing-migrators.test.ts',
     'packages/store-postgres/test/text-collation.test.ts',
