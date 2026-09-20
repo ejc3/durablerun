@@ -342,7 +342,7 @@ jobs:
                   for line in lines
               )
               return repaired[:at] + entries + repaired[at:]
-          if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
+          if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
               # One read the executor knows to be a read is sent alone on MySQL and PostgreSQL.
               # The MySQL executor's own transaction for the schema-version read is gone with that,
               # because one statement sent alone under the session's READ COMMITTED is what
