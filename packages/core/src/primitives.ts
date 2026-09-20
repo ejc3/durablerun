@@ -80,9 +80,9 @@ export type SqlTransactionLock =
 
 /**
  * An event lock's coordinates as an executor receives them, where the event name is a
- * string. A batch declares its lock with an `EventName`, which only core mints, and
- * `lockEvent` hands the executor that name's text. The released package exports this
- * name, so it stays.
+ * string. A statement names its lock with an `EventName`, which only core mints, and
+ * the statement carries that name's text to the batch that holds the lock. The released
+ * package exports this name, so it stays.
  */
 export type SqlEventLockCoordinates = Omit<
   Extract<SqlTransactionLock, { readonly kind: 'event' }>,

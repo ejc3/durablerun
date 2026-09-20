@@ -3,6 +3,7 @@ import {
   FencedBatch,
   type SqlExecutor,
   defineStatement,
+  taskStateValue,
   treeBuilder,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
@@ -87,7 +88,7 @@ async function spread(raw: LibsqlExecutor, label = 'probe'): Promise<void> {
     fence: 'win',
     where: `f.queue = ? OR f.queue = ?`,
     whereArgs: ['a', 'b'],
-    set: { state: `'cancelled'` },
+    set: { state: taskStateValue('sleeping') },
     rows: 'source-keys',
   })
   await b.run(raw)
@@ -124,7 +125,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     )
     expect(refusal, 'mutation-verdict:behavior:generated-selection-scope').toBeNull()
 
-    expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
+    expect(await stateOf(f.raw, 'stamped')).toBe('sleeping')
     expect(
       await stateOf(f.raw, 'untouched'),
       'mutation-verdict:behavior:generated-selection-scope',
@@ -142,7 +143,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     b.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'cancelled'` },
+      set: { state: taskStateValue('sleeping') },
       // Without the generated parentheses this becomes
       // `(fenced selection AND stamped) OR untouched`, so the second arm can
       // escape the fence and widen the write to a row this batch never owned.
@@ -152,7 +153,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     })
 
     await b.run(f.raw)
-    expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
+    expect(await stateOf(f.raw, 'stamped')).toBe('sleeping')
     expect(
       await stateOf(f.raw, 'untouched'),
       'mutation-verdict:behavior:generated-narrow-widens',
@@ -172,7 +173,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     matching.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'cancelled'` },
+      set: { state: taskStateValue('sleeping') },
       narrow: `task_id = ?`,
       narrowArgs: ['stamped'],
       rows: 'source-keys',
@@ -182,7 +183,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     expect(
       await stateOf(f.raw, 'stamped'),
       'mutation-verdict:behavior:generated-narrow-progress',
-    ).toBe('cancelled')
+    ).toBe('sleeping')
     f.close()
   })
 
@@ -281,12 +282,12 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     b.derived('task', {
       relation: 'runs-to-tasks',
       fence: 'win',
-      set: { state: `'cancelled'` },
+      set: { state: taskStateValue('sleeping') },
       rows: 'source-keys',
     })
 
     await expect(b.run(replaying)).resolves.toMatchObject({ won: null })
-    expect(await stateOf(f.raw, 'task')).toBe('cancelled')
+    expect(await stateOf(f.raw, 'task')).toBe('sleeping')
     f.close()
   })
 })

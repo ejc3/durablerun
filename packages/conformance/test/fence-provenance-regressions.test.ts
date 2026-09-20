@@ -9,6 +9,7 @@ import {
   type SqlExecutor,
   compileOnlyBuilder,
   defineStatement,
+  taskStateValue,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import {
@@ -1262,7 +1263,7 @@ describe('fence provenance', () => {
         relation: 'runs-to-tasks',
         fence: 'source',
         queue: Q,
-        set: { state: `'completed'` },
+        set: { state: taskStateValue('sleeping') },
         rows: 'source-keys',
       })
       await bound.run(f.raw)
@@ -1273,7 +1274,7 @@ describe('fence provenance', () => {
       expect(states, 'mutation-verdict:behavior:generated-bound-queue-holds-both-sides').toEqual([
         { task_id: 'bound-foreign-run', state: 'pending' },
         { task_id: 'bound-foreign-task', state: 'pending' },
-        { task_id: 'bound-same', state: 'completed' },
+        { task_id: 'bound-same', state: 'sleeping' },
       ])
       const refused = (build: () => unknown): string => {
         try {
@@ -1334,7 +1335,7 @@ describe('fence provenance', () => {
       runsToTasks.derived('target', {
         relation: 'runs-to-tasks',
         fence: 'source',
-        set: { state: `'completed'` },
+        set: { state: taskStateValue('sleeping') },
         rows: 'one',
       })
       await runsToTasks.run(f.raw)

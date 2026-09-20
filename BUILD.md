@@ -92,7 +92,16 @@ a last docs PR gives a live owner to every open bullet that is left.
    its batch carries the completion event's follow-on, and the rule reads a
    declared node or field, not a fragment's text. `awaitTaskDone`'s engine
    logic, the same 43 lines in each store today, and the `taskDoneState`
-   decoder exist once, in core.
+   decoder exist once, in core. This is met. PR3.3b names the lock in the four
+   core statements that insert into `events` or `waits`, a batch holds the
+   lock of a statement it admits and refuses such an insert whose definition
+   names no lock or another event's, and the completion event's statement is
+   where it is decided that a batch which ends no task holds the lock too. The
+   terminal-state rule reads value nodes (`taskStateValue`) and refuses a
+   fragment in a task's state, `awaitTaskDone`, its decoder, and `endingTask`
+   are core's, and what holds all of it is the conformance suite on three
+   dialects, the PostgreSQL case for each batch label, 32 registered
+   mutations, and an accepted exhibit of each mechanism's false negative.
 4. PR4.4c: a conformance surface generated from the store's two ports runs
    every call concurrently with itself on libSQL, PostgreSQL, and MySQL, the
    admin's `migrate()` included, and it fails when the fix for the transition
@@ -1483,6 +1492,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     profile for a failed task, so the `retry-task` cells reach the counter
     guards behind its state condition. The conformance cases pin each guard
     today.
+  - Deferred from `postmortems/pr3.3b-hoists-review.md`: a poison case for the
+    batch that records an unrecorded ending (`record-task-done`), over rows
+    where a run's claim outlives its task or names a task of another queue, so
+    that a dialect's `liveTask` and `taskOwnsRun` facts are held by something.
+    On consistent rows the batch's own claim predicate implies both, so no
+    conformance case tells a wrong fact from a right one, and only the libSQL
+    store's child-await error test holds the stored payload's type.
   - Deferred from PR3.10a: `--check-postmortem` checks a postmortem's tables
     and the commits it cites, and the whole attestation also checks its
     sections, its placeholder lines and its unfilled markers, inline. One
@@ -1697,14 +1713,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     with every test green. The property is that no write scans a table once
     for each row of another, and a check generated from the corpus would hold
     it for every statement. It is its own change.
-  - Deferred to PR3.3b, the hoists the second review named. Core declares the
-    event lock, so that the eight lines that take it leave the dialect store and
-    a batch that adds a completion event without it is refused, and it decides
-    there whether a batch that ends no task needs the lock. A tree rule refuses a
-    statement that writes a terminal `tasks.state` unless the batch carries the
-    completion event's follow-on. The child await's engine logic, which is the
-    same text in both stores, and its two reads move into core beside
-    `addTaskDone`, so that a third dialect inherits them.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -1721,6 +1729,54 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Promoted to PR3.14 below: the generated follow-ons that select their source
     by key correlated it to `tasks` on the queue, and on libSQL their plan was
     a scan of `tasks`.
+- **PR3.3b the hoists of the child-task review**: the second review of PR3.3
+  named three hoists, and this builds them on three stores. A statement that
+  records an event or registers a wait names that event's lock where core
+  defines it, and a batch holds the lock of a statement it admits. The
+  eighteen lines that took the lock left the two server stores, and an INSERT
+  into `events` or `waits` whose definition names no lock, or another event's,
+  is refused when the batch is built. Whether a batch that ends no task needs
+  the lock is decided once, where the completion event names it: it does,
+  because a lock is taken before the transaction's first statement. The state
+  a statement gives a task is typed: a named state is a value node
+  (`taskStateValue`), the copy of a run's state is a subquery built from nodes
+  (`stampedRunState`), and a fragment in a task's state is refused. On that, a
+  batch that writes a terminal `tasks.state` and records no completion event
+  under that statement's stamp is refused when it runs. The rule reads what
+  the column can receive, a CASE's results and what a subquery selects, and
+  never a condition or a filter: the copy's filter binds a caller's run id,
+  and while the rule read every node below the value a run id of `failed` had
+  `deferLaunch`, `reschedule` and `suspendRun` refused with a plain error where
+  a run nobody has is answered with `LeaseLostError`. The review found that
+  (`postmortems/pr3.3b-hoists-review.md`). Five registered
+  mutants each deleted one terminal path's completion event, which that rule
+  now refuses before the conformance case they are held by can see it, so
+  each records another task's event instead, which the rule does not read.
+  The child await's
+  rounds, its refusal, its decoder, its two reads, and the batch that records
+  an unrecorded ending are core's (`awaitTaskDone`, `endingTask`), and a
+  dialect supplies facts. On the prevention ladder the first is rung 1 for a
+  store and rung 2 for a new statement, the second is rung 2, and the third is
+  rung 1. Each has its false negative written and run as an accepted exhibit
+  in core's tests: a lock that names the event in another queue, a task state
+  copied from a run the batch ended, and a dialect fact that is wrong. The
+  PostgreSQL and MySQL lock cases hold the first and `childTaskViolations`
+  the second. Nothing new holds the third: on consistent rows the recording
+  batch's own claim predicate implies `liveTask` and `taskOwnsRun`, against
+  corrupt rows nothing at that site holds them, and the stored payload's type
+  is held by the libSQL store's child-await error test alone. Main had the
+  same gap with the facts inline in each store, and the poison case that
+  would close it is recorded under PR3.10. The SQL
+  corpus moved in one way: on each dialect 30 of 298 values differ, each only
+  in how a task's state is spelled. The SQL a store sends did not change
+  otherwise, and the released types did: `FencedBatch.lockEvent` is gone,
+  `DefinedStatement` gains a required `eventLock`, `DerivedSet` takes no text
+  for a task's state, and a libSQL batch whose statements name two events now
+  throws where it was sent. The published-surface check compares exported
+  names, and no name left, so it sees none of that. A build-time refusal also
+  got narrower: a declared event lock had to be followed at once by a
+  compare-and-set, and an event lock that arrives with its statement is held
+  to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -2206,10 +2262,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **Postgres double-claim**: `casMany` guarantees a win rule, not a
     concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
     conformance scenario before it is DONE.
-  - **Closed lock preludes**: `FencedBatch.lockEvent` and `lockClaim` pass only
-    their typed coordinates to the executor before the fenced SQL. They do not
-    accept SQL or contribute a result slot, so the new dialect can acquire its
-    transaction lock without opening an unfenced-write escape.
+  - **Closed lock preludes**: a batch passes only a lock's typed coordinates
+    to the executor before the fenced SQL, from `lockClaim` or from the event a
+    statement names as its lock where core defines it (`FencedBatch.lockEvent`
+    until PR3.3b). A prelude accepts no SQL and contributes no result slot, so
+    the new dialect can acquire its transaction lock without opening an
+    unfenced-write escape.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.
