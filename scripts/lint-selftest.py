@@ -1399,6 +1399,17 @@ def tree_rules_without_spelling(name: str) -> str:
     return TREE_RULES_TEXT.replace(entry, "")
 
 
+def tree_rules_with_arm(arm: str) -> str:
+    """The repository's tree rules with one more arm in the list of clock spellings, ahead of the last.
+
+    It fails when the last arm is not the fake clock's, for the reason given above.
+    """
+    last = "    String.raw`\\bfake_now_ms\\b`,\n"
+    if TREE_RULES_TEXT.count(last) != 1:
+        raise SystemExit("lint-selftest: the list of clock spellings does not end with the fake clock's arm")
+    return TREE_RULES_TEXT.replace(last, f"    String.raw`{arm}`,\n{last}")
+
+
 CLEAN_STORE = store(
     """
 export class S {
@@ -3731,6 +3742,15 @@ export class Store {
         },
         "cannot read the clock spellings",
         "a tree whose rules define no list of spellings is refused, because a pattern built from nothing matches nothing",
+    ),
+    (
+        "clock-lint.py",
+        {
+            **store("const SQL = `SELECT later_than_now() AS t`\n"),
+            TREE_RULES: tree_rules_with_arm(r"\b(?:${MORE_CLOCKS.join('|')})\s*\("),
+        },
+        "cannot read the clock spellings",
+        "an arm written through an interpolation the lint cannot read stops the lint: left in, it matches nothing, and a store that calls one of its spellings passes",
     ),
 ] + [
     (
