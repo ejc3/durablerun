@@ -1447,6 +1447,13 @@ MUTATION_SPECS = [
         "a listed aggregate spelled in upper case is refused",
     ),
     (
+        "tree-clock-advice-only-where-spelled",
+        "packages/core/src/fenced-batch.ts",
+        "      const advice = spelledClock ? `. ${SPAN_ADVICE}` : ''\n",
+        "      const advice = true ? `. ${SPAN_ADVICE}` : ''\n",
+        "a follow-on refused for holding the batch clock's token is told about age() and a subtraction, which it never wrote",
+    ),
+    (
         "tree-clock-spelling-case-fold",
         "packages/core/src/sql-tree.ts",
         "  ].join('|'),\n"
@@ -1582,6 +1589,13 @@ MUTATION_SPECS = [
         "  'unix_timestamp',\n",
         "",
         "the clock function unix_timestamp goes unseen in a tree",
+    ),
+    (
+        "tree-clock-function-age",
+        "packages/core/src/sql-tree.ts",
+        "  'age',\n",
+        "",
+        "PostgreSQL's age, which measures from the current date when it is given one argument, goes unseen in a tree",
     ),
     (
         "tree-clock-keyword-current-timestamp",
@@ -2441,14 +2455,14 @@ MUTATION_SPECS = [
     (
         "tree-read-state-literal-admitted",
         "packages/core/src/sql-tree.ts",
-        "  if (!isBind(node.rightOperand)) return false\n",
+        "  if (!holdsBind(bound)) return false\n",
         "  if (false) return false\n",
         "a read is refused a state written inline, the one form a partial index matches",
     ),
     (
         "tree-read-state-names-the-column",
         "packages/core/src/sql-tree.ts",
-        "  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))\n",
+        "  return STATE_COLUMNS.some((column) => namesColumn(named, column))\n",
         "  return true\n",
         "a read is refused every bound comparison, whatever column it names",
     ),
@@ -2472,6 +2486,55 @@ MUTATION_SPECS = [
         "const STATE_COLUMNS = ['state', 'status']\n",
         "const STATE_COLUMNS = ['state']\n",
         "a read may bind the status it compares, which the checkpoints' partial index cannot match",
+    ),
+    (
+        "tree-read-state-either-side",
+        "packages/core/src/sql-tree.ts",
+        "    bindsState(node.rightOperand, node.leftOperand) ||\n    bindsState(node.leftOperand, node.rightOperand)\n",
+        "    bindsState(node.rightOperand, node.leftOperand)\n",
+        "a read may bind the state it compares by writing the bound value on the left of the test",
+    ),
+    (
+        "tree-read-state-stops-at-a-subquery",
+        "packages/core/src/sql-tree.ts",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "",
+        "a bind inside a subquery on the right, which stands beside no state, refuses the read",
+    ),
+    (
+        "tree-read-state-reads-a-subquery-selection",
+        "packages/core/src/sql-tree.ts",
+        "  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)\n",
+        "  if (SelectQueryNode.is(node)) return false\n",
+        "a read may bind the state it compares by selecting the bound value in a subquery",
+    ),
+    (
+        "tree-read-state-bare-value-is-a-bind",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "a bound value counts only inside a list of plain values, so a read may bind the state it compares anywhere else",
+    ),
+    (
+        "tree-read-state-plain-list-is-bound",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || children(node).some(holdsBind)\n",
+        "a list of plain values, every one of which the builder binds, passes for a list that binds nothing",
+    ),
+    (
+        "tree-read-state-list-holds-a-bind",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || (children(node).length > 0 && children(node).every(holdsBind))\n",
+        "a list passes when one inline member stands beside the bound one",
+    ),
+    (
+        "tree-read-state-bind-in-parentheses",
+        "packages/core/src/sql-tree.ts",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)\n",
+        "  return isBind(node) || PrimitiveValueListNode.is(node) || false\n",
+        "a read may bind the state it compares by standing the value in parentheses, or under a cast or a call",
     ),
     (
         "tree-raw-fragment-unminted-message",
@@ -2583,6 +2646,19 @@ MUTATION_SPECS = [
         "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'\n"
         "                          AND w.run_id = runs.run_id)",
         "every emit scans the runs table instead of seeking the waits index",
+    ),
+    (
+        # Not correctness either: the access path of a read. Joined to its task
+        # by the queue alone, the sweep's read of expired leases scans tasks once
+        # for each lease it reads, and every pin of a chosen statement still
+        # passes. Only the nests of every shipped statement's plan see it.
+        "expired-claims-read-keys-its-task",
+        "packages/store-libsql/src/store.ts",
+        "      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "      taskOwnsRun: sqlFragment('t.queue = r.queue'),\n"
+        "      expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [binds.queue]),\n",
+        "every sweep scans tasks once for each expired lease it reads",
     ),
     (
         "emit-wake-event-correlation",
@@ -2986,7 +3062,7 @@ MUTATION_SPECS = [
     ),
     (
         "persisted-row-rejects-spread-descriptor",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/validate.ts",
         "export function persistedRowInteger(\n"
         "  scope: string,\n"
         "  row: SqlRow,\n"
@@ -3743,14 +3819,14 @@ MUTATION_SPECS = [
     ),
     (
         "test-token-source-monotonic",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (proposed <= tokens) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a duplicate proposed serial",
     ),
     (
         "test-token-source-valid-serial",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (!Number.isSafeInteger(proposed)) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a non-integer or unsafe proposed serial",
@@ -3764,63 +3840,63 @@ MUTATION_SPECS = [
     ),
     (
         "schema-absence-is-typed",
-        "packages/store-libsql/src/admin.ts",
-        "      if (error instanceof SchemaNotInitializedError) return null",
-        "      if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
+        "packages/core/src/schema-version.ts",
+        "    if (error instanceof SchemaNotInitializedError) return null",
+        "    if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
         "schema-version-missing-result",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length === 0) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length === 0) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "an absent schema-version result is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-results",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length > 1) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length > 1) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "duplicated schema-version results are interpreted as a fresh database",
     ),
     (
         "schema-version-missing-row",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length === 0) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length === 0) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "an absent schema-version row is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-rows",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length > 1) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length > 1) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
         "libsql-bootstrap-loss-forgiven",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        throw error\n",
-        "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version === minimumVersion) return\n",
+        "a migrator whose bootstrap lost to a winner that went on past version zero is rejected: the recovery every dialect shares forgives a failed write only at exactly its target version",
     ),
     (
         "libsql-bootstrap-failure-rethrown",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        if ((await this.readSchemaVersion()) === undefined) throw error\n",
-        "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if ((version || 0) >= minimumVersion) return\n",
+        "a bootstrap that failed with nothing committed is swallowed and migration runs on: the recovery every dialect shares reads an absent version as zero",
     ),
     (
         "postgres-bootstrap-loss-forgiven",
-        "packages/store-postgres/src/admin.ts",
-        "      if (version !== null && version >= minimumVersion) return\n",
-        "      if (version !== null && version > minimumVersion) return\n",
-        "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version > minimumVersion) return\n",
+        "a migrator whose own bootstrap committed and lost only its answer is rejected: the recovery every dialect shares forgives a failed write only past its target version",
     ),
     (
         "postgres-version-read-isolation",
@@ -3873,9 +3949,9 @@ MUTATION_SPECS = [
     ),
     (
         "migration-postcondition-old-version",
-        "packages/store-libsql/src/admin.ts",
-        "    if (version !== CURRENT_SCHEMA_VERSION) {",
-        "    if (version > CURRENT_SCHEMA_VERSION) {",
+        "packages/core/src/schema-version.ts",
+        "  if (version !== current) {",
+        "  if (version > current) {",
         "a committed migration can leave the recorded version behind and still report success",
     ),
     (
@@ -3950,20 +4026,20 @@ MUTATION_SPECS = [
         "      headersInput === undefined\n"
         "        ? null\n"
         "        : JSON.stringify(\n"
-        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
+        "            JSON.parse(serializeTaskValue('task headers', headersInput)),\n"
         "          )",
         "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
         "claim-retry-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
         "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
         "claim retry decoding resolves ambient JSON.parse after the durable guard",
     ),
     (
         "claim-headers-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "      row.headers === null\n"
         "        ? {}\n"
         "        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),",
@@ -5650,7 +5726,7 @@ MUTATION_SPECS.extend(
         ),
         (
             "retry-persisted-normalization",
-            "packages/store-libsql/src/store.ts",
+            "packages/core/src/statements/claim-receipt.ts",
             "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
             "    retryStrategy: parseTaskValueJson(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
             "claim exposes unchecked durable retry JSON",
@@ -6771,8 +6847,8 @@ MUTATION_SPECS.extend(
         (
             "spawn-child-key-excludes-a-caller-key",
             "packages/core/src/child-tasks.ts",
-            "    if (callerKey !== undefined) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
-            "    if (callerKey === null) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey !== undefined) {\n      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey === null) {\n      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')\n",
             "a spawn given both keys silently drops the caller's",
         ),
         (
@@ -6830,6 +6906,41 @@ MUTATION_SPECS.extend(
             "    this.#tasks.delete(runId)\n    this.#tasks.set(runId, taskId)\n",
             "    this.#tasks.set(runId, taskId) // MUTATION\n",
             "a run activated again keeps its old place in line and is let go before an older run",
+        ),
+        (
+            "recording-statement-takes-a-completion-event-only",
+            "packages/core/src/statements/events.ts",
+            "    if (childTaskId === null) {\n",
+            "    if (childTaskId === undefined) { // MUTATION\n",
+            "a recording batch that is handed a caller's event is sent keyed on no task, writes nothing, and says nothing",
+        ),
+        (
+            "port-refusal-family-holds-the-durable-string-refusal",
+            "packages/core/src/port-refusal.ts",
+            "    error instanceof InvalidDurableStringError ||\n",
+            "",
+            "a host answers a string no store can keep, or a name wider than an identifier, as a fault of its own",
+        ),
+        (
+            "history-helper-runs-the-child-task-checker",
+            "packages/conformance/src/engine-history.ts",
+            "    ...(await childTaskViolations(raw)),\n",
+            "",
+            "every surface that judges its rows through the one helper stops seeing a terminal task with no completion event",
+        ),
+        (
+            "libsql-won-fail-forgets-the-run",
+            "packages/store-libsql/src/store.ts",
+            "    if (won !== 'fail') throw await this.refusal(failure.operation, runId)\n    this.runTasks.forget(runId)\n",
+            "    if (won !== 'fail') throw await this.refusal(failure.operation, runId)\n",
+            "a store keeps the task of every run it failed until 1,024 newer activations push it out",
+        ),
+        (
+            "fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
+            "packages/conformance/src/fault-matrix.ts",
+            "      .filter((task) => task.state === 'cancelled' && endedByOlderBuild.has(String(task.task_id)))\n",
+            "      .filter((task) => endedByOlderBuild.has(String(task.task_id)))\n",
+            "the fault matrix cannot see an ordinary batch lose the completion event of the child the older build never ended",
         ),
         (
             "task-done-event-first-write-wins",
@@ -7114,21 +7225,21 @@ MUTATION_SPECS.extend(
         (
             "event-name-is-a-durable-string",
             "packages/core/src/child-tasks.ts",
-            "    return new EventName(requireDurableString(`${operation} eventName`, raw))\n",
-            "    return new EventName(raw) // MUTATION\n",
+            "    return new EventName(requireDurableString(`${operation} eventName`, raw), null)\n",
+            "    return new EventName(raw, null) // MUTATION\n",
             "an emit or an await with a NUL in its event name is stored as a shorter name on one dialect and reported as an outage on another",
         ),
         (
             "child-await-hit-error-names-the-task",
             "packages/store-libsql/src/store.ts",
-            "            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`\n",
-            "            : `awaitEvent ${queue}/${eventName}`\n",
+            "          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,\n",
+            "          `${operation} ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that hits a corrupt stored payload hands the task the engine's event name",
         ),
         (
             "child-await-recording-error-names-the-task",
             "packages/core/src/task-done.ts",
-            "      `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
+            "      `awaitTaskDone ${queue}/${name.display} found a non-TEXT stored payload`,\n",
             "      `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
             "a child await that records an outcome and reads a corrupt stored payload hands the task the engine's event name",
         ),
@@ -7170,8 +7281,8 @@ MUTATION_SPECS.extend(
         (
             "hosted-enqueue-refuses-reserved-key",
             "packages/driver/src/hosted.ts",
-            "            refuseReservedIdempotencyKey('enqueue', idempotencyKey)\n",
-            "            // MUTATION: any key reaches the store\n",
+            "      if (isPortRefusal(error)) return errorResponse(400, 'invalid_request')\n",
+            "      // MUTATION: a refusal of the port falls through to the server error\n",
             "the enqueue route answers a reserved key with a server error, where the input is the caller's mistake",
         ),
         (
@@ -7380,10 +7491,10 @@ MUTATION_SPECS.extend(
         ),
         (
             "mysql-bootstrap-loss-forgiven",
-            "packages/store-mysql/src/admin.ts",
-            "      if (version !== null && version >= minimumVersion) return\n",
-            "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
-            "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+            "packages/core/src/schema-version.ts",
+            "    if (version !== null && version >= minimumVersion) return\n",
+            "    if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
+            "a migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded: the recovery every dialect shares forgives no failed write",
         ),
         (
             "mysql-only-an-insert-counts-twice",
@@ -8354,6 +8465,12 @@ VERDICTS = {
         "the tree rules the statement grammar reads an aggregate name in any case",
         "mutation-verdict:construction:tree-grammar-aggregate-case-fold",
     ),
+    "tree-clock-advice-only-where-spelled": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path the clock says nothing about a span to a follow-on that spelled no clock",
+        "mutation-verdict:construction:tree-clock-advice-only-where-spelled",
+    ),
     "tree-clock-spelling-case-fold": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
@@ -8467,6 +8584,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules the spellings of a clock refuses unix_timestamp called in a fragment",
         "mutation-verdict:construction:tree-clock-function-unix-timestamp",
+    ),
+    "tree-clock-function-age": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules the spellings of a clock refuses age in a fragment, with one argument and with two",
+        "mutation-verdict:construction:tree-clock-function-age",
     ),
     "tree-clock-keyword-current-timestamp": ExpectedVerdict(
         "construction",
@@ -9200,6 +9323,48 @@ VERDICTS = {
         "the tree rules a state a read compares holds a checkpoint status to a literal as well",
         "mutation-verdict:construction:tree-read-status-is-a-state",
     ),
+    "tree-read-state-either-side": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused with the bound value on the left of the test",
+        "mutation-verdict:construction:tree-read-state-either-side",
+    ),
+    "tree-read-state-stops-at-a-subquery": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is admitted with a subquery on the right, which is its own statement",
+        "mutation-verdict:construction:tree-read-state-stops-at-a-subquery",
+    ),
+    "tree-read-state-reads-a-subquery-selection": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when a subquery on the right selects a bound value",
+        "mutation-verdict:construction:tree-read-state-reads-a-subquery-selection",
+    ),
+    "tree-read-state-bare-value-is-a-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused as a bare bound value, whatever the operator",
+        "mutation-verdict:construction:tree-read-state-bare-value-is-a-bind",
+    ),
+    "tree-read-state-plain-list-is-bound": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused in a list of plain values, every one of which the builder binds",
+        "mutation-verdict:construction:tree-read-state-plain-list-is-bound",
+    ),
+    "tree-read-state-list-holds-a-bind": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused in a list that holds one bound value among inline ones",
+        "mutation-verdict:construction:tree-read-state-list-holds-a-bind",
+    ),
+    "tree-read-state-bind-in-parentheses": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused when the bound value stands in parentheses",
+        "mutation-verdict:construction:tree-read-state-bind-in-parentheses",
+    ),
     "tree-raw-fragment-unminted-message": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -9381,6 +9546,12 @@ VERDICTS = {
         "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
         "mutation-verdict:behavior:emit-index-driver",
     ),
+    "expired-claims-read-keys-its-task": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -9404,7 +9575,7 @@ VERDICTS = {
     "successor-carries-every-column": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule fail: every run it inserts carries what its parent carried",
         "mutation-verdict:behavior:successor-carries-every-column",
         "packages/conformance/src/suite.ts",
     ),
@@ -12173,6 +12344,62 @@ for _verdict, _names in (
     (
         ExpectedVerdict(
             "behavior",
+            "packages/core/test/child-tasks.test.ts",
+            "the completion event contract records a completion event only: the recording statement takes no other name, by type and when built",
+            "mutation-verdict:behavior:recording-statement-takes-a-completion-event-only",
+        ),
+        (
+            "recording-statement-takes-a-completion-event-only",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-refusal.test.ts",
+            "a port's refusal of what its caller passed names its whole family in one predicate, and no other error",
+            "mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal",
+        ),
+        (
+            "port-refusal-family-holds-the-durable-string-refusal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/engine-history.test.ts",
+            "the one helper that judges the rows of a history names a defect of each of its three checkers",
+            "mutation-verdict:behavior:history-helper-runs-the-child-task-checker",
+        ),
+        (
+            "history-helper-runs-the-child-task-checker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "child task conformance [libsql] forgets the task of a run once its terminal batch has ended the run",
+            "mutation-verdict:behavior:a-won-terminal-write-forgets-its-run",
+            "packages/conformance/src/child-tasks.ts",
+        ),
+        (
+            "libsql-won-fail-forgets-the-run",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/fault-matrix-history-checkers.test.ts",
+            "the fault matrix judges the rows a cell leaves by every checker holds the child to the rule in a cell where the older build never ended it",
+            "mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
+        ),
+        (
+            "fault-matrix-excuses-the-older-builds-child-only-while-cancelled",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
             "packages/conformance/test/libsql.test.ts",
             "child task conformance [libsql] keeps the first outcome after retryTask revives the child and it completes",
             "mutation-verdict:behavior:task-done-event-first-write-wins",
@@ -12661,11 +12888,67 @@ MUTATION_SPECS.extend(
             "a suspension commits a marker named as the phase marker and forges a saga",
         ),
         (
-            "saga-attempt-record-name-is-checked",
-            "packages/store-libsql/src/store.ts",
-            "         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,\n",
-            "         )${rollback === undefined ? '' : ` AND ? IS NOT NULL`}`,\n",
-            "a failed rollback commits its record over the phase marker and replaces the saga's cause",
+            "saga-store-counts-failed-attempts",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = (last?.tries ?? 0) * 0 + 1\n",
+            "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = last?.tries ?? 1\n",
+            "a rollback's count stops at its first record, so a second failed attempt is stored as the first",
+        ),
+        (
+            "saga-store-count-saturates",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n  if (last !== null && !isSafeInteger(tries)) tries = last.tries\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "from a record at the largest safe integer the count goes one past it, the record reads as none, and the attempt after it is stored as the first",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "packages/core/src/sagas.ts",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`\n",
+            "export const rollbackTriesName = (stepKey: string): string => `${SAGA_ROLLBACK_PREFIX}${stepKey}`\n",
+            "a failed rollback is stored under the name that says the rollback ran, so the step is owed nothing",
+        ),
+        (
+            "saga-failed-rollback-shape-is-checked",
+            "packages/core/src/sagas.ts",
+            "  if (typeof stepKey !== 'string' || typeof errorJson !== 'string') {\n",
+            "  if (false) {\n",
+            "a caller of the older port is not told what the port takes, and its record is read as a step named undefined",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "packages/sdk/src/context.ts",
+            "      this.replayLastCutAt = key\n      this.#controls.rollbackPhase()\n",
+            "      this.replayLastCutAt = key\n",
+            "a step with no memo runs its body inside the rolling-back phase",
+        ),
+        (
+            "saga-sdk-spawn-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))\n",
+            "a rollback pass asks the store for a child, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-await-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n    this.refuseForwardProgress()\n",
+            "    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.\n",
+            "a rollback pass asks the store to register a wait, and the store's refusal reads as a lost lease",
+        ),
+        (
+            "saga-sdk-sleep-is-frozen",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n    this.refuseForwardProgress()\n",
+            "    if (taskMapHas(this.seen, key)) return // the wake already happened: continue\n",
+            "a sleep with no memo throws the sleep signal inside the phase, and task code that tells signals apart is misled",
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
@@ -12829,6 +13112,13 @@ MUTATION_SPECS.extend(
             "the relaunch cap enters the phase and ends the task in one batch",
         ),
         (
+            "saga-pass-budget-is-the-user-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "           AND f.attempt < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "the pass is checked against the run's own ordinal, so a task with an infrastructure retry one attempt below the bound never rolls back",
+        ),
+        (
             "saga-pass-needs-room-in-the-budget",
             "packages/store-libsql/src/store.ts",
             "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
@@ -12869,6 +13159,13 @@ MUTATION_SPECS.extend(
             "        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),\n",
             "        phase: sqlFragment('? IS NOT NULL', [taskId]),\n",
             "a rollback pass parks on an event that may never come",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+            "packages/store-libsql/src/store.ts",
+            "                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),\n",
+            "                phase: sqlFragment('? IS NOT NULL', [childOf.parentTaskId]),\n",
+            "a rollback pass spawns a child, which runs work the saga is about to compensate",
         ),
         (
             "saga-revival-refused-once-a-saga-began",
@@ -13226,6 +13523,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] refuses a child spawn inside the phase, and still finds a child the forward phase spawned",
+            "mutation-verdict:behavior:saga-child-spawn-is-frozen",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-child-spawn-refused-in-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] ends failed with the deciding failure and a complete outcome once every rollback ran",
             "mutation-verdict:behavior:saga-finish-is-honest",
             "packages/conformance/src/sagas.ts",
@@ -13293,6 +13602,17 @@ for _verdict, _names in (
             "packages/sdk/test/sagas.test.ts",
             "step rollbacks through the SDK [libsql] counts each failed rollback attempt and retries it under its own budget, past the spent task budget",
             "mutation-verdict:behavior:saga-sdk-attempts-counted",
+        ),
+        (
+            "saga-store-count-goes-on-from-the-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] halts the saga when a rollback spends its budget, and the result says what was left",
+            "mutation-verdict:behavior:saga-sdk-budget-is-counted",
         ),
         (
             "saga-failed-attempts-accumulate",
@@ -13482,6 +13802,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] holds the pass to the user ordinal at the bound, for a task that has infrastructure retries",
+            "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-budget-is-the-user-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "saga conformance [libsql] rolls back a task spawned with the largest budget a task may have",
             "mutation-verdict:behavior:saga-pass-fits-the-largest-budget",
             "packages/conformance/src/sagas.ts",
@@ -13531,12 +13863,36 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "saga conformance [libsql] refuses a failed rollback whose attempt record carries any other name",
-            "mutation-verdict:behavior:saga-attempt-record-name-is-checked",
+            "saga conformance [libsql] counts a rollback's failed attempts itself, one more than the last one stored",
+            "mutation-verdict:behavior:saga-store-counts-failed-attempts",
             "packages/conformance/src/sagas.ts",
         ),
         (
-            "saga-attempt-record-name-is-checked",
+            "saga-store-counts-failed-attempts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it holds the count at the largest safe integer, and never reads its own record as none",
+            "mutation-verdict:behavior:saga-store-count-saturates",
+        ),
+        (
+            "saga-store-count-saturates",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names a failed rollback's attempt record itself, and refuses the record an older caller hands over",
+            "mutation-verdict:behavior:saga-store-names-the-attempt-record",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-store-names-the-attempt-record",
+            "saga-failed-rollback-shape-is-checked",
         ),
     ),
     (
@@ -13548,6 +13904,20 @@ for _verdict, _names in (
         ),
         (
             "saga-nesting-guard-covers-the-start-marker",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/sagas.test.ts",
+            "step rollbacks through the SDK [libsql] throws the phase signal from every durable call that has no memo, and writes nothing for it",
+            "mutation-verdict:behavior:saga-sdk-every-call-is-frozen",
+        ),
+        (
+            "saga-sdk-step-is-frozen",
+            "saga-sdk-spawn-is-frozen",
+            "saga-sdk-await-is-frozen",
+            "saga-sdk-sleep-is-frozen",
         ),
     ),
     (
@@ -14640,6 +15010,120 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The poison matrix's target profiles for the arms that name their target (DESIGN.md, the
+# poison matrix; packages/conformance/src/poison-matrix.ts). A profile seeds the poisoned
+# target in the state in which its label acts on a target with nothing corrupt, so its cells
+# reach the guards behind the label's state condition. One mutation for each profile removes
+# a guard its cells reach, and one generated cell of that profile owns it, so the audit keeps
+# showing that the profile's cells can fail. The first two edits are the ones
+# `activate-requires-relaunch-bound` and `defer-launch-requires-claim-receipt-admission` make,
+# which hand-written cases own. The third is narrower than `retry-task-requires-counters-in-range`,
+# which removes three conjuncts at once where this removes the one on infrastructure retries.
+# The last two are one edit, which each failure label's own cell owns.
+MUTATION_SPECS.extend(
+    (
+        (
+            "poison-target-activate-holds-relaunch-bound",
+            "packages/store-libsql/src/store.ts",
+            "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n",
+            "    AND 1 = 1\n",
+            "the poison matrix's activate target activates a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+            "packages/store-libsql/src/store.ts",
+            "        admission: sqlFragment(claimReceiptAdmission()),",
+            "        admission: sqlFragment('1 = 1'),",
+            "the poison matrix's defer-launch target parks a claim whose relaunch counter is out of range",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+            "packages/store-libsql/src/store.ts",
+            "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n",
+            "         AND 1 = 1\n",
+            "the poison matrix's retry-task target revives a failed task whose infrastructure retries are out of range",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail target places a rollback pass for a run below a higher owned ordinal",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "                 AND ${storedHighestOwnedOrdinal('runs')}\n",
+            "                 AND 1 = 1\n",
+            "the poison matrix's fail-rollback target ends a task for a run below a higher owned ordinal",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment activate-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-activate-holds-relaunch-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment defer-launch-unactivated contains counter-bound/run-relaunch-count",
+            "mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-defer-launch-holds-receipt-admission",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment retry-task-failed contains counter-bound/task-infra-retries",
+            "mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-retry-task-holds-infra-retries-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-started-step contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-holds-highest-owned-ordinal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment fail-rollback-rolling-back contains accounting/below-top-minus-one",
+            "mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal",
+            "packages/conformance/src/store-conformance.ts",
+        ),
+        (
+            "poison-target-fail-rollback-holds-highest-owned-ordinal",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -14717,6 +15201,12 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "tree-read-state-stops-at-a-subquery": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
+    "tree-read-state-reads-a-subquery-selection": (
+        "replacement removes a TypeScript default operator, not a SQL bind"
+    ),
     "stale-token-expire-lease-now": (
         "replacement removes the claim token's comparison together with its one SQL bind"
     ),
@@ -16730,6 +17220,21 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-failed-attempts-accumulate": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
+    "saga-store-count-goes-on-from-the-record": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-step-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-spawn-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-await-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
+    "saga-sdk-sleep-is-frozen": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
     "saga-fatal-rollback-error-is-permanent": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -16912,6 +17417,29 @@ TREE_CONDITION_TOKEN = re.compile(
     r"\bif \(|&&|\|\||(?<!\?)\? |\.every\(|\.some\(|=== |!== |\.includes\(|\.filter\("
 )
 TREE_STRING_LITERAL = re.compile(r"`[^`]*`|'[^']*'|\"[^\"]*\"")
+TREE_SPELLING_ARM = re.compile(r"String\.raw`(.*)`")
+TREE_SPELLING_GROUP = re.compile(r"\(\?:([^()]*)\)")
+
+
+def spelling_entries(line: str) -> list[str]:
+    """The spellings one line of a spelling list holds.
+
+    A list is written two ways. An array line holds its quoted strings. A `String.raw`
+    arm of a pattern holds the alternatives of its first group, one or many, once
+    anything it interpolates is set aside, and an arm with no group holds itself. A group
+    a mutant has left with one alternative is still a group: read as the whole arm, the
+    mutant that dropped one of two spellings would look as if it had dropped both.
+
+    This reads text, not a pattern: a spelling written some other way, such as several
+    operators inside one character class, is one entry here however many it spells. See
+    the self-test's false negative.
+    """
+    arm = TREE_SPELLING_ARM.search(line)
+    if arm is None:
+        return [literal[1:-1] for literal in TREE_STRING_LITERAL.findall(line)]
+    pattern = re.sub(r"\$\{[^}]*\}", "", arm.group(1))
+    group = TREE_SPELLING_GROUP.search(pattern)
+    return [pattern] if group is None else group.group(1).split("|")
 
 
 def tree_condition_lines(
@@ -16983,39 +17511,69 @@ def tree_condition_lines(
 def tree_rule_coverage_problems(
     file: str,
     text: str,
-    finds: list[tuple[str, str]],
+    finds: list[tuple[str, str, str]],
     regions: tuple[tuple[str | None, str | None], ...],
     blocks: tuple[tuple[str, str], ...],
     listed: dict[str, str],
 ) -> list[str]:
     """Hold every condition of a tree rule to a registered mutation or a listed reason.
 
+    A line of a spelling list that holds two or more entries is held by entry and not by
+    a count. Each entry needs a mutation whose replacement drops that entry and no other
+    from the line. A count of the mutations that touch the line is not that: a mutation
+    that blanks a whole arm touches the line too, so eight entries and nine mutations can
+    leave one entry with none.
+
     The remainder is derived here, from the finds themselves, because a hand-kept list
     of what has no mutation was read as complete when it was not.
     """
     lines = text.split("\n")
+    # The lines of the spelling lists, by the one reading of a block's span.
+    block_lines = set(tree_condition_lines(text, (), blocks))
     touching: dict[int, set[str]] = {}
-    for name, find in finds:
+    dropped: dict[int, set[str]] = {}
+    for name, find, replace in finds:
         at = text.find(find)
         if at < 0:
             continue
         first = text.count("\n", 0, at) + 1
-        for number in range(first, first + find.rstrip("\n").count("\n") + 1):
-            touching.setdefault(number, set()).add(name)
+        found, replaced = find.rstrip("\n").split("\n"), replace.rstrip("\n").split("\n")
+        for offset, line in enumerate(found):
+            touching.setdefault(first + offset, set()).add(name)
+            if first + offset not in block_lines:
+                continue
+            # The line as the mutant leaves it. A replacement of another length has
+            # moved the line, and a line that is gone has dropped every entry.
+            after = replaced[offset] if len(replaced) == len(found) else ""
+            gone = set(spelling_entries(line)) - set(spelling_entries(after))
+            if len(gone) == 1:
+                dropped.setdefault(first + offset, set()).update(gone)
     wanted = tree_condition_lines(text, regions, blocks)
     problems: list[str] = []
     short: set[str] = set()
     for number in sorted(wanted):
-        have = len(touching.get(number, ()))
-        if have >= wanted[number]:
-            continue
         line = lines[number - 1].strip()
+        entries = spelling_entries(line) if number in block_lines else []
+        unheld = [entry for entry in entries if entry not in dropped.get(number, ())]
+        have = len(touching.get(number, ()))
+        shortfall = None
+        if len(entries) > 1 and unheld:
+            shortfall = (
+                f"holds {len(entries)} spellings and no registered mutation drops "
+                f"{', '.join(repr(entry) for entry in unheld)} alone; register one for each entry"
+            )
+        if len(entries) <= 1 and have < wanted[number]:
+            shortfall = (
+                f"holds {wanted[number]} condition(s) and {have} registered mutation(s) "
+                "touch it; register one for each"
+            )
+        if shortfall is None:
+            continue
         short.add(line)
         if line not in listed:
             problems.append(
-                f"{file}:{number}: `{line}` holds {wanted[number]} condition(s) and "
-                f"{have} registered mutation(s) touch it; register one for each, or list "
-                "the line in TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
+                f"{file}:{number}: `{line}` {shortfall}, or list the line in "
+                "TREE_CONDITIONS_WITHOUT_A_MUTATION with what a run showed"
             )
     for line, reason in sorted(listed.items()):
         if not reason.strip():
@@ -18713,11 +19271,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "every condition has a mutation or a reason",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18725,10 +19283,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "one mutation on a line of two conditions",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             ("fixture.ts:2:",),
@@ -18736,10 +19294,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "a spelling with no mutation",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             ("fixture.ts:13:",),
@@ -18747,11 +19305,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "a stale listing and an empty reason",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": " ", "if (node.c) {": "covered now"},
             (
@@ -18765,11 +19323,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             # `node.a` leave `node.b` unheld, and the check is clean.
             "false negative: two mutations of one operand",
             [
-                ("drops-a", "  if (node.a && node.b) return null"),
-                ("drops-a-again", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("drops-a", "  if (node.a && node.b) return null", ""),
+                ("drops-a-again", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18780,11 +19338,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             # return here, no mutation touches it, and the check is clean.
             "false negative: a condition the token list does not name",
             [
-                ("first", "  if (node.a && node.b) return null"),
-                ("second", "  if (node.a && node.b) return null"),
-                ("third", "  if (node.c) {"),
-                ("now", "  'now',\n"),
-                ("sysdate", "  'sysdate',\n"),
+                ("first", "  if (node.a && node.b) return null", ""),
+                ("second", "  if (node.a && node.b) return null", ""),
+                ("third", "  if (node.c) {", ""),
+                ("now", "  'now',\n", ""),
+                ("sysdate", "  'sysdate',\n", ""),
             ],
             {"return node.kind === 'x'": "fails closed: a run fails 3 tests"},
             (),
@@ -18802,6 +19360,68 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         )
         if len(got) != len(wanted_prefixes) or any(
             not problem.startswith(prefix) for problem, prefix in zip(got, wanted_prefixes)
+        ):
+            failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
+    # A line that holds two or more spellings is held by entry: each needs a mutation
+    # whose replacement drops that spelling and no other.
+    spelling_entry_source = (
+        "const OPERATORS = ['+', '-']\n"
+        "const ARMS = [\n"
+        "  String.raw`\\b(?:date|time)\\(\\)`,\n"
+        "  String.raw`[+*]`,\n"
+        "]\n"
+    )
+    spelling_entry_blocks = (("const OPERATORS = ", "\n"), ("const ARMS = [\n", "]\n"))
+    operators = "const OPERATORS = ['+', '-']"
+    arm = "  String.raw`\\b(?:date|time)\\(\\)`,\n"
+    held = [
+        ("plus", operators, "const OPERATORS = ['-']"),
+        ("minus", operators, "const OPERATORS = ['+']"),
+        ("date", arm, "  String.raw`\\b(?:time)\\(\\)`,\n"),
+        ("time", arm, "  String.raw`\\b(?:date)\\(\\)`,\n"),
+        ("class", "  String.raw`[+*]`,\n", "  String.raw`[^\\s\\S]`,\n"),
+    ]
+    whole_arm = ("whole-arm", arm, "  String.raw`[^\\s\\S]`,\n")
+    spelling_entry_cases = (
+        ("every spelling has a mutation that drops it alone", held, ()),
+        (
+            "a spelling of a one-line list that lost its mutation",
+            [find for find in held if find[0] != "minus"],
+            (("fixture.ts:1:", "drops '-' alone"),),
+        ),
+        (
+            "a spelling of a two-spelling arm that lost its mutation",
+            [find for find in held if find[0] != "date"],
+            (("fixture.ts:3:", "drops 'date' alone"),),
+        ),
+        (
+            # What a count of the mutations on the line cannot see. The mutant that blanks
+            # the arm touches the line, so two mutations touch a line of two spellings
+            # while `time` has none of its own.
+            "a mutant that blanks a whole arm holds none of its spellings",
+            [find for find in held if find[0] != "time"] + [whole_arm],
+            (("fixture.ts:3:", "drops 'time' alone"),),
+        ),
+        (
+            # The false negative, kept on purpose: spellings are read as quoted strings and
+            # as the alternatives of a group. A character class that spells two operators
+            # is one entry, so the one mutant here, which drops `+` from the class, holds
+            # the line, and nothing asks for a mutant that drops `*`.
+            "false negative: two spellings inside one character class",
+            [find for find in held if find[0] != "class"]
+            + [("class-plus", "  String.raw`[+*]`,\n", "  String.raw`[*]`,\n")],
+            (),
+        ),
+    )
+    for label, finds, wanted_prefixes in spelling_entry_cases:
+        got = tree_rule_coverage_problems(
+            "fixture.ts", spelling_entry_source, finds, ((None, None),), spelling_entry_blocks, {}
+        )
+        # Each problem is held to its line AND to the spellings it names: a problem at the
+        # right line that names the wrong spelling is the defect these cases first found.
+        if len(got) != len(wanted_prefixes) or any(
+            not problem.startswith(prefix) or names not in problem
+            for problem, (prefix, names) in zip(got, wanted_prefixes)
         ):
             failures.append(f"tree-coverage {label}: expected {wanted_prefixes!r}, got {got!r}")
     target_checker = mutation_target_diagnostic
@@ -19135,7 +19755,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     tree_rule_file,
                     (ROOT / tree_rule_file).read_text(),
                     [
-                        (mutation.name, mutation.find)
+                        (mutation.name, mutation.find, mutation.replace)
                         for mutation in MUTATIONS
                         if mutation.file == tree_rule_file
                     ],
@@ -19148,7 +19768,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1003:
+        if len(MUTATIONS) != 1033:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

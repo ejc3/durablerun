@@ -136,7 +136,17 @@ a last docs PR gives a live owner to every open bullet that is left.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free
-   declarations. The PR lists the declarations it moved.
+   declarations. The PR lists the declarations it moved. This is met. The test
+   id source is `testIdSource` in `@durablerun/core/testing`, which
+   store-libsql's released testing entry re-exports. The version read, the
+   versioned write and the check at the end of `migrate()` are
+   `readSchemaVersion`, `applyVersionedWrite` and `requireCurrentSchemaVersion`
+   in core's `schema-version.ts`, and libSQL, which wrote the versioned write
+   inline, calls it too. The switch is `corruptionTarget` in the conformance
+   package's `fixture.ts`. Eleven declarations of `store.ts` moved into core
+   under their own names. No statement changed: the SQL corpus is main's on
+   all three dialects, and each store's harvested text labels still equal
+   `scripts/text-statements.json`.
 7. PR3.14b: the statements of `claim` that read the running runs of the claim's
    queue are measured on libSQL beside 100, 1,000, 10,000, and 40,000 running
    runs of that queue. There are four of them, and not the three this line first
@@ -281,6 +291,102 @@ a last docs PR gives a live owner to every open bullet that is left.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
+17. PR3.3d: the five smaller items of the child-task review. The run-to-task
+    memo forgets a run once its terminal batch has ended it, and DESIGN.md says
+    what a stale entry could and could not do. An `EventName` carries the task
+    of a completion event and the form a message shows a person, so nothing
+    parses or formats the reserved name by hand. A port's refusal of what its
+    caller passed has one typed class, and the hosted route maps the family to
+    its answer once, with a test for each kind of refusal. One helper runs
+    every violation checker, and every generated surface and seeded race
+    whose rows only the engine wrote calls it, the fault matrix included,
+    which is shown by a cell that a bent guard fails. The test
+    helpers that are copies inside the files those four items touch exist
+    once. This is met. PR3.3d added `RunTaskMemo.forget`, which each store
+    calls when its own `complete`, `fail`, or `failRollback` has won, and a
+    case on three dialects, committed failing, in which a repeated terminal
+    write reads the run's task again. `EventName` carries `taskId` and
+    `display`, and the wait registration reads the awaited child from the
+    name, so the stores pass no child id beside it. `PortRefusalError`
+    extends `RangeError`, `isPortRefusal` names the family with
+    `InvalidDurableStringError` and `ChildAwaitRefusedError`, and
+    `hosted.test.ts` holds the one mapping for each class and holds any other
+    error at 500. `engineHistoryViolations` runs the three checkers at every
+    surface that spread them by hand. A fault matrix cell over a store that
+    records every completion event under another task's name, committed
+    failing, is now rejected, and the matrix with every checker is green on
+    three dialects. Of the copies, the SDK tests' `expectCleanRows` exists
+    once, and the label recorders stay with PR4.4d.
+19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
+    refused, by the tree rule and by `clock-lint`, which read one list of clock
+    spellings, and `clock-lint` refuses to run on a list it cannot read in
+    full. A batch of reads refuses a state or status column compared with a
+    bound value, from either side of the test and wherever the value stands
+    below its operand. The registry self-test fails when one spelling of a list
+    written on one line has no mutation of its own. This is met. A verdict case
+    and two bad inputs of the lint self-test were committed failing for `age`,
+    and a third bad input for an arm that interpolates what the lint cannot
+    read. Seven verdict cases were committed failing for the read rule: a
+    one-state list, a list of plain values, a list with one bound member, a
+    bound value in parentheses, one case with a cast, a call, a CASE and a
+    fragment, a bound value on the left of the test, and a subquery that
+    selects a bound value. An eighth case was committed failing for a refusal
+    that spoke of a subtraction to a follow-on that had spelled no clock. Nine
+    registered mutations are each caught by one case: one for `age`, seven for
+    the read rule, and one for that sentence. `clock-lint` holds no list of its
+    own, and its self-test refuses a tree with no list. Removing the mutation
+    of any one clock keyword, date function, counting operator or deadline test
+    from a copy of the registry gives one problem that names it, and five cases
+    in the registry self-test hold that.
+20. PR3.4c: `failRollback` takes the step, and the store names the rollback's
+    attempt record and counts the attempt, one past the last one it can read,
+    so a caller of the port chooses neither the name nor the count. The store
+    refuses a child spawn inside the rolling-back phase. Each freeze line of
+    the SDK has a case that fails when the line is deleted, and the pass's
+    budget guard has a case, over a task that has infrastructure retries,
+    that fails when the guard ignores them.
+    This is met. Two saga cases were committed failing on libSQL, PostgreSQL
+    and MySQL: every store recorded the seventh attempt it was handed and
+    then the first again, and created a child for a rollback pass. The port
+    now takes the step, core builds the record for every dialect, and the
+    stores read the last record under the read label `rollback-tries`, so
+    the SQL check of a caller's name went with the name. The child's insert
+    carries the phase as a required bind, and a plan pin on each dialect
+    holds the phase test to a seek of the checkpoints key. With the freeze
+    line of `ctx.spawn` deleted the SDK case fails by name, and under a guard
+    that ignores infrastructure retries the new budget case fails by name
+    while the two older ones pass. Eleven registered mutations hold the new
+    lines, and the one that mutated the SQL name check is retired.
+21. PR3.2c: removing a counter guard from the claim receipt's admission, from
+    the revival, or from the failure batch fails a targeted cell of the poison
+    matrix by name, the matrix reaches the rollback pass, and every statement
+    of the SQL corpus that inserts a run is held to the carry by a generated
+    case, on three dialects. This is met. Five target profiles seed the
+    poisoned task where its label acts on a target with nothing corrupt: a
+    claim no activation has reached, for `activate` and for `defer-launch`, a
+    task that failed for good, for `retry-task`, and an activated claim whose
+    task has a registered step started, for `fail`, or stands in the
+    rolling-back phase, for `fail-rollback`. The 48 new target cells each fail
+    under one of eleven guards removed by hand, 44 under their own name and the
+    four over `attempts/at-max-with-live-run` under the name of the aggregate
+    that runs them, where the whole matrix stayed green with the receipt's
+    relaunch bound, the revival's bound on infrastructure retries, or the
+    failure batch's guard on the highest owned ordinal removed. The control of
+    `fail` on a started step leaves the rollback pass as the task's second run
+    beside the phase marker. Five registered mutations, one for each profile,
+    are each caught by a generated cell of that profile. Six generated cases
+    hold the ten run inserts of the corpus, and a successor that drops the
+    parked wake step and a revival that carries nothing each fail one by name.
+23. PR3.14c: a check generated from the corpus plans every statement of every
+    label the libSQL store ships, and fails on a statement in which a step that
+    runs once for each row of another is not keyed, or runs once for each row of
+    a step that is neither keyed nor a due range, but for the statements it
+    names. This is met. `store-libsql`'s plan test sends every batch the store
+    builds from one history of real operations, the generated corpus and the
+    list of text statements hold that history to every statement, and the loop
+    nests of each plan are judged. One registered mutation, a read that joins
+    its task by the queue alone, fails it and passes every older pin of the
+    file.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1324,14 +1430,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     functions a statement may call, which makes a clock called as a node
     unwritable whatever it is named, and the scan of fragment text names a
     date function with no argument and the literal `'now'`. That scan stays a
-    spelling list: `age(column)` reads the clock on PostgreSQL and passes it.
+    spelling list. PR3.9g put PostgreSQL's `age` on it, and gave the list one
+    definition that `scripts/clock-lint.py` reads. A clock spelled under a
+    name nobody has listed still passes both scans: a list is a list.
     What has no mutation is derived, not listed here. The registry self-test,
     `pnpm lint:mutation-verdicts`, reads every condition-bearing line of
     `sql-tree.ts` and of the tree path in `fenced-batch.ts`, and fails when a
     line holds more conditions than registered mutations touch it, unless
     `TREE_CONDITIONS_WITHOUT_A_MUTATION` in `scripts/mutation-probe.py` lists
     the line with what a run showed: deleting it fails ordinary tests, or no
-    shape can tell it from the code. Part 3b deleted one entry by name,
+    shape can tell it from the code. Since PR3.9g a line of a spelling list
+    that holds two or more spellings is held by entry and not by that count:
+    each spelling needs a mutation whose replacement drops it and no other.
+    Part 3b deleted one entry by name,
     `compiled.readsClock`. The comparison that stood beside it,
     `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refused,
     because the clock token compiles to the batch clock's text, and also that
@@ -1408,9 +1519,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to 4 microseconds. It also found two reads binding a state their text had
     written inline: they write it inline again (`literalValue`), and a batch of
     reads refuses a state or status column compared with a bound value. Two
-    shapes still pass that rule and wait for part 2's decision about
-    fragments: a state bound inside a store fragment, and a one-state IN list
-    of a bound value. One narrow re-review of that fold found that the fix
+    shapes still passed that rule. PR3.9g closed one, a list under IN that
+    holds a bound value, and with it every other place a bound value can stand
+    in a test built from nodes, on either side of it. The other still passes: a
+    comparison written whole inside a store fragment, which a tree carries as
+    text. Only the option "Fragments that carry the module they came from", in
+    the options backlog of the milestone that ended on 2026-09-19, would let a
+    tree read it, and that option is not planned. Two shapes built from nodes
+    pass as well, and DESIGN.md names them: a simple CASE on the state with a
+    bound WHEN, and a subquery that selects the state compared with a bound
+    value. One narrow re-review of that fold found that the fix
     had taken each bind's type from the first call a prepared read saw,
     unchecked, in a record every store shares: a malformed first call was
     sent as it was, and every later call of that read was refused. A prepared
@@ -1441,6 +1559,59 @@ these three things; nothing else in the system does I/O, time, or randomness.
     refused where the statement is built as well as by the lint. The registry
     holds 873 mutations. The two options that were not built are in the
     options backlog of the milestone that ended on 2026-09-19.
+  - PR3.9g, delivered: three residuals of the tree rules. The clock spellings
+    list PostgreSQL's `age`, which measures from the current date when it is
+    given one argument. Every call is refused, the form with two arguments too,
+    which reads no clock: no store statement calls `age`, telling one argument
+    from two would mean reading SQL, and a refusal that found a clock spelled
+    says that a span between two stored instants is a subtraction. A follow-on
+    refused for holding the batch clock's token spelled nothing and is told
+    nothing of it. The spellings have one definition, `CLOCK_FUNCTIONS` and
+    `CLOCK_SPELLING` in `packages/core/src/sql-tree.ts`.
+    `scripts/clock-lint.py` kept a second list by hand. It now reads that one
+    from the tree it audits, leaves out the one arm a store's admin statements
+    would trip, and refuses to run on a tree whose list it cannot read in full,
+    an arm that interpolates anything but the list of functions included.
+    Before the change the pattern read from the tree's list was compared with
+    the hand-kept one and was the same string. The lint is exactly as strong as
+    the tree's list, which its self-test keeps as a case: a tree whose list
+    lacks `sysdate` accepts `SYSDATE()`. A batch of reads also refuses a state
+    or status column compared with a bound value from either side of the test,
+    wherever the value stands below its operand: in a list under IN or NOT IN,
+    in parentheses, under a cast, a call, a CASE or a value fragment that
+    carries a bind, or among the selections of a subquery. All of those passed
+    the rule that read only a bare bound value on the right. One predicate
+    walks an operand as `namesColumn` walks the other. A subquery is its own
+    statement, so a bind in its WHERE is not read. A list of inline literals is
+    admitted, because that is the form a partial index matches. What the rule
+    refuses beyond its property, and what still passes it, is in DESIGN.md. No
+    statement a store sends changed: the generated corpus is the same on three
+    dialects. The registry self-test holds each spelling of a one-line list to
+    a mutation of its own. Counting the mutations on the line would not: eight
+    clock keywords stand on a line that nine mutations touch, the eight and the
+    one that blanks the arm, so one keyword could lose its mutation with the
+    count met. No mutation was added for it, because every such spelling
+    already had one. Its kept false negative is a spelling written inside a
+    character class, which reads as one entry. This pull request registers nine
+    mutations: one for `age`, one for the sentence about a subtraction, and
+    seven for the read rule, where each operand of the predicate, both readings
+    of a subquery and the second side of the test are each dropped by one. The
+    first side of the test has none of its own: without it seven cases fail.
+    Two of main's entries are aimed at lines that were rewritten, each mutant
+    the one it was. Its one review round is `postmortems/pr3.9g-review.md`:
+    five findings, none in what a store sends. One mechanism was measured and
+    not built. The coverage check counts a mutation for every line its find
+    spans, and the property is the lines it changes: one find of this pull
+    request ran onto a line it left unchanged and met that line's count.
+    Counting by change is an option, not scheduled, because it is not
+    contained: read by import, six lines of main's `sql-tree.ts` pass by span
+    and would be short by change, each needing a mutation or a measured reason.
+    They are the test of `operatorName(node.operator) === 'in'`, `if
+    (BinaryOperationNode.is(conjunct)) {`, `} else if
+    (UnaryOperationNode.is(inner)) {`, `const defined = STATE_SETS.some(`, `if
+    (!BinaryOperationNode.is(node)) return null`, and the closing
+    `].join('|'),` of the clock spellings. The registry holds 1007 mutations:
+    main's 998 and the 9 this pull request adds.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
@@ -1610,10 +1781,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `deferLaunch`, so a guard added to one reaches the other. Six registered
     mutations that owned find texts inside activation's SQL now own the
     fragment's.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
-    case generated from every batch that inserts a run, in place of one
-    hand-listed family per path. The model property covers the protocol today,
-    and generating the SQL-side enumeration belongs with this PR's SQL-tree work.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
@@ -1646,14 +1813,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   says. What stays open here: the required attestation
   runs no probe and a red test may name none, so a red commit that holds its
   own fix is seen only by an attester who asks for `--prove-reds`.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
-    profile for a running, unactivated claim, so the `activate` and
-    `defer-launch` cells reach their corruption guards instead of refusing on
-    the receipt.
-  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a poison target
-    profile for a failed task, so the `retry-task` cells reach the counter
-    guards behind its state condition. The conformance cases pin each guard
-    today.
   - Deferred from `postmortems/pr3.3b-hoists-review.md`: a poison case for the
     batch that records an unrecorded ending (`record-task-done`), over rows
     where a run's claim outlives its task or names a task of another queue, so
@@ -1799,6 +1958,119 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its residual is NOT recorded here: each item sits under the named PR that will
   do it, with its source postmortem.
 
+- **PR3.2c poison target profiles and a generated successor-carry case**: DONE.
+  It builds four bullets that merged entries carried, two under PR3.10 from
+  `postmortems/pr3.2a-lifecycle-review.md` and
+  `postmortems/pr3.2b-retry-task-review.md`, one under PR3.4, and one under
+  PR3.9, and takes them out from under those entries. The profiles went into
+  the targeted cells and not the ambient ones, on a measurement: with the
+  poisoned run seeded as a claim no activation had reached, all 292 ambient
+  `activate` and `defer-launch` cells passed, and stayed green with the
+  receipt's relaunch bound, its sole-live-run guard, or its accounting guard
+  removed. An ambient cell requires no refusal, so it holds a guard only where
+  the unguarded write leaves something its oracle objects to, and for the
+  receipt's admission it left nothing. A targeted cell requires the poison's
+  rows unchanged. The arms that name their target, `activate`, `defer-launch`,
+  `retry-task`, `fail` and `fail-rollback`, are a second kind beside `claim`
+  and the lease sweeps, which scan: the call on the poison must be refused and
+  the healthy trigger wins a call of its own. Each profile has a control, the
+  same call with nothing corrupt, which must act on the poison and whose effect
+  is pinned, so that a refusal is the corruption's and not the profile's
+  (DESIGN.md, the poison matrix). The inventory went from 50 target cases and
+  26 declared unreachable targets to 98 and 83, with two new reasons: a receipt
+  names the generation it holds and the port refuses one outside the bounds,
+  and a failed task has no live run for a relation of one to hold of. A failed
+  task's top run is already charged, so its profile isolates a boundary by the
+  revival's own relation, and two boundaries that no live arm can isolate, the
+  budget's lower bound and a run ordinal's, are isolated there by companions of
+  their own. With the receipt's relaunch bound removed the whole libSQL matrix
+  stayed green at the base, 3,082 of 3,082, and six cells fail now, among them
+  `activate-unactivated contains counter-bound/run-relaunch-count`. With the
+  revival's bound on infrastructure retries removed it stayed green and two
+  cells fail now. With the failure batch's guard on the highest owned ordinal
+  removed it stayed green and two fail now, and with its accounting guard
+  removed six ambient cells already failed, by the findings the failure left
+  behind, and twelve targeted cells fail as well, ten of them on boundaries no
+  cell held. The control of `fail` on a started step is how the matrix reaches
+  the rollback pass. The pass's own integer guard, that the budget its batch
+  writes fits, stays with the two saga cases that hold it on valid, extreme
+  states, because no single corrupt pre-state reaches it: the failure's
+  compare-and-set in front of it vouches for the run's ordinal, the task's
+  three counters and the relation between them. Five mutations, one for each
+  profile, are each owned by a generated cell of that profile: 1027, which is
+  the 1022 this work was merged onto and these five. The successor-carry case
+  is generated from the SQL corpus (`conformance/src/successor-carry.ts`,
+  DESIGN.md §3.8): each of the ten statements that insert a run, across six
+  labels, must be made to insert one by some scenario, through an executor that
+  records which corpus statement inserted which run, and the run is judged as
+  its batch left it. A label with a run insert and no scenario fails, and so
+  does an insert no scenario reaches, and so does a label a scenario drives to
+  which the corpus gives no run insert. The enumeration is the corpus's, which
+  the corpus test holds to what the stores compile, so these cases are closed
+  only together with it. The hand-written case is deleted, the mutation it
+  owned is owned by the generated case of `fail`, and the rollback passes of
+  `fail`, `fail-rollback` and both sweep cap arms are reached for the first
+  time. The new cells and controls cost 0.7 s of test time on libSQL, 4.3 s on
+  PostgreSQL and 2.7 s on MySQL, and the generated carry cases 0.3, 0.7 and 0.6
+  s, on a shared machine at a load average of 17 to 70. Against that, the
+  matrix's own total moved by less than its noise: over five interleaved rounds
+  the base took 45.6 to 47.3 s on libSQL, 231.9 to 255.2 s on PostgreSQL and
+  161.8 to 187.4 s on MySQL. `verify` runs the libSQL and PostgreSQL legs, so
+  it gains about 6 s here and about twice that on CI's slowest runner, under a
+  limit that holds the three-times rule until its slowest run reaches 2,400
+  seconds.
+  - An option, not built: targeted witnesses for the claim receipt's guards
+    that are not counters, the sole live run, the stored retry strategy and
+    headers, and the lease. No targeted witness of that kind exists on any arm,
+    and hand-written cases with registered mutations hold each of those guards
+    today. Its trigger is one of those mutations surviving, or a review that
+    finds one of those guards unheld.
+  - An option, not built: the ambient `fail` cells over a task with a started
+    step, with insert authority for the pass. A probe placed a pass on the
+    poisoned task in 101 of 146 such cells, and the ambient oracle objected
+    only that it grants no such authority. It would hold the pass's live-task
+    conditions and nothing else, for about eleven seconds on PostgreSQL. Its
+    trigger is a defect in where a pass is placed over a corrupt pre-state.
+  - An option, not built: a retrying form of `fail-rollback` in the matrix's
+    `invoke`, which would reach the pass that follows a failed rollback from
+    the matrix itself. The generated successor-carry case reaches that pass
+    today.
+  - An option, not built: seed the ambient cells of the labels that `activate`,
+    `deferLaunch` and `retryTask` send over the state in which the label acts.
+    On this head the call changes the poison's rows in none of those 438 cells,
+    so they hold only that a refused call leaves nothing behind. Seeded over a
+    claim no activation had reached, the call acted in 168 of the 292 cells of
+    the first two and every one stayed green, so the change would make those
+    cells audit a write and would hold no guard. Its trigger is a write outside
+    authority, or a finding laundered, by one of those three labels that no
+    cell saw.
+  - An option, not built: a control for the four profiles of the arms that
+    scan. A cell of theirs shows the one call acting on the healthy trigger,
+    and not on the profile. Run with nothing corrupt in the review, each of the
+    four is acted on, so no cell is vacuous today. Its trigger is a change to
+    one of those four seeds, or to the eligibility a scan applies.
+  - An option, not built: controls over companions. Sixteen of the 48 new cells
+    move their profile's seed by companions, and a control runs the seed alone.
+    For fourteen the companions make sense only beside the corrupt value, so no
+    control can exist, and they are held by failing when their guard is
+    removed. For the other two, the lower bounds of the revival's budget and of
+    a run's ordinal, the companions are a valid failed task on their own, and a
+    control over them could show the revival acting. Its trigger is a change to
+    either of those two companions, or to the revival's charge relation.
+  - An option, not built: an enumeration of the refusals of the check that a
+    targeted case was seeded as its profile says, held against the oracle meta
+    tests. Seven meta tests now require that check's sentences, and nothing
+    lists the sentences, so a refusal added with no meta test would pass every
+    gate. A registered mutation for each refusal would keep the present tests
+    honest and would not see a new one. Its trigger is the next refusal added
+    to `declaredTargetErrors`.
+  - PR3.2c's one review found no HIGH, one MEDIUM and four LOW, recorded in
+    `postmortems/pr3.2c-poison-profiles-review.md`. Four are counted there: a
+    sentence in the spec that was false as a universal, three refusals of the
+    matrix's seed check that no test held, and two claims about the new test
+    machinery that said more than is true. All four are folded, and so are a
+    loose registry comment and three missing gate lines, which are not counted.
+
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
@@ -1869,12 +2141,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and a port's event name to the durable string domain, each where it enters.
     A queue or a step name at the other ports is not checked at the port. One
     check for the whole port is its own change.
-  - A plan check over every write of the libSQL corpus. `query-plans.test.ts`
-    pins the statements someone chose, so the terminal wake had no pin when it
-    moved into six batches, and the keyed follow-ons below scan `tasks` today
-    with every test green. The property is that no write scans a table once
-    for each row of another, and a check generated from the corpus would hold
-    it for every statement. It is its own change.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -1883,11 +2149,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads the count, because the database's counter is shared by parallel test
     workers. The PR4.4 entry says where it is held. The fuzz is not claimed:
     its walk is one caller on libSQL, so a hold there could not fail.
-  - Smaller, from the same review: the run-to-task memo does not forget a run
-    its terminal batch has ended, `EventName` does not carry the task id or a
-    display form, port refusals have no one typed class mapped once at the hosted
-    route, no single helper runs both violation checkers, and a few test helpers
-    are copies.
   - Promoted to PR3.14 below: the generated follow-ons that select their source
     by key correlated it to `tasks` on the queue, and on libSQL their plan was
     a scan of `tasks`.
@@ -1939,6 +2200,60 @@ these three things; nothing else in the system does I/O, time, or randomness.
   got narrower: a declared event lock had to be followed at once by a
   compare-and-set, and an event lock that arrives with its statement is held
   to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
+- **PR3.3d the child-task review's smaller list**: five small items from the
+  second review of PR3.3, on three stores. The run-to-task memo forgets a run
+  once the store's own `complete`, `fail`, or `failRollback` has ended it. A
+  stale entry could change no answer. It could only take the room of a run
+  still at work, whose terminal write then paid the `run-task` read, and a
+  repeated terminal write through the same store now reads the task again
+  before its refusal. An `EventName` carries the task of a completion event
+  and the form a message shows a person, so the wait registration reads the
+  awaited child from the name, and no store passes the child's id beside it
+  or formats the reserved name. A port's refusal of a reserved event name, a
+  reserved idempotency key, or a key together with `childOf` is a
+  `PortRefusalError`, which extends `RangeError`. `isPortRefusal` names the
+  family with `InvalidDurableStringError` and `ChildAwaitRefusedError`, and
+  the hosted route maps it to 400 once and has no reserved-key rule of its
+  own. `error.name` changed at those sites, and nothing else a caller sees
+  did. One helper, `engineHistoryViolations`, runs the invariant library, the
+  child-task checker, and the saga checker, and every surface that spread
+  them by hand calls it. The fault matrix gained the child-task checker that
+  way and found no violation on any dialect. It excuses one task, the child
+  its workload ends through a simulated older build that writes no completion
+  event (ChildTasks.tla's LegacyTerminal), until an await of that child has
+  answered, and two cases hold the excusal to that task. Of the test helpers
+  that are copies, the SDK tests' `expectCleanRows` exists once. The review of
+  this pull request then changed four things. The matrix excuses that child
+  only while its row is cancelled, because a crash can stop the older build's
+  cancel and the child is then an ordinary task. Three more sites call the
+  helper, the saga surface's race case, the suite's seeded races, and the
+  identifier surface, and a case lists the files that may call the invariant
+  library directly with the reason of each. The name of a completion event is
+  a type, `TaskDoneEventName`, which the recording statement takes. Five
+  registered mutations hold the five guards this entry added. Not built
+  here, each with its reason:
+  - A number, a retry strategy, or a saga step name that a port refuses stays
+    a bare `RangeError`. It is not a member of the refusal family, so the
+    hosted mapping leaves it at 500, and it can take the class when a
+    caller's value of one reaches a route.
+  - One base class for the whole family. `InvalidDurableStringError` was
+    released as a `TypeError`, so moving it under another parent changes the
+    published surface, which is the maintainer's choice.
+  - The label recorders that are copies: `LabelRecorder` and
+    `RecordingExecutor` in the libSQL store's tests, and `recordingLabels` in
+    the child-task surface. They stay with PR4.4d, which hoists the
+    conformance helpers.
+  - The matrix's judge tells the older build's ending from the state of the
+    row. A cancel of that same child by the current build that lost its
+    completion event would be excused too. No batch of the workload does
+    that, and closing it needs the rows to say which build ended a task,
+    which they do not.
+  - Nothing holds a pull request's body to the tree. An option: the
+    attestation refuses a body whose stated registry count or arm key is not
+    the head's.
+  - A file that is listed as calling the invariant library directly can gain
+    a seeded race that calls it alone, and the list does not see it. The
+    suite's scenario cases are the listed sites of that kind today.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -2086,14 +2401,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stopped whether or not the step there registered a rollback. The review
   round is `postmortems/pr3.4-sagas-review.md`.
   Open, and owned by this entry until it merges:
-  - The poison matrix seeds no task with a started step, so it never reaches
-    the rollback pass. The pass's one integer guard is that the budget its
-    batch writes fits. Two cases in the `sagas` surface hold it: a run at the
-    largest user ordinal gets no pass, and a task spawned with the largest
-    budget rolls back.
-  - The store records the attempt count the SDK hands it and does not check
-    it against the last one, and nothing caps how many passes a task may
-    take. Rollback budgets are the SDK's to keep.
+  - The store counts a rollback's failed attempts since PR3.4c, and it does
+    not know a rollback's budget: it is told whether another pass follows,
+    so the one cap it holds itself is the run ordinal's bound on a pass.
+    Rollback budgets are the SDK's to keep.
   - A saga with nothing to roll back records nothing, where the model calls
     it complete at entry.
   - The registry bridge arm in `ci.yml` is keyed on main's registry as of
@@ -2116,9 +2427,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
-  - The SDK freezes each durable call with a line of its own, and only the
-    sleep's and the emit's have a test. The store does not freeze a child
-    spawn inside the phase, so that call's freeze is the SDK's alone.
   - An option, not built: executable-twin markers for the side models.
     `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
     that shows a refusal, for every action a `[cas-fenced]` line of the main
@@ -2156,17 +2464,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
       structure check of `scripts/tla.sh` refuses such a module, inside the
       required `tla` check. Trigger: that check is moved, narrowed, or made
       to depend on the scope.
-  - `failRollback` takes the attempt record's name and count from its caller.
-    The name is now checked in SQL. A port that takes the step and derives
-    both would make a foreign name unwritable and close the limit above.
-  - The pass's budget guard is held at the bound by two cases whose tasks
-    have no infrastructure retries, so a guard that ignored them would pass.
   - A parent that awaits a child does not see the child's rollback outcome.
     PR3.4b put the outcome on the hosted inspect route and left this half
     open, because the obstacle is the writer and not the wire: a terminal
     batch binds its completion payload before it runs, and the outcome is a
     fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
     and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: a way for the port to ask an
+    executor for a current read. The store counts a rollback's failed attempts
+    from a record it reads before its batch (PR3.4c), and a worker replays
+    from its memo read, `get-checkpoints`. Both are batches of reads, which
+    the executor contract lets a replica serve, and both need every record
+    that has committed: over a replica that lags, the count is written one
+    short, and a replay does not see a checkpoint that has committed.
+    `SqlBatchMode` has `read` and `write` and nothing between them. No
+    executor in the repository sends a batch of reads anywhere but its one
+    target, so nothing is exposed today. It is the maintainer's design
+    question. Trigger: the first executor that serves a batch of reads from
+    a replica.
+  - Option, not a deferral of this entry: the phase as a required member of
+    the claim guards. Every statement that presents a worker's claim goes
+    through `whereClaimedRun` or `AwaitingClaim`, and a child spawn was the one
+    such statement whose phase nobody had decided (PR3.4c). With `phase` a
+    required member of both, no claim-fenced statement compiles until it says
+    what the phase asks of it. It re-keys the SQL corpus, the finds of the
+    registered mutations on those statements, and the base gate's arm.
+    Trigger: a statement that presents a claim is added, or one is found with
+    no decision about the phase.
+  - Option, not a deferral of this entry: a fuzz stat and a floor for the reach
+    of the count check. Every walk holds the stored count of a rollback's
+    failed attempts to what it saw recorded (PR3.4c), and nothing says that a
+    walk ever saw a second attempt of one step, so the check could pass over
+    walks that never reach one. At the gate's size 29 of the 32 shards reach
+    it and three do not, so a floor for each shard would fail as the halt
+    count's first floor did, and it needs a measured threshold of its own.
+    Trigger: the walk's saga operations change, or the check is found green
+    over a run in which no walk recorded a second attempt.
+  - Option, not a deferral of this entry: a composed model of sagas with child
+    tasks. Sagas.tla has no spawn and ChildTasks.tla has no phase, so the
+    store's refusal of a child spawn inside the phase (PR3.4c) is held by a
+    conformance case and argued in DESIGN.md §3.10: a stronger guard on
+    `SpawnChild` keeps every safety property, and no liveness property needs
+    a spawn inside the phase, because a pass in the phase cannot await.
+    Trigger: the first invariant that needs both a phase and a child.
   - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
     and attempt records are found by a test of each name among the task's own
     checkpoints, because a range of names is not sound under the database's
@@ -2309,6 +2649,91 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and it exempts five verdict markers the base predates. It must be keyed
     again if main's registry changes before this entry merges.
 
+- **PR3.4c the saga port takes the step, and the phase's last two doors**:
+  DONE. Four bullets that the saga review left open under PR3.4
+  (`postmortems/pr3.4-sagas-review.md`). Its own review round is
+  `postmortems/pr3.4c-saga-port-and-freezes-review.md`: three findings, one
+  at a bound no legal history reaches and two in sentences of DESIGN.md.
+  - `failRollback` took a rollback's attempt record from its caller, name and
+    count, and the store checked only the name. A saga case that hands the
+    first failed attempt over as the seventh and the second as the first was
+    committed failing on three dialects: every store recorded 7 and then 1.
+    The port now takes the step and the failure of this attempt. Core builds
+    the record once for every dialect, its name and its state one attempt
+    past the last one stored, and each store reads the last record first,
+    under the read label `rollback-tries`. No record, or one that cannot be
+    read, counts as none, as it does for the SDK. The read is sound because
+    only `fail-rollback` writes an attempt record, it wins only under its
+    caller's live claim, and a live task has one live run. DESIGN.md §3.10
+    states that invariant with the test that holds each leg. One leg had no
+    case for this label, and a new one hands `fail-rollback` a token the
+    claim never had and the same call replayed, and sees each refused with
+    the count as it was. The SQL check of a caller's name, its fragment on
+    three stores, its case, its mutation, and the `fail-rollback` column of
+    the reserved-names table went with the caller's name. An argument of the
+    older shape is refused at the entry by an error that says what the port
+    takes. Every fuzz walk now holds the count it finds stored to the failed
+    attempts it saw recorded. At the fuzz gate's own size, 2,000 seeds of
+    walks of 100 steps, a store that stores every attempt as the first
+    fails 29 of the 32 shards, and every failure printed is that check's.
+    One shard alone did not reach a second failed attempt of one step, so
+    the check leans on the whole gate.
+  - A published port signature changed in one step. Two builds against one
+    database need no staging, because the record keeps its name, its format
+    and its bytes, and a case plants a record as an older build wrote it and
+    sees the count go on from it. One process that mixes package versions is
+    no supported install: the type checker refuses both pairings, released
+    packages pin core exactly, and the SDK tells a store's lost lease by
+    instance. DESIGN.md §3.10 says what such a process does in each
+    direction, and marks what was measured and what was read.
+  - PostgreSQL sends ten queries for a failed rollback where it sent nine.
+    The tenth is the read of the last attempt record, a batch of one read,
+    and the round trip pin says so.
+  - The store refuses a child spawn inside the phase, on three stores, by a
+    case that was committed failing on three dialects. The refusal is the
+    statement's guard: core's spawn statement takes the phase as a required
+    bind beside the parent's live claim, as the four other frozen statements
+    do, so a store does not compile until it says what the phase asks. The
+    tree rules hold no saga rule, and an entry check would cost a read on
+    every child spawn and be atomic with nothing. Neither model changes, and
+    the option above says what would call for a composed one. A plan pin on
+    each dialect holds the phase test to a seek of the checkpoints key, and
+    on MySQL the batch walked 5 rows beside 2,000 checkpoints of the parent.
+    Seeing each pin fail found one that could not: the libSQL pin told a
+    task update that follows a pass by the budget column's name alone, which
+    a spawn's insert also names, and its two uses now share one definition.
+  - Every freeze line of the SDK has a case. One SDK case reaches a step,
+    both sleeps, both awaits and a child spawn for the first time on a
+    rollback pass, and each must throw the phase signal and write nothing.
+    With the line of `ctx.spawn` deleted it fails by name on libSQL and
+    PostgreSQL, where every SDK test passed before. Four registered
+    mutations delete one line each.
+  - The pass's budget guard is held at the bound over tasks that have an
+    infrastructure retry: one user attempt below the bound, which rolls
+    back, and at it, which cannot. Under a guard that reads the run's own
+    ordinal the new case fails by name and the two older ones pass.
+  - The SDK still counts its attempts, and only to decide whether a rollback's
+    budget admits another pass, so the mutation of that count no longer shows
+    in the stored record. It is aimed at the case where a rollback spends its
+    budget, whose rollback now succeeds on a fourth attempt that a budget of
+    two never reaches. The case it left holds the store's count through the
+    SDK, by a second mutation of that count.
+  - The count stops at the largest safe integer. One past it is no count the
+    decoder reads, so the record would read as none and the attempt after it
+    would be stored as the first. Only a record an older build's store wrote
+    can sit at that bound, and the SDK did the same arithmetic before core
+    owned the count. It is never refused there: a failed rollback that could
+    not record its failure would fail again for ever. A core case was
+    committed failing, and one registered mutation removes the bound. A
+    conformance case holds every store to the bound on three dialects, from a
+    record written there with raw SQL, because the scenarios are what a port
+    in another language proves itself against. DESIGN.md §3.10 also says what
+    a direct caller of the port gets over a record the store cannot read, and
+    names a fourth leg of the read's soundness, that the read is current, with
+    what holds it today. An option under PR3.4 records the design question
+    that leaves.
+  - The registry gains eleven mutations and retires one. The base gate's arm
+    retires that entry of the base registry and exempts seven markers.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
@@ -2604,7 +3029,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   fails version 9 whole, stays at version 8, and takes the version once that run
   has ended. PostgreSQL's pin parks one wait, because with `waits` empty the
   delete never reaches `runs`, and with the token term removed from the delete
-  alone the pin fails by that statement's name. The registry holds 1003.
+  alone the pin fails by that statement's name. The registry holds 1033.
   - Limit, measured: PostgreSQL matches the partial index to the bound state of
     the held guard and of the receipt read only when it plans with the values,
     as it does for the unnamed statements the executor sends. With the server
@@ -2612,17 +3037,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to the plan they had, and a claim beside 100,000 running runs costs 32.6 ms
     against 7.4, where it cost 64. The pin plans with real binds and cannot see
     it.
-  - For this PR's merge of main, which holds the plan check (PR3.14c): its rule
-    reads a seek of `runs_held (queue=? AND claimed_by=?)` as a walk, so over
-    this PR's statements it still faults seven nests, in the claim's task
-    follow-on, its delete and its receipt read, and its two excuses for the
-    first two no longer match, because their pattern names the old walk. So its
-    names do not simply come out. At the merge its rule learns that this seek is
-    bounded, because one token holds at most one claim's limit of runs, with the
-    reason in DESIGN.md. Then its two excuses and its name for the receipt read
-    among the due ranges come out, and its plan test passes with nothing of the
-    claim excused. Its option of a clause that refuses a lone walk in any
-    statement has that merge as its trigger.
+  - At this PR's merge of main, which holds the plan check (PR3.14c), its rule
+    read a seek of `runs_held (queue=? AND claimed_by=?)` as a walk. Over this
+    PR's statements it still faulted seven nests, in the claim's task follow-on,
+    its delete and its receipt read, and its two excuses for the first two no
+    longer matched, because their pattern named the old walk. So its names did
+    not simply come out. Its reader's list of columns that name one entity
+    gained `claimed_by`, because one token holds at most one claim's limit of
+    runs, with the reason in DESIGN.md. Then its two excuses and its name for
+    the receipt read among the due ranges came out, and its plan test passes
+    with nothing of the claim excused. With `claimed_by` taken out of that list
+    again the test fails on those seven nests, which was tried. Its option of a
+    clause that refuses a lone walk in any statement had this merge as its
+    trigger.
   - Option, not built, with its trigger: `taken`, the declaration of the runs a
     claim took, is a byte-identical copy in the three stores, and no mutation
     holds MySQL's copy, because the term changes no plan there. Hoisting it
@@ -2637,6 +3064,89 @@ these three things; nothing else in the system does I/O, time, or randomness.
     session it failed 3 times of 6. This PR's pin analyzes only the two tables
     it loads, in its own schema. Trigger: the first time that test flakes, or
     the next test that analyzes a whole database.
+- **PR3.14c the plan check generated from the corpus**: `query-plans.test.ts`
+  pinned the statements someone chose, and its block over writes planned the
+  UPDATE and DELETE of fourteen labels listed by hand, so a read, or the SELECT
+  of an INSERT, was planned only where someone chose it, as three reads were,
+  and a new label's writes only if someone listed it. One scripted history of
+  real operations now sends every batch the libSQL store builds, in every
+  variant, recorded once for the file. Every statement of
+  `conformance/corpus/libsql.json` must be one that history sent, by its exact
+  text, and every label of `scripts/text-statements.json` is sent or named with
+  why it is not the store's. The block over writes takes its statements from the
+  same history, so its hand list is gone and it plans the writes of every label.
+  Each statement is planned under the binds it was sent with, as the tree
+  `EXPLAIN QUERY PLAN` returns, and every send of it is held to plan alike. A
+  reader beside the test judges the loop nests of each plan: a step that runs
+  once for each row of another must be keyed, and every step it runs once for
+  each row of must be keyed or a due range. DESIGN.md §3.4 has the reading, the
+  two declared lists of column names, why a due range may drive, what the rule
+  cannot see, as five statements that were run, and what it refuses though it is
+  sound. A step is judged by its constraints whatever it is named, a read of a
+  subquery's rows as a read of a table is, and a plan line the reader cannot
+  read or place is a fault. Two statements of `claim` broke the rule, the task
+  update and the delete of expired waits, and were excused by name, for that
+  walk alone, until PR3.14b keyed them. Nothing is excused now. A plan prints a
+  range the same way whichever way it points and never prints a LIMIT, so every
+  statement in which a due range drives another step is named with the lines
+  that drive and with what bounds them, a LIMIT its text holds or a recorded
+  open question. Four were: the claim's candidate legs, the two sweep scans, and
+  the claim's read of the runs it took, whose range was every lease of its queue
+  that had not expired, under no LIMIT. That read had no pin, and it showed that
+  plan only under its real binds, because SQLite plans from bound values. Three
+  are named now. All four statements of `claim` were PR3.14b's, and it has keyed
+  them. The reader read its seek of `runs_held` by the claim token as a walk and
+  still faulted seven nests, so the reader's list of columns that name one
+  entity gained `claimed_by`, because one token holds at most one claim's limit
+  of runs. Then the claim's two excuses and its name in the list of due ranges
+  came out. As measured before PR3.14b: one claim of one run on libSQL, median
+  of 7, on a file database, beside running runs of its queue that another worker
+  holds, then each of its statements alone in a transaction that is rolled back,
+  with `activate` as the keyed control:
+
+  | Running runs | Claim | Runs update | Task update | Waits delete | Read | `activate` |
+  |---|---|---|---|---|---|---|
+  | 8 | 7.3 ms | 2.1 ms | 0.2 ms | 0.1 ms | 0.8 ms | 4.9 ms |
+  | 10,008 | 25.5 ms | 5.8 ms | 4.2 ms | 3.8 ms | 4.6 ms | 5.9 ms |
+  | 100,008 | 206.9 ms | 38.2 ms | 41.0 ms | 39.1 ms | 40.9 ms | 4.6 ms |
+
+  One registered mutation owns the red: the sweep's read of expired leases,
+  joined to its task by the queue alone, scans `tasks` once for each lease it
+  reads. It fails the nest check by name and passes every older pin of the file,
+  the pin of that same read among them.
+  - Option, not a deferral of this PR: a clause that refuses a walk in any
+    statement, alone or not. A lone walk drives nothing and nothing drives it,
+    so the nest rule does not see it. In an UPDATE or a DELETE the two pins over
+    writes refuse it, and a read, or an INSERT ... SELECT, that walks a protocol
+    table alone passes every plan test today. Before PR3.14b the clause would
+    have found exactly the four statements of `claim`, beside
+    `EXCUSED_SOURCE_WALKS`, which is deleted now. Its trigger was PR3.14b
+    merging, which has come: the clause can now replace the two pins over
+    writes, and would not be a second list beside them.
+  - Option, not a deferral of this PR: the same generated check on PostgreSQL
+    and MySQL, whose plan tests hold chosen statements. Each needs its own
+    reading of its own plan format, and MySQL's test already measures rows
+    walked from inside the batch, which a plan cannot give. Its trigger is a
+    statement found to walk on a server that those chosen pins do not hold.
+  - Option, not a deferral of this PR: one history for the corpus generator and
+    this check. `sql-corpus.test.ts` scripts the same operations to record the
+    corpus, in another package, so a new label or variant is scripted twice, and
+    each test fails until it is. One history over the store's two ports, in a
+    testing entry both packages can import, would serve both, and a server's
+    generated check too. Its trigger is that check being built for a server, or
+    the second variant that has to be scripted in both.
+  - Option, not a deferral of this PR: a generated surface for the plan reader.
+    Its review found the reader blind to a read of a subquery's rows inside a
+    nest, and not failing closed at three seams, and every such finding lay
+    where no shipped plan goes and no case picked by hand went. The surface
+    would make every kind of line the reader knows stand as the step that drives
+    and as the step that is driven, under each reach, with the expected reading
+    derived and not written by hand. The postmortem of that review names it as
+    the mechanism its root cause asks for. Its trigger is the next finding
+    against the reader.
+  - Recorded, and not planned: a statement inside a trigger is never planned.
+    libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
+    scans `drivers`, a table of one row for each live driver.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It
@@ -2916,10 +3426,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
     table: with a limit of one at five rows and fewer, and with a limit of
     half the table at 20, 120, and 400 rows, where a quarter of the table
     was still read by key. The plan tests say so and do not pin it.
-  - Deferred from PR4.3: third copies. The test id source, the admin's
-    version read and versioned write, the fixture's corruption-table switch,
-    and the store's dialect-free declarations are now in three packages.
-    Hoisting them is one change to all three stores.
+  - PR4.4d, DONE. The third copies this bullet deferred from PR4.3 each exist
+    once, where a fourth dialect inherits them. The test id source is in core's
+    testing entry. The admin's version read, its versioned write and
+    `migrate()`'s closing check are in core's `schema-version.ts`: the read
+    takes the dialect's own labeled batch as a closure, so the label and the
+    SQL text stay in each `admin.ts`, where the label harvest and each
+    dialect's executor read them. libSQL wrote the versioned write inline, as
+    the shared function at a minimum of 0 and of N, and now calls it. The
+    fixtures' corruption-table switch is `corruptionTarget` in the conformance
+    package. Eleven declarations of `store.ts` that held no SQL text and
+    imported nothing of their dialect are in core under the same names, each
+    beside a neighbour that was already on core's main entry point. What is
+    SQL text stays in the dialect even where three stores spell it alike:
+    each bootstrap, MySQL's one-statement bootstrap and named lock,
+    PostgreSQL's table lock, each version's batch, every fragment, and every
+    member of the three store classes. `migrate()` keeps its control flow for
+    PR4.4b. Sixteen registered mutations follow their lines, carried by the
+    base gate's arm, and the pull request registers none.
+  - An option, not built: a check that a re-aim cannot widen a mutant or make
+    two entries one. PR4.4d's hoist put four entries of three files on one
+    shared line. Two became one mutant and one grew wider, and only the review
+    saw it, because a replacement's text says nothing of its reach on a line
+    with more callers. The check is differential: apply the base's entry at
+    the base and the re-aimed entry at the head, run both against one recorded
+    set of scenarios, and require the same scenarios to break, and different
+    ones for entries that share a find. Its trigger is the next hoist that
+    moves registered lines of several files onto one line.
   - PR4.4c, DONE. The generated surface, `self-concurrency`, in the shared
     suite on all three dialects, races every call of the store's two ports
     against copies of itself. PR #50 and PR4.3 had each found a transition no
@@ -3383,14 +3916,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Its trigger is a MySQL version that takes locks on more than one table at
     once, and `store-postgres/test/deadlocked-read.test.ts` is the shape to
     port.
-  - An option, not built: one definition of the refusal for a schema newer than
-    the build. Each of the three stores builds that message and has a case for
-    it, where main already had the older message three times. A helper in core
-    beside `SchemaMismatchError` would be the single definition. libSQL's
-    `migration-postcondition-old-version` mutation finds its text in that
-    file, so the move needs a re-aim and a line in the base gate's bridge. It
-    fits PR4.4d, which hoists the stores' third copies, and a fourth store is
-    its trigger otherwise.
+  - Done in PR4.4d: one definition of the refusal for a schema newer than the
+    build, and of the older refusal beside it. The three stores built both
+    messages, byte for byte alike. They are `requireCurrentSchemaVersion` in
+    core's `schema-version.ts`, which each `migrate()` calls last. libSQL's
+    `migration-postcondition-old-version` mutation followed its line there,
+    with the re-aim in the base gate's bridge that this bullet foresaw.
   - An option, not built: a short `lock_timeout` on the version's lock
     statement, with reruns. The version then gives up its place in every lock
     queue when it cannot have the locks at once, where today store traffic

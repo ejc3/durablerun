@@ -1,11 +1,15 @@
 import {
   type Buggify,
+  CHECKPOINT_INTEGER_BOUNDS,
   type Checkpoint,
   type CheckpointWrite,
   type ClaimedRun,
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_RETRY,
   DERIVED_INTEGER_BOUNDS,
   EventName,
   type FailOutcome,
+  type FailedRollback,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -15,17 +19,16 @@ import {
   NOW,
   PARKED_CLAIM_CLEARED_TEXT,
   PERSISTED_INTEGER_BOUNDS,
-  POSITIVE_CLAIM_GENERATION_BOUNDS,
-  type PersistedIntegerBounds,
-  type PersistedIntegerBoundsExceptClaimGeneration,
   READS_SEED,
   REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
+  RUN_INTEGER_BOUNDS,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
+  SWEEP_PIPELINE_WIDTH,
   SWEEP_SCAN_DRIFT,
   type SchedulerStore,
   type SpawnOptions,
@@ -33,6 +36,7 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  TASK_INTEGER_BOUNDS,
   type TaskDoneDialect,
   type TaskOutcome,
   type TaskResult,
@@ -54,7 +58,7 @@ import {
   coalesced,
   completeCas,
   completeTaskMirror,
-  decodeBoundedInteger,
+  decodeClaimedRun,
   decodeRollbackOutcome,
   decodeTaskResult,
   deferLaunchCas,
@@ -62,6 +66,7 @@ import {
   emitEventCas,
   emittedEventRead,
   endingTask,
+  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
@@ -70,7 +75,8 @@ import {
   neverBuggify,
   nextWakeRead,
   normalizeRetryStrategy,
-  parseTaskValueJson,
+  persistedPositiveClaimGeneration,
+  persistedRowInteger,
   prepareRead,
   rawSql,
   readRows,
@@ -81,6 +87,7 @@ import {
   reopenLostLaunchCas,
   requireDerivedInteger,
   requireDurableString,
+  requireFailedRollback,
   requireIdentifiersFit,
   requireSagaStepFits,
   requireEpochMs,
@@ -99,7 +106,6 @@ import {
   spawnTaskCas,
   sqlFragment,
   stampedRunState,
-  storageValueKind,
   storedEventRead,
   suspendCas,
   sweepDueCancelsRead,
@@ -107,6 +113,7 @@ import {
   taskResultRead,
   taskStateValue,
   userRetrySuccessorInsert,
+  wakeHasOwn,
   wakeRunsUpdate,
 } from '@durablerun/core'
 import {
@@ -114,7 +121,6 @@ import {
   QUEUED,
   cancelDue,
   checkpointInItsPhase,
-  checkpointIsAnAttemptRecord,
   checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -147,21 +153,6 @@ import {
 } from './fragments.js'
 import { NOW_MS } from './time.js'
 import { TREE_DIALECT } from './tree.js'
-
-const DEFAULT_RETRY = normalizeRetryStrategy({
-  kind: 'exponential',
-  baseSeconds: 5,
-  factor: 2,
-  maxSeconds: 3600,
-})
-const DEFAULT_MAX_ATTEMPTS = 5
-const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
-const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
-const CHECKPOINT_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.checkpoints
-const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.hasOwnProperty) as (
-  value: object,
-  key: PropertyKey,
-) => boolean
 
 /**
  * Classify and read a wake once before constructing its SQL shape.
@@ -429,13 +420,6 @@ const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
   AND ${sweepScanAdmissible('r', 't')}`
 
 /**
- * The sweep runs its per-item batches at most this many at once through core
- * `mapLimit`. The fencing discipline requires per-item atomicity, never
- * sequential issuance.
- */
-const SWEEP_PIPELINE_WIDTH = 8
-
-/**
  * The task still admits this run's completion: it is already terminal, or this is its
  * only live run and no saga began. A task that is rolling back cannot complete
  * (DESIGN.md §3.10, specs/Sagas.tla ForwardFrozenInSaga).
@@ -597,6 +581,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
                 claimToken: childOf.claimToken,
                 taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
                 liveTask: sqlFragment(`t.state IN ${LIVE}`),
+                // A child is forward progress, and the forward phase is frozen once a saga began.
+                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),
               },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS BIGINT) + CAST(? AS BIGINT)`, [
@@ -1756,6 +1742,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
+    this.runTasks.forget(runId)
   }
 
   /**
@@ -1887,14 +1874,25 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId, 'rollbackTry.key': rollbackTry.key })
-    requireSagaStepFits('rollbackTry.key', rollbackTry.key)
+    const failed = requireFailedRollback(rollback)
+    requireIdentifiersFit({ queue, runId })
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
     const taskId = await this.endingTask('failRollback', queue, runId)
+    // The store names the attempt record and counts the attempt, one past the last one
+    // stored, which core reads here and the claim's fence keeps current (DESIGN.md §3.10).
+    const tried = await failedRollbackRecord(
+      {
+        open: () =>
+          new FencedBatch('rollback-tries', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        run: (batch: FencedBatch) => batch.run(this.db),
+      },
+      taskId,
+      failed,
+    )
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1909,7 +1907,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       successorId: null,
       retryDelayMs: null,
       passId,
-      rollback: { tried: rollbackTry, passDelayMs },
+      rollback: { tried, passDelayMs },
     })
   }
 
@@ -1962,21 +1960,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
-          [
-            ...(retryDelayMs === null ? [] : [retryDelayMs]),
-            // The attempt record is the caller's checkpoint, and it may carry no other name.
-            ...(rollback === undefined ? [] : [rollback.tried.key]),
-          ],
+         )`,
+          retryDelayMs === null ? [] : [retryDelayMs],
         ),
       }),
     )
     // The saga arms (DESIGN.md §3.10, specs/Sagas.tla). Outside the phase, a failure no
     // retry follows is the task's terminal decision. When a registered step started and
     // is not rolled back, this batch enters the phase in place of ending the task. A
-    // retry the user budget refuses is that same decision. Inside the phase the caller
-    // hands over the failed rollback's attempt record, which lands behind the failure
-    // itself, so a failed attempt is counted or the pass did not fail. A retry there is
+    // retry the user budget refuses is that same decision. Inside the phase the entry
+    // hands over the failed rollback's attempt record, which the store named and counted
+    // and which lands behind the failure itself, so a failed attempt is counted or the
+    // pass did not fail. A retry there is
     // a pass the user budget does not cap, and a failure without the record is capped
     // like any other, which halts the saga.
     if (rollback !== undefined) {
@@ -2115,6 +2110,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    this.runTasks.forget(runId)
     return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
@@ -2290,7 +2286,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
     if (stored?.payload_type !== 'text') {
-      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      throw new RangeError(`emitEvent ${queue}/${name.display} found a non-TEXT stored payload`)
     }
   }
 
@@ -2321,7 +2317,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
           awaited.stepName,
           name,
           awaited.timeoutSeconds,
-          awaited.childTaskId,
         ),
       refusal: (operation, runId) => this.refusal(operation, runId),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
@@ -2524,7 +2519,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       stepName,
       EventName.fromPort('awaitEvent', eventName),
       timeoutSeconds,
-      null,
     )
     if (answer === null) throw await this.refusal('awaitEvent', runId)
     return answer
@@ -2569,7 +2563,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     stepName: string,
     name: EventName,
     timeoutSeconds: number | null,
-    awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const eventName = name.value
     const timeoutMs =
@@ -2602,7 +2595,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
         claimToken,
         stepName,
         eventName: name,
-        awaitedTaskId,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2679,11 +2671,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
         // A child await reaches the task's code, which never sees the engine's event name.
-        const subject =
-          awaitedTaskId === null
-            ? `awaitEvent ${queue}/${eventName}`
-            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
-        throw new RangeError(`${subject} found a non-TEXT stored payload`)
+        const operation = name.taskId === null ? 'awaitEvent' : 'awaitTaskDone'
+        throw new RangeError(
+          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,
+        )
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }
@@ -2692,79 +2683,4 @@ export class PostgresSchedulerStore implements SchedulerStore {
     if (won !== 'register') return null
     return { emitted: false }
   }
-}
-
-/**
- * Decode one persisted field through the bounds branded for that exact field.
- *
- * The query supplies only its row and a field descriptor. The descriptor owns
- * both the row key and the interval, so a caller cannot decode one property
- * through another property's coincidentally equal bounds.
- */
-export function persistedRowInteger(
-  scope: string,
-  row: SqlRow,
-  bounds: PersistedIntegerBoundsExceptClaimGeneration,
-): number {
-  return decodePersistedRowInteger(scope, row, bounds)
-}
-
-function persistedPositiveClaimGeneration(scope: string, row: SqlRow): number {
-  return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
-}
-
-function decodePersistedRowInteger(
-  scope: string,
-  row: SqlRow,
-  bounds: PersistedIntegerBounds,
-): number {
-  const separator = bounds.field.indexOf('.')
-  if (separator < 0 || separator === bounds.field.length - 1) {
-    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
-  }
-  const column = bounds.field.slice(separator + 1)
-  const value = row[column]
-  const decoded = decodeBoundedInteger(value, bounds)
-  if (decoded.ok) return decoded.value
-  throw new RangeError(
-    `${scope}.${column} must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
-  )
-}
-
-function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
-  const claimed: ClaimedRun = {
-    runId: String(row.run_id),
-    taskId: String(row.task_id),
-    taskName: String(row.task_name),
-    attempt: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.attempt),
-    infraRetries: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.infra_retries),
-    claimGen: persistedPositiveClaimGeneration('claim', row),
-    claimToken,
-    claimExpiresAtEpochMs: persistedRowInteger(
-      'claim',
-      row,
-      RUN_INTEGER_BOUNDS.claim_expires_at_ms,
-    ),
-    leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
-    paramsJson: String(row.params),
-    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),
-    maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
-    headers:
-      row.headers === null
-        ? {}
-        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),
-  }
-  if (row.wake_event !== null && row.wake_step !== null) {
-    // The SDK matches on the exact step key. Rows parked before schema v3
-    // carry it only in waits, so claim and emit copy it into the run before
-    // deleting that registration. Never fabricate a step from the event name:
-    // repeated awaits may share the event while using distinct step keys.
-    const event = String(row.wake_event)
-    const step = String(row.wake_step)
-    claimed.wake =
-      row.event_payload === null
-        ? { event, step, timedOut: true }
-        : { event, step, payloadJson: String(row.event_payload) }
-  }
-  return claimed
 }

@@ -1,8 +1,4 @@
-import {
-  childTaskViolations,
-  engineInvariantViolations,
-  sagaViolations,
-} from '@durablerun/conformance'
+import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   FatalTaskError,
@@ -501,8 +497,7 @@ async function runProgram(
       ],
       'read',
     )
-    expect(await engineInvariantViolations(raw)).toEqual([])
-    expect(await childTaskViolations(raw)).toEqual([])
+    expect(await engineHistoryViolations(raw)).toEqual([])
     const [counted, measured, named] = await raw.batch(
       't',
       [
@@ -1047,9 +1042,7 @@ async function runSagaProgram(
       ],
       'read',
     )
-    expect(await engineInvariantViolations(raw)).toEqual([])
-    expect(await childTaskViolations(raw)).toEqual([])
-    expect(await sagaViolations(raw)).toEqual([])
+    expect(await engineHistoryViolations(raw)).toEqual([])
     const undos = effects.log.filter((line) => line.startsWith('undo:'))
     return {
       calls,

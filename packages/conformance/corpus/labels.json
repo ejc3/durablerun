@@ -24,6 +24,7 @@
   "get-checkpoints": ["read"],
   "task-result": ["read"],
   "run-task": ["read"],
+  "rollback-tries": ["read"],
   "refusal-state": ["read"],
   "task-done-state": ["read"]
 }

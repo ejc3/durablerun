@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '24f997ed9c45ead6ff0e18733d1c1570e28bbbd5aaa9fb63261fc5b991ac1a02':
+          if digest == 'f1466c1488287895fa3cba88092958163f246032d618a436b02d1381e4e27785':
               # A claim reaches the runs its token holds through an index of the token.
               # The plan pins that hold the token term of its follow-ons and libSQL's
               # receipt read, and the conformance case that holds the receipt's lease

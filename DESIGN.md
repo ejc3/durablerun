@@ -700,10 +700,19 @@ One invocation executes one claimed run to its next suspension point:
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
-    refuses a name that starts with `$` with `RangeError`, and a name no store
+    refuses a name that starts with `$` with `PortRefusalError`, which is a
+    `RangeError`, and a name no store
     can keep, one with a NUL or a lone surrogate, with
     `InvalidDurableStringError`, and `EventName.taskDone` is the completion
-    event of a task. So the `emitEvent`
+    event of a task. An `EventName` carries that task (`taskId`, null for a
+    caller's event) and the form a message shows a person (`display`): a
+    caller's event by its name, and a completion event as `task <id>`, because
+    the reserved name never reaches task code and the error of an await does.
+    The wait registration reads the awaited child from the name it is given,
+    so no caller passes a child's id beside its event, and no store formats
+    the reserved name for a person or reads a task out of it. One store
+    still tests the reserved prefix: the PostgreSQL executor, to choose the
+    lock of a completion event. So the `emitEvent`
     and `awaitEvent` ports cannot forget the refusal, and they write or
     register nothing for a reserved name. The hosted emit route and the SDK
     already refused one through `UserName.parse`. Any other caller of the emit
@@ -726,8 +735,33 @@ One invocation executes one claimed run to its next suspension point:
     found nothing answers with the run's own refusal. A child that exists is
     found without a claim, which is what a replay asks. Refusing a caller's `$`
     key is a breaking change to the enqueue contract. A caller that used such
-    keys gets `RangeError` at the port and 400 at the hosted route, and has to
+    keys gets `PortRefusalError`, which is a `RangeError`, at the port and 400
+    at the hosted route, and has to
     rename them. Rows already stored under such a key stay as they are.
+  - A port's refusal of what its caller passed has a type a host maps once.
+    `PortRefusalError` extends `RangeError`, and core throws it where it threw
+    a bare `RangeError` for a caller's name, key, or options: an event name
+    that is not a string or is reserved (`refuseReservedEventName`, behind
+    `emitEvent` and `awaitEvent`), a reserved idempotency key
+    (`refuseReservedIdempotencyKey`, behind `spawn`), and `idempotencyKey`
+    together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
+    still holds for them. `error.name` reads `PortRefusalError` where it read
+    `RangeError`, which a caller that compares names will see, and so does
+    the recorded failure of a task whose own code calls a port and lets the
+    refusal escape. The SDK's own calls are not such a path: it makes a
+    refused spawn or await a `FatalTaskError`, as before. `isPortRefusal` is
+    the one definition of the family: that class, `InvalidDurableStringError`,
+    which stays a `TypeError` because it was released as one, and
+    `ChildAwaitRefusedError`. The hosted route answers 400 `invalid_request`
+    for the family in one place and has no rule of its own for a reserved
+    key: the enqueue route sends the key to the port. An answer carries a
+    fixed code and never an error's name or message, so no answer changed. A
+    number, a retry strategy, or a saga step name that a port refuses is
+    still a bare `RangeError`. It is not a member of the family, so the
+    mapping leaves it at 500. What the mapping answers is the family, and
+    not what a route can raise today: no hosted route can raise
+    `ChildAwaitRefusedError`, and it is answered 400 all the same, so a route
+    that gains an await needs no rule of its own.
   - The payload is the child's first outcome, in the shape `getTaskResult`
     answers with: the terminal state, and the completed payload or the failure
     reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds
@@ -781,7 +815,18 @@ One invocation executes one claimed run to its next suspension point:
     worker's own terminal write pays no read. Any other caller pays one read of
     the run's task (`run-task`) before the batch. A run's task never changes
     and run ids are never reused, so neither the read nor the memory can be
-    stale. Passing the task id through the port would remove the read, and
+    stale. The store forgets a run once its own `complete`, `fail`, or
+    `failRollback` has ended it, so it holds the runs it activated and has
+    not ended, a suspended run among them until its next activation tells the
+    store again. The entry of an ended run can change no answer: it names the
+    right task for as long as it stays, and a run remembered under another
+    queue still loses the batch's compare-and-set. What it can do is take
+    room. The memo holds 1,024 runs and the oldest leaves first, so a store
+    that kept ended runs lost a run still at work after 1,024 newer
+    activations, and that run's terminal write then paid the read. A
+    caller sees the forgetting only when it repeats a terminal write through
+    the same store: the repeat reads the run's task again before it is
+    refused. Passing the task id through the port would remove the read, and
     would change the rule that a launch carries only the run and its token. The
     maintainer chose the memory.
   - A child is awaited only within its parent's queue. Events are keyed by
@@ -908,7 +953,7 @@ One invocation executes one claimed run to its next suspension point:
     nothing and the fence reaches the same rows through the same stamp. It is
     there for the planner: beside a bound queue and a state, SQLite prefers the
     (queue, state) index to the key and walks the queue. `store-libsql`'s plan
-    pins recover every UPDATE and DELETE of thirteen labels from the real
+    pins recover every UPDATE and DELETE of every label from the real
     operations. One requires the plan step over the written table, under its
     name or its alias in that statement, to be a seek by the key the write was
     handed, so a scan, a walk, or an index added later fails alike. The other
@@ -1052,6 +1097,116 @@ One invocation executes one claimed run to its next suspension point:
     table. The pin's fixture also parks one wait, because with `waits` empty the
     delete of timed-out waits never reaches `runs` and its scans would be judged
     without having run.
+  - The plan of every statement libSQL ships. The pins above hold statements
+    someone chose, and the two over writes plan no read and no SELECT of an
+    INSERT. `store-libsql`'s plan test also sends every batch the store builds,
+    from one scripted history of real operations, and the two checked
+    inventories hold it to "every": each statement of
+    `conformance/corpus/libsql.json`, in every variant, must be one the history
+    sent, by its exact text, and each label of `scripts/text-statements.json` is
+    sent or named with why it is not the store's. A statement is planned under
+    the binds it was sent with, because SQLite plans from bound values: one
+    statement the history sends plans through a partial index that it cannot use
+    while `state = 'running'` is unknown. The history sends most statements many
+    times. Each is kept with the binds of one send, and the test plans every
+    send and holds that all sends of one text plan alike, so that one stands for
+    all. The plan is read as the tree `EXPLAIN QUERY PLAN` returns. Under one
+    select the SCAN and SEARCH lines are nested loops, outermost first. A step
+    runs once for each row of the loops listed before it, of the loops listed
+    before a CORRELATED subquery it sits under, and of the loops of an
+    uncorrelated LIST subquery of its select, because an IN seeks once for each
+    row of its list, which is the shape of every generated follow-on. An
+    uncorrelated SCALAR subquery starts a nest of its own, and a MULTI-INDEX OR
+    is one loop, as wide as its widest leg. The step that reads a CO-ROUTINE or
+    MATERIALIZE body is as bounded as the loops that made its rows, and it is
+    judged against what drives it as a read of a table is. A body is known by
+    its name to the select that holds its line and to no other, so a table
+    elsewhere in the plan that carries the same name is judged as the table it
+    is. A plan carries no row counts, so a step's bound is what its constrained
+    columns mean, whatever table or alias it names, from two declared lists of
+    column names and no list of index spellings. A step is keyed when it has an
+    equality on a column that names one entity (`task_id`, `run_id`,
+    `event_name`, `wake_event`, `idempotency_key`, `driver_id`, `claimed_by`).
+    The last is a claim token, which names one claim: one token holds at most
+    one claim's limit of runs, because `claim` takes nothing under a token that
+    already holds a run, so a seek of `runs_held` by it is as bounded as the
+    claim was. It is a due range when it has a range on a column an index hands
+    work out in the order of (`available_at_ms`, `claim_expires_at_ms`,
+    `cancel_at_ms`). It is a walk otherwise, every SCAN and every automatic
+    index included. `meta`, which holds the clock, is read by its key in a
+    subquery of its own, so it joins no nest. The rule is two lines over every
+    nest of every statement: a step that runs once for each row of another must
+    be keyed, and every step it runs once for each row of must be keyed or a due
+    range. A due range may drive because the literal sentence, that no step
+    reads a table once for each row of another, would refuse the claim's two
+    candidate legs and both sweep scans, which read `tasks` by key once for each
+    due run, under a LIMIT, by design. A plan line the reader cannot read is a
+    fault, so a plan it does not understand is not a plan it has passed. So is a
+    line that stands under no line of the plan, a line under a sort, and a body
+    or an index leg with no step under it, whose rows nothing that was read
+    bounds. A statement may be excused by name, for the one fault it names, so
+    any other fault in it still fails, and none is excused today. Until schema
+    version 9 two statements of `claim` broke the rule, the task update and the
+    delete of expired waits, whose IN list walked the running runs of the queue,
+    and they were excused here and by the pins over writes. They reach those
+    runs by the claim token now, as the item on a claim's reads of `runs` above
+    says. A plan prints a range the same way whichever way it points, and it
+    never prints a LIMIT, so the test also names every statement in which a due
+    range drives another step, with the lines that drive and with what bounds
+    them: the statement's own LIMIT, which its text must then hold, or where the
+    open question is recorded. A range that drives in a statement nobody named
+    fails, and so does another driving line in a statement that is named, and so
+    does a name that nothing needs. Three are named: the claim's candidate legs
+    and the two sweep scans. The claim's read of the runs it took was the fourth
+    until schema version 9, a range over every lease of its queue that had not
+    expired. Beside 100,000 running runs of its queue each of the claim's four
+    statements then took about 40 ms on libSQL, against 0.1 to 2 ms beside 8,
+    while a keyed `activate` stayed near 5 ms. What the rule cannot see is
+    below, each written as a statement and run against a real plan, where it
+    passes with its defect present:
+    - Both steps are keyed, and one entity's rows are many. `update runs set
+      claim_gen = (select count(*) from checkpoints c where c.task_id =
+      runs.task_id) where task_id = ?` reads every checkpoint of a task once for
+      each run of the task.
+    - A due range under no LIMIT. `select r.run_id, t.task_name from runs r join
+      tasks t on t.task_id = r.task_id where r.queue = ? and r.state = 'pending'
+      and r.available_at_ms <= ?` reads `tasks` once for every due run of the
+      queue, and its plan is the plan of a claim's candidate leg.
+    - A lone walk, which drives nothing and which nothing drives. `insert into
+      events (queue, event_name, payload, emitted_at_ms) select queue, run_id,
+      null, 0 from runs where queue = ? and state = ?` is one step. In an UPDATE
+      or a DELETE the pins over writes refuse it. A read, or an INSERT ...
+      SELECT, that walks a protocol table alone passes every plan test today.
+      The guard inside the claim's runs update was such a walk until schema
+      version 9, and the pins over writes excused it by name.
+    - A statement inside a trigger is never planned. The driver's heartbeat
+      inserts into a view, and its plan is `SCAN CONSTANT ROW`. The `DELETE FROM
+      drivers WHERE expires_at_ms < ...` inside the view's trigger plans, by
+      hand, as `SCAN drivers`, a table of one row for each live driver.
+    - A range that points away from what is due prints as one that points at it.
+      `select r.run_id, t.task_name from runs r join tasks t on t.task_id =
+      r.task_id where r.queue = ? and r.state = 'running' and
+      r.claim_expires_at_ms > ?` reads every lease that has NOT expired, and its
+      plan is the plan of the sweep's read of the leases that have. The claim's
+      read of the runs it took was that statement in what shipped until schema
+      version 9, and only under its real binds: with the state unknown SQLite
+      walked the queue by state, which the rule refuses.
+    The list of names is what holds the second and the fifth. That a LIMIT
+    stands in the statement's text is checked. That it bounds the range that
+    drives is a person's reading, which no plan can check, and another nest
+    under a driving line of the same text is not seen. One false positive is by
+    construction: a plan does not show which filter runs before a nested step,
+    so a walk that filters to a few rows before it probes is refused like one
+    that probes for every row, which was the claim's case until it reached its
+    runs by the claim token. Beyond it the reader refuses sound statements of
+    four kinds, which is strictness, stated: an IN list that filters and does
+    not seek, because a plan does not say which a list does; a materialized body
+    read under an alias, because the step names the alias and not the body;
+    `json_each` as a driver, because nothing bounds its rows; and a due range
+    under a keyed driver, because a step that runs once for each row of another
+    must be keyed. The same generated check is not built for PostgreSQL or
+    MySQL, whose plan tests hold chosen statements, and BUILD.md records that as
+    an option under PR3.14c.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
@@ -1435,7 +1590,22 @@ are load-bearing):
      still sees the literal it was declared with. A state a shared read
      compares from nodes is written inline (`literalValue`), and a batch of
      reads refuses a state or status column compared with a bound value, whose
-     placeholder no partial index can match. MySQL builds its own `next-wake`,
+     placeholder no partial index can match. The test is read from both sides:
+     the column is found wherever it stands below one operand, and the bound
+     value wherever it stands below the other, alone, in parentheses, in a list
+     under IN or NOT IN, where the builder binds every plain value, or under a
+     cast, a call, a CASE or a value fragment that carries a bind. A subquery
+     is its own statement, so a bind in its WHERE is not read. What it selects
+     is the value compared, so its selections are read. A list of inline
+     literals is admitted, because that is the form a partial index matches.
+     The rule reads names and shapes, so it refuses more than its property and
+     less. More: a test that names a state column only inside a CASE or a call
+     whose value is no state, beside arithmetic on a bound value, is refused
+     with a message about an index the test never concerned, and so is an empty
+     list. No shipped read has either shape. Less: a simple CASE on the state
+     with a bound WHEN, a subquery that selects the state compared with a bound
+     value, and a comparison written whole inside a store fragment, which a
+     tree carries as text, all pass. MySQL builds its own `next-wake`,
      because it does not answer MIN from an index: each leg is a store fragment
      holding a scalar subquery and its index hint, so the grammar lists no
      hint, as for the claim. The libSQL and MySQL query-plan suites pin these
@@ -1457,14 +1627,26 @@ are load-bearing):
      function node is outside the grammar whatever it is named, because the
      grammar lists the functions a statement may call and lists no clock. Raw
      fragment text is the one thing a tree cannot read, so it is scanned for
-     the batch clock's text and for the clock spellings
-     `scripts/clock-lint.py` lists, which include a date function called with
-     no argument, SQLite's spelling of the current time, and the literal
-     `'now'`, whatever function takes it. The tree's own list adds
+     the batch clock's text and for a list of clock spellings, which include
+     a date function called with no argument, SQLite's spelling of the
+     current time, the literal `'now'`, whatever function takes it, and
+     PostgreSQL's `age`, which measures from the current date when it is
+     given one argument and is refused whatever it is given. The list has one
+     definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
+     `packages/core/src/sql-tree.ts`, where a registered mutation deletes each
+     entry. Six function names are the exception: the keyword arm refuses their
+     call as well, so deleting one changes nothing, and the registry lists them
+     with that reason. `scripts/clock-lint.py` keeps no list: it reads that one
+     from the tree it audits, applies it to store sources, and refuses to run
+     on a tree whose list it cannot read in full. An arm that interpolates
+     anything but the list of functions is such a list: left in, it would match
+     nothing, and every spelling it holds would pass. One arm is the tree's
+     alone,
      `fake_now_ms`, the column a store's clock reads under test, which a
-     fragment could read with no clock call at all. That scan is a
-     spelling proxy, confined to raw text, and a spelling nobody has listed
-     passes it.
+     fragment could read with no clock call at all. A store's admin
+     statements write that row by name, so the lint refuses a read of it with
+     a pattern of its own. The scan is a spelling proxy, confined to raw
+     text, and a spelling nobody has listed passes both.
    - A statement holds no second definition of eligibility.
      `eligibilityDefinitionProblem` asks the rules `scripts/fragment-lint.py`
      applies to store SQL text of the tree, where a condition built from nodes
@@ -2290,7 +2472,9 @@ are load-bearing):
 `awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal
 (`refusal-state`), so a write that wins pays for no refusal read. The one read a
 winning `complete` or `fail` can pay is its run's task (`run-task`, §3.2), and
-only in a store that did not activate the run. It throws `RunCancelledError` (AB001)
+only in a store that did not activate the run. A store forgets a run it has
+ended, so a repeat of that write reads the task again before its refusal. It
+throws `RunCancelledError` (AB001)
 when the task's cancellation ended the run and `LeaseLostError` (AB002)
 otherwise, including when that read fails. `heartbeat` reports `held: false`
 with `reason: 'cancelled'` or `reason: 'lease-lost'`, from the same read. A worker retrying `complete` after a lost
@@ -2494,6 +2678,48 @@ not depend on careful reading:
   observing that a label was called, or deriving authority from the
   after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
+  An ambient cell does not require a refusal, so it holds a guard only where
+  the unguarded write leaves something its oracle objects to. With the failure
+  batch's accounting guard removed, five ambient cells of `fail` and
+  `fail-rollback` fail, by the findings the failure leaves behind. For the
+  claim receipt's admission the unguarded write left nothing. Measured: with
+  the poisoned run seeded as a claim no activation had reached, all 292 ambient
+  `activate` and `defer-launch` cells passed, and stayed green with the claim
+  receipt's relaunch bound, its sole-live-run guard, or its accounting guard
+  removed. A targeted cell holds a guard whatever the write leaves behind,
+  because its oracle requires the poison's rows unchanged and the poison not
+  returned. A targeted cell seeds the poisoned task in a lifecycle profile and
+  crosses it with every counter boundary and relational target that the arm's
+  classification calls targetable. There are two kinds of arm. An arm that
+  scans for its target, `claim` and the two lease sweeps, makes one call, in
+  which the poison sorts first and the healthy trigger must win. An arm that
+  names its target, `activate`, `defer-launch`, `retry-task`, `fail` and
+  `fail-rollback`, makes two: the call on the poison must be refused, and the
+  healthy trigger wins a call of its own. Its profile is the state in which its
+  label acts on a target with nothing corrupt, so that the corruption, and not
+  the label's state condition, is what refuses: a claim under a live lease that
+  no activation has reached, a task that failed for good with budget left, an
+  activated claim whose task has a registered step started, and the same claim
+  inside the rolling-back phase. A control for each such profile makes the same
+  call with nothing corrupt, requires it to act, and pins where it leaves the
+  task. That is what makes a targeted refusal the corruption's and not the
+  profile's. The control runs the profile's own seed. Sixteen of the 48 new
+  cells move that seed by companions, and for fourteen of them the companions
+  make sense only beside the corrupt value, so no control can show the call
+  acting there. Those cells are held by failing when their guard is removed,
+  which one of them shows under a registered mutation and the others showed
+  under guards removed by hand. The control of `fail` on a started step is how
+  the matrix reaches the rollback pass. The pass's own integer guard, that the
+  budget its batch writes fits, is reached by no corrupt pre-state, because the
+  failure's compare-and-set vouches for the run's ordinal, the task's counters
+  and their relation first, so the two saga cases that hold it on valid,
+  extreme states keep it. 98 target cases and 83 declared unreachable targets
+  are pinned, each unreachable one with its reason. One registered mutation for
+  each profile of an arm that names its target removes a guard its cells reach,
+  and one generated cell of the profile owns it. The profiles reach counters
+  and the relations between them. The claim receipt's guards that are not
+  counters, the sole live run, the stored retry strategy and headers, and the
+  lease, have no targeted witness on any arm (BUILD.md, PR3.2c).
 - *The stale-token column* (`conformance/src/stale-token-column.ts`): a worker
   write is fenced on the claim its caller presents (rules 4 and 5), and each
   compare-and-set composes that comparison by its own choice. The rules that
@@ -3416,13 +3642,23 @@ Costs and the consistency discipline (there are **no cross-DB transactions**):
    counts only user-code failures. Successor runs carry forward core's
    `SUCCESSOR_CARRIED_RUN_COLUMNS` (the run-DB pointer, `wake_event`,
    `event_payload`, and `wake_step`) on **every** path that creates one (the
-   sweep, the worker-side fail-with-retry, and `retryTask`'s revival from the
-   task's top run). Every other runs column a successor sets for itself: its
-   identity and attempt, its state and availability, `created_at_ms` at the
-   parent's failure instant (a revival's own instant), fresh claim,
-   lease, heartbeat, and relaunch fields, no outcome, and its own fence stamp.
-   The conformance case "both successor paths carry every inherited run
-   column" classifies every runs column as one or the other.
+   sweep, the worker-side fail-with-retry, a saga's rollback pass, and
+   `retryTask`'s revival from the task's top run). Every other runs column a
+   successor sets for itself: its identity and attempt, its state and
+   availability, `created_at_ms` at the parent's failure instant (a revival's
+   own instant), fresh claim, lease, heartbeat, and relaunch fields, no
+   outcome, and its own fence stamp. The successor-carry cases
+   (`conformance/src/successor-carry.ts`) are generated from the SQL corpus:
+   every statement of the corpus that inserts a run is a case nobody lists.
+   Some scenario must make that very statement insert a run, and the run is
+   judged as its batch left it: it carries what the run before it held, or, as
+   a task's first run, nothing; every column of it is carried or its own; and
+   it is created at the instant of the row its batch stamped. A batch that
+   inserts a run and that no scenario reaches fails, and so does a label a
+   scenario drives to which the corpus gives no run insert, so a new path
+   cannot carry nothing unnoticed, as a revival once did. The enumeration is
+   the corpus's: the corpus test holds the corpus to what the stores compile,
+   and only together with it are these cases closed.
 3. **Events never fan out into other runs' DBs.** `emitEvent` is scheduler-plane
    only: first-write-wins event row + flip waiting runs to pending with the
    payload parked on the run row (`event_payload`, as in Absurd's `r_` table).
@@ -3669,7 +3905,10 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   - `$rollback:<step>` says the rollback of that step ran. It is the
     `rollback:<step>#<count>` step above, under the reserved prefix.
   - `$rollback-tries:<step>` holds a rollback's failed attempts,
-    `{ tries, errorJson }`.
+    `{ tries, errorJson }`. The store names it and counts it: a failed rollback
+    hands over the step and the failure of this attempt, and the store writes
+    one attempt past the last one it can read. The paragraph on the store's
+    count, below, has the two edges of that.
 
   On terminal failure the run enters the rolling-back phase; the task function
   re-runs, memoized steps skip and re-register their closures, and the SDK
@@ -3730,7 +3969,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   | UserTerminal | `fail` with no retry, or with a retry the budget refuses | Places the rollback pass, writes the phase marker, and the task follows the pass. The terminal arm yields to the pass by id, so nothing ends. |
   | InfraCap | the cap arm of `sweep:lost-launch`, and `sweep:claim-timeout` at the infrastructure cap | The same three statements. The sweep reports `rollback-started`. Inside the phase each ends the task as it always did. |
   | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase, and through no other batch: a suspension's marker is held to the same predicate over the name, and a suspension runs only before the phase. Any other checkpoint is admitted only before it. |
-  | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The attempt record lands behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
+  | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The port takes the step and the failure of this attempt. The store first reads the rollback's last attempt record, under the read label `rollback-tries`, and the batch writes the record one attempt on, under the name the store builds from the step, behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
   | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the reason the caller passes, which the SDK makes the failure that began the saga. |
   | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
   | Revive | `retry-task` | Refuses a task whose saga began. |
@@ -3742,27 +3981,46 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   child-task cases, the PostgreSQL terminal lock case, both matrices, and the
   saga endings case each reach it from the list of terminal labels.
 - **The forward phase is frozen by the store.** Inside the phase it refuses a
-  forward checkpoint, a completion, a suspension, which commits a marker, and
-  a wait registration, which would park the pass on an event that may never
-  come. Two names are the engine's alone in either phase: the phase marker,
+  forward checkpoint, a completion, a suspension, which commits a marker, a
+  wait registration, which would park the pass on an event that may never
+  come, and a child spawn. A child is forward progress, as a step is: it
+  would run work the saga is about to compensate, and the checkpoint that
+  records it for its parent is refused already, so no later pass could find
+  it. The child's insert carries the phase as a required bind beside the
+  parent's live claim, as the checkpoint write, the suspension, the failure
+  and the wait registration carry theirs. Those four may answer that the
+  phase asks nothing of them, and a child spawn may not: its bind is a
+  predicate and never open. So the test is atomic with the insert, and a
+  store does not compile until it has said what the phase asks of a child
+  spawn. A child the forward phase spawned is still found by a
+  replay in either phase, because finding one creates nothing. Neither model
+  holds this guard, and neither has to. `SpawnChild` of ChildTasks.tla asks
+  only for a running parent, so a store that refuses more runs a subset of
+  that model's behaviours and keeps every safety property of it. No liveness
+  property needs a spawn inside the phase, because a pass in the phase cannot
+  await, so it could never read a child's outcome. The `spawn` label maps to
+  the model as it did.
+  Two names are the engine's alone in either phase: the phase marker,
   which only the batch that decides a failure writes, and a rollback's attempt
   record, which only the batch that fails a pass writes. A lease holder's
   plain checkpoint write is refused both, and so is the marker a suspension
   commits for its caller. A rollback's name is admitted through a plain
   checkpoint write inside the phase and through nothing else: a suspension,
   which runs only before the phase, refuses it, because a rollback recorded
-  that early leaves its step owed nothing when the failure is decided. The
-  attempt record a failed rollback commits for its caller is refused every
-  other name. Those are the three batches that take a caller's checkpoint
-  name, and one conformance case holds the whole table: each of the three
-  against every reserved name, in both phases, refused or admitted only in
-  its phase. A reserved name is matched byte for byte on every dialect, so a
+  that early leaves its step owed nothing when the failure is decided. A
+  failed rollback commits no name of its caller's: its port takes the step,
+  and the store builds the attempt record's name, so no other name can reach
+  that batch. A plain checkpoint write and a suspension are the two batches
+  that take a caller's checkpoint name, and one conformance case holds the
+  whole table: each of the two against every reserved name, in both phases,
+  refused or admitted only in its phase.
+  A reserved name is matched byte for byte on every dialect, so a
   name in another case, or padded with a space, is a plain name everywhere.
   The MySQL store casts the reserved literal to binary to get that, because a
   bind compared with a literal there takes the connection's collation, which
   folds case and pads spaces. So no caller of the port, a worker in another
-  language included, can forge a saga, replace its cause, or spend a
-  rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
+  language included, can forge a saga, replace its cause, or spend or
+  miscount a rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
   the first durable call with no memo ends a pass's replay. An emit is the one
   durable call with no memo at all, and the store cannot freeze it, because an
@@ -3861,13 +4119,45 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     marker, so no saga knows it started, and it is not rolled back.
   - A task that failed before this build has no saga checkpoints, and nothing
     about it changes.
+  - `failRollback` took the attempt record from its caller before it took the
+    step. Two builds against one database need no staging. The record keeps
+    its name, its format, and its bytes, because both builds write core's one
+    encoding. A worker of an older build counts one past the record it read
+    and its store writes what it is handed, and a newer store counts one past
+    the same record, so passes handled by either build in any order leave
+    the same rows. A conformance case plants a record as an older build
+    wrote it and sees the count go on from it, and holds the stored text byte
+    for byte. The store's count holds only for a pass that a newer build
+    handles, as any guard added to a batch does.
+  - One process that mixes package versions, an older SDK handed a newer
+    store or the reverse, is no supported install, and this change does not
+    make it one. Measured: the type checker refuses both pairings. Read, not
+    run: released packages pin core exactly, so such a process runs two
+    copies of core, and the SDK recognises a store's lost lease by instance,
+    so every lost lease there is already booked as a user failure. Measured,
+    for a caller that ignores the types: a caller of the newer shape against
+    the older store is refused by the statement builder before anything is
+    sent, on all three dialects, and a caller of the older shape against the
+    newer store is refused at the entry, which says what the port takes, on
+    all three. Measured with the older SDK over a store that refuses that
+    way: the worker books the refusal as a user failure, and the `fail` that
+    follows inside the phase halts the saga. The task ends `failed` with the
+    refusal as its reason, the rollback outcome is `failed`, no attempt
+    record is written, and the rollback's own budget is not honoured.
+    Nothing foreign is written, and a rollback that succeeds is untouched,
+    because its write is a plain checkpoint.
 - **What it costs.** On PostgreSQL every failure sends one more query than
   before, nine where it sent eight, because the rollback pass is gated on the
   failure alone and so is sent, matching nothing when no rollback is owed.
-  A completion and a checkpoint send what they did, eight and four. The store
+  A completion and a checkpoint send what they did, eight and four. A failed
+  rollback sends ten, one more than a failure: the store first reads the
+  rollback's last attempt record, a batch of one read. The store
   decides whether a rollback is owed from its own rows. A caller's hint that
   none is would be a second account of those rows, which a worker of an older
   build could not give. A test pins the count for each batch a saga touches.
+  A child spawn tests its parent's phase by one seek of the checkpoints key,
+  the task and the marker's name, and a plan pin on each dialect holds that
+  on the statement the store sends.
   A saga read reaches its checkpoints by their key, the task and the name. One
   name is one row of it. The names under a prefix, which are the start markers
   and the attempt records, are one range of it on libSQL and MySQL, where a
@@ -3889,9 +4179,58 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   after it.
   A plan pin on each dialect holds what that dialect does, over the statements
   the real operations send.
-- **A known limit.** The store records the attempt count the SDK hands it and
-  does not check it against the last one, and nothing caps how many passes a
-  task may take. Rollback budgets are the SDK's to keep.
+- **The store counts a rollback's failed attempts.** `failRollback` takes the
+  step and the failure of this attempt, and core builds the attempt record
+  for every dialect in one place: its name, `$rollback-tries:` and the step,
+  and its state, one attempt past the last one stored. No record, or one that
+  cannot be read, counts as none, which is what the SDK counts when it halts
+  a saga on such a record and its halt is written over it. The count stops at
+  the largest safe integer: one past it is no count the decoder reads, so a
+  record that held it would read as none, and the attempt after it would be
+  stored as the first. Only a record an older build's store wrote can sit at
+  that bound. The failure is recorded all the same, never refused, and a
+  count at the bound still says the budget is spent. So a caller of the
+  port chooses neither the name nor the count. Over a record the store can
+  read, the count goes up by one or stays at the bound, and a spent attempt
+  is never given back, which is the model's TriesOnlyGrow. Over a record the
+  store cannot read, the count starts again at one. Through the SDK that
+  happens only beside a halt, which ends the task. A direct caller of the
+  port that asks for another pass over such a record gets every spent attempt
+  back, as it could at any time before the store counted, when the count was
+  the caller's to choose. The last record is read before the batch, under the
+  read label `rollback-tries`, and the count cannot go stale between that
+  read and a batch that wins. That rests on one invariant with four legs. A
+  test holds each of the first three, and the fourth is a premise about
+  executors that no test holds. Only
+  `fail-rollback` writes an attempt record: the reserved-names table refuses
+  that name at the two batches that take a caller's checkpoint name, in both
+  phases. It wins only under its caller's live claim: the generated
+  stale-token column holds that for every write label that takes a claim
+  token, `fail-rollback` among them, and a saga case hands `fail-rollback` a
+  token the claim never had, and the same call replayed after it won, and
+  sees each refused with the count left as it was. A live task has one live
+  run: the engine's invariants hold that over every conformance case and
+  every fuzz walk. The read is current: it sees every attempt record that has
+  committed. It is a batch of reads, outside the write's transaction, and
+  the executor contract lets a replica serve a batch of reads. An executor
+  that took that at its word could count from a replica that lags, and the
+  store would write N where N + 1 is due. What holds this today is that no
+  executor in the repository sends a batch of reads anywhere but the one
+  target it was opened on, and every fixture's target is a primary. No
+  fixture has a replica, so no test can show it. The exposure is older than
+  this read: a worker's memo read, `get-checkpoints`, is a batch of reads
+  too, and the SDK counted from it before the store counted. The port has no
+  way to ask for a current read, and BUILD.md records that as an option under
+  PR3.4. So between the read and a batch that wins no other batch
+  can have written the record, and a copy or a replay of the same call has
+  read a count that may be stale and loses the compare-and-set. A future
+  label that wrote an attempt record outside the claim of the task's one live
+  run would break this: the read could then go stale, and that label would
+  have to take the count inside its own batch. Every fuzz walk also holds the
+  count it finds stored to the failed attempts it saw recorded. What stays
+  the SDK's to keep is the budget: the store is told whether another pass
+  follows and does not know a rollback's `maxAttempts`, so the one cap it
+  holds itself is the run ordinal's bound on a pass.
 - **Decided by the maintainer.** The model isolates three questions, each as
   one constant, and is checked under both answers. These are the answers the
   implementation is built under:

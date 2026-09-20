@@ -139,3 +139,13 @@ function canonicalRetryFactor(value: unknown): number {
   }
   return value === 0 ? 0 : value
 }
+
+/** The retry strategy `spawn` stores for a task that names none, on every dialect. */
+export const DEFAULT_RETRY = normalizeRetryStrategy({
+  kind: 'exponential',
+  baseSeconds: 5,
+  factor: 2,
+  maxSeconds: 3600,
+})
+/** The attempt budget `spawn` stores for a task that names none, on every dialect. */
+export const DEFAULT_MAX_ATTEMPTS = 5
