@@ -1,5 +1,5 @@
 import { StoreUnavailableError } from '@durablerun/core'
-import { createConnection } from 'mysql2/promise'
+import { type Connection, createConnection } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor, classifyError, createOwnedMysqlPool } from '../src/executor.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -29,12 +29,13 @@ describe('MysqlExecutor error typing against a real server', () => {
     limited.password = 'one-connection'
     limited.pathname = `/${db.databaseName}`
     let executor: MysqlExecutor | undefined
+    let holder: Connection | undefined
     try {
       await control.query(
         `CREATE USER '${account}'@'%' IDENTIFIED BY 'one-connection' WITH MAX_USER_CONNECTIONS 1`,
       )
       await control.query(`GRANT ALL ON ${db.databaseName}.* TO '${account}'@'%'`)
-      const holder = await createConnection(limited.href)
+      holder = await createConnection(limited.href)
       executor = MysqlExecutor.open(limited.href)
       const batch = () =>
         (executor as MysqlExecutor)
@@ -50,6 +51,7 @@ describe('MysqlExecutor error typing against a real server', () => {
       // The retry an outage invites works: the server frees the account's slot a moment
       // after the holder's connection ends.
       await holder.end()
+      holder = undefined
       let retried: unknown = refused
       for (let attempt = 0; attempt < 100 && retried !== 'answered'; attempt++) {
         retried = await batch()
@@ -58,6 +60,7 @@ describe('MysqlExecutor error typing against a real server', () => {
       expect(retried).toBe('answered')
     } finally {
       await executor?.close()
+      await holder?.end()
       await control.query(`DROP USER IF EXISTS '${account}'@'%'`)
       await control.end()
       await db.close()
