@@ -84,6 +84,24 @@ export function httpLauncher(opts: { url: string; secret: string }): Launcher {
   }
 }
 
+/** Nobody waits for a wake ping, so nothing but a deadline of its own would ever end one. */
+const WAKE_PING_DEADLINE_MS = 5_000
+
+/**
+ * The unconditional ping after a pass: best-effort, never awaited by the pass. It ends at
+ * its deadline at the latest, so a driver address that accepts the connection and never
+ * answers holds no connection of this process for longer than that.
+ */
+function pingDriver(clock: Clock, driverUrl: string): void {
+  const deadline = new AbortController()
+  const settled = new AbortController()
+  fetch(`${driverUrl}/wake`, { method: 'POST', signal: deadline.signal })
+    .catch(() => {})
+    .finally(() => settled.abort())
+  // The sleep ends early once the ping settles, and aborting a settled request does nothing.
+  void clock.sleep(WAKE_PING_DEADLINE_MS, settled.signal).then(() => deadline.abort())
+}
+
 export interface WorkerServer {
   server: Server
   /** Resolves once listening; the bound port (0 requests an ephemeral one). */
@@ -157,10 +175,7 @@ export function createWorkerServer(deps: {
         })
         .finally(() => {
           inFlight.delete(pass)
-          if (deps.driverUrl) {
-            // Unconditional ping: best-effort, never awaited by the pass.
-            fetch(`${deps.driverUrl}/wake`, { method: 'POST' }).catch(() => {})
-          }
+          if (deps.driverUrl) pingDriver(deps.clock, deps.driverUrl)
         })
       inFlight.add(pass)
     })()
