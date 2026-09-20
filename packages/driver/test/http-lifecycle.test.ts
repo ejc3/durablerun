@@ -1,11 +1,5 @@
 import { once } from 'node:events'
-import {
-  type AddressInfo,
-  type Server as TcpServer,
-  type Socket,
-  connect,
-  createServer as createTcpServer,
-} from 'node:net'
+import { type AddressInfo, type Socket, connect, createServer as createTcpServer } from 'node:net'
 import { engineInvariantViolations } from '@durablerun/conformance'
 import type { SchedulerStore } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
@@ -57,10 +51,44 @@ async function stopLoop(clock: FakeClock, loop: DriverLoop, done: Promise<void>)
   while (!stopped) {
     clock.advance(3_600_000)
     clock.fire()
-    await new Promise((resolve) => setImmediate(resolve))
+    await clock.yieldTurn()
   }
   await stopping
   await done
+}
+
+type Fixture = Awaited<ReturnType<typeof fx>>
+
+/** The worker server of a case: the fixture's store and clock, the one job, and what the case adds. */
+function workerOn(f: Fixture, extra: { driverUrl?: string } = {}) {
+  return createWorkerServer({
+    store: f.store,
+    clock: f.clock,
+    registry: JOBS,
+    secret: SECRET,
+    ...extra,
+  })
+}
+
+/** A driver loop on the fixture's clock that launches over HTTP at `url`. */
+function driverThrough(f: Fixture, url: string): DriverLoop {
+  return new DriverLoop(
+    { store: f.store, launcher: httpLauncher({ url, secret: SECRET }), ids: f.ids, clock: f.clock },
+    LOOP,
+  )
+}
+
+/** Send a signed launch the way the launcher does, and answer with its status. */
+async function postLaunch(port: number, body: string): Promise<number> {
+  const response = await fetch(`http://127.0.0.1:${port}/launch`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-durablerun-signature': signBody(SECRET, body),
+    },
+    body,
+  })
+  return response.status
 }
 
 /** A claimed run and the launch body that names it. */
@@ -98,83 +126,65 @@ async function rawClient(port: number) {
   return {
     socket,
     seen,
-    statuses: () => [...seen.data.matchAll(/HTTP\/1\.1 (\d{3})/g)].map((match) => Number(match[1])),
+    statuses: () => statusesIn(seen.data),
     send: (text: string) => new Promise<void>((resolve) => socket.write(text, () => resolve())),
   }
 }
 
-/** Bind a test peer on a port the OS picks. */
-function listenOnOsPort(server: TcpServer): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port))
-  })
-}
-
-/** Destroy what a peer still holds, then stop it. */
-function closePeer(server: TcpServer, held: Iterable<Socket>): Promise<void> {
-  for (const socket of held) socket.destroy()
-  return new Promise((resolve) => server.close(() => resolve()))
+/** The status of every HTTP answer in `text`, in the order they came. */
+function statusesIn(text: string): number[] {
+  return [...text.matchAll(/HTTP\/1\.1 (\d{3})/g)].map((match) => Number(match[1]))
 }
 
 /**
- * A peer that accepts every connection, reads what it is sent, and never answers. It
- * remembers its connections in the order they came, because the one a test asks about is
- * the one that carried the request. The client's connection pool may open another to the
- * same address once that one is gone, and closes it on a timer of its own.
+ * A test peer on a port the OS picks. It remembers its connections in the order they came,
+ * because the one a case asks about is the one that carried the request: the client's
+ * connection pool may open another to the same address once that one is gone, and closes
+ * it on a timer of its own.
  */
-async function silentPeer() {
+async function peer(onConnection: (socket: Socket) => void) {
   const connections: Socket[] = []
   const closed = new Set<Socket>()
   const server = createTcpServer((socket) => {
     connections.push(socket)
     socket.on('close', () => closed.add(socket))
     socket.on('error', () => {})
-    socket.resume()
+    onConnection(socket)
   })
-  const port = await listenOnOsPort(server)
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     accepted: () => connections.length,
     /** Whether the nth connection the peer accepted, counted from zero, has closed. */
     closed: (nth: number) => connections[nth] !== undefined && closed.has(connections[nth]),
-    close: () => closePeer(server, connections),
+    close(): Promise<void> {
+      for (const socket of connections) socket.destroy()
+      return new Promise((resolve) => server.close(() => resolve()))
+    },
   }
 }
+
+/** A peer that accepts every connection, reads what it is sent, and never answers. */
+const silentPeer = () => peer((socket) => socket.resume())
 
 /**
  * A peer that hands every byte on to `targetPort` and keeps the answers to itself, so a
  * launch sent through it arrives and its ack never comes back.
  */
 async function oneWayRelay(targetPort: number) {
-  const connections: Socket[] = []
-  const onward: Socket[] = []
-  const closed = new Set<Socket>()
   let answers = ''
-  const server = createTcpServer((from) => {
-    connections.push(from)
+  const relay = await peer((from) => {
     const to = connect(targetPort, '127.0.0.1')
-    onward.push(to)
     from.pipe(to)
     to.on('data', (chunk) => {
       answers += String(chunk)
     })
-    from.on('close', () => {
-      closed.add(from)
-      to.destroy()
-    })
-    from.on('error', () => {})
+    from.on('close', () => to.destroy())
     to.on('error', () => {})
   })
-  const port = await listenOnOsPort(server)
-  return {
-    url: `http://127.0.0.1:${port}`,
-    /** Whether the nth connection the relay accepted, counted from zero, has closed. */
-    closed: (nth: number) => connections[nth] !== undefined && closed.has(connections[nth]),
-    /** The status of every answer the target gave, which is one per request that reached it. */
-    statuses: () => [...answers.matchAll(/HTTP\/1\.1 (\d{3})/g)].map((match) => Number(match[1])),
-    close: () => closePeer(server, [...connections, ...onward]),
-  }
+  /** The status of every answer the target gave, which is one for each request that reached it. */
+  return { ...relay, statuses: () => statusesIn(answers) }
 }
 
 describe('a launch the driver stopped waiting for', () => {
@@ -182,15 +192,7 @@ describe('a launch the driver stopped waiting for', () => {
     const f = await fx('lifecycle-silent-worker')
     const peer = await silentPeer()
     await f.store.spawn(Q, 'job', '{}')
-    const loop = new DriverLoop(
-      {
-        store: f.store,
-        launcher: httpLauncher({ url: peer.url, secret: SECRET }),
-        ids: f.ids,
-        clock: f.clock,
-      },
-      LOOP,
-    )
+    const loop = driverThrough(f, peer.url)
     const done = loop.run()
     try {
       await until(
@@ -235,15 +237,7 @@ describe('a launch the driver stopped waiting for', () => {
     })
     const relay = await oneWayRelay(await worker.listen())
     const spawned = await f.store.spawn(Q, 'job', '{}')
-    const loop = new DriverLoop(
-      {
-        store: f.store,
-        launcher: httpLauncher({ url: relay.url, secret: SECRET }),
-        ids: f.ids,
-        clock: f.clock,
-      },
-      LOOP,
-    )
+    const loop = driverThrough(f, relay.url)
     const done = loop.run()
     const state = async () => (await f.store.getTaskResult(Q, spawned.taskId))?.state
     try {
@@ -294,25 +288,11 @@ describe('the wake ping a worker sends after a pass', () => {
   it('holds no connection, past its deadline, to a driver that accepted it and never answered', async () => {
     const f = await fx('lifecycle-silent-driver')
     const peer = await silentPeer()
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-      driverUrl: peer.url,
-    })
+    const worker = workerOn(f, { driverUrl: peer.url })
     const port = await worker.listen()
     try {
       const launch = await claimedLaunch(f.store)
-      const ack = await fetch(`http://127.0.0.1:${port}/launch`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-durablerun-signature': signBody(SECRET, launch.body),
-        },
-        body: launch.body,
-      })
-      expect(ack.status).toBe(202)
+      expect(await postLaunch(port, launch.body)).toBe(202)
       await until(
         () => peer.accepted() === 1,
         'the ping reaching the silent driver',
@@ -346,25 +326,11 @@ describe('the wake ping a worker sends after a pass', () => {
         wakes++
       },
     })
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-      driverUrl: `http://127.0.0.1:${await wake.listen()}`,
-    })
+    const worker = workerOn(f, { driverUrl: `http://127.0.0.1:${await wake.listen()}` })
     const port = await worker.listen()
     try {
       const launch = await claimedLaunch(f.store)
-      const ack = await fetch(`http://127.0.0.1:${port}/launch`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-durablerun-signature': signBody(SECRET, launch.body),
-        },
-        body: launch.body,
-      })
-      expect(ack.status).toBe(202)
+      expect(await postLaunch(port, launch.body)).toBe(202)
       await until(() => wakes === 1, 'the ping reaching the driver', SOCKET_WAIT_MS)
       // The deadline's sleep ends with the ping, so an answered ping leaves no timer behind.
       expect(
@@ -382,12 +348,7 @@ describe('the wake ping a worker sends after a pass', () => {
 describe('closing the worker server', () => {
   it('lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both', async () => {
     const f = await fx('lifecycle-close-launch-on-the-wire')
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-    })
+    const worker = workerOn(f)
     const client = await rawClient(await worker.listen())
     try {
       const launch = await claimedLaunch(f.store)
@@ -431,12 +392,7 @@ describe('closing the worker server', () => {
 
   it('delivers the ack of a launch that arrived whole just before close() began', async () => {
     const f = await fx('lifecycle-close-ack-in-hand')
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-    })
+    const worker = workerOn(f)
     const client = await rawClient(await worker.listen())
     try {
       const launch = await claimedLaunch(f.store)
@@ -463,12 +419,7 @@ describe('closing the worker server', () => {
 
   it('ends a launch that never finishes arriving once its bound of five seconds passes', async () => {
     const f = await fx('lifecycle-close-bound')
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-    })
+    const worker = workerOn(f)
     const client = await rawClient(await worker.listen())
     try {
       const launch = await claimedLaunch(f.store)
@@ -536,12 +487,7 @@ describe('the limits of the local servers', () => {
   it('give a connection ten seconds for its headers and thirty for its whole request', async () => {
     const f = await fx('lifecycle-limits')
     try {
-      const worker = createWorkerServer({
-        store: f.store,
-        clock: f.clock,
-        registry: JOBS,
-        secret: SECRET,
-      })
+      const worker = workerOn(f)
       const wake = createWakeServer({ wake: () => {} })
       const limits = { headersMs: 10_000, requestMs: 30_000 }
       expect(
@@ -570,12 +516,7 @@ describe('the limits of the local servers', () => {
 describe('a request that is rejected with a body', () => {
   it('leaves its kept-alive connection usable on the worker server', async () => {
     const f = await fx('lifecycle-keepalive-worker')
-    const worker = createWorkerServer({
-      store: f.store,
-      clock: f.clock,
-      registry: JOBS,
-      secret: SECRET,
-    })
+    const worker = workerOn(f)
     const client = await rawClient(await worker.listen())
     try {
       const launch = await claimedLaunch(f.store)

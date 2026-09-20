@@ -24,6 +24,26 @@ async function fx(seed: string) {
 
 const OPTS = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60 }
 
+/**
+ * A launcher whose first call never settles on its own. When `letsGo`, that call settles once
+ * its signal fires, and then says the launch was taken. Every later call is accepted at once.
+ * `signals` holds what each call was handed.
+ */
+function firstCallHangs(letsGo: boolean) {
+  const signals: (AbortSignal | undefined)[] = []
+  const launcher = new FakeLauncher((_inv, options) => {
+    signals.push(options?.signal)
+    if (signals.length > 1) return LaunchOutcome.accepted()
+    return new Promise<LaunchOutcome>((resolve) => {
+      if (!letsGo) return
+      options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
+        once: true,
+      })
+    })
+  })
+  return { launcher, signals }
+}
+
 describe('DriverLoop', () => {
   it('drains due work, then parks until the next wake', async () => {
     const f = await fx('loop-basic')
@@ -183,17 +203,7 @@ describe('DriverLoop', () => {
   it('the watchdog aborts the launch it stops waiting for, and reads nothing the launcher answers after that', async () => {
     const f = await fx('loop-abort')
     await f.store.spawn(Q, 'job', '{}')
-    const signals: (AbortSignal | undefined)[] = []
-    const launcher = new FakeLauncher((_inv, options) => {
-      signals.push(options?.signal)
-      if (signals.length > 1) return LaunchOutcome.accepted()
-      // A transport that lets go when it is told to, and then says the launch was taken.
-      return new Promise<LaunchOutcome>((resolve) => {
-        options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
-          once: true,
-        })
-      })
-    })
+    const { launcher, signals } = firstCallHangs(true)
     const loop = new DriverLoop(
       { store: f.store, launcher, ids: f.ids, clock: f.clock },
       { ...OPTS, launchTimeoutSeconds: 5 },
@@ -231,27 +241,17 @@ describe('DriverLoop', () => {
     const outcomeWhen = async (letsGo: boolean) => {
       const f = await fx('loop-abort-same-outcome')
       await f.store.spawn(Q, 'job', '{}')
-      let calls = 0
-      const launcher = new FakeLauncher((_inv, options) => {
-        calls++
-        if (calls > 1) return LaunchOutcome.accepted()
-        return new Promise<LaunchOutcome>((resolve) => {
-          if (!letsGo) return
-          options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
-            once: true,
-          })
-        })
-      })
+      const { launcher, signals } = firstCallHangs(letsGo)
       const loop = new DriverLoop(
         { store: f.store, launcher, ids: f.ids, clock: f.clock },
         { ...OPTS, launchTimeoutSeconds: 5 },
       )
       const done = loop.run()
-      await until(() => calls === 1, 'first launch waiting')
+      await until(() => signals.length === 1, 'first launch waiting')
       await f.advance(5_000)
       await until(() => loop.stats.launchFailed === 1, 'timeout counted')
       await f.advance(5_000)
-      await until(() => calls === 2, 'relaunch after recovery')
+      await until(() => signals.length === 2, 'relaunch after recovery')
       await loop.stop()
       await done
       const [tasks, runs] = await f.raw.batch('t', [
