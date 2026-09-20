@@ -2570,6 +2570,28 @@ export class S {
     ),
     (
         "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* 'cancel-task' -> excluded [read]\n",
+            "\\* 'cancel-task' -> excluded\n",
+        ),
+        "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
+        "a label whose line in the main ledger states no class must fail",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* 'cancel-task' -> excluded [read]\n",
+            "\\* 'cancel-task' -> excluded [read] [receipt]\n",
+        ),
+        "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
+        "a label whose line in the main ledger states two classes must fail",
+    ),
+    (
+        "spec-ledger.py",
         side_model_ledger(
             SIDE_LEDGER_ENTRIES.replace(
                 "\\* No batch", "\\*   'renamed-away' -> EndChild\n\\* No batch"
