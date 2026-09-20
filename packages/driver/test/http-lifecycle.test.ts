@@ -412,6 +412,47 @@ describe('closing the worker server', () => {
       f.close()
     }
   })
+
+  it('ends a launch that never finishes arriving once its bound of five seconds passes', async () => {
+    const f = await fx('lifecycle-close-bound')
+    const worker = createWorkerServer({
+      store: f.store,
+      clock: f.clock,
+      registry: JOBS,
+      secret: SECRET,
+    })
+    const client = await rawClient(await worker.listen())
+    try {
+      const launch = await claimedLaunch(f.store)
+      const requested = once(worker.server, 'request')
+      await client.send(launchText(launch.body, launch.body.slice(0, 10)))
+      await requested
+      let closed = false
+      const closing = worker.close().then(() => {
+        closed = true
+      })
+      // close() waits for the launch on the wire, and only the clock can end that wait.
+      await until(() => f.clock.sleeps.length === 1, 'close() waiting for the launch on the wire')
+      expect(f.clock.sleeps.map((sleep) => sleep.ms)).toEqual([5_000])
+      expect(closed).toBe(false)
+      f.clock.advance(5_000)
+      f.clock.fire()
+      expect(
+        await reached(() => closed, SOCKET_WAIT_MS),
+        'close() ends what is left once its bound passes',
+      ).toBe(true)
+      expect(
+        await reached(() => client.seen.closed, SOCKET_WAIT_MS),
+        'the client that stalled is dropped',
+      ).toBe(true)
+      expect(client.statuses()).toEqual([])
+      await closing
+    } finally {
+      client.socket.destroy()
+      await worker.close()
+      f.close()
+    }
+  })
 })
 
 describe('closing the wake server', () => {
