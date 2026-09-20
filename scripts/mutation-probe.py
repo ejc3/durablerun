@@ -12297,6 +12297,13 @@ MUTATION_SPECS.extend(
             "the attempt records are read for a failed task whose saga never began",
         ),
         (
+            "saga-first-name-past-needs-a-colon",
+            "packages/core/src/sagas.ts",
+            "  if (prefix[last] !== ':') {\n",
+            "  if (prefix[last] === undefined) {\n",
+            "a prefix that does not end in a colon is given a range end, which bounds other names",
+        ),
+        (
             "saga-task-update-binds-its-queue",
             "packages/store-libsql/src/store.ts",
             "      // for every task row, and the update then walks the table to find one task.\n      queue,\n",
@@ -12998,6 +13005,17 @@ for _verdict, _names in (
         (
             "postgres-saga-attempt-records-need-a-failed-task",
             "postgres-saga-attempt-records-need-a-saga",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "the names under a reserved saga prefix, as a range of names compared by bytes refuses a prefix that does not end in a colon",
+            "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
+        ),
+        (
+            "saga-first-name-past-needs-a-colon",
         ),
     ),
 ):
@@ -17086,7 +17104,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 882:
+        if len(MUTATIONS) != 883:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

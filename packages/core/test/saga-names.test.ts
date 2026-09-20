@@ -34,7 +34,15 @@ describe('the names under a reserved saga prefix, as a range of names compared b
 
   it('refuses a prefix that does not end in a colon', () => {
     // The type refuses these where a call is compiled, and the check where it is not.
-    expect(() => firstNamePast('$started' as `${string}:`)).toThrow(RangeError)
-    expect(() => firstNamePast('' as `${string}:`)).toThrow(RangeError)
+    expect(
+      ['$started', ''].map((prefix) => {
+        try {
+          return firstNamePast(prefix as `${string}:`)
+        } catch (error) {
+          return error instanceof RangeError ? 'RangeError' : String(error)
+        }
+      }),
+      'mutation-verdict:behavior:saga-first-name-past-needs-a-colon',
+    ).toEqual(['RangeError', 'RangeError'])
   })
 })
