@@ -1,13 +1,12 @@
 import {
   type Clock,
   type IdSource,
-  InvalidDurableStringError,
   type SchedulerStore,
   StoreUnavailableError,
   UserName,
   durationToMs,
+  isPortRefusal,
   parseTaskValueJson,
-  refuseReservedIdempotencyKey,
   requirePositiveInt,
   serializeTaskValue,
 } from '@durablerun/core'
@@ -232,16 +231,6 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         const body = requestObject(bodyText)
         const taskName = requiredNonemptyString(body.taskName)
         const idempotencyKey = optionalString(body.idempotencyKey)
-        // Keys that start with `$` are the engine's: a parent finds its child under one.
-        // The spawn port refuses one too. Asked here, the refusal is the caller's
-        // mistake, a 400, and not a server error.
-        if (idempotencyKey !== undefined) {
-          try {
-            refuseReservedIdempotencyKey('enqueue', idempotencyKey)
-          } catch {
-            throw new HostedRequestError(400, 'invalid_request')
-          }
-        }
         const paramsJson = serializeTaskValue('task parameters', body.params ?? null)
         const spawned = await store.spawn(
           queue,
@@ -342,7 +331,10 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
       return await route.run(request, bodyText)
     } catch (error) {
       if (error instanceof HostedRequestError) return errorResponse(error.status, error.code)
-      if (error instanceof InvalidDurableStringError) return errorResponse(400, 'invalid_request')
+      // A port's refusal of what the caller passed is the caller's mistake. Core names
+      // that family once, so a route has no rule of its own for a reserved key or a
+      // wide one, and a refusal that joins the family is answered here too.
+      if (isPortRefusal(error)) return errorResponse(400, 'invalid_request')
       if (error instanceof StoreUnavailableError || error instanceof WakeSchedulingError) {
         return errorResponse(503, 'service_unavailable')
       }

@@ -5,6 +5,7 @@
  * payload, and refusals from this one file.
  */
 
+import { PortRefusalError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
 import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
@@ -40,14 +41,15 @@ export function taskIdOfDoneEvent(eventName: string): string | null {
 /**
  * Refuse a reserved event name at the store's port. A caller that could emit a
  * completion event's name would win first-write-wins and forge a child's result, and
- * one that could await it would skip the queue rule.
+ * one that could await it would skip the queue rule. The refusal is the caller's
+ * mistake, so it is a `PortRefusalError`.
  */
 export function refuseReservedEventName(operation: string, eventName: string): void {
   if (typeof eventName !== 'string') {
-    throw new TrustedRangeError(`${operation} eventName must be a string`)
+    throw new PortRefusalError(`${operation} eventName must be a string`)
   }
   if (startsWith(eventName, RESERVED_EVENT_PREFIX)) {
-    throw new TrustedRangeError(
+    throw new PortRefusalError(
       `${operation} eventName '${eventName}' is reserved: names that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
@@ -198,7 +200,7 @@ export function childSpawnKey(parentTaskId: string, replayKey: string): string {
  */
 export function refuseReservedIdempotencyKey(operation: string, key: string): void {
   if (startsWith(key, RESERVED_EVENT_PREFIX)) {
-    throw new TrustedRangeError(
+    throw new PortRefusalError(
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
@@ -213,7 +215,7 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
   const childOf = opts.childOf
   if (childOf !== undefined) {
     if (callerKey !== undefined) {
-      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')
+      throw new PortRefusalError('spawn takes idempotencyKey or childOf, never both')
     }
     requireDurableString('childOf.parentQueue', childOf.parentQueue)
     requireDurableString('childOf.runId', childOf.runId)

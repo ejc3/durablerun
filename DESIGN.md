@@ -689,7 +689,8 @@ One invocation executes one claimed run to its next suspension point:
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
-    refuses a name that starts with `$` with `RangeError`, and a name no store
+    refuses a name that starts with `$` with `PortRefusalError`, which is a
+    `RangeError`, and a name no store
     can keep, one with a NUL or a lone surrogate, with
     `InvalidDurableStringError`, and `EventName.taskDone` is the completion
     event of a task. An `EventName` carries that task (`taskId`, null for a
@@ -721,8 +722,29 @@ One invocation executes one claimed run to its next suspension point:
     found nothing answers with the run's own refusal. A child that exists is
     found without a claim, which is what a replay asks. Refusing a caller's `$`
     key is a breaking change to the enqueue contract. A caller that used such
-    keys gets `RangeError` at the port and 400 at the hosted route, and has to
+    keys gets `PortRefusalError`, which is a `RangeError`, at the port and 400
+    at the hosted route, and has to
     rename them. Rows already stored under such a key stay as they are.
+  - A port's refusal of what its caller passed has a type a host maps once.
+    `PortRefusalError` extends `RangeError`, and core throws it where it threw
+    a bare `RangeError` for a caller's name, key, or options: an event name
+    that is not a string or is reserved (`refuseReservedEventName`, behind
+    `emitEvent` and `awaitEvent`), a reserved idempotency key
+    (`refuseReservedIdempotencyKey`, behind `spawn`), and `idempotencyKey`
+    together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
+    still holds for them. `error.name` reads `PortRefusalError` where it read
+    `RangeError`, which a caller that compares names will see, and so does
+    the recorded failure of a task that lets one escape. `isPortRefusal` is
+    the one definition of the family: that class, `InvalidDurableStringError`,
+    which stays a `TypeError` because it was released as one, and
+    `ChildAwaitRefusedError`. The hosted route answers 400 `invalid_request`
+    for the family in one place and has no rule of its own for a reserved
+    key: the enqueue route sends the key to the port. An answer carries a
+    fixed code and never an error's name or message, so no answer changed. A
+    number, a retry strategy, or a saga step name that a port refuses is
+    still a bare `RangeError`. No hosted route passes a caller's value of
+    those, so a refusal of one there is the host's own fault, and 500 is its
+    answer.
   - The payload is the child's first outcome, in the shape `getTaskResult`
     answers with: the terminal state, and the completed payload or the failure
     reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds

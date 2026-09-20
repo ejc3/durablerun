@@ -7088,8 +7088,8 @@ MUTATION_SPECS.extend(
         (
             "hosted-enqueue-refuses-reserved-key",
             "packages/driver/src/hosted.ts",
-            "            refuseReservedIdempotencyKey('enqueue', idempotencyKey)\n",
-            "            // MUTATION: any key reaches the store\n",
+            "      if (isPortRefusal(error)) return errorResponse(400, 'invalid_request')\n",
+            "      // MUTATION: a refusal of the port falls through to the server error\n",
             "the enqueue route answers a reserved key with a server error, where the input is the caller's mistake",
         ),
         (

@@ -500,7 +500,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
         refused,
         parent: await runState(f, parent.runId),
         waits: await waitCount(f),
-      }).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
+      }).toEqual({ refused: 'PortRefusalError', parent: 'running', waits: 0 })
     })
 
     // The store that activated a run remembers its task, so the worker's own terminal

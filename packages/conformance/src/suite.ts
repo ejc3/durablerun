@@ -128,7 +128,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { refused, tasks: Number(count?.n) },
           'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
-        ).toEqual({ refused: 'RangeError', tasks: 0 })
+        ).toEqual({ refused: 'PortRefusalError', tasks: 0 })
       })
 
       it('keys a child by its parent and call site, under a key only the store builds', async () => {
@@ -164,7 +164,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           replayFindsTheChild: true,
           siblingIsAnotherTask: true,
           key: childSpawnKey(parentTask.taskId, '$spawn:child'),
-          both: 'RangeError',
+          both: 'PortRefusalError',
         })
       })
 
@@ -3596,7 +3596,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { forged, events: Number(stored?.n) },
           'mutation-verdict:behavior:emit-event-refuses-reserved-name',
-        ).toEqual({ forged: 'RangeError', events: 0 })
+        ).toEqual({ forged: 'PortRefusalError', events: 0 })
       })
 
       // An event name is durable text, and the dialects disagree on a NUL and on a lone

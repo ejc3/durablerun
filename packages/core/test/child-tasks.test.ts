@@ -35,8 +35,8 @@ describe('the completion event contract', () => {
       },
       'mutation-verdict:behavior:reserved-event-name-prefix',
     ).toEqual({
-      done: 'RangeError',
-      bare: 'RangeError',
+      done: 'PortRefusalError',
+      bare: 'PortRefusalError',
       user: 'accepted',
       inner: 'accepted',
       empty: 'accepted',
@@ -65,7 +65,7 @@ describe('the completion event contract', () => {
     expect(
       names.map((name) => refusal(() => refuseReservedEventName('emitEvent', name as string))),
       'mutation-verdict:behavior:reserved-event-name-type',
-    ).toEqual(names.map(() => 'RangeError'))
+    ).toEqual(names.map(() => 'PortRefusalError'))
   })
 
   it('round-trips every outcome through its payload', () => {
