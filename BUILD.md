@@ -2151,6 +2151,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     cases on each. Two mutations hold the two counts, and three
     older ones were re-aimed at the one function that now says what a victim
     is: 875.
+  - PR4.4c's one review found no HIGH, no MEDIUM and twelve LOW, recorded in
+    `postmortems/pr4.4c-self-concurrency-review.md`. Ten are counted there.
+    Nine were holds of the new surface that could not fail, or sentences that
+    said more than was held or measured, and one was a MySQL deadlock victim
+    the executor's count missed when its rollback failed. All ten are folded.
+    The surface's own find, the claim deadlock below, is the one defect of the
+    round's eleven that this project's machinery found.
   - An option, not built: hold each contest's winners against the contract.
     The surface's one oracle is this build's own serial order, so an answer
     that is wrong in both orders passes. The red is ready: with libSQL's
