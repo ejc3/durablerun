@@ -47,7 +47,8 @@
 // Written over a snapshot of the same release, it also refuses a tarball whose sha256 differs
 // from the one recorded, a tarball the snapshot does not record, and a directory that lacks a
 // recorded one, and it keeps the two tables; a new release starts with both empty. Every such
-// refusal comes before a tarball is unpacked. The repository's formatter lays the file out, in
+// refusal comes before a tarball is unpacked, and a namespace export is refused after. The
+// repository's formatter lays the file out, in
 // whatever directory the command is given. Compare the recorded sha256 of each tarball with
 // the release receipt before committing a new snapshot.
 import { execFileSync } from 'node:child_process'

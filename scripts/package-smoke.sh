@@ -187,7 +187,7 @@ surface_refuses 'a second change to a listed name' \
   'Checkpoint is listed as changed, but the sha256 recorded is not the packed declaration' \
   "differ();changed.Checkpoint={reason:'a control',declarationSha256:'0'}"
 
-# --write has refusals of its own, and each comes before a tarball is unpacked, so a stand-in
+# --write has refusals of its own. Four come before a tarball is unpacked, so a stand-in
 # tarball that holds its own name is enough to show one. A refused write leaves the snapshot.
 surface_write_refuses() {
   # $1 what the control shows, $2 the refusal expected, $3 the tarballs that a snapshot of the
@@ -226,6 +226,26 @@ surface_write_refuses 'a directory that lacks a recorded tarball' \
   "{\"a.tgz\":\"$stand_in_sha256\",\"b.tgz\":\"0\"}" a.tgz
 surface_write_refuses 'a directory with no tarball' \
   'found no tarball in' '{}'
+# The fifth refusal of --write reads what a tarball holds, so its control needs a real one: a
+# copy of the packed core package whose index exports a whole module as a namespace. It is
+# refused by name, and nothing is written.
+surface_namespace="$PACK_DIR/surface-namespace"
+rm -rf "$surface_namespace"
+mkdir -p "$surface_namespace/tarballs"
+cp "$PACK_DIR"/durablerun-*.tgz "$surface_namespace/tarballs/"
+core_tarball="$(basename "$PACK_DIR"/durablerun-core-*.tgz)"
+tar -xzf "$PACK_DIR/$core_tarball" -C "$surface_namespace"
+printf "export * as PackageSurfaceControlNamespace from './clock.js';\n" \
+  >> "$surface_namespace/package/dist/index.d.ts"
+tar -czf "$surface_namespace/tarballs/$core_tarball" -C "$surface_namespace" package
+if refusal="$(node "$ROOT/scripts/package-surface.mjs" --write control "$surface_namespace/tarballs" "$surface_namespace/snapshot.json" 2>&1)"; then
+  echo "package-smoke: package-surface --write accepted a tarball that exports a module as a namespace" >&2
+  exit 1
+fi
+if [[ "$refusal" != *"PackageSurfaceControlNamespace exports a whole module as a namespace"* || -e "$surface_namespace/snapshot.json" ]]; then
+  echo "package-smoke: package-surface --write refused a tarball that exports a module as a namespace for another reason, or wrote a snapshot: $refusal" >&2
+  exit 1
+fi
 # And --write works, from any directory: a snapshot written from the four packed tarballs by a
 # command given elsewhere is laid out as the repository's formatter lays it out, and the packed
 # packages pass the check against it with nothing withdrawn and nothing changed.
