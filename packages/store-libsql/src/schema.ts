@@ -267,8 +267,9 @@ export const MIGRATIONS: Migration[] = [
     //
     // SQLite cannot add NOT NULL to a column that exists. Rebuilding the table would declare
     // it, and costs a copy of every stored byte inside one write transaction: measured on a
-    // million events of 1 KB, 48 and 56 seconds, a 4.5 GB file doubled, and the calls of
-    // every other connection failing once their busy timeout ran out. Two triggers refuse
+    // million events of 1 KB, 48 and 56 seconds, a 4.5 GB file doubled, and another
+    // connection's writes failing once its busy timeout ran out, with each read that came
+    // after a failed write on that connection failing too. Two triggers refuse
     // the same writes, by an insert, an update or either arm of an upsert, under any
     // conflict clause, and cost nothing to install. They read no table. What they do not
     // give: the catalog still calls the column nullable, so on this dialect nothing can hold
@@ -280,6 +281,12 @@ export const MIGRATIONS: Migration[] = [
     // trigger installed two statements before refuses it, the batch fails, and the database
     // stays at the version before with the row as it was. The rows are found with
     // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    //
+    // That statement is a scan inside the version's write transaction. On a table that is
+    // not in the page cache it holds the one writer lock while it reads from disk: measured
+    // on a cold 4.5 GB file, 14.9 seconds, and other connections' writes failed once their
+    // busy timeout ran out. The finding query above reads the same pages under no write
+    // lock, and run first it took the version to under half a second with no call failing.
     version: 10,
     statements: [
       `CREATE TRIGGER events_payload_not_null_update

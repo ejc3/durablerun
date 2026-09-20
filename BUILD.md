@@ -394,9 +394,9 @@ a last docs PR gives a live owner to every open bullet that is left.
     a column that exists and the rebuild that would declare it was measured and
     refused. The poison matrix's witnesses of a stored NULL
     go through the fixture's storage-corruption door, where every dialect now
-    refuses them. Five registered mutations hold the servers' lines, the strict
-    `sql_mode` that MySQL's refusal depends on among them, and libSQL's frozen
-    statements are held by its cases and by their hash. The entry under
+    refuses them, by an UPDATE and by an INSERT. Six registered mutations hold
+    the servers' lines and the invariant library's two conditions, and libSQL's
+    frozen statements are held by its cases and by their hash. The entry under
     PR3.1d has the measurements on a million events under the older build's
     traffic.
 
@@ -944,40 +944,54 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the NULL.
   - PostgreSQL declares the column NOT NULL with one `ALTER TABLE`. MySQL
     declares it through a form the catalog guards, which closes PR4.3's open
-    item (4): it acts only while `information_schema` calls the column
-    nullable, so a rerun after a crash or a replay from a stale plan leaves a
-    later declaration alone, and the runner's generated crash cuts took the
-    version in with no edit. libSQL cannot declare it, because SQLite cannot
+    item (4): it does nothing once `information_schema` calls the column NOT
+    NULL, so a rerun after a crash or a replay from a stale plan leaves a later
+    declaration alone, a column the catalog does not hold fails loudly, and the
+    runner's generated crash cuts took the version in with no edit. It asks
+    for the change in place and with no lock, so its own text refuses a NULL in
+    a session with no strict `sql_mode`, where the bare change stored an empty
+    string. libSQL cannot declare it, because SQLite cannot
     add NOT NULL to a column that exists. The rebuild that would declare it was
     measured and refused: on a million events of 1 KB it took 48 and 56 s,
     doubled a 4.5 GB file, and a fifth to a third of the calls of a worker of
-    the older build failed once its busy timeout ran out. Two triggers hold the
+    the older build failed, its writes once its busy timeout ran out and its
+    reads behind them (PR3.15). Two triggers hold the
     payload there, and the version's third statement makes the update trigger
     check the rows already there.
   - Measured on a million events under the traffic of a build whose last
     version is 9 (DESIGN.md has the traffic and every run): PostgreSQL 85 to
-    129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 to 1.2 s and 2.7
+    129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 s and 2.5 to 2.6
     s, libSQL 90 and 430 ms with nothing else running. No call of the older
-    build failed on any dialect.
+    build failed on any dialect. Those are warm figures. On a libSQL file that
+    is not in the page cache the version's check is a scan under the writer
+    lock: on a cold 4.5 GB file `migrate()` took 14.9 s and other connections'
+    calls failed once their busy timeout ran out. The finding query run first,
+    under no write lock, took it to 0.3 to 0.4 s with no call failing, and
+    DESIGN.md's operator note says to run it. Each server's statement queues
+    behind an older transaction that holds `events`, and MySQL's rebuilds the
+    whole table in place, holding the named migration lock throughout.
   - A row that already holds NULL is a foreign writer's or tampering. On each
     dialect a case through the real executor holds that `migrate()` fails by
     the dialect's own refusal, leaves version 9 and leaves the row as it was.
-    MySQL refuses only under a strict `sql_mode`: without one the change
-    succeeds and stores an empty string where the NULL was. A case holds that
-    fact, and a registered mutation takes the strict mode out of the executor's
-    session setup.
+    The bare MySQL change refuses only under a strict `sql_mode`: without one
+    it succeeds and stores an empty string where the NULL was. The version's
+    text therefore asks for the change in place and with no lock, which MySQL
+    refuses outside a strict mode with error 1846, and a case sends the
+    version's own statements over such a session and requires that refusal.
   - The statement builder's table declarations say NOT NULL, so assigning a
     value that may be NULL to the payload is a type error in every statement
     the stores build. The shared comparison of those declarations with each
     catalog gained one rule for every dialect: NOT NULL in the catalog, or a
-    raw write of NULL seen refused through the storage-corruption door.
+    raw write of NULL seen refused through the storage-corruption door, by
+    both kinds of write that can store one, an UPDATE and an INSERT.
   - The invariant library reports an event row that holds NULL, so every sim,
     scenario and fuzz walk checks it. Its witness and the older witness of a
     run whose stored event holds NULL go through the same door, and every
     dialect refuses them. Its positive control is a libSQL case that drops a
     trigger as tampering would.
-  - Five registered mutations, 1037 to 1042: the column change on each server,
-    MySQL's guarded form, the strict `sql_mode`, and the invariant's condition.
+  - Six registered mutations, 1037 to 1043: the column change on each server,
+    MySQL's guarded form, its clause, and the invariant library's two
+    conditions on a stored NULL.
     libSQL's three statements have none, by the registry's own rule: its
     self-test refuses a live mutation of libSQL's migration file, which a hash
     freezes. Three entries were written first, each caught by a filtered run,
@@ -996,7 +1010,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
     sees the write refused and closes. One cell for such a witness would do,
     for these two and for the numeric witnesses PostgreSQL and MySQL refuse.
     It changes the matrix's machinery and its pinned counts. Trigger: the
-    matrix's share of a conformance leg's time becoming a finding.
+    matrix's share of a conformance leg's time becoming a finding. (4) A read
+    that the runner sends outside the write transaction before a version whose
+    check scans a table, so that libSQL's scan under the writer lock always
+    finds its pages warm, where today DESIGN.md's operator note asks for it by
+    hand. It changes the runner's shape on three dialects. Trigger: a
+    deployment whose `events` table does not fit the page cache. (5)
+    PostgreSQL's three-transaction form: `ADD CONSTRAINT ... CHECK (payload IS
+    NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and a drop of
+    the constraint. Measured in review on a million rows of 1 KB (1.2 GB): 0.3
+    ms, 263 ms under SHARE UPDATE EXCLUSIVE, which blocks neither reads nor
+    writes, 0.3 ms and 0.6 ms, against the shipped form's 176 ms scan under
+    ACCESS EXCLUSIVE. A lock is held to its transaction's end, so it costs
+    three versions under the present runner, and it does not remove the queue
+    behind an older transaction. Trigger: a deployment where the scan under
+    ACCESS EXCLUSIVE is measured to matter.
+- **PR3.15 a libSQL write that fails busy fails the read that follows it on
+  its connection**: NOT STARTED. Older than any version here, met twice on
+  2026-09-20 while PR3.1d was measured and reviewed, and owned by nobody until
+  this entry. What is known: when a write batch on a file database fails with
+  SQLITE_BUSY, once the executor's five second busy timeout runs out, a read
+  that follows it on the same `LibsqlExecutor` fails with `SQLITE_BUSY: cannot
+  commit transaction - SQL statements in progress`, where a read takes no
+  write lock and should have answered. Beside a long write transaction a
+  worker lost one read for every emit it lost, 108 and 160 of each in two
+  runs. A write that follows fails on the lock itself while it is held, so
+  whether it would meet the same message was not isolated, and calls succeed
+  again once the lock is free. The same message comes back when an
+  `EXPLAIN QUERY PLAN` is sent inside a read batch, which leaves a statement
+  unfinished, so the likely cause is a statement of the failed batch that is
+  never reset before the batch's transaction is ended. That cause is read from
+  the symptom and was not confirmed in the client. A red test: hold the write
+  lock from a second connection for longer than the busy timeout (the test
+  lowers it), let one write batch fail, and require the next read on that
+  executor to succeed. Not built in PR3.1d, which changes no executor.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -3824,7 +3871,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     at most (the statement takes its tables one at a time, so what queues
     meanwhile is whatever touches a table it has already taken), and it tries
     again. Its trigger is a deployment that must migrate under sustained
-    traffic, or beside transactions that stay open for long.
+    traffic, or beside transactions that stay open for long. Version 10 is the
+    first MySQL version that takes a table's metadata lock, and reads queue
+    behind it too, so the same option exists there as a short
+    `lock_wait_timeout` for the migrating session, which is a year by default.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is
