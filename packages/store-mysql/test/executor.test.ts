@@ -262,7 +262,10 @@ describe('MysqlExecutor transactions', () => {
       )
     const refusal =
       outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
-    expect({ refusal, sent: connection.sent }).toEqual({
+    expect(
+      { refusal, sent: connection.sent },
+      'mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused',
+    ).toEqual({
       refusal: expect.stringContaining('sent as a read'),
       sent: [],
     })

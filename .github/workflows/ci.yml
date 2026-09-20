@@ -358,7 +358,7 @@ jobs:
               # each stand on a line of their own now, and each entry is the mutant it was.
               # PostgreSQL's lock on meta left the admin's statement list for the executor, which
               # sends the same statement in the same place, so the mutant that removed the
-              # statement from the list now removes the executor's send. Eleven mutations are
+              # statement from the list now removes the executor's send. Thirteen mutations are
               # newer than the base, which has to exempt their markers.
               repaired = previous
               for name in (
@@ -374,7 +374,9 @@ jobs:
                       'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
                       'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
                       'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
+                      'mutation-verdict:construction:postgres-migration-write-names-its-lock',
                       'mutation-verdict:construction:mysql-migration-write-names-its-lock',
+                      'mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused',
                       'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
                       'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
                       'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat',

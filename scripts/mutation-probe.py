@@ -3858,6 +3858,13 @@ MUTATION_SPECS = [
         "a lock of a kind that a later build of core added is ignored, and the batch runs under no lock",
     ),
     (
+        "postgres-migration-write-names-its-lock",
+        "packages/store-postgres/src/executor.ts",
+        "  if (needsTheLock && lock?.kind !== 'migration') {\n",
+        "  if (needsTheLock && lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+        "a version's batch whose control was dropped runs with no lock on meta, where at the commit before the lock was a statement of the batch that no wrapper could drop",
+    ),
+    (
         "postgres-version-batch-names-the-migration-lock",
         "packages/store-postgres/src/admin.ts",
         "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),\n",
@@ -7358,9 +7365,16 @@ MUTATION_SPECS.extend(
         (
             "mysql-migration-write-names-its-lock",
             "packages/store-mysql/src/executor.ts",
-            "  if (mode === 'write' && label.startsWith('migrate:') && lock?.kind !== 'migration') {\n",
-            "  if (mode === 'read' && label.startsWith('migrate:') && lock?.kind !== 'migration') { // MUTATION\n",
+            "  if (lock?.kind !== 'migration') {\n",
+            "  if (lock?.kind !== 'migration' && label === '') { // MUTATION\n",
             "a migration write under a label that no list knows runs its DDL under no lock, beside another migrator, and MySQL cannot undo what it did",
+        ),
+        (
+            "mysql-migration-batch-sent-as-a-read-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode === 'read') {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "  if (mode === 'read' && lock !== undefined) {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "a migrate: batch sent as a read runs its DDL with no lock, because a DDL statement's own commit ends the read-only transaction first",
         ),
         (
             "mysql-lock-of-an-unknown-kind-is-refused",
@@ -10084,6 +10098,12 @@ VERDICTS = {
         "PgExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
         "mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused",
     ),
+    "postgres-migration-write-names-its-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing",
+        "mutation-verdict:construction:postgres-migration-write-names-its-lock",
+    ),
     "postgres-version-batch-names-the-migration-lock": ExpectedVerdict(
         "construction",
         "packages/store-postgres/test/admin.test.ts",
@@ -11567,6 +11587,12 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions refuses a migration write that names no migration lock, and sends nothing",
             "mutation-verdict:construction:mysql-migration-write-names-its-lock",
+        ),
+        "mysql-migration-batch-sent-as-a-read-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration batch sent as a read, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused",
         ),
         "mysql-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
             "construction",
@@ -18426,7 +18452,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 963:
+        if len(MUTATIONS) != 965:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

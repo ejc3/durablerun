@@ -522,11 +522,14 @@ describe('PgExecutor transactions', () => {
         )
       return { outcome, statements: client.calls.length, connections: pool.connectCalls }
     }
-    expect({
-      aVersion: await sent('migrate:v1'),
-      aLabelNoListKnows: await sent('migrate:backfill'),
-      theBootstrap: await sent('migrate:bootstrap'),
-    }).toEqual({
+    expect(
+      {
+        aVersion: await sent('migrate:v1'),
+        aLabelNoListKnows: await sent('migrate:backfill'),
+        theBootstrap: await sent('migrate:bootstrap'),
+      },
+      'mutation-verdict:construction:postgres-migration-write-names-its-lock',
+    ).toEqual({
       aVersion: {
         outcome: expect.stringContaining('names no migration lock'),
         statements: 0,
