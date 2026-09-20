@@ -10,6 +10,7 @@ import {
   type StoreFixture,
   type StoreFixtureOptions,
   corruptionTarget,
+  nullPayloadAttempt,
   overWidthWrite,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
@@ -39,7 +40,13 @@ const ER_SUBQUERY_NO_1_ROW = 1242
 /** A string longer than its column holds, which strict mode refuses and does not cut. */
 const ER_DATA_TOO_LONG = 1406
 
+/** `Column cannot be null`, which is an error under the strict mode every session sets. */
+const ER_BAD_NULL_ERROR = 1048
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'null') {
+    return nullPayloadAttempt(corruption, (error) => mysqlErrno(error) === ER_BAD_NULL_ERROR)
+  }
   if (corruption.invalidRepresentation === 'over-width') {
     return {
       statements: [overWidthWrite(corruption)],

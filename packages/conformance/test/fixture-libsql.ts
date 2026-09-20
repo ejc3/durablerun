@@ -8,6 +8,7 @@ import {
   type StoreFixture,
   type StoreFixtureOptions,
   corruptionTarget,
+  nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
@@ -30,9 +31,29 @@ function persistedIntegerCatalogStatements(tables: readonly PersistedNumericTabl
   })
 }
 
+/** The code SQLite gave a refusal, through whatever the executor wrapped it in. */
+function sqliteCode(error: unknown): string | undefined {
+  let current = error
+  for (let depth = 0; depth < 6; depth++) {
+    if (typeof current !== 'object' || current === null) return undefined
+    const candidate = current as { readonly code?: unknown; readonly cause?: unknown }
+    if (typeof candidate.code === 'string') return candidate.code
+    current = candidate.cause
+  }
+  return undefined
+}
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   if (corruption.invalidRepresentation === 'over-width') {
     return unboundedOverWidthAttempt(corruption)
+  }
+  if (corruption.invalidRepresentation === 'null') {
+    // SQLite cannot add NOT NULL to a column that exists, so the schema holds the payload
+    // with two triggers, and a trigger's refusal carries this code.
+    return nullPayloadAttempt(
+      corruption,
+      (error) => sqliteCode(error) === 'SQLITE_CONSTRAINT_TRIGGER',
+    )
   }
   const fractionalValue =
     corruption.column === 'max_attempts' ||

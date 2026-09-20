@@ -10,6 +10,7 @@ import {
   type StoreFixture,
   type StoreFixtureOptions,
   corruptionTarget,
+  nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
@@ -33,9 +34,14 @@ function sqlState(error: unknown): string | undefined {
   return undefined
 }
 
+const NOT_NULL_VIOLATION = '23502'
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   if (corruption.invalidRepresentation === 'over-width') {
     return unboundedOverWidthAttempt(corruption)
+  }
+  if (corruption.invalidRepresentation === 'null') {
+    return nullPayloadAttempt(corruption, (error) => sqlState(error) === NOT_NULL_VIOLATION)
   }
   const fractionalValue =
     corruption.column === 'max_attempts' ||

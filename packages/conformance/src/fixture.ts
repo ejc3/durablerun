@@ -78,6 +78,13 @@ export type StorageCorruption =
       column: 'idempotency_key'
       invalidRepresentation: 'over-width'
     }
+  | {
+      table: 'events'
+      queue: string
+      eventName: string
+      column: 'payload'
+      invalidRepresentation: 'null'
+    }
 
 type OverWidthCorruption = Extract<StorageCorruption, { invalidRepresentation: 'over-width' }>
 
@@ -111,6 +118,36 @@ export function unboundedOverWidthAttempt(
         throw new Error(
           `the name past the width was not stored whole: tasks.${corruption.column} holds ${width} characters`,
         )
+      }
+    },
+  }
+}
+
+type NullPayloadCorruption = Extract<StorageCorruption, { invalidRepresentation: 'null' }>
+
+/**
+ * SQL NULL written over an event's stored payload, which is the same SQL on every dialect,
+ * and the read that proves it landed where a schema accepts it. An await that timed out
+ * answers with no payload, so a stored NULL would read as a timeout. How a dialect's schema
+ * refuses the write is that dialect's to say.
+ */
+export function nullPayloadAttempt(
+  corruption: NullPayloadCorruption,
+  isStructuralRejection: (error: unknown) => boolean,
+): StorageCorruptionAttempt {
+  const { where, identityArgs } = corruptionTarget(corruption)
+  return {
+    statements: [
+      { sql: `UPDATE events SET payload = NULL WHERE ${where}`, args: identityArgs },
+      {
+        sql: `SELECT COUNT(*) AS held FROM events WHERE ${where} AND payload IS NULL`,
+        args: identityArgs,
+      },
+    ],
+    isStructuralRejection,
+    verify: (results) => {
+      if (Number(results[1]?.rows[0]?.held) !== 1) {
+        throw new Error('the NULL payload was not stored: no row of events holds it')
       }
     },
   }
