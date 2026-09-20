@@ -1029,9 +1029,15 @@ One invocation executes one claimed run to its next suspension point:
     does for version 6's index. And a database that an older build left with a
     run still running under a token too long for the index cannot take version 9
     yet: the version fails whole, with SQLSTATE 54000, the database stays at
-    version 8, and the same `migrate()` succeeds once that run has ended or the
-    sweep has taken its lease. A test in `store-postgres` holds that. Three
-    things make the index reachable, and a check holds each one.
+    version 8, and the same `migrate()` succeeds once that run has ended, or the
+    sweep has taken its lease, and every transaction that was open in that
+    database at that moment has finished. The last part is PostgreSQL's: an
+    index build also indexes a row version that is dead but that an open
+    snapshot can still see, and it judges the index's predicate on that version.
+    A test in `store-postgres` holds both halves, in a database of its own,
+    because which snapshots count is decided for each database and the suites
+    share one. Three things make the index reachable, and a check holds each
+    one.
     First, the two follow-ons name the claim token beside the stamp. The stamp
     is the fence. The token is for the planner and narrows nothing, for one
     reason: a run carries this batch's claim stamp only when this batch's
