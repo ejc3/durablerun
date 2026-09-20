@@ -226,7 +226,8 @@ export const PORT_METHODS: readonly PortMethod[] = freeze(objectKeys(PORT_STRING
  * What every dialect's store extends, and the only place the port's strings are checked.
  *
  * The constructor puts `requirePortStrings` in front of every method the table names, as
- * a property of the instance that cannot be assigned. So a dialect's
+ * an accessor of the instance that cannot be assigned, defined again, or replaced by a
+ * class field. So a dialect's
  * entry holds nothing and cannot forget to: it is reached only through the check. A
  * dialect inherits the check by extending this, and a method the port gains is checked
  * once the table names its strings, which the table's type makes it do.
@@ -246,26 +247,27 @@ export abstract class HeldPort {
           `a store that extends HeldPort must define ${method} as a method`,
         )
       }
-      defineProperty(this, method, {
-        // It can be defined again, because a proxy over a store may only answer a property
-        // with another value when the property can be. It cannot be assigned.
-        configurable: true,
-        value: (...args: unknown[]): unknown => {
-          try {
-            requirePortStrings(method, args)
-          } catch (error) {
-            return rejected(error)
-          }
-          // The entry is looked up when it is called, on the prototype chain and so past
-          // this property, and never captured: a method patched onto the class after this
-          // store was constructed, as a test double is, is reached, with the check in front.
-          const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)
-          if (typeof called !== 'function') {
-            return rejected(new TrustedTypeError(`the store no longer defines ${method}`))
-          }
-          return apply(called as (...entryArgs: unknown[]) => unknown, this, args)
-        },
-      })
+      const checked = (...args: unknown[]): unknown => {
+        try {
+          requirePortStrings(method, args)
+        } catch (error) {
+          return rejected(error)
+        }
+        // The entry is looked up when it is called, on the prototype chain and so past
+        // this property, and never captured: a method patched onto the class after this
+        // store was constructed, as a test double is, is reached, with the check in front.
+        const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)
+        if (typeof called !== 'function') {
+          return rejected(new TrustedTypeError(`the store no longer defines ${method}`))
+        }
+        return apply(called as (...entryArgs: unknown[]) => unknown, this, args)
+      }
+      // An accessor with a getter and no setter, which cannot be defined again. A class
+      // field that would replace an entry, an assignment, and a redefinition each throw,
+      // where a property that could be defined again let a field replace the check in
+      // silence. A proxy over a store may still answer the method with its own function:
+      // only a data property that cannot be written binds a proxy to its value.
+      defineProperty(this, method, { get: () => checked })
     }
   }
 }

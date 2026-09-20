@@ -252,10 +252,15 @@ describe('a store that extends the held port', () => {
     })
   })
 
-  it('cannot have its check assigned away, and lets a proxy answer a method with its own', () => {
+  it('cannot have its check assigned or defined away, and lets a proxy answer a method with its own', () => {
     expect(() => {
       ;(store as { claim: unknown }).claim = () => Promise.resolve('unchecked')
     }).toThrow(TypeError)
+    expect(() =>
+      Object.defineProperty(store, 'claim', { value: () => Promise.resolve('unchecked') }),
+    ).toThrow(TypeError)
+    // The same function answers every read, so a caller may compare it.
+    expect(store.claim).toBe(store.claim)
     const proxied = new Proxy(store, {
       get: (target, property) =>
         property === 'claim' ? () => 'the proxy answered' : Reflect.get(target, property),
