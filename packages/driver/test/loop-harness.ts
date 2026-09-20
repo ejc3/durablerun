@@ -1,17 +1,19 @@
-import { type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
-
-/** What a caller hands a launcher beside the invocation. */
-type FakeLaunchOptions = { signal?: AbortSignal }
+import {
+  type LaunchInvocation,
+  type LaunchOptions,
+  LaunchOutcome,
+  type Launcher,
+} from '@durablerun/core'
 
 export class FakeLauncher implements Launcher {
   invocations: LaunchInvocation[] = []
   constructor(
     private readonly script: (
       inv: LaunchInvocation,
-      options?: FakeLaunchOptions,
+      options?: LaunchOptions,
     ) => Promise<LaunchOutcome> | LaunchOutcome = () => LaunchOutcome.accepted(),
   ) {}
-  async launch(inv: LaunchInvocation, options?: FakeLaunchOptions): Promise<LaunchOutcome> {
+  async launch(inv: LaunchInvocation, options?: LaunchOptions): Promise<LaunchOutcome> {
     this.invocations.push(inv)
     return this.script(inv, options)
   }

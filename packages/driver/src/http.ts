@@ -54,10 +54,13 @@ async function readBody(req: NodeJS.ReadableStream): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** Fire-and-forget launcher over HTTP: a 202 ack is 'accepted'. */
+/**
+ * Fire-and-forget launcher over HTTP: a 202 ack is 'accepted'. The request carries the
+ * caller's signal, so it lives no longer than the caller waits for it.
+ */
 export function httpLauncher(opts: { url: string; secret: string }): Launcher {
   return {
-    async launch(invocation) {
+    async launch(invocation, options) {
       const body = JSON.stringify(invocation)
       try {
         const response = await fetch(`${opts.url}/launch`, {
@@ -67,6 +70,10 @@ export function httpLauncher(opts: { url: string; secret: string }): Launcher {
             [SIGNATURE_HEADER]: signBody(opts.secret, body),
           },
           body,
+          // A worker that accepts the connection and never answers would otherwise hold
+          // this socket long after the driver stopped waiting. The aborted request
+          // rejects into the failed launch below, which by then nobody reads.
+          signal: options?.signal ?? null,
         })
         if (response.status === 202) return LaunchOutcome.accepted()
         return LaunchOutcome.launchFailed()
