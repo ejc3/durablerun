@@ -515,17 +515,21 @@ describe('MysqlExecutor error typing, by the state and the number the server sen
     })
   })
 
-  it('types the permanent answers MySQL files under its general state by their numbers', async () => {
+  it('types the permanent answers MySQL files outside the three classes by their numbers', async () => {
     expect(
       {
         wrongValueForField: await typed({ errno: 1366, sqlState: 'HY000' }),
         brokenCheckConstraint: await typed({ errno: 3819, sqlState: 'HY000' }),
+        columnLeftOut: await typed({ errno: 1364, sqlState: 'HY000' }),
+        textThatIsNoNumber: await typed({ errno: 1265, sqlState: '01000' }),
         anotherGeneralError: await typed({ errno: 1105, sqlState: 'HY000' }),
       },
       'mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent',
     ).toEqual({
       wrongValueForField: 'PermanentStoreError',
       brokenCheckConstraint: 'PermanentStoreError',
+      columnLeftOut: 'PermanentStoreError',
+      textThatIsNoNumber: 'PermanentStoreError',
       anotherGeneralError: 'StoreUnavailableError',
     })
   })

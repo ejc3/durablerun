@@ -68,10 +68,13 @@ const ER_DATA_TOO_LONG = 1406
 const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 /**
- * Answers as permanent as the classes above that MySQL files under HY000, its general
- * state, which also holds a lock wait timeout, so no class can name them.
+ * Answers as permanent as the classes above that MySQL files outside them, so no class can
+ * name them: three under HY000, its general state, which also holds a lock wait timeout,
+ * and one under 01000, the state of a warning.
  */
-const PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE = new Set([
+const PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS = new Set([
+  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column
+  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default
   1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column
   3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
 ])
@@ -498,7 +501,7 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
       : sqlStateClass(error)
     if (
       (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
-      PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE.has(errno)
+      PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS.has(errno)
     ) {
       return new PermanentStoreError(
         `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,
