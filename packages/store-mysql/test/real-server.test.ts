@@ -487,6 +487,31 @@ describe('MysqlExecutor against a real server', () => {
       await db.close()
     }
   })
+
+  it('answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs', async () => {
+    // A keyed delete reads its keys through `runs_stamp`, which version 8 adds, so a database
+    // that has not reached version 8 answers every batch that holds one with error 1176. That
+    // is a schema this build does not expect, and it is permanent: booked as an outage, a
+    // caller would retry it forever.
+    const db = await openMysqlTestDb({ idNamespace: 'no-stamp-index' })
+    try {
+      await db.raw.batch('fixture:drop-the-stamp-index', [
+        { sql: 'ALTER TABLE runs DROP INDEX runs_stamp', args: [] },
+      ])
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      await store.spawn('q', 'task', '{}')
+      const refusal = await store
+        .claim('q', 'w', { leaseSeconds: 60, limit: 1 })
+        .catch((error: unknown) => error)
+      expect(
+        refusal,
+        'mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch',
+      ).toBeInstanceOf(SchemaMismatchError)
+      expect(String(refusal)).toContain('MySQL error 1176')
+    } finally {
+      await db.close()
+    }
+  })
 })
 
 describe('the version table on a real server', () => {
