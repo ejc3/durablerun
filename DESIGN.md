@@ -3513,7 +3513,12 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   for every dialect in one place: its name, `$rollback-tries:` and the step,
   and its state, one attempt past the last one stored. No record, or one that
   cannot be read, counts as none, which is what the SDK counts when it halts
-  a saga on such a record and its halt is written over it. So a caller of the
+  a saga on such a record and its halt is written over it. The count stops at
+  the largest safe integer: one past it is no count the decoder reads, so a
+  record that held it would read as none, and the attempt after it would be
+  stored as the first. Only a record an older build's store wrote can sit at
+  that bound. The failure is recorded all the same, never refused, and a
+  count at the bound still says the budget is spent. So a caller of the
   port can store no other name and no other count, and a rollback's spent
   attempts are never given back, which is the model's TriesOnlyGrow. The last
   record is read before the batch, under the read label `rollback-tries`,

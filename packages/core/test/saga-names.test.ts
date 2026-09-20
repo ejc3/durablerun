@@ -159,11 +159,14 @@ describe("a rollback's attempt record, as the store names it and counts it", () 
     const belowTheBound = nextRollbackTry(failed, stored(largest - 1))
     const atTheBound = nextRollbackTry(failed, stored(largest))
     const afterIt = nextRollbackTry(failed, atTheBound.stateJson)
-    expect({
-      belowTheBound: recordOf(belowTheBound),
-      atTheBound: recordOf(atTheBound),
-      afterIt: recordOf(afterIt),
-    }).toEqual({
+    expect(
+      {
+        belowTheBound: recordOf(belowTheBound),
+        atTheBound: recordOf(atTheBound),
+        afterIt: recordOf(afterIt),
+      },
+      'mutation-verdict:behavior:saga-store-count-saturates',
+    ).toEqual({
       belowTheBound: { tries: largest, errorJson: failed.errorJson },
       atTheBound: { tries: largest, errorJson: failed.errorJson },
       afterIt: { tries: largest, errorJson: failed.errorJson },

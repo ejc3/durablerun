@@ -248,7 +248,7 @@ a last docs PR gives a live owner to every open bullet that is left.
     holds the phase test to a seek of the checkpoints key. With the freeze
     line of `ctx.spawn` deleted the SDK case fails by name, and under a guard
     that ignores infrastructure retries the new budget case fails by name
-    while the two older ones pass. Ten registered mutations hold the new
+    while the two older ones pass. Eleven registered mutations hold the new
     lines, and the one that mutated the SQL name check is retired.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
@@ -2275,8 +2275,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     budget, whose rollback now succeeds on a fourth attempt that a budget of
     two never reaches. The case it left holds the store's count through the
     SDK, by a second mutation of that count.
-  - The registry gains ten mutations and retires one. The base gate's arm
-    retires that entry of the base registry and exempts six markers.
+  - The registry gains eleven mutations and retires one. The base gate's arm
+    retires that entry of the base registry and exempts seven markers.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's

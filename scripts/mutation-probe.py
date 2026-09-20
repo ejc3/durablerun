@@ -12260,16 +12260,23 @@ MUTATION_SPECS.extend(
         (
             "saga-store-counts-failed-attempts",
             "packages/core/src/sagas.ts",
-            "      tries: (last?.tries ?? 0) + 1,\n",
-            "      tries: (last?.tries ?? 0) * 0 + 1,\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = (last?.tries ?? 0) * 0 + 1\n",
             "every failed rollback attempt is stored as the first, so a spent attempt is given back and a budget never runs out",
         ),
         (
             "saga-store-count-goes-on-from-the-record",
             "packages/core/src/sagas.ts",
-            "      tries: (last?.tries ?? 0) + 1,\n",
-            "      tries: last?.tries ?? 1,\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "  let tries = last?.tries ?? 1\n",
             "a rollback's count stops at its first record, so a second failed attempt is stored as the first",
+        ),
+        (
+            "saga-store-count-saturates",
+            "packages/core/src/sagas.ts",
+            "  let tries = (last?.tries ?? 0) + 1\n  if (last !== null && !isSafeInteger(tries)) tries = last.tries\n",
+            "  let tries = (last?.tries ?? 0) + 1\n",
+            "from a record at the largest safe integer the count goes one past it, the record reads as none, and the attempt after it is stored as the first",
         ),
         (
             "saga-store-names-the-attempt-record",
@@ -13232,6 +13239,17 @@ for _verdict, _names in (
         ),
         (
             "saga-store-counts-failed-attempts",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it holds the count at the largest safe integer, and never reads its own record as none",
+            "mutation-verdict:behavior:saga-store-count-saturates",
+        ),
+        (
+            "saga-store-count-saturates",
         ),
     ),
     (
@@ -18183,7 +18201,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 948:
+        if len(MUTATIONS) != 949:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

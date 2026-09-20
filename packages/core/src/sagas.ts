@@ -160,18 +160,22 @@ export function requireFailedRollback(value: unknown): FailedRollback {
  * the last one stored (specs/Sagas.tla's RollbackRetry and TriesOnlyGrow). `lastStateJson`
  * is what is stored under that name, or null when nothing is. A record that cannot be read
  * counts as none, as it does for the SDK, which halts the saga on one and writes over it.
+ * The count stops at the largest safe integer. One past it is no count `decodeRollbackTry`
+ * reads, so the record would read as none, and the attempt after it would be stored as the
+ * first. It is never refused there: a failed rollback that could not record its failure
+ * would fail again for ever, and a count at the bound still says the budget is spent.
  */
 export function nextRollbackTry(
   failed: FailedRollback,
   lastStateJson: string | null,
 ): CheckpointWrite {
   const last = lastStateJson === null ? null : decodeRollbackTry(lastStateJson)
+  // One past the last count, and never past the largest safe integer.
+  let tries = (last?.tries ?? 0) + 1
+  if (last !== null && !isSafeInteger(tries)) tries = last.tries
   return {
     key: rollbackTriesName(failed.stepKey),
-    stateJson: encodeRollbackTry({
-      tries: (last?.tries ?? 0) + 1,
-      errorJson: failed.errorJson,
-    }),
+    stateJson: encodeRollbackTry({ tries, errorJson: failed.errorJson }),
   }
 }
 
