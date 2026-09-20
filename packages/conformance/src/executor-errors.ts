@@ -44,9 +44,15 @@ const BROKEN_CONSTRAINTS: Readonly<
     sql: 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?',
     args: ['key-of-the-first', second],
   }),
-  'not null': (first) => ({
+  'not null (a NULL written)': (first) => ({
     sql: 'UPDATE tasks SET task_name = NULL WHERE task_id = ?',
     args: [first],
+  }),
+  'not null (a column left out)': () => ({
+    // A row that names two of its columns and leaves out others that take no NULL and
+    // have no default. A dialect can file this apart from a NULL that was written.
+    sql: 'INSERT INTO tasks (task_id, queue) VALUES (?, ?)',
+    args: ['a-task-with-columns-left-out', Q],
   }),
   check: (first) => ({
     // Every dialect holds `state` to the six states a task can be in.
