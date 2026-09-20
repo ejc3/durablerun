@@ -2122,9 +2122,12 @@ not depend on careful reading:
   exactly the real case, a column that presented only the later scan stayed
   green. A typed record asks every `sweep:` label whether its scan hands it
   a generation, and each case checks that answer against the scan the store
-  sends. Seventeen registered
-  mutations, one for each comparison of each call, remove it from the
-  statement the call sends, and the enrollment case holds the marker tables
+  sends. Twenty registered mutations hold the column to this. Fifteen remove
+  the token comparison from a statement a call sends, one for each call and
+  one more for each server store's own `expire-lease-now` text. Two remove a
+  receipt's generation, two remove a sweep's scanned generation, and one
+  weakens the shared claim predicate to a pattern match. Each is owned by
+  the case of its call, and the enrollment case holds the marker tables
   to the derived column, so a call that joins the column fails there until
   its mutation is registered. What the column cannot see, written and run. It
   sees the calls `invoke` makes. The spawn of a child was the one token-taking

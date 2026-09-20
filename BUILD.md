@@ -182,10 +182,12 @@ a last docs PR gives a live owner to every open bullet that is left.
     fails a case of the stale-token column by name, on three dialects. This is
     met. The column enrolls the thirteen calls that present a claim, read from
     what the poison matrix's `invoke` passes, and it is green on libSQL,
-    PostgreSQL and MySQL. Thirteen registered mutations each remove the token
-    comparison from the statement one call sends, and each is caught by that
-    call's case. With `fail-rollback`'s comparison removed, which left the
-    whole libSQL conformance file green before, that file's one red is
+    PostgreSQL and MySQL. Fifteen registered mutations each remove the token
+    comparison from a statement one call sends: one for each of the thirteen
+    calls, and one more for each server store's own `expire-lease-now` text.
+    Each is caught by that call's case on its dialect. With `fail-rollback`'s
+    comparison removed, which left the whole libSQL conformance file green
+    before, that file's one red is
     `fail-rollback refuses a caller that does not hold the claim`, and the
     same case is red on PostgreSQL and on MySQL. `expire-lease-now` is each
     store's own text, and with the comparison removed from one store's text
@@ -654,9 +656,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   DESIGN.md already says every lease sweep acts on the claim its scan read,
   the lost-launch write reports a scanned count that only the generation ties
   to the row, and the claim-timeout batch once trusted a scanned attempt. Two
-  cases hold both lease sweeps to it. Seventeen mutations, the first to name
-  core's claim-receipt, lease, suspend, complete, fail, checkpoint and sweep
-  statements, are each owned by their call's case: 910. The hand-written
+  cases hold both lease sweeps to it, from the claim before and from a claim
+  not yet made. Twenty mutations, the first to name core's claimed-run,
+  claim-receipt, lease, suspend, complete, fail, checkpoint and sweep
+  statements, are each owned by a case of the column: 913. The hand-written
   stale-token lines for heartbeat, set-checkpoint, reschedule with a delay,
   suspend, complete, fail and expireLeaseNow are gone, and the immediate chain
   keeps its own case. The column adds about 0.4 s to libSQL's conformance and

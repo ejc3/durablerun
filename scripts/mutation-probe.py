@@ -13347,10 +13347,12 @@ for _verdict, _names in (
 
 
 # The stale-token column (DESIGN.md S3.4 rules 4 and 5, packages/conformance/src/stale-token-column.ts).
-# One mutation for each comparison the column holds: it removes the claim token, the claim's
-# generation, or the generation a sweep's scan read, from the statement one call sends, and the
+# Each mutation but the last removes one comparison the column holds, the claim token, the claim's
+# generation, or the generation a sweep's scan read, from a statement one call sends, and the
 # case generated for that call owns it. Calls that share a statement share an edit, so an edit
 # appears once for each call it unfences, because each call's own case has to fail.
+# `expire-lease-now` is each store's own text, so its edit appears once for each store, and the
+# case of that store's dialect owns it.
 # One more removes nothing: it weakens the shared claim predicate to a pattern match, which the
 # statement grammar can spell, and the column's complete case owns it.
 MUTATION_SPECS.extend(
@@ -13503,6 +13505,44 @@ MUTATION_SPECS.extend(
             "      .where('claim_gen', '=', binds.claimGen)\n",
             "      // MUTATION: the claim's generation is not compared\n",
             "a claim-timeout sweep acts on a claim its scan did not read",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+            "packages/store-postgres/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on PostgreSQL",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+            "packages/store-mysql/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on MySQL",
         ),
         (
             "stale-token-read-as-a-pattern",
@@ -13719,6 +13759,30 @@ for _verdict, _names in (
             "stale-scan-sweep-claim-timeout",
         ),
     ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [postgres] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [mysql] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+        ),
+    ),
 ):
     for _name in _names:
         VERDICTS[_name] = _verdict
@@ -13801,6 +13865,12 @@ TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
     "stale-token-expire-lease-now": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-postgres": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-mysql": (
         "replacement removes the claim token's comparison together with its one SQL bind"
     ),
     "tree-reads-run-in-read-mode": (
@@ -17678,7 +17748,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 911:
+        if len(MUTATIONS) != 913:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
