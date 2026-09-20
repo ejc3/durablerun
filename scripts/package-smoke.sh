@@ -142,6 +142,15 @@ surface_loses 'a released class that lost its private constructor' \
 surface_gains 'a released value exported as a type only' \
   core/package/dist/index.d.ts "export type { systemClock } from './system-clock.js';" -- \
   'systemClock is declared differently' '+ (a value exported as a type only)'
+# A whole module exported as a namespace has no shape in the check, so it is refused by name
+# before a release can record one. The same copy reads a released name through a namespace
+# import, which the check follows to the name and does not stop at.
+surface_gains 'a module exported as a namespace' \
+  core/package/dist/index.d.ts \
+  "import * as PackageSurfaceControlInner from './clock.js';" \
+  "export * as PackageSurfaceControlNamespace from './clock.js';" \
+  'export declare const packageSurfaceControlValue: PackageSurfaceControlInner.Clock;' -- \
+  'PackageSurfaceControlNamespace exports a whole module as a namespace'
 # The same from the other side: the snapshot says a member was declared another way.
 surface_refuses 'a snapshot in which one member of a released interface differs' \
   'Checkpoint is declared differently' \

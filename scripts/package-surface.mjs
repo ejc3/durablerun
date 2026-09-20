@@ -21,8 +21,10 @@
 // consumer cannot construct the class. A value that is exported as a type only says so in one
 // line, because a consumer can no longer use it as a value. That is asked of a consumer's
 // compiler, through a module for each entry point that exists only in the check and uses
-// every exported name as a value. The check does not judge whether a difference breaks a
-// consumer. Any difference is refused until the snapshot says why it is there.
+// every exported name as a value. A whole module exported as a namespace has no shape here
+// and is refused by name, so that no release records one the check cannot hold. The check does
+// not judge whether a difference breaks a consumer. Any difference is refused until the
+// snapshot says why it is there.
 //
 // A name leaves on purpose through the snapshot's `withdrawn` table, which gives the
 // reason beside the name. A withdrawn name must be one the release exported, and it
@@ -65,6 +67,8 @@ const same = (was, now) => was.join('\n') === now.join('\n')
 const by = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
 const find = (table, { packageName, subpath, name }) => table?.[packageName]?.[subpath]?.[name]
 const TYPE_ONLY = '(a value exported as a type only)'
+const NAMESPACE =
+  'exports a whole module as a namespace, which has no shape here: export its names one by one, or teach this check the shape of a namespace before a release records one'
 // TS1362: a name cannot be used as a value because it was exported using `export type`.
 const EXPORTED_AS_A_TYPE = 1362
 
@@ -210,7 +214,10 @@ function packedSurface(unpackedRoot, released = () => true) {
     const home = packages.find(({ dir }) => file.startsWith(dir + sep))
     return home && `${home.name}/${relative(home.dir, file)}`
   }
+  // A module is no declaration of its own: what a namespace import names is not reached, and
+  // the names read through it are.
   const topLevel = (node) => {
+    if (ts.isSourceFile(node)) return false
     const statement = ts.isVariableDeclaration(node) ? node.parent.parent : node
     return ts.isSourceFile(statement.parent) || ts.isModuleBlock(statement.parent)
   }
@@ -238,12 +245,17 @@ function packedSurface(unpackedRoot, released = () => true) {
   }
   const label = (symbol) => `${symbol.getName()} ${place(declarationsOf(symbol)[0])}`
   const surface = {}
+  const namespaces = []
   for (const entry of exported) {
     const { packageName, subpath, symbols } = entry
     const asTypes = typeOnly(entry)
     const shapes = {}
     for (const symbol of symbols.sort(by((each) => each.getName()))) {
       const own = resolved(symbol)
+      if (own.declarations?.some(ts.isSourceFile)) {
+        namespaces.push(`${packageName} ${subpath}: ${symbol.getName()}`)
+        continue
+      }
       const reached = new Set([own])
       reach(own, reached)
       reached.delete(own)
@@ -256,7 +268,7 @@ function packedSurface(unpackedRoot, released = () => true) {
     surface[packageName] ??= {}
     surface[packageName][subpath] = shapes
   }
-  return surface
+  return { surface, namespaces }
 }
 
 // What differs, for a reader: the lines only the release has, then the lines only the packed
@@ -288,7 +300,10 @@ const entriesOf = (table) =>
 function check(unpackedRoot, snapshotPath) {
   const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'))
   const { release } = snapshot
-  const current = packedSurface(unpackedRoot, (at) => find(snapshot.surface, at) !== undefined)
+  const { surface: current, namespaces } = packedSurface(
+    unpackedRoot,
+    (at) => find(snapshot.surface, at) !== undefined,
+  )
   const refusals = []
   const blank = (reason) => typeof reason !== 'string' || reason.trim() === ''
   const withdrawn = entriesOf(snapshot.withdrawn)
@@ -323,6 +338,7 @@ function check(unpackedRoot, snapshotPath) {
     for (const subpath of Object.keys(subpaths))
       if (current[packageName]?.[subpath] === undefined)
         refusals.push([`${packageName} ${subpath}: the entry point itself is gone`])
+  for (const at of namespaces) refusals.push([`${at} ${NAMESPACE}`])
   const released = entriesOf(snapshot.surface)
   for (const exported of released) {
     const { packageName, subpath, entry: was, at } = exported
@@ -375,6 +391,8 @@ function write(release, tarballDir, snapshotPath) {
       throw new Error(
         `package-surface: ${tarballDir} lacks ${absent.join(', ')}, which the snapshot of ${release} records`,
       )
+    const { surface, namespaces } = packedSurface(unpacked)
+    if (namespaces.length > 0) throw new Error(`package-surface: ${namespaces[0]} ${NAMESPACE}`)
     const snapshot = {
       release,
       source:
@@ -382,7 +400,7 @@ function write(release, tarballDir, snapshotPath) {
       assets,
       withdrawn: same ? (before.withdrawn ?? {}) : {},
       changed: same ? (before.changed ?? {}) : {},
-      surface: packedSurface(unpacked),
+      surface,
     }
     // The repository's formatter decides the layout, so the written file passes its check.
     const formatted = execFileSync(
