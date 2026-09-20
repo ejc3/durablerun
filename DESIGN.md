@@ -1168,12 +1168,13 @@ One invocation executes one claimed run to its next suspension point:
     plans as no rows at all, so no line above has a step to judge. And that step
     may not be a due range, because a write carries no LIMIT, so a range over
     what is due takes all of it at once. Both go by the statement's kind,
-    because an INSERT of values also plans as no rows, and a write that begins
-    with WITH, whose table the reader cannot name, is refused. The generated
-    check holds that every UPDATE and DELETE a store ships is one the reader
-    reads as a write, so the two lines cannot hold nothing: with the reader's
-    pattern bent so that it cannot read a quoted table, that hold fails and
-    names every shipped write, which was tried.
+    because an INSERT of values also plans as no rows. The statement's first
+    word says its kind, and the reader refuses what it cannot tell: a statement
+    whose first word is not its kind, as one that begins with a comment is, a
+    write that begins with WITH, whose table it cannot name, and an UPDATE or a
+    DELETE whose table it cannot name. So the two lines cannot hold nothing:
+    with the reader's pattern bent so that it reads no write, the generated
+    check fails and names every one of the 82 shipped writes, which was tried.
     No table is excused from the first line, so the
     reader keeps no list of tables: every table of the schema is held, and
     `meta` with them, which a statement reads for the clock, by its key.
@@ -1297,8 +1298,9 @@ One invocation executes one claimed run to its next suspension point:
     read under an alias, because the step names the alias and not the body;
     `json_each` as a driver, because nothing bounds its rows; a due range
     under a keyed driver, because a step that runs once for each row of another
-    must be keyed; and a write that begins with WITH, because the reader cannot
-    name the table it writes. The same generated check is not built for
+    must be keyed; and a statement that begins with a comment or a write that
+    begins with WITH, because the reader cannot tell what it writes. The same
+    generated check is not built for
     PostgreSQL or
     MySQL, whose plan tests hold chosen statements, and BUILD.md records that as
     an option under PR3.14c.

@@ -3248,9 +3248,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   a DELETE whose plan has no step over the table it writes, which is how a
   DELETE with no WHERE plans, and a due range over that table, because a write
   carries no LIMIT. Their red was one test that failed by name on both. The
-  generated check holds that every UPDATE and DELETE a store ships is one the
-  reader reads as a write, and with the reader's pattern bent that hold fails
-  and names every shipped write, which was tried. The third stays passed, and
+  reader refuses a statement whose first word does not say its kind and a write
+  whose table it cannot name, so the two lines cannot hold nothing: with its
+  pattern bent so that it reads no write, the generated check names every one
+  of the 82 shipped writes, which was tried. A write hidden behind a
+  comment read as no fault until then, which a reading of the fold's own diff
+  found, and its red came first. The third stays passed, and
   is run: a write that reaches its table by another entity's key is bounded by
   that entity's rows, as a keyed read is, and the pin refused it only because
   it held each table to a list of its own keys. DESIGN.md has why that is
@@ -3263,9 +3266,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   when it is planned by hand from the trigger's own text, is never planned. The
   clause also refuses sound shapes: the drivers of one queue found by the queue
   alone and a MIN over an index prefix, because a plan carries no row counts,
-  and a write that begins with WITH, whose table the reader cannot name. A case
-  holds `key` to `meta` alone, by reading every table's columns from the
-  migrated schema.
+  and a statement that begins with a comment or a write that begins with WITH,
+  because the reader cannot tell what it writes. A case holds `key` to `meta`
+  alone, by reading every table's columns from the migrated schema.
   Two registered mutations own the clause, one in a read and one in the SELECT
   of an INSERT, the checkpoint a worker writes under its lease. Each finds its
   run by a comparison no index serves and returns what it returned. Before the
