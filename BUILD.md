@@ -2014,6 +2014,22 @@ these three things; nothing else in the system does I/O, time, or randomness.
   request runs `verify` took 1,096 to 1,767 seconds and `base-gate` 187 to 316,
   and their limits are now 90 and 20 minutes, each at least three times its
   slowest run, the margin the per-test limits have.
+  PR4.6 raised three limits by that rule. Three times `verify`'s slowest run,
+  1,767 seconds, is 5,301 of the 5,400 seconds that 90 minutes hold. PR4.6
+  adds about 17 ms to each of the 3,342 fresh PostgreSQL fixtures of a run,
+  about a minute where it was measured and about two on CI's slowest runner,
+  which takes three times the slowest run to about 5,650 seconds. `verify`'s
+  limit is now 120 minutes, which holds the rule until its slowest run reaches
+  2,400 seconds. `mutations` had a limit of 60 minutes and no arithmetic on
+  record: over its last 38 successful runs it took 988 to 1,754 seconds, so
+  three times its slowest is 5,262 seconds where the limit held 3,600, and its
+  limit is 120 minutes as well. `conformance-mysql` took 356 to 630 seconds
+  over the same runs, three times which is 1,890 seconds where 30 minutes hold
+  1,800, and PR4.6's empty version adds about 4 ms to each of its fixtures. Its
+  limit is 45 minutes. `base-gate` at 342 seconds and `tla` at 463 hold the
+  rule under their limits of 20 and 30 minutes. A limit is not latency: no job
+  runs longer for it, and a job that hangs holds its runner longer before it
+  is stopped.
 
 - **PR3.14 keyed generated follow-ons**: on libSQL, eleven shipped writes
   scanned the table they wrote: the task update of claim, activate,
@@ -2585,7 +2601,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   million rows a table and 6 of 6 at four million, with no error at any
   caller. The lock is a statement of PostgreSQL's
   runner. When PR4.4b carries the migration lock as a lock coordinate,
-  PostgreSQL's coordinate can replace that statement. An
+  PostgreSQL's coordinate can replace that statement. The per-fixture cost
+  is also why this PR raises the limits of three CI jobs, by the rule and with
+  the arithmetic in the PR3.13 entry. An
   operator's own view over a store table stops the version: PostgreSQL refuses
   to change the type of a column a view reads, `migrate()` fails and leaves
   version 6, and it commits once the view is dropped.

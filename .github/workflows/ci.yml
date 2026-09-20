@@ -13,9 +13,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # 18 to 30 minutes across recent runs. Three times the slowest, the margin the per-test limits have: a slow runner must
-    # not cancel a required check, and a hung run must not hold a runner for the six hour default.
-    timeout-minutes: 90
+    # 16 to 30 minutes across recent runs. At least three times the slowest, the margin the per-test limits have, with
+    # room for the suite to grow: a slow runner must not cancel a required check, and a hung run must not hold a runner
+    # for the six hour default. A limit is not latency. The arithmetic is in BUILD.md, where the limit was first set.
+    timeout-minutes: 120
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # The dialects this job has servers for. MySQL runs the same suite in its
@@ -56,7 +57,8 @@ jobs:
   # flushes are off, which is what keeps a database for every test affordable.
   conformance-mysql:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Six to eleven minutes across recent runs, and at least three times the slowest, like verify.
+    timeout-minutes: 45
     env:
       DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
     steps:
@@ -90,7 +92,8 @@ jobs:
   # a CI job and no one has to run it by hand before merging.
   mutations:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 16 to 30 minutes across recent runs, and at least three times the slowest, like verify.
+    timeout-minutes: 120
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # Some registered mutations are killed by tests that need a MySQL server.
