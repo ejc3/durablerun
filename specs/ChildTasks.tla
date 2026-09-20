@@ -84,21 +84,63 @@
 \*    under that model's own restrictions: an untimed await only under an armed
 \*    cancellation deadline.
 \*
-\* Ledger, modeled ahead of implementation (spec-first):
-\*   every terminal batch ('complete', 'fail', 'cancel-task', 'sweep:cancel',
-\*     'sweep:lost-launch' cap, 'sweep:claim-timeout' at the infra cap)
-\*     -> ChildTerminal  [cas-fenced]  (the completion event and the waiter's
-\*     wake are follow-ons of the terminal compare-and-set, so a replay finds
-\*     the task already terminal and writes nothing)
+\* ---------------------------------------------------------------------------
+\* BATCH-LABEL LEDGER -- machine-checked by scripts/spec-ledger.py.  The model
+\* came before its SQL (spec-first), and these are the batches that implement
+\* it.  The script holds this block to what it can see: every quoted label is
+\* a batch some store sends, every action named is an action of Next below,
+\* and every action of Next is mapped here or listed as having no batch, with
+\* the reason.  It reads no guard.  The `child-tasks` conformance surface holds
+\* each action and guard by a case that names it.
+\*
+\* An entry starts three spaces in and keeps its labels, its actions, and its
+\* class on that one line, and its prose continues five spaces in.  The class
+\* is the label's duplicate-semantics class, which Scheduler.tla's ledger
+\* defines and assigns, so an entry that states one must agree with it.
+\*
+\* Modeled (label -> action  [dup-class]):
+\*   'spawn' of a child -> SpawnChild  [receipt]  (the insert presents the
+\*     parent's live claim, the one a child await presents.  A replay finds the
+\*     child by its reserved key, with no claim, and creates nothing)
+\*   'complete' -> ChildTerminal  [cas-fenced]
+\*   'fail' that ends the task -> ChildTerminal  [cas-fenced]
+\*   'fail-rollback' that ends the task -> ChildTerminal  [cas-fenced]
+\*   'cancel-task' -> ChildTerminal  [cas-fenced]
+\*   'sweep:cancel' -> ChildTerminal  [cas-fenced]
+\*   'sweep:lost-launch' at its cap -> ChildTerminal  [cas-fenced]
+\*   'sweep:claim-timeout' at the infra cap -> ChildTerminal  [cas-fenced]
+\*     (every batch that can end a task, which the conformance suite lists as
+\*     TERMINAL_BATCH_LABELS.  The completion event and the waiter's wake are
+\*     follow-ons of the terminal compare-and-set, so a replay finds the task
+\*     already terminal and writes nothing.  A failure that retries, and a
+\*     failure or a cap that starts a saga (Sagas.tla), end no task and write
+\*     no event)
 \*   'retry-task' -> ReviveChild  [cas-fenced]  (leaves the event alone)
-\*   'await-event' -> AwaitHit / AwaitMiss / AwaitMaterialize / AwaitRefused /
-\*     AwaitUnknown  [cas-fenced]  (the same batch, reached by an internal path
-\*     that builds the reserved name; the child's existence, queue, and state
-\*     are read inside the batch, under the event lock)
-\*   a terminal batch of an older build -> LegacyTerminal  (no SQL of this
-\*     build: it is what this build must tolerate)
-\*   'claim' of a run whose timed wait came due -> AwaitTimeout  [cas-fenced]
+\*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]  (the batch a caller's
+\*     await sends, reached by an internal path that builds the reserved name.
+\*     It registers only while a task with the child's id is live in the
+\*     parent's queue, which it reads inside the batch, under the event lock)
+\*   'await-event' -> AwaitRefused / AwaitUnknown  [cas-fenced]  (it registered
+\*     nothing and hit nothing, and the 'task-done-state' read says why: a child
+\*     in another queue, or no such task.  Nothing is written)
+\*   'record-task-done' -> AwaitMaterialize  [cas-fenced]  (the same read found
+\*     the child ended with nothing recorded.  The batch writes the event from
+\*     that row, fenced on the row's stamp, on no event existing, and on the
+\*     awaiting run's live claim, under the event lock, and answers as a hit)
+\*   'claim' of the woken run -> ParentClaimWoken  [receipt]  (the claim returns
+\*     the outcome the emit parked on the run)
+\*   'claim' of a run whose timed wait came due -> AwaitTimeout  [receipt]
 \*     (unchanged: the claim consumes the wait row)
+\*   'cancel-task', 'sweep:cancel' of the parent -> CancelParent  [cas-fenced]
+\*     (unchanged: the cancellation deletes the parent's wait rows)
+\* No batch (action -- reason):
+\*   LegacyTerminal -- a terminal batch of an older build: no SQL of this build,
+\*     it is what this build must tolerate
+\*   LateEmit -- exists only for a vacuity probe
+\*   ForgedEmit -- exists only for a vacuity probe: the emit port refuses a
+\*     reserved name, so 'emit-event' never writes this event
+\* ---------------------------------------------------------------------------
+
 EXTENDS Naturals
 
 CONSTANTS
