@@ -1,4 +1,3 @@
-import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   type SchedulerStore,
@@ -7,7 +6,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type ChildTask, type TaskRegistry, runClaimedRun } from '../src/index.js'
-import { Q, claimAndRun, fx, invocationOf, registry } from './worker-harness.js'
+import { Q, claimAndRun, expectCleanRows, fx, invocationOf, registry } from './worker-harness.js'
 
 type Fixture = Awaited<ReturnType<typeof fx>>
 
@@ -25,10 +24,6 @@ async function resultOf(f: Fixture, taskId: string): Promise<unknown> {
   return result?.completedPayloadJson === undefined
     ? result
     : JSON.parse(result.completedPayloadJson)
-}
-
-async function expectCleanRows(f: Fixture): Promise<void> {
-  expect(await engineHistoryViolations(f.raw)).toEqual([])
 }
 
 /** ctx.spawn and ctx.awaitTask (DESIGN.md §3.2, specs/ChildTasks.tla). */

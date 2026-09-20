@@ -1,4 +1,3 @@
-import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   FatalTaskError,
   MAX_COUNT,
@@ -8,14 +7,10 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { TaskContext } from '../src/index.js'
-import { SAGA_DIALECTS, type SagaFixture, checkpointNames, drive, runNext } from './saga-harness.js'
-import { Q, registry } from './worker-harness.js'
+import { SAGA_DIALECTS, checkpointNames, drive, runNext } from './saga-harness.js'
+import { Q, expectCleanRows, registry } from './worker-harness.js'
 
 const NO_DELAY = { kind: 'fixed', baseSeconds: 0 } as const
-
-async function expectCleanRows(f: SagaFixture): Promise<void> {
-  expect(await engineHistoryViolations(f.raw)).toEqual([])
-}
 
 /** A step whose body and rollback each leave a line in `effects`. */
 function effectfulStep(ctx: TaskContext, effects: string[], name: string, value: unknown = name) {
