@@ -536,6 +536,25 @@ async function assertEdgePostcondition(
  * fails to FIRE the armed label is itself an error — the workload's
  * coverage of the inventory is machine-checked, not assumed.
  */
+/**
+ * What the rows a cell leaves violate: everything `engineHistoryViolations` names, less
+ * one excusal. The workload ends one child through a simulated older build, and the
+ * model allows what that leaves behind: specs/ChildTasks.tla's LegacyTerminal ends the
+ * child, writes no event, wakes nobody, and records nothing, so the child is terminal
+ * with no completion event until an await of it records the outcome (AwaitMaterialize).
+ * `endedByOlderBuild` holds that child from the spawn that creates it until an await of
+ * it has answered, which a crash can prevent. Only the missing event of a task in the
+ * set is excused. The missing event of any other task still fails the cell, and so does
+ * any other violation that names the excused one.
+ */
+export async function matrixHistoryViolations(
+  raw: SqlExecutor,
+  endedByOlderBuild: ReadonlySet<string>,
+): Promise<string[]> {
+  const excused = new Set([...endedByOlderBuild].map(missingCompletionEvent))
+  return (await engineHistoryViolations(raw)).filter((violation) => !excused.has(violation))
+}
+
 export async function runFaultMatrixCase(
   makeFixture: StoreFixtureFactory,
   label: string,
@@ -560,8 +579,8 @@ export async function runFaultMatrixCase(
       })
     }
 
-    // The tasks a cell may leave terminal with no completion event. There is one: the
-    // child an older build ends below, until an await of it has recorded its outcome.
+    // The one task `matrixHistoryViolations` excuses: the child the older build ends
+    // below, from the spawn that creates it until an await of it has answered.
     const endedByOlderBuild = new Set<string>()
 
     world.actor('driver', async (simDb) => {
@@ -850,10 +869,7 @@ export async function runFaultMatrixCase(
 
     // (1) Nothing the fault did may have corrupted state, or left rows that
     // ChildTasks.tla or Sagas.tla forbids.
-    const excused = new Set([...endedByOlderBuild].map(missingCompletionEvent))
-    const violationsNow = async (): Promise<string[]> =>
-      (await engineHistoryViolations(f.raw)).filter((violation) => !excused.has(violation))
-    const violations = await violationsNow()
+    const violations = await matrixHistoryViolations(f.raw, endedByOlderBuild)
     if (violations.length > 0) {
       throw new Error(`matrix ${cell}: ${violations.join('; ')}`)
     }
@@ -891,7 +907,7 @@ export async function runFaultMatrixCase(
     if (!done) {
       throw new Error(`matrix ${cell}: system wedged — probe task never completed`)
     }
-    const finalViolations = await violationsNow()
+    const finalViolations = await matrixHistoryViolations(f.raw, endedByOlderBuild)
     if (finalViolations.length > 0) {
       throw new Error(`matrix ${cell} final: ${finalViolations.join('; ')}`)
     }
