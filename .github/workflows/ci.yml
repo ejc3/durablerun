@@ -330,6 +330,8 @@ jobs:
               # Each store's executor types a permanent SQL error apart from an outage, from
               # the driver's error code, a worker pass ends on the new type as on an outage,
               # and a contest of the self-concurrency surface books it with the outages.
+              # On MySQL a limit that a retry cures is read before its class, and one
+              # real-server case holds the executor's lists to the server's own list of numbers.
               # Each new condition registers a mutation the base predates, so their verdict
               # markers are exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
@@ -339,6 +341,9 @@ jobs:
                   "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
                   "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
                   "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+                  "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
