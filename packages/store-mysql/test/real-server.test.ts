@@ -12,6 +12,7 @@ import {
   MIGRATIONS,
   RUNS_STAMP_INDEX,
   createIndexIfMissing,
+  setNotNullWhileNullable,
 } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -373,6 +374,28 @@ describe('MysqlExecutor against a real server', () => {
         { nullable: 'YES', comment: '' },
         { nullable: 'NO', comment: '' },
       ])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('fails loudly over a column the catalog does not hold, where doing nothing would record the version', async () => {
+    // The form does nothing only when the catalog says the column is already NOT NULL. A
+    // column the catalog does not hold is a caller's mistake, and a form that chose to do
+    // nothing there would let its version be recorded over a column that never changed,
+    // where the index form over a missing table fails.
+    const db = await openMysqlTestDb({ idNamespace: 'column-missing' })
+    try {
+      const form = setNotNullWhileNullable('events', 'no_such_column', 'LONGTEXT').map((sql) => ({
+        sql,
+        args: [],
+      }))
+      const answer = await db.raw.batch('migrate:column', form, MIGRATION_WRITE).then(
+        () => 'accepted',
+        (error: unknown) => /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+      )
+      // 1054: unknown column.
+      expect(answer).toBe('MySQL error 1054')
     } finally {
       await db.close()
     }
