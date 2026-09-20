@@ -508,6 +508,48 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // The count's bound is part of the contract a store is held to, and not only a rule of
+    // the one definition the three stores call today. A store, or a port in another
+    // language, that did the arithmetic itself and went one past the bound would write a
+    // count no decoder reads, so the record would read as none and the attempt after it
+    // would be stored as the first. Only a record an older build's store wrote can sit at
+    // the bound, so the case writes one there, as that store would have.
+    it("holds a rollback's count at the largest safe integer, and never stores one that reads as none", async () => {
+      const { taskId, pass } = await rollingBack(f, ['a'])
+      const stored = async () =>
+        decodeRollbackTry(String(await checkpointState(f.raw, taskId, triesName('a'))))?.tries
+      await f.store.failRollback(
+        Q,
+        pass.runId,
+        pass.claimToken,
+        CAUSE,
+        { delaySeconds: 0 },
+        failedRollback('a'),
+      )
+      await f.raw.batch('a-record-at-the-bound', [
+        {
+          sql: 'UPDATE checkpoints SET state = ? WHERE task_id = ? AND checkpoint_name = ?',
+          args: [triesOf('a', Number.MAX_SAFE_INTEGER).stateJson, taskId, triesName('a')],
+        },
+      ])
+      const second = await claimActivated(f.store, Q, 'w-pass-2')
+      await f.store.failRollback(
+        Q,
+        second.runId,
+        second.claimToken,
+        CAUSE,
+        { delaySeconds: 0 },
+        failedRollback('a'),
+      )
+      const atTheBound = await stored()
+      const third = await claimActivated(f.store, Q, 'w-pass-3')
+      await f.store.failRollback(Q, third.runId, third.claimToken, CAUSE, null, failedRollback('a'))
+      expect({ atTheBound, after: await stored() }).toEqual({
+        atTheBound: Number.MAX_SAFE_INTEGER,
+        after: Number.MAX_SAFE_INTEGER,
+      })
+    })
+
     // The store reads the last count before its batch, and the claim's fence is what keeps
     // that read current. A caller whose claim is gone may have read a count that is stale,
     // and it loses the compare-and-set, so a stale count is never written: not under a token
