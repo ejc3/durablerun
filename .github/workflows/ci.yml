@@ -307,6 +307,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
