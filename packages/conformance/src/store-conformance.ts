@@ -1275,8 +1275,9 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       })
 
       // A targeted refusal is the corruption's only if the same call acts on the same
-      // profile with nothing corrupt. An arm that scans shows that in the cell itself, where
-      // its one call wins the healthy trigger. An arm that names its target shows it here.
+      // profile with nothing corrupt. An arm that names its target shows that here. An arm
+      // that scans has no such control: its cell shows the one call acting on the healthy
+      // trigger, and not on the profile.
       // Where each clean call leaves the poisoned task: its state, its runs in order, and its
       // checkpoints. The type asks a new profile for its answer.
       const cleanEffects = {

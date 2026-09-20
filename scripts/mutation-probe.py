@@ -14234,8 +14234,11 @@ for _verdict, _names in (
 # target in the state in which its label acts on a target with nothing corrupt, so its cells
 # reach the guards behind the label's state condition. One mutation for each profile removes
 # a guard its cells reach, and one generated cell of that profile owns it, so the audit keeps
-# showing that the profile's cells can fail. Hand-written cases own the first three edits
-# under other names, and the last two are one edit, which each failure label's own cell owns.
+# showing that the profile's cells can fail. The first two edits are the ones
+# `activate-requires-relaunch-bound` and `defer-launch-requires-claim-receipt-admission` make,
+# which hand-written cases own. The third is narrower than `retry-task-requires-counters-in-range`,
+# which removes three conjuncts at once where this removes the one on infrastructure retries.
+# The last two are one edit, which each failure label's own cell owns.
 MUTATION_SPECS.extend(
     (
         (
