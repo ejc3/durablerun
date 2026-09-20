@@ -1030,14 +1030,20 @@ One invocation executes one claimed run to its next suspension point:
     run still running under a token too long for the index cannot take version 9
     yet: the version fails whole, with SQLSTATE 54000, the database stays at
     version 8, and the same `migrate()` succeeds once that run has ended, or the
-    sweep has taken its lease, and every transaction that was open in that
-    database at that moment has finished. The last part is PostgreSQL's: an
-    index build also indexes a row version that is dead but that an open
-    snapshot can still see, and it judges the index's predicate on that version.
-    A test in `store-postgres` holds both halves, in a database of its own,
-    because which snapshots count is decided for each database and the suites
-    share one. Three things make the index reachable, and a check holds each
-    one.
+    sweep has taken its lease, and no transaction that was open at that moment
+    still holds a snapshot in that database or a transaction id of its own
+    anywhere on the server. That last part is PostgreSQL's. An index build also
+    indexes a row version that is dead but that an open snapshot can still see,
+    it judges the index's predicate on that version, and the building session's
+    own snapshot reaches back to the oldest transaction id still running on the
+    server, in any database. Measured with one transaction held open on purpose:
+    a write transaction in another database refused the version, and a read-only
+    snapshot in another database did not. A test in `store-postgres` holds both
+    halves in a database of its own: the version is refused while a snapshot the
+    test opens there is open, and it builds, asked once, after the server's
+    oldest running transaction id has passed one taken when the run ended, which
+    the test waits for. Three things make the index reachable, and a check holds
+    each one.
     First, the two follow-ons name the claim token beside the stamp. The stamp
     is the fence. The token is for the planner and narrows nothing, for one
     reason: a run carries this batch's claim stamp only when this batch's

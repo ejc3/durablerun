@@ -184,17 +184,25 @@ describe('racing PostgreSQL migrators', () => {
  * database stays at version 8, which every build runs against. It heals by itself, a
  * little later than when the run ends: an index build also indexes a row version that is
  * dead but that an open snapshot can still see, and it judges the index's predicate on
- * that old version. So the same `migrate()` succeeds once that run has ended, or the sweep
- * has taken its lease, AND every transaction that was open in the database at that moment
- * has finished.
+ * that old version. Two kinds of transaction hold such a snapshot. One has a snapshot in
+ * this database. The other has a transaction id of its own in ANY database of the server,
+ * because the building session's own snapshot reaches back to the oldest transaction id
+ * still running on the server. So the same `migrate()` succeeds once that run has ended,
+ * or the sweep has taken its lease, AND no transaction that was open at that moment still
+ * holds either. Measured with one transaction held open on purpose: a write transaction in
+ * another database refused the version, and a read-only snapshot in another database did
+ * not.
  *
- * Which snapshots count is decided for each database, and every other test of this suite
- * shares one database by schema, so beside them this test once met a transaction that was
- * none of its own. It runs in a database of its own, which it creates and drops, where no
- * snapshot exists but the one it opens on purpose. That holds the sentence both ways: the
- * version is refused while that snapshot is open, and built once it is closed. This needs a
- * server, and a role that may create a database.
+ * The test holds the sentence both ways. It runs in a database of its own, which it
+ * creates and drops, so the only snapshot in its database is the one it opens on purpose,
+ * and the version is refused while that one is open. Other tests share the server, and
+ * their write transactions count, so before it asks for the version again it waits for
+ * the exact condition: the server's oldest running transaction id has passed one taken
+ * after the run ended. It then asks once, and the version builds. This needs a server, and
+ * a role that may create a database.
  */
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 describe('version 9 over a run held under a token too long for its index', () => {
   it('fails loudly and leaves version 8 while the run runs, and while an open snapshot still sees it, and then succeeds', async () => {
     const shared = process.env.DURABLERUN_POSTGRES_URL
@@ -259,11 +267,26 @@ describe('version 9 over a run held under a token too long for its index', () =>
       await other.query('SELECT count(*) FROM runs')
       // The run ends under its own token. No entry but `claim` holds a token to the width.
       await store.complete('q', run.runId, token, '{}')
-      // Its old version is dead, that snapshot can still see it, and the build meets it.
+      // A transaction id taken now is newer than the one that ended the run.
+      const ended = await client.query('SELECT pg_current_xact_id()::text AS id')
+      // The run's old version is dead, that snapshot can still see it, and the build meets it.
       expect(await migrated()).toEqual(refused)
 
-      // The snapshot is closed, and nothing else in this database can hold one.
+      // The snapshot is closed, and nothing else in this database holds one. A transaction
+      // of another test, in another database, may still hold a transaction id from before
+      // the run ended. The longest any PostgreSQL test of this repository holds one open is
+      // bounded at 5 s (a racing migrator waiting to be seen), so 60 s is twelve times that.
       await other.query('COMMIT')
+      for (let tries = 0; ; tries++) {
+        const oldest = await client.query(
+          'SELECT pg_snapshot_xmin(pg_current_snapshot()) > $1::xid8 AS passed',
+          [(ended.rows[0] as { id: string }).id],
+        )
+        if ((oldest.rows[0] as { passed: boolean }).passed) break
+        if (tries >= 1200) throw new Error('a transaction from before the run ended is still open')
+        await pause(50)
+      }
+      // Asked once, not until it works: nothing that was open when the run ended is open.
       expect(await migrated()).toEqual({ answer: 'migrated', version: 9 })
       const built = await client.query(
         `SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'runs_held'`,
@@ -276,5 +299,5 @@ describe('version 9 over a run held under a token too long for its index', () =>
       await control.query(`DROP DATABASE IF EXISTS ${own} WITH (FORCE)`)
       await control.end()
     }
-  })
+  }, 90_000) // Past the 60 s the wait above may take, so that bound is what reports.
 })

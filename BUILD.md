@@ -3027,10 +3027,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   token's place too, and a `store-postgres` test holds the one edge that leaves:
   a database an older build left with a run still running under such a token
   fails version 9 whole, stays at version 8, and takes the version once that run
-  has ended and every transaction that was open in that database at that moment
-  has finished, because PostgreSQL's index build also indexes a dead row version
-  that an open snapshot can still see. The test runs in a database of its own
-  and holds both halves. PostgreSQL's pin parks one wait, because with `waits`
+  has ended and no transaction that was open at that moment still holds a
+  snapshot in that database or a transaction id of its own anywhere on the
+  server, because PostgreSQL's index build also indexes a dead row version that
+  an open snapshot can still see, and the building session's own snapshot
+  reaches back to the server's oldest running transaction id. The test runs in a
+  database of its own and holds both halves: refused while a snapshot it opens
+  is open, and built, asked once, after the server's oldest running transaction
+  id has passed the moment the run ended. Its first two forms each passed alone
+  and failed beside other tests' transactions, which is how the gate found both
+  halves of that sentence. PostgreSQL's pin parks one wait, because with `waits`
   empty the delete never reaches `runs`, and with the token term removed from
   the delete alone the pin fails by that statement's name. The registry holds
   1033.
