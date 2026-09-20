@@ -682,6 +682,23 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('answers a claim under a token longer than an identifier alike on every dialect, and never as an outage', async () => {
+        // 3,000 hex characters that no compression shortens. An index of the token holds
+        // a bounded row on one dialect, a prefix on another and the whole value on the
+        // third, so a token of any length is where the dialects would answer differently.
+        let x = 0x2545f491
+        const token = Array.from({ length: 3000 }, () => {
+          x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+          return (x >>> 28).toString(16)
+        }).join('')
+        await f.store.spawn(Q, 'long-claim-token', '{}')
+        const answer = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 }).then(
+          (runs) => `took ${runs.length}`,
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+        expect(answer).toMatch(/^(took 1|InvalidDurableStringError)$/)
+      })
+
       it('same-token receipt holds the lease expiry to its range, at both ends', async () => {
         // The receipt's bounds check on the lease expiry is the one term a dialect may
         // spell differently, to keep its planner from choosing an index by it. Whatever
