@@ -1132,6 +1132,67 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
   })
 
+  it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
+    const WALK = 'neither keyed nor a due range'
+    // A due range that stands alone is no walk, and the list of due ranges names only one
+    // that drives another step. Under no LIMIT it reads everything due at once, as an UPDATE
+    // always does, and one of the two pins that stood here refused this one, because a due
+    // range is not the key a write was handed. Pointed the other way it reads the backlog.
+    const everyExpiredLease = await read(
+      `update runs set state = 'failed'
+       where queue = ? and state = 'running' and claim_expires_at_ms <= ?`,
+    )
+    const everyRunNotYetDue = await read(
+      `select run_id from runs where queue = ? and state = 'pending' and available_at_ms > ?`,
+    )
+    expect([everyExpiredLease, everyRunNotYetDue]).toEqual([
+      { faults: [], dueDrivers: [] },
+      { faults: [], dueDrivers: [] },
+    ])
+    // A statement is planned under the binds its sends carried, and SQLite plans from bound
+    // values. Sent with a state the history never sends it with, this one walks.
+    const leases =
+      'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?'
+    expect((await nestsOf({ sql: leases, args: ['q', 'running', 0] })).faults).toEqual([])
+    expect((await nestsOf({ sql: leases, args: ['q', 'pending', 0] })).faults).toEqual([
+      `SEARCH runs USING INDEX runs_poll (queue=? AND state=?) :: is a walk of runs: ${WALK}`,
+    ])
+    // What it refuses though it is sound, because a plan does not say how few rows a walk
+    // reads: the drivers of one queue are a handful, and a MIN over an index prefix is one row.
+    const driversOfAQueue = await read('select driver_id from drivers where queue = ?')
+    const earliestPending = await read(
+      `select min(available_at_ms) from runs where queue = ? and state = 'pending'`,
+    )
+    expect([driversOfAQueue, earliestPending].map((reading) => reading.faults)).toEqual([
+      [`SEARCH drivers USING PRIMARY KEY (queue=?) :: is a walk of drivers: ${WALK}`],
+      [
+        `SEARCH runs USING COVERING INDEX runs_poll (queue=? AND state=?) :: is a walk of runs: ${WALK}`,
+      ],
+    ])
+    // Last, because it changes how this database plans. A plan depends on the database's
+    // statistics, and the database a statement is planned on here has none. Keyed here, this
+    // read walks its queue where the statistics rate the two indexes the other way.
+    const runsOfATask = {
+      sql: 'select run_id from runs where task_id = ? and queue = ?',
+      args: ['t', 'q'],
+    }
+    expect((await nestsOf(runsOfATask)).faults).toEqual([])
+    await raw.execute('ANALYZE sqlite_schema')
+    for (const [index, stat] of [
+      ['runs_task_attempt', '1000000 1000000 1000000'],
+      ['runs_poll', '1000000 2 2 1'],
+    ]) {
+      await raw.execute({
+        sql: `INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('runs', ?, ?)`,
+        args: [index ?? '', stat ?? ''],
+      })
+    }
+    await raw.execute('ANALYZE sqlite_schema')
+    expect((await nestsOf(runsOfATask)).faults).toEqual([
+      `SEARCH runs USING INDEX runs_poll (queue=?) :: is a walk of runs: ${WALK}`,
+    ])
+  })
+
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
@@ -1203,6 +1264,16 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const beatPlan = await planTree(beat.sql, beat.args)
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
     expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
+    // Planned by hand from the trigger's own text, with a bind where it names the new row,
+    // that DELETE is a walk, and the reader refuses it.
+    const triggers = await raw.execute(`select sql from sqlite_master where type = 'trigger'`)
+    const deletes = triggers.rows.flatMap(
+      (row) => String(row.sql).match(/DELETE FROM [^;]+/g) ?? [],
+    )
+    expect(deletes).toHaveLength(1)
+    expect((await read(String(deletes[0]).replace(/NEW\.\w+/g, '?'))).faults).toEqual([
+      'SCAN drivers :: is a walk of drivers: neither keyed nor a due range',
+    ])
   })
   it('judges a read of a body as it judges any step, whatever a step is named', async () => {
     // A materialized body, scanned once for each run of a walk: every task of the queue,
