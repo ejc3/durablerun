@@ -39,6 +39,20 @@ const BROKEN_CONSTRAINTS: Readonly<
     sql: 'INSERT INTO tasks SELECT * FROM tasks WHERE task_id = ?',
     args: [first],
   }),
+  unique: (_first, second) => ({
+    // The second task under the first one's idempotency key, in the same queue.
+    sql: 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?',
+    args: ['key-of-the-first', second],
+  }),
+  'not null': (first) => ({
+    sql: 'UPDATE tasks SET task_name = NULL WHERE task_id = ?',
+    args: [first],
+  }),
+  check: (first) => ({
+    // Every dialect holds `state` to the six states a task can be in.
+    sql: 'UPDATE tasks SET state = ? WHERE task_id = ?',
+    args: ['no-such-state', first],
+  }),
 }
 
 /**
