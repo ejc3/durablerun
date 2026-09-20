@@ -1977,11 +1977,12 @@ are load-bearing):
    still at version 6 behaves as every build did before it. An older build
    that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
    it does after every migration. libSQL and MySQL take an empty version 7,
-   which keeps the numbering of the dialects aligned. On a fresh database the
-   version costs PostgreSQL nine statements, 17 ms where opening and
-   migrating a test fixture took 27, and costs MySQL one more version read and
-   one more locked batch, 4 ms where it took 39 (medians of 75 fixtures on
-   each side, interleaved, on one machine).
+   which keeps the numbering of the dialects aligned. On a fresh database
+   version 7's nine statements and the runner's lock, one statement in each of
+   the seven versions, cost PostgreSQL 17 ms where opening and migrating a
+   test fixture took 27, and the empty version costs MySQL one more version
+   read and one more locked batch, 4 ms where it took 39 (medians of 75
+   fixtures or more on each side, interleaved, on one machine).
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
