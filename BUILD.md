@@ -152,11 +152,14 @@ a last docs PR gives a live owner to every open bullet that is left.
    claiming one did on all three. Schema version 9 is the index `runs_held`, a
    queue's running runs by their claim token, the two follow-ons name the token
    beside the stamp, and libSQL's receipt read keeps its bounds check off the
-   lease index. One claim beside 10,000 running runs went from 22.1 ms to 4.6 on
-   libSQL, from 12.7 to 7.3 on PostgreSQL and from 33 to 4.0 on MySQL, and no
-   other write was measurably slower. The table of excuses is deleted, a pin on
-   each dialect holds all four statements, and the entry under PR3.14b has the
-   measured table and what a realistic ceiling of running runs is.
+   lease index. One claim beside 10,000 running runs went from a mean of 22.1 ms
+   to 4.6 on libSQL and from 12.7 to 7.3 on PostgreSQL. On MySQL it went from a
+   median of 33 ms, whose means ran from 34 to 61 under the server's default
+   buffer pool, to a mean of 4.0. No other write was measurably slower. `claim`
+   holds its token to an identifier's width, because PostgreSQL's index row is
+   bounded. The table of excuses is deleted, a pin on each dialect holds all
+   four statements, and the entry under PR3.14b has the measured table and what
+   a realistic ceiling of running runs is.
 8. PR4.4e: on MySQL a keyed write takes its key on a table of any size. Inside
    a claim's own batch on a four-row `runs` table the update holds a record
    lock on the rows it claims and on no other row, and the concurrent-claim
@@ -2517,7 +2520,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   and the receipt read each discarded every running run, 12.1, 35.2 and 13.8 ms
   at 100,000. Its delete is driven from `waits` while that table is empty and
   from the running runs once it holds rows, so beside 100,000 parked waits a
-  claim cost what it cost beside none, 8.2 and 8.9 ms against 8.2, and the
+  claim took 8.2 and 8.9 ms in two rounds against 7.6 and 8.2 beside none, about
+  8 percent more in each round and inside the noise between rounds, and the
   delete became a fifth read of the same backlog. On MySQL the follow-on and the
   delete have found their runs by the statement stamp since version 8, 9 and 3
   rows walked, and the held guard and the receipt read each walked every running
@@ -2569,15 +2573,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   | MySQL | 6.56, 5.56 | 4.20, 3.26 | 33, 32 (medians) | 4.03, 3.17 |
 
   At 100,000 a claim costs 5.0 ms on libSQL and 7.2 to 7.7 on PostgreSQL, and at
-  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows in its
-  four statements at every size. What the index costs the other writes, mean ms
-  before and after at 10,000 running runs: activate 2.54 and 2.19, heartbeat
-  1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on libSQL;
-  4.61 and 4.62, 1.32 and 1.37, 5.06 and 5.34, 2.51 and 2.58 on PostgreSQL; 2.94
-  and 2.32, 0.83 and 0.77, 3.81 and 3.62, 1.98 and 1.88 on MySQL. The same call
-  moves 5 to 7 percent from round to round, and the index's cost is inside that.
-  One PostgreSQL round at 10,000 is left out of its mean, because every call of
-  it was 1.7 times slower, activate included.
+  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows
+  in its four statements at every size. What the index costs the other writes,
+  mean ms before and after at 10,000 running runs: activate 2.54 and 2.19,
+  heartbeat 1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on
+  libSQL; 4.61 and 4.62, 1.32 and 1.37, 5.06 and 5.34, 2.51 and 2.58 on
+  PostgreSQL; 2.94 and 2.32, 0.83 and 0.77, 3.81 and 3.62, 1.98 and 1.88 on
+  MySQL. The same call moves 5 to 7 percent from round to round, and the index's
+  cost is inside that. One PostgreSQL round at 10,000 is left out of its mean,
+  because every call of it was 1.7 times slower, activate included.
 
   The three `claim` entries of `EXCUSED_SOURCE_WALKS` are deleted with the
   table, and that pin excuses nothing. A second libSQL pin allows a claim to
@@ -2587,7 +2591,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   statement walks beside 400, with a run due and with none. Four mutations are
   registered: the token term on libSQL and on PostgreSQL, libSQL's unary plus,
   and the receipt's bounds check, which a new conformance case holds at both
-  ends of its range on every dialect. The registry holds 1002.
+  ends of its range on every dialect. A fifth holds the claim token to an
+  identifier's width at `claim`. The review of this change found that
+  PostgreSQL's index of the token cannot hold a row past about 2,700 bytes, so a
+  claim under 3,000 characters that do not compress answered as an outage there
+  and took its run on the other two, where before the index every dialect took
+  it. `claim` now holds its token with the check it already made for its queue,
+  one shared conformance case shows all three dialects refusing such a token
+  alike, the identifier surface sends an identifier past the width in the
+  token's place too, and a `store-postgres` test holds the one edge that leaves:
+  a database an older build left with a run still running under such a token
+  fails version 9 whole, stays at version 8, and takes the version once that run
+  has ended. PostgreSQL's pin parks one wait, because with `waits` empty the
+  delete never reaches `runs`, and with the token term removed from the delete
+  alone the pin fails by that statement's name. The registry holds 1003.
   - Limit, measured: PostgreSQL matches the partial index to the bound state of
     the held guard and of the receipt read only when it plans with the values,
     as it does for the unnamed statements the executor sends. With the server
@@ -2595,11 +2612,31 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to the plan they had, and a claim beside 100,000 running runs costs 32.6 ms
     against 7.4, where it cost 64. The pin plans with real binds and cannot see
     it.
-  - For whichever of this PR and PR3.14c merges second: the plan check excuses
-    the claim's task follow-on and its delete by name, and names the receipt
-    read in its list of due ranges, with this PR as the owner. All three come
-    out, and its tests pass without them. Its option of a clause that refuses a
-    lone walk in any statement has this merge as its trigger.
+  - For this PR's merge of main, which holds the plan check (PR3.14c): its rule
+    reads a seek of `runs_held (queue=? AND claimed_by=?)` as a walk, so over
+    this PR's statements it still faults seven nests, in the claim's task
+    follow-on, its delete and its receipt read, and its two excuses for the
+    first two no longer match, because their pattern names the old walk. So its
+    names do not simply come out. At the merge its rule learns that this seek is
+    bounded, because one token holds at most one claim's limit of runs, with the
+    reason in DESIGN.md. Then its two excuses and its name for the receipt read
+    among the due ranges come out, and its plan test passes with nothing of the
+    claim excused. Its option of a clause that refuses a lone walk in any
+    statement has that merge as its trigger.
+  - Option, not built, with its trigger: `taken`, the declaration of the runs a
+    claim took, is a byte-identical copy in the three stores, and no mutation
+    holds MySQL's copy, because the term changes no plan there. Hoisting it
+    beside core's claim statement was declined here: the third copies across the
+    stores have an owner, it is a store text fragment, and a hoist re-aims the
+    two store-anchored mutations this PR registers. Trigger: the next change to
+    `taken`.
+  - Option, not built, with its trigger: `store-postgres`'s saga plan test
+    judges plans over tiny tables that have no statistics, so a database-wide
+    ANALYZE from any other session can flip them. Alone it passed 4 times of 4,
+    and beside a database-wide ANALYZE issued ten times a second from another
+    session it failed 3 times of 6. This PR's pin analyzes only the two tables
+    it loads, in its own schema. Trigger: the first time that test flakes, or
+    the next test that analyzes a whole database.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It

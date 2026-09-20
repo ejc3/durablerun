@@ -954,19 +954,39 @@ One invocation executes one claimed run to its next suspension point:
     buffer pool, against 4. Schema version 9 is the index `runs_held`, a queue's
     running runs by their token: `(queue, claimed_by)` over the rows whose state
     is running on libSQL and PostgreSQL, and `(queue, claimed_by(255), state)`
-    on MySQL, which has no partial index and keeps the token in a LONGTEXT. The
-    contract gives a claim token no length. The engine's own are 32 characters,
-    and a caller's longer one still seeks by its first 255 and is compared whole
-    on the row. With the index one claim costs 4 to 8 ms on every dialect at
-    every size measured, up to 100,000 running runs, and no other write was
-    measurably slower: an entry enters the index at claim and leaves it when the
-    run leaves `running`, and those transitions already move the row in
-    `runs_poll` and `runs_lease`. On PostgreSQL an update that is not heap-only
-    writes every index that holds the row, so heartbeat and activate write this
-    one too, as they already wrote `runs_lease`. It is an index and nothing
-    else: a build that predates it runs against the schema unchanged, and a
-    newer build's statements are valid without it. Three things make the index
-    reachable, and a check holds each one.
+    on MySQL, which has no partial index and keeps the token in a LONGTEXT. A
+    claim token is held to an identifier's width where it enters, at `claim`
+    (§3.4 rule 10), because the index must hold it on every dialect and
+    PostgreSQL's btree row may not pass about 2,700 bytes. With no bound, a
+    claim under 3,000 characters that do not compress answered as an outage on
+    PostgreSQL (SQLSTATE 54000) and took its run on the other two, where before
+    the index every dialect took it. 255 characters are at most 1,020 bytes, so
+    the row fits, and MySQL's prefix of 255 holds the whole token. The engine's
+    own tokens are 32 characters. With the index one claim costs 4 to 8 ms on
+    every dialect at every size measured, up to 100,000 running runs on libSQL
+    and PostgreSQL and 40,000 on MySQL, and no other write was measurably
+    slower: on libSQL and PostgreSQL an entry enters the index at claim and
+    leaves it when the run leaves `running`, and those transitions already move
+    the row in `runs_poll` and `runs_lease`. On MySQL, which has no partial
+    index, every run is in the index from its spawn, under no token until it is
+    claimed. The review of this change measured spawn there beside 10,000
+    running runs, in three interleaved rounds of 300 calls: 2.48, 2.43 and 2.34
+    ms before the index and 2.19, 2.20 and 2.30 with it. On PostgreSQL an update
+    that is not heap-only writes every index that holds the row, so heartbeat
+    and activate write this one too, as they already wrote `runs_lease`. It is
+    an index and nothing else: a build that predates it runs against the schema
+    unchanged, and a newer build's statements are valid without it. On
+    PostgreSQL the build blocks writes to `runs` while it reads the whole table,
+    history included, as version 6's does: the review measured 40 ms over
+    500,001 ended runs. An operator cannot build it ahead of the migration
+    there: with `runs_held` built by hand, `migrate()` fails with
+    `SchemaMismatchError` (SQLSTATE 42P07) and the version stays at 8, as it
+    does for version 6's index. And a database that an older build left with a
+    run still running under a token too long for the index cannot take version 9
+    yet: the version fails whole, with SQLSTATE 54000, the database stays at
+    version 8, and the same `migrate()` succeeds once that run has ended or the
+    sweep has taken its lease. A test in `store-postgres` holds that. Three
+    things make the index reachable, and a check holds each one.
     First, the two follow-ons name the claim token beside the stamp. The stamp
     is the fence. The token is for the planner and narrows nothing, for one
     reason: a run carries this batch's claim stamp only when this batch's
@@ -1017,8 +1037,21 @@ One invocation executes one claimed run to its next suspension point:
     runs costs 32.6 ms against 7.4, where it cost 64 before the index. That is
     slower and never wrong. An executor that prepared named statements would
     meet the same limit once PostgreSQL chose a generic plan. The PostgreSQL pin
-    plans with real binds, so it cannot see this. It is the pin's false
-    negative.
+    plans with real binds, so it cannot see this. It is the pin's first false
+    negative. The state could be written as a literal in those two statements,
+    and PostgreSQL would then match the index under a generic plan too. It was
+    not, because that moves the statements of three dialects for a plan no
+    shipped executor produces, and the limit is measured and stated here. The
+    pin's second false negative is statistics. Its fixture analyzes the two
+    tables it loads, and its plans depend on that: with that line removed the
+    pin fails on all four statements, and beside 10,000 running runs that were
+    never analyzed the receipt read still ranged over `runs_lease` while the
+    other reads used `runs_held`. On a database with no statistics at all, as
+    after a bulk load, PostgreSQL reads the backlog as it did before the index.
+    That is slower, never wrong, and it lasts until autovacuum analyzes the
+    table. The pin's fixture also parks one wait, because with `waits` empty the
+    delete of timed-out waits never reaches `runs` and its scans would be judged
+    without having run.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
@@ -1899,7 +1932,8 @@ are load-bearing):
    permanent `SchemaMismatchError` classification.
 10. **A durable identifier holds 255 characters, on every dialect.** The
    identifiers are a queue, a task id, a run id, a driver id, an idempotency
-   key, an event name, a step name, and a checkpoint name. A character is a
+   key, an event name, a step name, a checkpoint name, and a claim token. A
+   character is a
    Unicode code point, which is how MySQL counts a `VARCHAR`. It is not a
    UTF-16 unit and not a byte: 255 characters outside the basic plane are 510
    units and 1020 bytes, and they fit. The width is MySQL's, which cannot index
@@ -1911,8 +1945,12 @@ are load-bearing):
    `InvalidDurableStringError`, whatever the excess is, trailing spaces
    included. A driver holds its queue and its id the same way when it is
    constructed, because a refused tick reads as an outage and a refused
-   registry beat is swallowed. A task name, a claim token, and a payload are
-   not identifiers: nothing indexes them, and the port does not bound their
+   registry beat is swallowed. A claim token is held where it enters the
+   port, at `claim`, since `runs_held` indexes it (§3.2). No other entry that
+   takes a token holds it to the width, and none needs to: each only compares
+   it with what `claim` stored, no row can hold a token that `claim` refused,
+   and so a longer one matches no run. A task name and a payload are not
+   identifiers: nothing indexes them, and the port does not bound their
    length. A child's task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
 
