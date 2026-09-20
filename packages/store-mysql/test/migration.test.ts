@@ -503,24 +503,34 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
     }
   })
 
-  it('is given an empty string by the same change in a session with no strict mode', async () => {
-    // A fact about the server that the case above depends on. Outside a strict mode MySQL
-    // does not refuse to make a column NOT NULL over a row that holds NULL. It stores the
-    // column type's default where the NULL was, with a warning, and a waiter would then read
-    // a delivered event whose payload is not JSON. Version 10's statements are sent here as
-    // they are, over a session that the executor did not set up.
+  it('is refused by the version itself in a session with no strict mode, with the row as it was', async () => {
+    // Outside a strict mode MySQL does not refuse to make a column NOT NULL over a row that
+    // holds NULL. It stores the column type's default where the NULL was, with a warning,
+    // and a waiter would then read a delivered event whose payload is not JSON. The executor
+    // sets a strict mode on every connection it takes, but that is session state kept in
+    // another file, and a port in another language replays the version's text and not that
+    // setup. So the text itself has to refuse. Version 10's statements are sent here as they
+    // are, over a session that the executor did not set up.
     const db = await databaseAt(9, 'null-payload-no-strict-mode')
     try {
       await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
       const session = await sessionOn(db)
+      let refusal = 'accepted'
       try {
         await session.query("SET SESSION sql_mode = ''")
         const version10 = MIGRATIONS.find(({ version }) => version === 10)
         for (const statement of version10?.statements ?? []) await session.query(statement)
+      } catch (error) {
+        refusal = `MySQL error ${String((error as { errno?: unknown }).errno)}`
       } finally {
         await session.end()
       }
-      expect(await observed(db)).toEqual({ version: '9', column: 'NO', held: '' })
+      expect({ refusal, ...(await observed(db)) }).toEqual({
+        refusal: 'MySQL error 1846',
+        version: '9',
+        column: 'YES',
+        held: null,
+      })
     } finally {
       await db.close()
     }
