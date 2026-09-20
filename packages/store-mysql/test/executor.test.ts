@@ -220,6 +220,26 @@ describe('MysqlExecutor transactions', () => {
     ])
   })
 
+  it('refuses a migration write that names no migration lock, and sends nothing', async () => {
+    // MySQL commits each DDL statement on its own, so a migration write is safe only while
+    // no other migrator runs. The batch itself has to name the lock. Chosen from a list of
+    // labels, a `migrate:` label the list does not know runs its DDL beside another
+    // migrator, and nothing says so.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('migrate:backfill', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect({ refusal, sent: afterSessionSetup(connection) }).toEqual({
+      refusal: expect.stringContaining('names no migration lock'),
+      sent: [],
+    })
+  })
+
   it('reports a DELETE of two rows as two rows', async () => {
     // MySQL answers a DELETE with a count and no info line, which is also how it answers
     // a single-row upsert that updated. Only the upsert counts its row twice.
