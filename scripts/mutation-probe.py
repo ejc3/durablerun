@@ -13788,6 +13788,447 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
+# The stale-token column (DESIGN.md S3.4 rules 4 and 5, packages/conformance/src/stale-token-column.ts).
+# Each mutation but the last removes one comparison the column holds, the claim token, the claim's
+# generation, or the generation a sweep's scan read, from a statement one call sends, and the
+# case generated for that call owns it. Calls that share a statement share an edit, so an edit
+# appears once for each call it unfences, because each call's own case has to fail.
+# `expire-lease-now` is each store's own text, so its edit appears once for each store, and the
+# case of that store's dialect owns it.
+# One more removes nothing: it weakens the shared claim predicate to a pattern match, which the
+# statement grammar can spell, and the column's complete case owns it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "stale-token-spawn-of-a-child",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the parent's claim spawns a child under it",
+        ),
+        (
+            "stale-token-activate",
+            "packages/core/src/statements/claim-receipt.ts",
+            "    whereClaimedRun(binds)(update)\n",
+            "    update // MUTATION: the claim token is not compared\n"
+            "      .where('run_id', '=', binds.runId)\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim activates the run",
+        ),
+        (
+            "stale-token-defer-launch",
+            "packages/core/src/statements/claim-receipt.ts",
+            "    whereClaimedRun(binds)(update)\n",
+            "    update // MUTATION: the claim token is not compared\n"
+            "      .where('run_id', '=', binds.runId)\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks a run it was never handed",
+        ),
+        (
+            "stale-token-heartbeat",
+            "packages/core/src/statements/lease.ts",
+            "      .where('claimed_by', '=', binds.claimToken)\n",
+            "      // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim extends the lease",
+        ),
+        (
+            "stale-token-reschedule",
+            "packages/core/src/statements/suspend.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks the run",
+        ),
+        (
+            "stale-token-suspend",
+            "packages/core/src/statements/suspend.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim parks the run and commits its marker",
+        ),
+        (
+            "stale-token-await-event",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim registers a wait on the run",
+        ),
+        (
+            "stale-token-record-task-done",
+            "packages/core/src/statements/events.ts",
+            "    .where('r.claimed_by', '=', claim.claimToken)\n",
+            "    // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim records a child's completion event",
+        ),
+        (
+            "stale-token-complete",
+            "packages/core/src/statements/complete.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim completes the run and its task",
+        ),
+        (
+            "stale-token-fail",
+            "packages/core/src/statements/fail.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim fails the run",
+        ),
+        (
+            "stale-token-fail-rollback",
+            "packages/core/src/statements/fail.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim fails a rollback and ends the saga",
+        ),
+        (
+            "stale-token-expire-lease-now",
+            "packages/store-libsql/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease",
+        ),
+        (
+            "stale-token-set-checkpoint",
+            "packages/core/src/statements/checkpoint.ts",
+            "      .$call(whereClaimedRun(binds))\n",
+            "      .where('run_id', '=', binds.runId) // MUTATION: the claim token is not compared\n"
+            "      .where('queue', '=', binds.queue)\n"
+            "      .where('state', '=', 'running')\n",
+            "a caller that does not hold the claim writes a checkpoint and extends the lease",
+        ),
+        (
+            "stale-generation-activate",
+            "packages/core/src/statements/claim-receipt.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "the claim before this one activates the run",
+        ),
+        (
+            "stale-generation-defer-launch",
+            "packages/core/src/statements/claim-receipt.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "the claim before this one parks the run",
+        ),
+        (
+            "stale-scan-sweep-lost-launch",
+            "packages/core/src/statements/sweep.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "a lost-launch sweep acts on a claim its scan did not read",
+        ),
+        (
+            "stale-scan-sweep-claim-timeout",
+            "packages/core/src/statements/sweep.ts",
+            "      .where('claim_gen', '=', binds.claimGen)\n",
+            "      // MUTATION: the claim's generation is not compared\n",
+            "a claim-timeout sweep acts on a claim its scan did not read",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+            "packages/store-postgres/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on PostgreSQL",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+            "packages/store-mysql/src/store.ts",
+            "              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue, claimToken],\n",
+            "              WHERE run_id = ? AND queue = ? AND state = 'running'\n"
+            "                AND ${unexpired}\n"
+            "                AND EXISTS (\n"
+            "                  SELECT 1 FROM tasks t\n"
+            "                  WHERE ${owner}\n"
+            "                )`,\n"
+            "        args: [runId, queue], // MUTATION: the claim token is not compared\n",
+            "a caller that does not hold the claim expires the lease on MySQL",
+        ),
+        (
+            "stale-token-read-as-a-pattern",
+            "packages/core/src/statements/claimed-run.ts",
+            "      .where('claimed_by', '=', binds.claimToken)\n",
+            "      .where('claimed_by', 'like', binds.claimToken) // MUTATION: the caller's token is read as a pattern\n",
+            "a caller whose token is a pattern that matches the claim's completes the run",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) spawn of a child refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-spawn-of-a-child",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-spawn-of-a-child",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) activate refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-activate",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-activate",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) defer-launch refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-defer-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-defer-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) heartbeat refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-heartbeat",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-heartbeat",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) reschedule refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-reschedule",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-reschedule",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) suspend refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-suspend",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-suspend",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) await-event refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-await-event",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-await-event",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) record-task-done refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-record-task-done",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-record-task-done",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) complete refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-complete",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-complete",
+            "stale-token-read-as-a-pattern",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) fail refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-fail",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-fail",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) fail-rollback refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-fail-rollback",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-fail-rollback",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) set-checkpoint refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-set-checkpoint",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-set-checkpoint",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) activate refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-generation-activate",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-generation-activate",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) defer-launch refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-generation-defer-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-generation-defer-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) sweep:lost-launch acts on nothing when its scan read another generation",
+            "mutation-verdict:behavior:stale-scan-sweep-lost-launch",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-scan-sweep-lost-launch",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [libsql] (write label x caller that does not hold the claim) sweep:claim-timeout acts on nothing when its scan read another generation",
+            "mutation-verdict:behavior:stale-scan-sweep-claim-timeout",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-scan-sweep-claim-timeout",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [postgres] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-postgres",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "stale-token column [mysql] (write label x caller that does not hold the claim) expire-lease-now refuses a caller that does not hold the claim",
+            "mutation-verdict:behavior:stale-token-expire-lease-now",
+            "packages/conformance/src/stale-token-column.ts",
+        ),
+        (
+            "stale-token-expire-lease-now-mysql",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -13865,6 +14306,15 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "stale-token-expire-lease-now": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-postgres": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
+    "stale-token-expire-lease-now-mysql": (
+        "replacement removes the claim token's comparison together with its one SQL bind"
+    ),
     "tree-reads-run-in-read-mode": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
@@ -18287,7 +18737,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 952:
+        if len(MUTATIONS) != 972:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

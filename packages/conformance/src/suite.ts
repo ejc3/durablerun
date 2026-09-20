@@ -1190,17 +1190,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(lease.held).toBe(true)
         expect(lease.remainingMs).toBe(120_000)
       })
-
-      // fenceTwin('Heartbeat') — a stale token never extends a lease.
-      it('reports lease lost for a stale token — the AB002 signal', async () => {
-        await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne(f.store, Q, 'tick-1')
-        expect(await f.store.heartbeat(Q, run.runId, 'stale-token', 60)).toEqual({
-          held: false,
-          remainingMs: 0,
-          reason: 'lease-lost',
-        })
-      })
     })
 
     describe('sweep classification', () => {
@@ -2275,10 +2264,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('expireLeaseNow (the advisory write)', () => {
-      it('accelerates sweep pickup with a valid token; stale tokens no-op', async () => {
+      it('accelerates sweep pickup with a valid token', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimActivated(f.store, Q, 'tick-1', 600)
-        expect(await f.store.expireLeaseNow(Q, run.runId, 'wrong-token')).toBe(false)
         expect(await f.store.sweep(Q, 10)).toEqual([]) // lease still healthy
         expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(true)
         const swept = await f.store.sweep(Q, 10)
@@ -2723,34 +2711,18 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(again?.runId).toBe(run.runId)
       })
 
-      // fenceTwin('SleepSuspend') fenceTwin('VoluntaryChain')
-      // — the executable twins of the modeled CAS guards: every park/terminal
-      // disposition refuses a stale token, including the immediate chain
-      // (inSeconds: 0) and the marker-carrying suspend, which share the CAS.
-      it('stale-token transitions throw LeaseLostError', async () => {
+      // fenceTwin('VoluntaryChain'): the immediate chain shares the park's compare-and-set.
+      // The stale-token column holds every park and terminal disposition to its claim
+      // token, and it calls `reschedule` with a delay, so the chain with none is held here.
+      it('an immediate chain under a stale token throws LeaseLostError', async () => {
         const run = await activatedRun()
-        await expect(f.store.reschedule(Q, run.runId, 'stale', { inSeconds: 1 })).rejects.toThrow(
-          LeaseLostError,
-        )
         await expect(f.store.reschedule(Q, run.runId, 'stale', { inSeconds: 0 })).rejects.toThrow(
-          LeaseLostError,
-        )
-        await expect(
-          f.store.suspendRun(
-            Q,
-            run.runId,
-            'stale',
-            { inSeconds: 1 },
-            { key: 's', stateJson: '{}' },
-          ),
-        ).rejects.toThrow(LeaseLostError)
-        await expect(f.store.complete(Q, run.runId, 'stale', '{}')).rejects.toThrow(LeaseLostError)
-        await expect(f.store.fail(Q, run.runId, 'stale', '{}', null)).rejects.toThrow(
           LeaseLostError,
         )
       })
 
-      // fenceTwin('FailRunWithRetry') fenceTwin('FailRunTerminal'): `fail` has two arms
+      // fenceTwin('FailRunWithRetry'): the terminal arm's marker is on the stale-token column,
+      // which calls `fail` with no retry. This case holds both arms. `fail` has two arms
       // behind one compare-and-set on the live claim, a retry while the budget has room and
       // the task's end at the budget. A stale token is refused on both, and neither refusal
       // writes anything. The live token then takes the arm the budget names, so each run
@@ -3261,15 +3233,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           heartbeat_at_ms: 1_010_000,
           claim_expires_at_ms: 1_070_000,
         })
-      })
-
-      it('a stale token writes nothing and throws LeaseLostError', async () => {
-        await f.store.spawn(Q, 'job', '{}')
-        const run = await claimActivated(f.store, Q, 'w1')
-        await expect(
-          f.store.setCheckpoint(Q, run.taskId, run.runId, 'stale', 's', '{}', 60),
-        ).rejects.toThrow(LeaseLostError)
-        expect(await f.store.getCheckpoints(Q, run.taskId, 9)).toEqual([])
       })
 
       it('rejects a fractional stored owner attempt before extending the lease', async () => {
