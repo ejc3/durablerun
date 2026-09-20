@@ -2723,7 +2723,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(again?.runId).toBe(run.runId)
       })
 
-      // fenceTwin('FailRun') fenceTwin('SleepSuspend') fenceTwin('VoluntaryChain')
+      // fenceTwin('SleepSuspend') fenceTwin('VoluntaryChain')
       // — the executable twins of the modeled CAS guards: every park/terminal
       // disposition refuses a stale token, including the immediate chain
       // (inSeconds: 0) and the marker-carrying suspend, which share the CAS.
@@ -2748,6 +2748,34 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await expect(f.store.fail(Q, run.runId, 'stale', '{}', null)).rejects.toThrow(
           LeaseLostError,
         )
+      })
+
+      // fenceTwin('FailRunWithRetry') fenceTwin('FailRunTerminal'): `fail` has two arms
+      // behind one compare-and-set on the live claim, a retry while the budget has room and
+      // the task's end at the budget. A stale token is refused on both, and neither refusal
+      // writes anything. The live token then takes the arm the budget names, so each run
+      // was where this case says it was.
+      it('a stale fail is refused with budget left and at the budget, and writes nothing', async () => {
+        for (const { maxAttempts, runs, failed } of [
+          { maxAttempts: 3, runs: 2, failed: false },
+          { maxAttempts: 1, runs: 1, failed: true },
+        ]) {
+          const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts })
+          const run = await claimActivated(f.store, Q, `w-budget-${maxAttempts}`)
+          expect(run.taskId).toBe(spawned.taskId)
+          const before = await snapshot(f, spawned.taskId)
+          await expect(
+            f.store.fail(Q, run.runId, 'stale', '{"name":"Boom"}', { delaySeconds: 1 }),
+          ).rejects.toThrow(LeaseLostError)
+          expect(await snapshot(f, spawned.taskId), `budget ${maxAttempts}`).toEqual(before)
+          await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
+          const after = await snapshot(f, spawned.taskId)
+          expect(
+            { runs: after.runs?.length, failed: after.tasks?.[0]?.state === 'failed' },
+            `budget ${maxAttempts}`,
+          ).toEqual({ runs, failed })
+        }
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
       it('suspendRun rejects a non-integer stored attempt atomically', async () => {
