@@ -1091,6 +1091,21 @@ describe('the tree path', () => {
       }
     })
 
+    it('says nothing about a span to a follow-on that spelled no clock', () => {
+      // The advice on age() and a subtraction is for a statement that spelled a clock. A
+      // follow-on refused for holding the batch clock's token spelled none.
+      const refusal = () =>
+        batchWithClock('(SELECT 7)')
+          .casTree('win', statement(winCas()))
+          .followOnTree(
+            'task',
+            statement(taskFollowOn().set({ first_started_at_ms: nowValue })),
+            'one',
+          )
+      expect(refusal).toThrow(/reads the clock/)
+      expect(refusal).not.toThrow(/subtraction/)
+    })
+
     it('says a follow-on that spells a clock reads the clock', () => {
       refusesAs(
         'mutation-verdict:construction:tree-followon-spelled-clock-message',
