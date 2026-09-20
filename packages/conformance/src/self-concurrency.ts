@@ -5,10 +5,8 @@ import {
   StoreUnavailableError,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { childTaskViolations } from './child-tasks.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory, StoreFixtureOptions } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
 import { rollingBack, startStep, triesOf } from './sagas.js'
 import {
   awaitOwned,
@@ -30,18 +28,13 @@ const COPIES = 4
 const EVERY_COPY = Array.from({ length: COPIES }, (_, copy) => copy)
 
 /**
- * How many times an executor runs one batch before it reports a deadlock (DESIGN.md §3.2).
- * It is written here and not imported, so the suite holds the contract and not whatever a
- * constant happens to say.
+ * How many runs sleep on an event beside the second contest of `claim`. A claim deletes
+ * the expired waits of the runs it takes, and a server plans that delete by what `waits`
+ * holds. Beside an empty `waits` MySQL read `waits` first and met nothing. Beside these
+ * it read the claimed runs first, with shared locks along an index that covers every
+ * other claimer's run, and its claimers deadlocked in 20 contests of 20.
  */
-const ATTEMPTS = 3
-
-/**
- * The most deadlock victims an excused contest may count. A copy that met no outage was a
- * victim on fewer than all of its attempts, and whatever runs afterwards runs alone. A
- * count past this is not the excused defect, and fails the contest.
- */
-const EXCUSED_VICTIMS = COPIES * (ATTEMPTS - 1)
+const PARKED_WAITERS = 50
 
 /**
  * Brings a fresh fixture to a state in which one call of the port is legal, the same way
@@ -66,6 +59,40 @@ interface Race {
 async function startedRun(f: StoreFixture, taskName = 'job'): Promise<ClaimedRun> {
   await f.store.spawn(Q, taskName, '{}')
   return claimActivated(f.store, Q, `w-${taskName}`)
+}
+
+/** `count` tasks whose one run started and now sleeps on an event nobody emits. */
+async function parkWaiters(f: StoreFixture, count: number): Promise<void> {
+  for (let index = 0; index < count; index++) await f.store.spawn(Q, `waiter-${index}`, '{}')
+  const parked = await f.store.claim(Q, 'w-waiters', { leaseSeconds: 60, limit: count })
+  if (parked.length !== count) throw new Error(`parked ${parked.length} of ${count} waiters`)
+  for (const run of parked) {
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await awaitOwned(f.store, Q, run, 'wait', 'never', 3600)
+  }
+}
+
+/** A due run for every copy, each claimed under a token of its own, and then what they left. */
+async function distinctClaimers(f: StoreFixture) {
+  for (const copy of EVERY_COPY) await f.store.spawn(Q, `job-${copy}`, '{}')
+  const claim = (token: string) => f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
+  return {
+    call: (copy: number) => claim(`copy-${copy}`),
+    // A claimer skips the runs another has locked, so a claim may come back short of
+    // what is due, or empty, and how the runs are split is not held. What is held is
+    // that no run is claimed twice and that what the claimers left can still be
+    // claimed. A claim sent again under its token is answered with what it took the
+    // first time, so every claim here has a token of its own.
+    afterwards: async () => {
+      const claimed = []
+      for (let next = 0; next <= COPIES; next++) {
+        const more = await claim(`copy-${COPIES}.${next}`)
+        if (more.length === 0) return claimed
+        claimed.push(...more)
+      }
+      throw new Error('the last claimer was never answered nothing')
+    },
+  }
 }
 
 /** A task with one run, claimed and not yet started. */
@@ -124,26 +151,10 @@ const STORE_RACES = {
       for (let index = 0; index < 2; index++) await f.store.spawn(Q, `job-${index}`, '{}')
       return () => f.store.claim(Q, 'one-request', { leaseSeconds: 60, limit: 1 })
     },
-    'by distinct claimers, and one more for what they left': async (f) => {
-      for (const copy of EVERY_COPY) await f.store.spawn(Q, `job-${copy}`, '{}')
-      const claim = (token: string) => f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-      return {
-        call: (copy: number) => claim(`copy-${copy}`),
-        // A claimer skips the runs another has locked, so a claim may come back short of
-        // what is due, or empty, and how the runs are split is not held. What is held is
-        // that no run is claimed twice and that what the claimers left can still be
-        // claimed. A claim sent again under its token is answered with what it took the
-        // first time, so every claim here has a token of its own.
-        afterwards: async () => {
-          const claimed = []
-          for (let next = 0; next <= COPIES; next++) {
-            const more = await claim(`copy-${COPIES}.${next}`)
-            if (more.length === 0) return claimed
-            claimed.push(...more)
-          }
-          throw new Error('the last claimer was never answered nothing')
-        },
-      }
+    'by distinct claimers, and one more for what they left': distinctClaimers,
+    'by distinct claimers beside parked waiters, and one more for what they left': async (f) => {
+      await parkWaiters(f, PARKED_WAITERS)
+      return distinctClaimers(f)
     },
   },
   activate: {
@@ -343,15 +354,6 @@ const ADMIN_RACES = {
   },
 } satisfies { readonly [Method in keyof StoreAdmin]: Readonly<Record<string, Race>> }
 
-type ContestNames<Prefix extends string, Table> = {
-  [Method in keyof Table & string]: `${Prefix}${Method} ${keyof Table[Method] & string}`
-}[keyof Table & string]
-
-/** The name of every contest. A fixture's `selfRaceDeadlocksExcused` can name no other. */
-export type SelfRaceName =
-  | ContestNames<'', typeof STORE_RACES>
-  | ContestNames<'admin ', typeof ADMIN_RACES>
-
 /**
  * A method whose entry holds no state compiles and races nothing, so a table that has one
  * is refused here, where the contests are generated.
@@ -503,8 +505,6 @@ interface Contest {
   readonly violations: readonly string[]
   readonly outages: readonly string[]
   readonly deadlocks: number
-  /** The dialect's fixture names this contest as one in which its server may pick a victim. */
-  readonly deadlocksExcused: boolean
   /**
    * No copy answered with anything and nothing the store holds changed, so the arranged
    * state was not one in which the call is legal.
@@ -562,14 +562,9 @@ async function contest(
         rows: Object.fromEntries(
           Object.entries(after.rows).map(([table, lines]) => [table, lines.map(setAside).sort()]),
         ),
-        violations: [
-          ...(await engineInvariantViolations(f.raw)),
-          ...(await childTaskViolations(f.raw)),
-          ...(await sagaViolations(f.raw)),
-        ],
+        violations: await engineHistoryViolations(f.raw),
         outages: settled.flatMap((one) => (one.kind === 'outage' ? [one.why] : [])),
         deadlocks: f.deadlocks() - deadlocksBefore,
-        deadlocksExcused: name in f.selfRaceDeadlocksExcused,
         idle: copies.every(didNothing) && JSON.stringify(before) === JSON.stringify(after),
       }
     },
@@ -596,9 +591,8 @@ async function contest(
  * wrong in both orders passes here, and the scheduler suite's own cases hold the answers.
  *
  * The executor absorbs a deadlock by running the victim again, which would hide a wrong
- * lock order from all four. So its count of victims is held at zero as well, except where
- * a dialect's fixture names a contest and says why (`selfRaceDeadlocksExcused`), and there
- * it is held to `EXCUSED_VICTIMS`.
+ * lock order from all four. So its count of victims is held at zero as well, in every
+ * contest and on every dialect.
  *
  * Contests between different calls are the fuzz's and the fault matrix's.
  */
@@ -613,12 +607,7 @@ export function selfConcurrencyConformance(
         const raced = await contest(makeFixture, name, race, 'at once')
         // What both orders must equal: this build's own serial order, and clean.
         const held = { ...serial, violations: [], outages: [], idle: false, deadlocks: 0 }
-        // An excused contest may count victims, up to the bound, and nothing else of it is excused.
-        const withinTheExcuse = raced.deadlocksExcused && raced.deadlocks <= EXCUSED_VICTIMS
-        expect({ serial, raced: withinTheExcuse ? { ...raced, deadlocks: 0 } : raced }).toEqual({
-          serial: held,
-          raced: held,
-        })
+        expect({ serial, raced }).toEqual({ serial: held, raced: held })
       })
     }
   })

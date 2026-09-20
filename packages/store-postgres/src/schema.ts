@@ -280,6 +280,10 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
         ALTER COLUMN driver_id TYPE TEXT COLLATE "C"`,
     ],
   },
+  // Version 8 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. PostgreSQL's DELETE takes no lock on the rows its subquery reads.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 8, statements: [] },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

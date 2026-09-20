@@ -241,6 +241,18 @@ export class InvalidDurableStringError extends TypeError {
 }
 
 /**
+ * A port refused a call for what its caller passed: a name or a key in the engine's
+ * namespace, or options that contradict each other. Nothing was written, and the same
+ * call is refused again. These refusals were bare RangeErrors, and this is one, so a
+ * caller that catches RangeError still catches it. What the class adds is that a host
+ * can tell a caller's mistake from a RangeError of the engine's own, such as a stored
+ * row it cannot read. `isPortRefusal` names the whole family of a port's refusals.
+ */
+export class PortRefusalError extends RangeError {
+  override readonly name = 'PortRefusalError'
+}
+
+/**
  * The database's schema is not the one this build expects — a missing table
  * or column. DELIBERATELY NOT a StoreUnavailableError: it is permanent, and
  * waiting does not repair it.

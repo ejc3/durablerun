@@ -221,7 +221,6 @@ async function recordTaskDone(
     'materialize',
     materializeTaskDoneCas({
       ...awaiting,
-      childTaskId,
       eventName: name,
       payloadJson: encodeTaskOutcome(outcome),
       childStamp,
@@ -243,7 +242,7 @@ async function recordTaskDone(
   if (row === undefined) return null
   if (row.payload_type !== 'text') {
     throw new TrustedRangeError(
-      `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
+      `awaitTaskDone ${queue}/${name.display} found a non-TEXT stored payload`,
     )
   }
   return { emitted: true, payloadJson: String(row.payload) }

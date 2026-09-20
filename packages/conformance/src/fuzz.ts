@@ -12,10 +12,8 @@ import {
   taskDoneEventName,
 } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
-import { childTaskViolations } from './child-tasks.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
 import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
 
 const Q = 'q'
@@ -130,12 +128,7 @@ async function runWalk(
     return fresh
   }
 
-  /** The engine invariants, and what ChildTasks.tla requires of rows only the engine wrote. */
-  const violationsNow = async (): Promise<string[]> => [
-    ...(await engineInvariantViolations(f.raw)),
-    ...(await childTaskViolations(f.raw)),
-    ...(await sagaViolations(f.raw)),
-  ]
+  const violationsNow = (): Promise<string[]> => engineHistoryViolations(f.raw)
 
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
   const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)

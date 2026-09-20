@@ -1800,6 +1800,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
+    this.runTasks.forget(runId)
   }
 
   /**
@@ -2159,6 +2160,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    this.runTasks.forget(runId)
     return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
@@ -2334,7 +2336,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
     if (stored?.payload_type !== 'text') {
-      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      throw new RangeError(`emitEvent ${queue}/${name.display} found a non-TEXT stored payload`)
     }
   }
 
@@ -2365,7 +2367,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
           awaited.stepName,
           name,
           awaited.timeoutSeconds,
-          awaited.childTaskId,
         ),
       refusal: (operation, runId) => this.refusal(operation, runId),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
@@ -2568,7 +2569,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
       stepName,
       EventName.fromPort('awaitEvent', eventName),
       timeoutSeconds,
-      null,
     )
     if (answer === null) throw await this.refusal('awaitEvent', runId)
     return answer
@@ -2613,7 +2613,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
     stepName: string,
     name: EventName,
     timeoutSeconds: number | null,
-    awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const eventName = name.value
     const timeoutMs =
@@ -2646,7 +2645,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
         claimToken,
         stepName,
         eventName: name,
-        awaitedTaskId,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS SIGNED) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2723,11 +2721,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
         // A child await reaches the task's code, which never sees the engine's event name.
-        const subject =
-          awaitedTaskId === null
-            ? `awaitEvent ${queue}/${eventName}`
-            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
-        throw new RangeError(`${subject} found a non-TEXT stored payload`)
+        const operation = name.taskId === null ? 'awaitEvent' : 'awaitTaskDone'
+        throw new RangeError(
+          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,
+        )
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }

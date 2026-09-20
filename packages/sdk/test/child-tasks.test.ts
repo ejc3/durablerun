@@ -1,4 +1,3 @@
-import { childTaskViolations, engineInvariantViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   type SchedulerStore,
@@ -7,6 +6,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type ChildTask, type TaskRegistry, runClaimedRun } from '../src/index.js'
+import { expectCleanRows } from './clean-rows.js'
 import { Q, claimAndRun, fx, invocationOf, registry } from './worker-harness.js'
 
 type Fixture = Awaited<ReturnType<typeof fx>>
@@ -27,13 +27,31 @@ async function resultOf(f: Fixture, taskId: string): Promise<unknown> {
     : JSON.parse(result.completedPayloadJson)
 }
 
-async function expectCleanRows(f: Fixture): Promise<void> {
-  expect(await engineInvariantViolations(f.raw)).toEqual([])
-  expect(await childTaskViolations(f.raw)).toEqual([])
-}
-
 /** ctx.spawn and ctx.awaitTask (DESIGN.md §3.2, specs/ChildTasks.tla). */
 describe('child tasks through the SDK', () => {
+  it('records a port refusal that task code lets escape under the name of the refusal', async () => {
+    const f = await fx('port-refusal-escapes')
+    try {
+      const reg = registry({
+        // Task code that holds a store of its own and calls the port past the SDK.
+        forger: async () => {
+          await f.store.emitEvent(Q, taskDoneEventName('another-task'), '{}')
+        },
+      })
+      const spawned = await f.store.spawn(Q, 'forger', 'null', { maxAttempts: 1 })
+      await claimAndRun(f, reg, 'w1')
+      const result = await f.store.getTaskResult(Q, spawned.taskId)
+      const failure: unknown = JSON.parse(result?.failureReasonJson ?? 'null')
+      expect({ state: result?.state, failure }).toEqual({
+        state: 'failed',
+        failure: expect.objectContaining({ name: 'PortRefusalError' }),
+      })
+      await expectCleanRows(f)
+    } finally {
+      await f.close()
+    }
+  })
+
   it('a parent spawns a child, suspends on it, and resumes with its first outcome', async () => {
     const f = await fx('child-basic')
     const reg = registry({

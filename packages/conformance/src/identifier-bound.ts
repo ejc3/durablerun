@@ -12,7 +12,7 @@ import {
 } from '@durablerun/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
+import { engineHistoryViolations } from './engine-history.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
 /**
@@ -323,7 +323,7 @@ export function identifierBoundConformance(
           Object.fromEntries(Object.keys(answers).map((word) => [word, ordinary])),
         )
         expect(Object.keys(answers)).toHaveLength(6)
-        expect(await engineInvariantViolations(live.raw)).toEqual([])
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
       }))
 
     it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', () =>
@@ -437,7 +437,7 @@ export function identifierBoundConformance(
           readThroughThePort: storedNames,
         })
         expect([...childSpawnKey(spawned.taskId, 'r'.repeat(room))]).toHaveLength(WIDTH)
-        expect(await engineInvariantViolations(live.raw)).toEqual([])
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
       }))
   })
 }

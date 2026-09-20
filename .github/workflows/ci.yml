@@ -338,7 +338,7 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
+          if digest == 'ad98c88952cc01f4d80c3fd383e91ad453a9c22214b4731da36246ddef2fea29':
               # Four kinds of code that the three store packages each held a copy of now exist once,
               # and sixteen base entries follow their lines: the test id source into core's testing
               # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
