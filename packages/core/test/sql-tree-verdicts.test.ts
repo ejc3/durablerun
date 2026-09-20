@@ -522,29 +522,42 @@ describe('the tree rules', () => {
     })
 
     it('is refused in a one-state list under IN', () => {
-      expect(String(problem(runs().where('r.state', 'in', ['running'])))).toMatch(BOUND)
+      expect(
+        String(problem(runs().where('r.state', 'in', ['running']))),
+        'mutation-verdict:construction:tree-read-state-list-is-read',
+      ).toMatch(BOUND)
     })
 
     it('is refused in a list of plain values, every one of which the builder binds', () => {
-      expect(String(problem(runs().where('r.state', 'not in', ['running', 'pending'])))).toMatch(
-        BOUND,
-      )
+      expect(
+        String(problem(runs().where('r.state', 'not in', ['running', 'pending']))),
+        'mutation-verdict:construction:tree-read-state-plain-list-is-bound',
+      ).toMatch(BOUND)
     })
 
     it('is refused in a list that holds one bound value among inline ones', () => {
       const mixed = (eb: Loose) => eb('r.state', 'in', [literalValue('pending'), 'running'])
-      expect(String(problem(runs().where(mixed)))).toMatch(BOUND)
+      expect(
+        String(problem(runs().where(mixed))),
+        'mutation-verdict:construction:tree-read-state-list-holds-a-bind',
+      ).toMatch(BOUND)
     })
 
     it('is admitted in a list of inline literals', () => {
       const inline = (eb: Loose) =>
         eb('r.state', 'in', [literalValue('pending'), literalValue('running')])
-      expect(problem(runs().where(inline))).toBeNull()
+      expect(
+        problem(runs().where(inline)),
+        'mutation-verdict:construction:tree-read-state-inline-list-admitted',
+      ).toBeNull()
     })
 
     it('is refused when the bound value stands in parentheses', () => {
       const wrapped = (eb: Loose) => eb('r.state', '=', eb.parens(eb.val('running')))
-      expect(String(problem(runs().where(wrapped)))).toMatch(BOUND)
+      expect(
+        String(problem(runs().where(wrapped))),
+        'mutation-verdict:construction:tree-read-state-bind-in-parentheses',
+      ).toMatch(BOUND)
     })
   })
 
