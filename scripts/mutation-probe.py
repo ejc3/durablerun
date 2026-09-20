@@ -7407,8 +7407,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-pending-batch-names-the-migration-lock",
             "packages/store-mysql/src/admin.ts",
-            "            pending.flatMap(versionBatch),\n            MIGRATION_WRITE,\n",
-            "            pending.flatMap(versionBatch),\n            'write', // MUTATION\n",
+            "            versionBatch(migration),\n            MIGRATION_WRITE,\n",
+            "            versionBatch(migration),\n            'write', // MUTATION\n",
             "the batch of pending versions names no lock, and the executor refuses every migrate() of a MySQL database",
         ),
         (

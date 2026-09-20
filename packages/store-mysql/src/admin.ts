@@ -65,12 +65,13 @@ export class MysqlStoreAdmin implements StoreAdmin {
     let recorded = found ?? (await this.schemaVersion())
     while (recorded < CURRENT_SCHEMA_VERSION) {
       const plannedFrom = recorded
-      const pending = MIGRATIONS.filter(({ version }) => version > plannedFrom)
+      // What is left of the migration: every version after the recorded one, in order.
+      const migration = MIGRATIONS.filter(({ version }) => version > plannedFrom)
       await this.applyVersionedWrite(
         () =>
           this.db.batch(
             `migrate:v${CURRENT_SCHEMA_VERSION}`,
-            pending.flatMap(versionBatch),
+            versionBatch(migration),
             MIGRATION_WRITE,
           ),
         plannedFrom + 1,
@@ -133,16 +134,17 @@ export class MysqlStoreAdmin implements StoreAdmin {
 }
 
 /**
- * One version's statements, then the version itself, advanced only from the version
- * before it. A migrator that lost the race finds the version already advanced, matches no
- * row, and its repeatable statements changed nothing.
+ * The batch of what is left of a migration. For each version in turn: its statements, then
+ * the version itself, advanced only from the version before it. A migrator that lost the
+ * race finds the version already advanced, matches no row, and its repeatable statements
+ * changed nothing.
  */
-function versionBatch(migration: MysqlMigration): SqlStatement[] {
-  return [
-    ...migration.statements.map((sql) => ({ sql, args: [] })),
+function versionBatch(migration: readonly MysqlMigration[]): SqlStatement[] {
+  return migration.flatMap(({ version, statements }) => [
+    ...statements.map((sql) => ({ sql, args: [] })),
     {
       sql: "UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND value = ?",
-      args: [String(migration.version), String(migration.version - 1)],
+      args: [String(version), String(version - 1)],
     },
-  ]
+  ])
 }

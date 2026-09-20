@@ -122,7 +122,7 @@ OPAQUE_STATEMENT_LISTS = {
         "and schema tests execute and freeze every generated migration",
     ),
     ("packages/store-mysql/src/admin.ts", "migrate:v*"): (
-        "pending.flatMap(versionBatch)",
+        "versionBatch(migration)",
         "MySQL commits each DDL statement on its own, so the batch's control names "
         "the migration lock, which the executor refuses a migrate: write without, "
         "every statement is safe to repeat at every place a migrator can die, "
