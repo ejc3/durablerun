@@ -259,6 +259,13 @@ const PROGRAM_SHAPES = {
       drawn(d, { kind: 'await-child', childIndex: d.rng.int(d.spawned) }),
     ),
   ],
+  // The first suspension ends the pass, so the second sleep is reached by the pass after it.
+  'two sleeps, which run one after the other': (d) => [
+    group(
+      drawn(d, { kind: 'sleep', sleepSeconds: 5 + d.rng.int(20) }),
+      drawn(d, { kind: 'sleep', sleepSeconds: 5 + d.rng.int(20) }),
+    ),
+  ],
   'a sleep beside a step': (d) => [
     group(
       d.rng.next() < 0.5
