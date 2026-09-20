@@ -14785,6 +14785,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-row-checker-forward-checkpoint-in-the-phase": (
         "one test is generated for each condition of the checker, and its title carries the condition"
     ),
+    "saga-row-checker-attempt-records-share-a-run": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
     "saga-nesting-guard-covers-the-start-marker": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
