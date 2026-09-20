@@ -13214,14 +13214,14 @@ MUTATION_SPECS.extend(
         (
             "transport-wake-ping-ends-at-its-deadline",
             "packages/driver/src/http.ts",
-            "  void clock.sleep(WAKE_PING_DEADLINE_MS, settled.signal).then(() => deadline.abort())\n",
-            "  void clock.sleep(WAKE_PING_DEADLINE_MS, settled.signal) // MUTATION: the deadline ends nothing\n",
+            "  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal).then(end)\n",
+            "  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal) // MUTATION: the deadline ends nothing\n",
             "a driver address that accepts the ping and never answers holds a connection of the worker process for minutes, one for every pass",
         ),
         (
             "transport-answered-wake-ping-leaves-no-timer",
             "packages/driver/src/http.ts",
-            "    .finally(() => settled.abort())\n",
+            "    .finally(end)\n",
             "    // MUTATION: the deadline's sleep outlives an answered ping\n",
             "every answered ping leaves a five second timer behind, so a busy worker carries one pending timer for every pass of its last five seconds",
         ),

@@ -93,13 +93,14 @@ const WAKE_PING_DEADLINE_MS = 5_000
  * answers holds no connection of this process for longer than that.
  */
 function pingDriver(clock: Clock, driverUrl: string): void {
-  const deadline = new AbortController()
-  const settled = new AbortController()
-  fetch(`${driverUrl}/wake`, { method: 'POST', signal: deadline.signal })
+  // One signal ends both halves: the deadline ends the request, and the request's end ends
+  // the deadline's sleep. Whichever comes second finds the signal already fired.
+  const over = new AbortController()
+  const end = () => over.abort()
+  fetch(`${driverUrl}/wake`, { method: 'POST', signal: over.signal })
     .catch(() => {})
-    .finally(() => settled.abort())
-  // The sleep ends early once the ping settles, and aborting a settled request does nothing.
-  void clock.sleep(WAKE_PING_DEADLINE_MS, settled.signal).then(() => deadline.abort())
+    .finally(end)
+  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal).then(end)
 }
 
 /**
