@@ -190,6 +190,136 @@ it('reaches tasks by an index condition in every shipped task update', async () 
   }
 })
 
+/** Copy one running run and its task `count` times, each copy with its own ids, token and stamp. */
+async function cloneRunning(
+  client: Client,
+  schema: string,
+  run: { runId: string; taskId: string },
+  count: number,
+) {
+  const copies: [string, string, string, Record<string, string>][] = [
+    [
+      'tasks',
+      'task_id',
+      run.taskId,
+      {
+        task_id: "'held-task-' || seq.n",
+        idempotency_key: 'NULL',
+        last_attempt_run: "'held-run-' || seq.n",
+        fence_stamp: "'held-task-stamp-' || seq.n",
+      },
+    ],
+    [
+      'runs',
+      'run_id',
+      run.runId,
+      {
+        run_id: "'held-run-' || seq.n",
+        task_id: "'held-task-' || seq.n",
+        claimed_by: "'another-worker-' || seq.n",
+        fence_stamp: "'held-stamp-' || seq.n",
+      },
+    ],
+  ]
+  for (const [table, key, id, replaced] of copies) {
+    const columns = await client.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
+      [schema, table],
+    )
+    const names = columns.rows.map((row) => String((row as { column_name: string }).column_name))
+    const copied = await client.query(
+      `INSERT INTO ${table} (${names.join(', ')})
+       SELECT ${names.map((name) => replaced[name] ?? `src.${name}`).join(', ')}
+       FROM ${table} src, generate_series(1, ${count}) AS seq(n) WHERE src.${key} = $1`,
+      [id],
+    )
+    expect(copied.rowCount).toBe(count)
+  }
+}
+
+/**
+ * What a claim reads of `runs` on PostgreSQL, beside running runs that other workers hold.
+ * A queue's running runs are its work in flight, and a claim that reads them pays for them
+ * on every tick: one claim measured 64 ms beside 100,000 running runs against 7 ms beside
+ * none, in the held guard of the compare-and-set, twice in the task follow-on, in the
+ * delete of timed-out waits once `waits` holds rows, and in the receipt read. This holds
+ * the property and not an index's name: every scan of `runs`, in each of the four
+ * statements, returns and discards a number of rows that the claim's one run bounds, while
+ * three hundred runs are running beside it. The statements are the ones a real claim
+ * sent, run again under its binds in one transaction that is rolled back, with a run due
+ * and the claim's token holding nothing, so the held guard has every running run to
+ * search. PostgreSQL matches a partial index to `state = $n` only when it plans with the
+ * value, which it does for the unnamed statements the executor sends, so the plan is read
+ * with the values and never as a generic plan. This needs a server.
+ */
+it('reads of runs no more than a claim takes, beside the running runs other workers hold', async () => {
+  const OTHERS = 300
+  const db = await openPostgresTestDb({ idNamespace: 'plan-claim-reads' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const claims: SqlStatement[] = []
+    const { store, started } = driving(db, (label, statement) => {
+      if (label === 'claim') claims.push(statement)
+    })
+    await cloneRunning(client, db.schemaName, await started('held-by-another-worker'), OTHERS)
+    await client.query('ANALYZE')
+    // The claim whose statements run again. Its run completes first, so its token holds
+    // nothing when those statements claim the next due run under it.
+    const mine = await started('claimed-and-completed')
+    await store.complete('q', mine.runId, mine.claimToken, '{}')
+    const shipped = claims.slice(-4)
+    const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
+    expect(shipped.map((statement) => head(statement.sql))).toEqual([
+      'update "runs"',
+      'update "tasks"',
+      'delete from',
+      'select "r"."run_id",',
+    ])
+    await store.spawn('q', 'due', '{}')
+
+    const backlogReads: string[] = []
+    let scansOfRuns = 0
+    await client.query('BEGIN')
+    try {
+      await client.query('SET LOCAL enable_seqscan = off')
+      await client.query('SET LOCAL enable_bitmapscan = off')
+      for (const statement of shipped) {
+        const plan = await client.query(
+          `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${compilePostgresPlaceholders(statement.sql).sql}`,
+          [...statement.args],
+        )
+        const lines = plan.rows.map((row) => String(Object.values(row as object)[0]))
+        lines.forEach((line, at) => {
+          if (!/Scan\b.* on runs\b/.test(line)) return
+          scansOfRuns += 1
+          const actual = /actual rows=([\d.]+) loops=(\d+)/.exec(line)
+          const loops = Number(actual?.[2] ?? 0)
+          // What the scan discarded is printed under it, ahead of the next node of the plan.
+          const under = lines.slice(at + 1)
+          const next = under.findIndex((other) => /->|SubPlan|InitPlan/.test(other))
+          const removed = (next < 0 ? under : under.slice(0, next))
+            .map((other) => /Rows Removed by Filter: (\d+)/.exec(other)?.[1])
+            .find((count) => count !== undefined)
+          const read = (Number(actual?.[1] ?? 0) + Number(removed ?? 0)) * loops
+          if (read > 20)
+            backlogReads.push(`${head(statement.sql)} -> ${line.trim()} read ${read} rows`)
+        })
+      }
+    } finally {
+      await client.query('ROLLBACK')
+    }
+    // The compare-and-set, the follow-on and the receipt read each scan `runs`.
+    expect(scansOfRuns).toBeGreaterThanOrEqual(6)
+    expect(backlogReads).toEqual([])
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
 /**
  * A saga's checkpoints on PostgreSQL. One name is one row of the key. The names under a
  * prefix are found by a test of each name among the task's rows of the key, so a read
