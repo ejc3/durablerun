@@ -387,6 +387,58 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  // A value can parse and still not serialize: JSON nested deeper than the serializer can
+  // walk. The answer is then serialized with every stored value as its text, which always
+  // serializes, so no value the port accepted makes the route throw.
+  it('answers with the text of stored values that parse and cannot be serialized', async () => {
+    const f = await fixture('hosted-inspect-unserializable')
+    try {
+      const deep = `${'['.repeat(100_000)}${']'.repeat(100_000)}`
+      const completed = await f.store.spawn(Q, 'job', '{}')
+      const first = await claimed(f, 'first')
+      await f.store.complete(Q, first.runId, first.claimToken, deep)
+      const failed = await f.store.spawn(Q, 'job', '{}')
+      const second = await claimed(f, 'second')
+      await f.store.fail(Q, second.runId, second.claimToken, deep, null)
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, deep)
+      // The text is 200 KB, so an answer is compared with a label where it holds the text whole.
+      const told = async (taskId: string): Promise<unknown> =>
+        JSON.parse(JSON.stringify(await inspected(f, taskId)), (_key, value) =>
+          value === deep ? 'the stored text, whole' : value,
+        )
+      expect({
+        result: await told(completed.taskId),
+        failure: await told(failed.taskId),
+        error: await told(halted.taskId),
+      }).toEqual({
+        result: {
+          status: 200,
+          body: {
+            taskId: completed.taskId,
+            state: 'completed',
+            resultText: 'the stored text, whole',
+          },
+        },
+        failure: {
+          status: 200,
+          body: { taskId: failed.taskId, state: 'failed', failureText: 'the stored text, whole' },
+        },
+        error: {
+          status: 200,
+          body: {
+            taskId: halted.taskId,
+            state: 'failed',
+            failureText: SAGA_CAUSE,
+            rollback: { outcome: 'failed', errorText: 'the stored text, whole' },
+          },
+        },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('authorizes the exact body before parsing or touching the store and hides failures', async () => {
     const privateCause = 'private identity backend detail'
     const cases: ReadonlyArray<{
