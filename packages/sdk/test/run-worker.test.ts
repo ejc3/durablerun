@@ -52,6 +52,15 @@ const INVALID_CONTEXT_CALLS: readonly {
   { title: "awaitEvent name '$go'", call: (ctx) => ctx.awaitEvent('$go') },
   { title: "emitEvent name 'x#y'", call: (ctx) => ctx.emitEvent('x#y', '{}') },
   { title: "emitEvent name '$go'", call: (ctx) => ctx.emitEvent('$go', '{}') },
+  // A name outside the durable string domain, which no store keeps as it was passed. The
+  // SDK's own boundary answers it before any store call, so the task's attempt pays once.
+  {
+    title: 'step name with a lone surrogate, an emoji cut in half',
+    call: (ctx) => ctx.step('\u{1F600}'.slice(0, 1), () => 1),
+  },
+  { title: 'step name with a NUL', call: (ctx) => ctx.step('a\u0000b', () => 1) },
+  { title: 'awaitEvent name with a lone surrogate', call: (ctx) => ctx.awaitEvent('a\uDC00b') },
+  { title: 'emitEvent name with a NUL', call: (ctx) => ctx.emitEvent('a\u0000b', '{}') },
   {
     title: 'awaitEvent timeout NaN',
     call: (ctx) => ctx.awaitEvent('go', { timeoutSeconds: Number.NaN }),

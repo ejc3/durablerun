@@ -741,8 +741,10 @@ One invocation executes one claimed run to its next suspension point:
   - A port's refusal of what its caller passed has a type a host maps once.
     `PortRefusalError` extends `RangeError`, and core throws it where it threw
     a bare `RangeError` for a caller's name, key, or options: an event name
-    that is not a string or is reserved (`refuseReservedEventName`, behind
-    `emitEvent` and `awaitEvent`), a reserved idempotency key
+    that is reserved (`refuseReservedEventName`, behind `emitEvent` and
+    `awaitEvent`; one that is not a string is refused before it, by the one
+    check of the port's strings, with `InvalidDurableStringError`, which is
+    of the same family, §3.4 rule 10), a reserved idempotency key
     (`refuseReservedIdempotencyKey`, behind `spawn`), and `idempotencyKey`
     together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
     still holds for them. `error.name` reads `PortRefusalError` where it read
@@ -1910,6 +1912,74 @@ are load-bearing):
    not identifiers: nothing indexes them, and the port does not bound their
    length. A child's task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
+
+   **Every string a caller passes the port is checked in one place, before any statement
+   is sent.** The rule, in words a port in any language implements:
+   - An identifier that enters the port is inside the durable string domain and within
+     the width. The domain is the strings every store keeps exactly as they were passed:
+     no NUL, and no UTF-16 surrogate that is not half of a pair.
+   - Every other durable string, which is a task name and a claim token, is inside the
+     domain. Nothing indexes it, so its length is not bounded.
+   - A payload, which is JSON text or the headers object, is its serializer's, and this
+     check leaves it alone.
+   - A value that is not a string where the port takes one is refused as a string outside
+     the domain is, because the domain is of strings. A string the caller left out, an
+     optional argument or an optional member of an options object, is not a refusal, and
+     null is not a way to leave one out.
+   - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
+     happens before an id is minted or anything is sent, and it is a rejected promise and
+     never a throw.
+
+   Outside the domain no dialect keeps a name, and they do not agree on what they do with
+   one. Measured at the port: a lone surrogate is replaced with U+FFFD by every driver,
+   so two checkpoint names that differ only in one are one row, and a run claimed under
+   one token is held under another that differs only in one. Where libSQL stores a name
+   it ends the name at a NUL, and where it reads with one it matches nothing. MySQL
+   stores a NUL whole. PostgreSQL refuses it, and its executor reports that as an outage.
+   A direct caller of the port reaches this, and so does a queue or a driver id from
+   configuration. Task code does not: `UserName.parse` refuses such a name for every
+   name the SDK takes, before any store call, as a permanent failure of the task.
+
+   The rule is data. Core names every string once (`PORT_STRING_RULES`: each name a
+   caller knows a string by, and whether it is an identifier, a durable string or a
+   payload) and says where each enters (`PORT_STRINGS`: every method, argument by
+   argument). The table's type is computed from the port's, so a method the port gains, a
+   string argument a method gains, and a string inside an options object each stop the
+   build until the table names them. One check is built from the table
+   (`requirePortStrings`), and every store extends `HeldPort`, whose constructor puts
+   that check in front of every method the table names. A dialect's entry holds nothing
+   and is reached only through the check. A fourth dialect inherits it by extending the
+   same class, and the conformance fixture types its store as one that does, so a class
+   that implements the port on its own does not reach the suite. The released port type
+   carries no brand: a wrapper or a test double of a store needs nothing.
+
+   The executable twin is the identifier surface, which every dialect runs. It generates
+   every place a string enters the port from the same table, 82 of them, and asks each
+   held place for a NUL, each kind of lone surrogate, an emoji cut in half, a pair the
+   wrong way round, a number and null, and each identifier's place for three names past
+   the width, over an executor that only records that it was reached. The fuzz walk draws
+   its places and its names from the same source.
+
+   What the mechanism does not see, stated so that nobody takes it for more:
+   - Any name fits any string position. `claim`'s queue written as a payload compiles,
+     and the refusal cases, which draw their places from the table, then ask nothing
+     there. So the surface also writes down every place that is NOT an identifier, 25 of
+     them, and a place named a payload in core's table fails that list by its name. It is
+     a second, visible edit, and not a proof.
+   - An entry called from the class's prototype is reached with nothing in front of it.
+     Two libSQL cases do that on purpose, to reach a prepared read's own refusal of a
+     malformed bind, and nothing else in the repository does.
+
+   **One hosted answer follows from it.** The inspect route answers 400 `invalid_request`
+   for a task id with a NUL in it, through the same refusal line a task id past the width
+   takes. It answered 404, always: with a real task present, its id followed by a NUL and
+   more text matched nothing.
+
+   **A rolling deploy.** Nothing is migrated. A row written before this rule keeps the
+   name a driver gave it: U+FFFD is inside the domain, and a name libSQL ended at a NUL
+   is the shorter name. Only a direct caller of the port could have written one, because
+   the SDK refused such a name already. A caller that passes one now is refused where it
+   was stored under another name, or reported as an outage.
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,
