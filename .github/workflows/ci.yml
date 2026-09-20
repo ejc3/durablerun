@@ -326,7 +326,7 @@ jobs:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
           base.write_text(repaired)
-          print('Re-aimed registered mutation text; all other base registry bytes are unchanged.')
+          print('Bridged the base registry for this arm; all other base registry bytes are unchanged.')
           PY
       - name: The base branch's checkers, applied to this tree
         env:

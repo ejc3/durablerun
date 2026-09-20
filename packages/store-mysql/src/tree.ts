@@ -13,6 +13,7 @@ import {
   type OnConflictNode,
   type OperationNode,
   OperatorNode,
+  ParensNode,
   RawNode,
   ReferenceNode,
   SelectQueryNode,
@@ -26,6 +27,18 @@ const INCOMING = 'excluded'
 function tableName(node: OperationNode | undefined): string | null {
   const inner = node !== undefined && AliasNode.is(node) ? node.node : node
   return inner !== undefined && TableNode.is(inner) ? inner.table.identifier.name : null
+}
+
+/** The name a reference is qualified by, if any, and the stored column it names. */
+function referenced(reference: ReferenceNode): {
+  readonly table: string | undefined
+  readonly name: string | null
+} {
+  const name = (reference.column as { column?: { name?: unknown } }).column?.name
+  return {
+    table: reference.table?.table.identifier.name,
+    name: typeof name === 'string' ? name : null,
+  }
 }
 
 function assignedColumn(update: ColumnUpdateNode): string {
@@ -56,9 +69,8 @@ function storedColumnsRead(node: OperationNode, target: string, assigned: readon
   const read = new Set<string>()
   const walk = (current: OperationNode): void => {
     if (ReferenceNode.is(current)) {
-      const table = current.table?.table.identifier.name
-      const name = (current.column as { column?: { name?: unknown } }).column?.name
-      if (typeof name === 'string' && (table === undefined || table === target)) read.add(name)
+      const { table, name } = referenced(current)
+      if (name !== null && (table === undefined || table === target)) read.add(name)
       return
     }
     if (RawNode.is(current)) {
@@ -152,12 +164,26 @@ const KEY_INDEXES: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   waits: { run_id: 'primary' },
 }
 
+/** What a keyed write carries none of. An UPDATE has no FROM besides, and a DELETE no USING. */
+const NOT_IN_A_KEYED_WRITE = [
+  'with',
+  'top',
+  'output',
+  'joins',
+  'returning',
+  'orderBy',
+  'limit',
+  'explain',
+  'endModifiers',
+] as const
+
 /** Read this table after every other: it names the statement's own table, so it resolves. */
 const targetLast = (target: string): string => `/*+ JOIN_SUFFIX(\`${target}\`) */`
 
-/** The conditions a WHERE requires together: its chain of ANDs, flattened. */
+/** The conditions a WHERE requires together: its chain of ANDs, flattened, through any parentheses. */
 function requiredConditions(node: OperationNode | undefined): readonly OperationNode[] {
   if (node === undefined) return []
+  if (ParensNode.is(node)) return requiredConditions(node.node)
   return AndNode.is(node)
     ? [...requiredConditions(node.left), ...requiredConditions(node.right)]
     : [node]
@@ -179,9 +205,8 @@ function keyOf(
     const subquery =
       SelectQueryNode.is(condition.rightOperand) || RawNode.is(condition.rightOperand)
     if (operator !== 'in' || !subquery) return []
-    const table = condition.leftOperand.table?.table.identifier.name
-    const name = (condition.leftOperand.column as { column?: { name?: unknown } }).column?.name
-    return typeof name === 'string' && (table === undefined || table === target)
+    const { table, name } = referenced(condition.leftOperand)
+    return name !== null && (table === undefined || table === target)
       ? [{ column: name, keys: condition.rightOperand }]
       : []
   })
@@ -229,8 +254,7 @@ const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }
 function requiresStampOf(alias: string, condition: OperationNode): boolean {
   if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return false
   const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
-  const table = condition.leftOperand.table?.table.identifier.name
-  const name = (condition.leftOperand.column as { column?: { name?: unknown } }).column?.name
+  const { table, name } = referenced(condition.leftOperand)
   return operator === '=' && table === alias && name === 'fence_stamp'
 }
 
@@ -246,24 +270,22 @@ function stampedKeys(
   target: string,
   keys: OperationNode | undefined,
 ): { readonly from: AliasNode; readonly index: string } {
-  const selection = keys !== undefined && SelectQueryNode.is(keys) ? keys : null
+  const selection = keys !== undefined && SelectQueryNode.is(keys) ? keys : undefined
   const [from, ...more] = selection?.from?.froms ?? []
   const table = tableName(from)
-  const alias =
-    from !== undefined && AliasNode.is(from) && IdentifierNode.is(from.alias) ? from : null
-  if (
-    selection === null ||
-    alias === null ||
-    table === null ||
-    more.length > 0 ||
-    (selection.joins ?? []).length > 0
-  ) {
+  const source =
+    from !== undefined && AliasNode.is(from) && IdentifierNode.is(from.alias)
+      ? { from, named: from.alias.name }
+      : null
+  if (source === null || table === null || more.length > 0 || (selection?.joins ?? []).length > 0) {
     throw new Error(
       `store-mysql: a delete of ${target} takes its keys from something other than a selection of one table`,
     )
   }
-  const named = (alias.alias as IdentifierNode).name
-  if (!requiredConditions(selection.where?.where).some((c) => requiresStampOf(named, c))) {
+  const fenced = requiredConditions(selection?.where?.where).some((condition) =>
+    requiresStampOf(source.named, condition),
+  )
+  if (!fenced) {
     throw new Error(`store-mysql: a delete of ${target} takes its keys from ${table} unfenced`)
   }
   const through = STAMP_INDEXES[table]
@@ -272,7 +294,7 @@ function stampedKeys(
       `store-mysql: a delete of ${target} takes its keys from ${table}, which declares no index of its stamp`,
     )
   }
-  return { from: alias, index: through }
+  return { from: source.from, index: through }
 }
 
 /**
@@ -458,10 +480,9 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
         return
       }
-      const { with: common, top, output, from, joins, returning, orderBy, limit, explain } = node
       this.requireKeyedGrammar(
         [node.table],
-        [common, top, output, from, joins, returning, orderBy, limit, explain, node.endModifiers],
+        [node.from, ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause])],
       )
       this.append(`update ${targetLast(target)} `)
       this.visitKeyedTarget(node.table, index)
@@ -481,18 +502,9 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         super.visitDeleteQuery(node)
         return
       }
-      const { with: common, top, output, using, joins, returning, orderBy, limit, explain } = node
       this.requireKeyedGrammar(node.from.froms, [
-        common,
-        top,
-        output,
-        using,
-        joins,
-        returning,
-        orderBy,
-        limit,
-        explain,
-        node.endModifiers,
+        node.using,
+        ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause]),
       ])
       const keysFrom = stampedKeys(target, keyed?.keys)
       this.append(`delete ${targetLast(target)} `)

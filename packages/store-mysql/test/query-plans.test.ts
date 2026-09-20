@@ -3,6 +3,7 @@ import {
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
+  sqlBatchMode,
   systemIdSource,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
@@ -94,6 +95,35 @@ async function cloneRows(
     },
   ])
   expect(copied?.rowsAffected).toBe(count)
+}
+
+/**
+ * A queue of `count` due runs, each with a task of its own, because a task with many live
+ * runs is not claimable. The longest waiting is the last: `<prefix>-run-<count - 1>`.
+ */
+async function seedDueRuns(db: TestDb, prefix: string, count: number) {
+  const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'seed', '{}')
+  await cloneRows(
+    db,
+    'tasks',
+    `src.task_id = '${seed.taskId}'`,
+    { task_id: `CONCAT('${prefix}-task-', seq.n)`, idempotency_key: 'NULL' },
+    count - 1,
+  )
+  await cloneRows(
+    db,
+    'runs',
+    `src.run_id = '${seed.runId}'`,
+    {
+      run_id: `CONCAT('${prefix}-run-', LPAD(seq.n, 4, '0'))`,
+      task_id: `CONCAT('${prefix}-task-', seq.n)`,
+      available_at_ms: '1000000 - seq.n',
+    },
+    count - 1,
+  )
+  // The server counts a table in the background, some time after a load. This is that
+  // count, taken now.
+  await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
 }
 
 describe('production sweep scans on MySQL (exact shipped SQL)', () => {
@@ -260,7 +290,12 @@ const RECORD_LOCKS = {
  * a statement explained ahead of itself walks less than one that arrives cold.
  */
 async function claimMeasuringTheLegs(db: TestDb, limit: number, explained = false) {
-  let legs = { walked: Number.NaN, locksHeld: Number.NaN, rowsLocked: Number.NaN, target: '' }
+  let legs = {
+    walked: Number.NaN,
+    locksHeld: Number.NaN,
+    rowsLocked: Number.NaN,
+    target: null as string | null,
+  }
   const measuring: SqlExecutor = {
     batch: async (label, statements, control) => {
       const [first, ...rest] = statements
@@ -289,7 +324,7 @@ async function claimMeasuringTheLegs(db: TestDb, limit: number, explained = fals
         walked: walkedRows(after) - walkedRows(before),
         locksHeld: Number(locks?.rows[0]?.held),
         rowsLocked: Number(locks?.rows[0]?.rows),
-        target: `${String(updated?.type)} on ${String(updated?.key)}`,
+        target: updated === undefined ? null : `${String(updated.type)} on ${String(updated.key)}`,
       }
       return [claimed, ...followOns]
     },
@@ -434,28 +469,7 @@ describe("the claim's candidate legs on MySQL", () => {
     try {
       const LIMIT = 2
       const BACKLOG = 40
-      const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'seed', '{}')
-      await cloneRows(
-        db,
-        'tasks',
-        `src.task_id = '${seed.taskId}'`,
-        { task_id: "CONCAT('small-task-', seq.n)", idempotency_key: 'NULL' },
-        BACKLOG - 1,
-      )
-      await cloneRows(
-        db,
-        'runs',
-        `src.run_id = '${seed.runId}'`,
-        {
-          run_id: "CONCAT('small-run-', LPAD(seq.n, 4, '0'))",
-          task_id: "CONCAT('small-task-', seq.n)",
-          available_at_ms: '1000000 - seq.n',
-        },
-        BACKLOG - 1,
-      )
-      // The server counts a table in the background, some time after a load. This is that
-      // count, taken now.
-      await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
+      await seedDueRuns(db, 'small', BACKLOG)
       const legs = await claimMeasuringTheLegs(db, LIMIT)
       // The two that have waited longest.
       expect(legs.claimed).toEqual(['small-run-0038', 'small-run-0039'])
@@ -492,7 +506,7 @@ describe('a keyed write on MySQL', () => {
     // already holds the run its locking leg chose. Two claimers each waited for the
     // other's run, and InnoDB rolled one back. Every row was locked at one to five rows
     // with a limit of one, and at 20, 120, and 400 rows with a limit of half the table.
-    const measured: { claimed: number; rowsLocked: number; target: string }[] = []
+    const claims: { claimed: number; rowsLocked: number; target: string | null }[] = []
     for (const [rows, limit] of [
       [2, 1],
       [4, 1],
@@ -503,28 +517,9 @@ describe('a keyed write on MySQL', () => {
         nowMs: 1_000_000,
       })
       try {
-        const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'seed', '{}')
-        await cloneRows(
-          db,
-          'tasks',
-          `src.task_id = '${seed.taskId}'`,
-          { task_id: "CONCAT('keyed-task-', seq.n)", idempotency_key: 'NULL' },
-          rows - 1,
-        )
-        await cloneRows(
-          db,
-          'runs',
-          `src.run_id = '${seed.runId}'`,
-          {
-            run_id: "CONCAT('keyed-run-', LPAD(seq.n, 4, '0'))",
-            task_id: "CONCAT('keyed-task-', seq.n)",
-            available_at_ms: '1000000 - seq.n',
-          },
-          rows - 1,
-        )
-        await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
+        await seedDueRuns(db, 'keyed', rows)
         const claim = await claimMeasuringTheLegs(db, limit, true)
-        measured.push({
+        claims.push({
           claimed: claim.claimed.length,
           rowsLocked: claim.rowsLocked,
           target: claim.target,
@@ -533,14 +528,14 @@ describe('a keyed write on MySQL', () => {
         await db.close()
       }
     }
-    expect(measured.map((claim) => claim.claimed)).toEqual([1, 1, 10])
+    expect(claims.map((claim) => claim.claimed)).toEqual([1, 1, 10])
     // The plan over four rows, beside the locks it explains. It is soft so that a failure
     // shows both.
     expect
-      .soft(measured[1]?.target, 'how the update reaches the runs of a four-row table')
+      .soft(claims[1]?.target, 'how the update reaches the runs of a four-row table')
       .toBe('eq_ref on PRIMARY')
     expect(
-      measured.map((claim) => claim.rowsLocked),
+      claims.map((claim) => claim.rowsLocked),
       'mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last',
     ).toEqual([1, 1, 10])
   })
@@ -557,15 +552,19 @@ describe('a keyed write on MySQL', () => {
       const seen: { write: string; key: string; target: string; warnings: string[] }[] = []
       const explaining: SqlExecutor = {
         batch: async (label, statements, control) => {
-          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
-          if (mode === 'read') return db.raw.batch(label, statements, control)
+          if (sqlBatchMode(control) === 'read') return db.raw.batch(label, statements, control)
           const sent: SqlStatement[] = []
           const at: number[] = []
-          const explained: { i: number; table: string; key: string; at: number }[] = []
+          const explained: { i: number; table: string; key: string; explainAt: number }[] = []
           statements.forEach((statement, i) => {
             const keyed = KEYED_WRITE.exec(statement.sql)
             if (keyed !== null) {
-              explained.push({ i, table: String(keyed[1]), key: String(keyed[2]), at: sent.length })
+              explained.push({
+                i,
+                table: String(keyed[1]),
+                key: String(keyed[2]),
+                explainAt: sent.length,
+              })
               sent.push(
                 { sql: `EXPLAIN ${statement.sql}`, args: statement.args },
                 { sql: 'SHOW WARNINGS', args: [] },
@@ -577,15 +576,15 @@ describe('a keyed write on MySQL', () => {
             sent.push(gate === undefined ? statement : { ...statement, skipUnlessWrote: gate })
           })
           const all = await db.raw.batch(label, sent, control)
-          for (const { i, table, key, at: where } of explained) {
-            const target = all[where]?.rows.find((row) => row.table === table)
+          for (const { i, table, key, explainAt } of explained) {
+            const target = all[explainAt]?.rows.find((row) => row.table === table)
             seen.push({
               write: `${label}[${i}] ${table}`,
               key: `${table}.${key}`,
               // A target the server read ahead of the statement has no row of its own.
               target: target === undefined ? 'read ahead' : `${target.type} on ${target.key}`,
               // 1003 is the rewritten statement, and 1276 a correlated reference resolved.
-              warnings: (all[where + 1]?.rows ?? [])
+              warnings: (all[explainAt + 1]?.rows ?? [])
                 .filter((warning) => ![1003, 1276].includes(Number(warning.Code)))
                 .map((warning) => `${warning.Code} ${warning.Message}`),
             })

@@ -54,6 +54,25 @@ async function sent(kind: Kind, name: string, statement: DefinedStatement): Prom
   return statementSent
 }
 
+/** The claim's compare-and-set over two candidates, as a batch sends it. */
+const sentClaim = () =>
+  sent(
+    'casMany',
+    'claim',
+    claimCas({
+      queue: 'q',
+      claimToken: 'tok',
+      leaseMs: 1000,
+      candidateRunIds: sqlFragment(
+        '(SELECT run_id FROM (SELECT r.run_id FROM runs r LIMIT ?) AS c)',
+        [2],
+      ),
+      legacyWaitStep: sqlFragment('NULL'),
+      leaseExpiresAt: sqlFragment('$NOW$ + ?', [1000]),
+      leaseFits: sqlFragment('1 = 1'),
+    }),
+  )
+
 const leaseCas = () =>
   reopenLostLaunchCas({
     queue: 'q',
@@ -109,22 +128,7 @@ describe('MySQL spelling of the shared statement trees', () => {
   })
 
   it('reads the table it updates through a derived table', async () => {
-    const statement = await sent(
-      'casMany',
-      'claim',
-      claimCas({
-        queue: 'q',
-        claimToken: 'tok',
-        leaseMs: 1000,
-        candidateRunIds: sqlFragment(
-          '(SELECT run_id FROM (SELECT r.run_id FROM runs r LIMIT ?) AS c)',
-          [2],
-        ),
-        legacyWaitStep: sqlFragment('NULL'),
-        leaseExpiresAt: sqlFragment('$NOW$ + ?', [1000]),
-        leaseFits: sqlFragment('1 = 1'),
-      }),
-    )
+    const statement = await sentClaim()
     expect(statement.sql, 'mutation-verdict:construction:mysql-self-read-derived-table').toContain(
       'not exists (select `held`.`run_id` from (select * from `runs`) as `held` where',
     )
@@ -213,22 +217,7 @@ describe('MySQL spelling of the shared statement trees', () => {
   })
 
   it('reads a keyed update last, through the index of its key', async () => {
-    const statement = await sent(
-      'casMany',
-      'claim',
-      claimCas({
-        queue: 'q',
-        claimToken: 'tok',
-        leaseMs: 1000,
-        candidateRunIds: sqlFragment(
-          '(SELECT run_id FROM (SELECT r.run_id FROM runs r LIMIT ?) AS c)',
-          [2],
-        ),
-        legacyWaitStep: sqlFragment('NULL'),
-        leaseExpiresAt: sqlFragment('$NOW$ + ?', [1000]),
-        leaseFits: sqlFragment('1 = 1'),
-      }),
-    )
+    const statement = await sentClaim()
     expect(
       statement.sql,
       'mutation-verdict:construction:mysql-keyed-write-names-its-key-index',
@@ -290,20 +279,18 @@ describe('MySQL spelling of the shared statement trees', () => {
   it('refuses a delete whose keys are anything but a selection of one plain table', () => {
     const refused =
       'a delete of waits takes its keys from something other than a selection of one table'
-    expect(
-      () =>
-        compiled(
-          treeBuilder
-            .deleteFrom('waits')
-            .where((eb) =>
-              eb(
-                'run_id',
-                'in',
-                rawSql<string>(sqlFragment('(SELECT r.run_id FROM runs r)'), 'subquery'),
-              ),
+    expect(() =>
+      compiled(
+        treeBuilder
+          .deleteFrom('waits')
+          .where((eb) =>
+            eb(
+              'run_id',
+              'in',
+              rawSql<string>(sqlFragment('(SELECT r.run_id FROM runs r)'), 'subquery'),
             ),
-        ),
-      'mutation-verdict:construction:mysql-keyed-delete-keys-are-a-selection',
+          ),
+      ),
     ).toThrow(refused)
     expect(
       () =>
@@ -322,6 +309,21 @@ describe('MySQL spelling of the shared statement trees', () => {
             ),
         ),
       'mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table',
+    ).toThrow(refused)
+    expect(
+      () =>
+        compiled(
+          treeBuilder
+            .deleteFrom('waits')
+            .where((eb) =>
+              eb(
+                'run_id',
+                'in',
+                eb.selectFrom('runs').select('runs.run_id').where('runs.fence_stamp', '=', 'stamp'),
+              ),
+            ),
+        ),
+      'mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased',
     ).toThrow(refused)
     expect(
       () =>
@@ -415,6 +417,24 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(sql, 'mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere').toContain(
       '`runs` force index (primary) set ',
     )
+    const underParentheses = compiled(
+      treeBuilder
+        .updateTable('runs')
+        .set({ state: 'pending' })
+        .where((eb) =>
+          eb.parens(
+            eb(
+              'run_id',
+              'in',
+              rawSql<string>(sqlFragment('(SELECT w.run_id FROM waits w)'), 'subquery'),
+            ),
+          ),
+        ),
+    )
+    expect(
+      underParentheses.sql,
+      'mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses',
+    ).toContain('`runs` force index (primary) set ')
   })
 
   it('takes no list of values for a key', () => {
