@@ -2399,14 +2399,13 @@ are load-bearing):
    arrivals, a sweep and a spawn, do not touch `events`. The test enrolls a
    version by the spelling of its first statement, which is right for this
    version and would miss a later one that takes two tables by `ALTER`.
-   Measured on a million
-   events, data directory in memory, under four workers and two readers of a
-   build whose last version is 9, each worker spawning, claiming, activating,
-   awaiting an event, emitting it, claiming again and completing: 85, 90 and
-   129 ms with 64 B payloads (a 303 MB table) and 387 and 391 ms with 1 KB
-   (1.4 GB), against 87 ms with nothing else running. The longest call that
-   overlapped the statement waited as long as it ran, no call failed, and the
-   server counted no deadlock. A disk will be slower.
+   Measured on a million events, data directory in memory, under four workers
+   and two readers of a build whose last version is 9, each worker spawning,
+   claiming, activating, awaiting an event, emitting it, claiming again and
+   completing: 85, 90 and 129 ms with 64 B payloads (a 303 MB table) and 387 and
+   391 ms with 1 KB (1.4 GB), against 87 ms with nothing else running. The
+   longest call that overlapped the statement waited as long as it ran, no call
+   failed, and the server counted no deadlock. A disk will be slower.
    That wait holds only when no older transaction holds `events`. The
    statement queues behind every transaction that has touched the table and
    stays open, and everything that touches `events` queues behind the
@@ -2437,29 +2436,32 @@ are load-bearing):
    at most 3 of 59 samples taken 40 ms apart.
    In place does not mean that nothing is rewritten: InnoDB rebuilds the whole
    table, where PostgreSQL's statement rewrites nothing. In review the table's
-   id and its tablespace changed across the version in four runs of four. So
-   the change
-   costs by the byte, as libSQL's refused rebuild does, and needs free disk of
-   about the table's size. While it rebuilds, InnoDB keeps other sessions'
-   changes in an online log, 128 MB by default
+   id and its tablespace changed across the version in four runs of four. So the
+   change costs by the byte, as libSQL's refused rebuild does, and needs free
+   disk of about the table's size. While it rebuilds, InnoDB keeps other
+   sessions' changes in an online log, 128 MB by default
    (`innodb_online_alter_log_max_size`), and past that limit the change fails
-   with error 1799, which would leave the column nullable and the version at
-   9. Nobody reproduced that limit here.
+   with error 1799 and leaves the column nullable and the version at 9.
+   Reproduced in review with this text and with the bare change alike: at the
+   log's 64 KB minimum, and at the default under a synthetic flood of 1 KB
+   inserts from several sessions. The traffic of the older build came nowhere
+   near the limit.
    This is the first MySQL version that takes a table's metadata lock, so the
    queue PostgreSQL's paragraph describes exists here too, and reads join it.
    Measured in review behind an older transaction that had read `events`: a
    plain SELECT that arrived behind the pending change waited 2.9 s and an
    INSERT 4.2 s, and the server's `lock_wait_timeout` is a year by default.
    The named migration lock is held through the rebuild, and a migrator that
-   cannot take it gives up after the executor's 30 seconds. Measured twice
-   with that wait lowered to one second in a scratch copy, two migrators
-   racing on a million events of 1 KB: the second gave up after 1.0 s
-   with a store error that says it could not take the migration lock, the
-   first finished its 2.5 to 2.6 s rebuild, and a process that started
-   afterwards migrated in 3 ms. So in a rolling deploy over a table
-   whose rebuild outlasts 30 seconds, a process that starts during the rebuild
-   fails in `migrate()`, and starts cleanly once the first migrator is done.
-   The index builds of versions 6, 8 and 9 already had this shape.
+   cannot take it gives up after the executor's 30 seconds. Measured twice with
+   that wait lowered to one second in a scratch copy, two migrators racing on a
+   million events of 1 KB: the second gave up after 1.0 s with a store error
+   that says it could not take the migration lock, the first finished its 2.5 to
+   2.6 s rebuild, and a process that started afterwards migrated in 3 ms. So in
+   a rolling deploy over a table whose rebuild outlasts 30 seconds, a process
+   that starts more than those 30 seconds before the rebuild ends fails in
+   `migrate()`, and starts cleanly once the first migrator is done. One that
+   starts later waits for the lock and migrates. The index builds of versions 6,
+   8 and 9 already had this shape.
    The statement asks for the change in place and with no lock
    (`ALGORITHM=INPLACE, LOCK=NONE`), and that clause carries the refusal of a
    NULL. Without it MySQL refuses the change over a row that holds NULL only
@@ -2559,7 +2561,13 @@ are load-bearing):
    payload it should have held, or delete it, and migrate again. On libSQL run
    that query before every migration to version 10, whether or not a row is
    expected: it warms the pages the version's check reads, under no write lock
-   (above).
+   (above). On MySQL, error 1846 from version 10 is not such a row. It has two
+   causes, and its message tells them apart: a session with no strict
+   `sql_mode`, which no session of the executor is (`cannot silently convert
+   NULL values`), and a FULLTEXT index on `events`, which this schema does not
+   ship and under which the bare change completed by a copy (`InnoDB presently
+   supports one FULLTEXT index creation at a time`). Both leave the column and
+   the rows as they were.
 
    A process of an older build runs against version 10 unchanged, because no
    statement of the engine writes that NULL, and a newer build on a database

@@ -117,7 +117,8 @@ export function createIndexIfMissing(table: string, index: string, columns: stri
  * does nothing ONLY on the catalog's word that the column is NOT NULL: a column the catalog
  * does not hold is a caller's mistake, and the form then attempts the change, which fails
  * loudly, where doing nothing would let the caller's version be recorded over a column that
- * never changed.
+ * never changed. So "while nullable" says what it does for every column the catalog holds,
+ * and for one it does not hold the server refuses the attempt with error 1054.
  *
  * The change is asked for in place and with no lock, and that clause carries the refusal of
  * a NULL. Under a strict `sql_mode` it is how InnoDB makes the change anyway, and a row that
