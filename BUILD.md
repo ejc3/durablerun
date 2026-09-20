@@ -2255,7 +2255,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The last two rows did not move. A held heartbeat is two statements. A
     claim with nothing to claim is most of an idle tick, 3.3 ms of MySQL's
     4.7 ms and 6.8 ms of PostgreSQL's 11 ms in a second run of the same kind,
-    and the next-wake read's saving is lost in what the rounds spread. Ten
+    and the next-wake read's saving is lost in what the rounds spread. Eleven
     mutations hold the rule's conditions, the session's autocommit, core's
     brand, and the plan tests below, and the mutant of MySQL's schema-version
     read is re-aimed at the rule. The rule first decided from a statement's

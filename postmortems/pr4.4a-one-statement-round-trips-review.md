@@ -140,12 +140,17 @@ says otherwise.
 
 ## Fix-induced defects
 
-None found. The fixes were not reviewed as new code: this pull request has no
-second review unless the coordinator asks for one. They were re-tested. The
-reviewer's probes for findings 1, 2 and 4 became the three red cases, each
-mechanism's false negative was run where the table says so, and the twelve
-mutants the fold changed or added were probed and each was caught by its own
-verdict.
+None found in the product. The fixes were not reviewed as new code: this pull
+request has no second review unless the coordinator asks for one. They were
+re-tested. The reviewer's probes for findings 1, 2 and 4 became the three red
+cases, each mechanism's false negative was run where the table says so, and
+the ten mutants the fold changed or added were probed and each was caught by
+its own verdict.
+
+One fold commit did break a gate. Freezing what core brands added a condition
+to `addTree`, and main's registry, which the base gate reads, holds no mutation
+on that line, so the base gate refused the tree until its bridge listed the
+line. The author's final gates caught that before anything was pushed.
 
 The fold did leave two things behind that a careless fold would have kept.
 Deleting the write arm made the lock condition dead code, because a lock
@@ -172,7 +177,7 @@ deleted.
   because this branch is rebased before it merges. Checked before this file was
   committed: the suites of core, the SDK, the driver and the three stores at
   79 files and 1,055 tests, the registry at 884 by import of a copy, and the
-  filtered probes of the 12 mutants the fold changed or added, all caught by
+  filtered probes of the ten mutants the fold changed or added, all caught by
   their own verdicts with no collateral failure. The full gates of the final
   head are in the pull request's body.
 - Finder: the one full review of PR #64. Quoted verdict: "No HIGH findings on
