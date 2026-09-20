@@ -1833,17 +1833,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and requires that no attempt record is read when no saga began or a
     cancellation ended it. Medians in ms beside the task's own checkpoints,
     main and then this change, from one harness run in a worktree of each,
-    three processes a side, interleaved, 200 timed reads in each:
+    five processes a side, interleaved, 200 timed reads in each:
 
     | Read, and the task's checkpoints | libSQL | PostgreSQL | MySQL |
     |---|---|---|---|
-    | result of a plain task, 10 | 0.128, 0.125 | 0.772, 0.703 | 0.353, 0.356 |
-    | result of a plain task, 1,000 | 0.193, 0.118 | 0.977, 0.750 | 0.718, 0.360 |
-    | result of a plain task, 10,000 | 0.819, 0.113 | 2.733, 0.850 | 3.914, 0.333 |
-    | result of a rolled back saga, 10,000 | 1.500, 0.117 | 5.878, 5.182 | 9.550, 0.343 |
-    | result of a halted saga, 10,000 | 0.834, 0.119 | 4.398, 3.698 | 12.609, 0.350 |
-    | rollback owed, plain task, 10,000 | 0.737, 0.060 | 3.819, 3.658 | 1.995, 0.295 |
-    | rollback owed, rolled back saga, 10,000 | 0.744, 0.060 | 3.848, 3.745 | 6.196, 0.294 |
+    | result of a plain task, 10 | 0.130, 0.118 | 0.819, 0.703 | 0.360, 0.341 |
+    | result of a plain task, 1,000 | 0.198, 0.111 | 0.962, 0.702 | 0.733, 0.311 |
+    | result of a plain task, 10,000 | 0.880, 0.108 | 2.692, 0.833 | 3.886, 0.290 |
+    | result of a rolled back saga, 10,000 | 1.551, 0.112 | 5.736, 5.133 | 9.681, 0.303 |
+    | result of a halted saga, 10,000 | 0.987, 0.115 | 4.199, 3.654 | 12.558, 0.298 |
+    | rollback owed, plain task, 10,000 | 0.753, 0.060 | 3.750, 3.607 | 1.998, 0.257 |
+    | rollback owed, rolled back saga, 10,000 | 0.756, 0.060 | 3.720, 3.691 | 6.265, 0.263 |
 
     Beside 10 checkpoints every read is the same on both sides. "Rollback
     owed" is the predicate a failure evaluates, read alone. On PostgreSQL what
