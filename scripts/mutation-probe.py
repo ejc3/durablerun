@@ -13755,6 +13755,13 @@ MUTATION_SPECS.extend(
             "a step that started under an older build and never persisted, under a stored key past the width, runs its body again on every remaining attempt before a write that can never succeed",
         ),
         (
+            "claim-token-held-to-the-width",
+            "packages/store-libsql/src/store.ts",
+            "    requireIdentifiersFit({ queue, claimToken })\n",
+            "    requireIdentifiersFit({ queue }) // MUTATION: the claim token is not held\n",
+            "a claim under a token too long for PostgreSQL's index of it answers as an outage there and takes its run on the other two dialects",
+        ),
+        (
             "driver-identifiers-held-at-construction",
             "packages/driver/src/loop.ts",
             "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
@@ -13776,6 +13783,7 @@ for _verdict, _names in (
             "identifier-past-the-width-refused",
             "parent-queue-held-to-the-width",
             "parent-run-id-held-to-the-width",
+            "claim-token-held-to-the-width",
         ),
     ),
     (
@@ -19140,7 +19148,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1002:
+        if len(MUTATIONS) != 1003:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

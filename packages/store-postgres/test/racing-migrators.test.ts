@@ -3,7 +3,8 @@ import { Client } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PostgresStoreAdmin } from '../src/admin.js'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
-import { MIGRATIONS } from '../src/schema.js'
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from '../src/schema.js'
+import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
@@ -171,4 +172,65 @@ describe('racing PostgreSQL migrators', () => {
     },
     MIGRATIONS.length * (WAIT_BOUND_MS + 10_000),
   )
+})
+
+/**
+ * Version 9 builds `runs_held`, an index of the claim token over the running runs, and a
+ * btree row on PostgreSQL may not pass about 2,700 bytes. `claim` holds a token to an
+ * identifier's width since that version, so no row a current build writes is too long for
+ * it. A database that an OLDER build left, with a run still running under a caller's
+ * token of any length, can hold one. There the version fails, loudly and whole, and the
+ * database stays at version 8, which every build runs against. It heals by itself: once
+ * that run ends, or the sweep takes its expired lease, the same `migrate()` succeeds.
+ * This needs a server.
+ */
+describe('version 9 over a run held under a token too long for its index', () => {
+  it('fails loudly and leaves version 8, and succeeds once that run has ended', async () => {
+    const db = await openPostgresTestDb({ idNamespace: 'long-token-before-version-9' })
+    const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+    await client.connect()
+    try {
+      await client.query(`SET search_path TO "${db.schemaName}"`)
+      const store = new PostgresSchedulerStore(db.raw, db.ids)
+      await store.spawn('q', 'job', '{}')
+      const [run] = await store.claim('q', 'a-short-token', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('the job was not claimed')
+      await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      // What an older build left: no index, version 8, and the run held under 3,000
+      // characters that no compression shortens.
+      let x = 0x2545f491
+      const token = Array.from({ length: 3000 }, () => {
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+        return (x >>> 28).toString(16)
+      }).join('')
+      await client.query('DROP INDEX runs_held')
+      await client.query(`DELETE FROM meta WHERE key = 'applied:v${CURRENT_SCHEMA_VERSION}'`)
+      await client.query(`UPDATE meta SET value = $1 WHERE key = 'schema_version'`, [
+        String(CURRENT_SCHEMA_VERSION - 1),
+      ])
+      await client.query('UPDATE runs SET claimed_by = $1 WHERE run_id = $2', [token, run.runId])
+      expect(CURRENT_SCHEMA_VERSION).toBe(9)
+      expect(await db.admin.schemaVersion()).toBe(8)
+
+      const refusal = await db.admin.migrate().then(
+        () => 'migrated',
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      )
+      expect(refusal).toMatch(/54000/)
+      expect(await db.admin.schemaVersion()).toBe(8)
+
+      // The run ends under its own token. No entry but `claim` holds a token to the width.
+      await store.complete('q', run.runId, token, '{}')
+      await db.admin.migrate()
+      expect(await db.admin.schemaVersion()).toBe(9)
+      const built = await client.query(
+        `SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'runs_held'`,
+        [db.schemaName],
+      )
+      expect(built.rowCount).toBe(1)
+    } finally {
+      await client.end()
+      await db.close()
+    }
+  })
 })

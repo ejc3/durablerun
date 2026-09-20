@@ -701,7 +701,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIdentifiersFit({ queue })
+    requireIdentifiersFit({ queue, claimToken })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum), so ticks

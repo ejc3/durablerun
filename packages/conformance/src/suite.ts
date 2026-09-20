@@ -685,7 +685,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('answers a claim under a token longer than an identifier alike on every dialect, and never as an outage', async () => {
         // 3,000 hex characters that no compression shortens. An index of the token holds
         // a bounded row on one dialect, a prefix on another and the whole value on the
-        // third, so a token of any length is where the dialects would answer differently.
+        // third: with no bound on the token, PostgreSQL answered this claim as an outage
+        // where the other two took the run. The token is held to an identifier's width
+        // where it enters, so every dialect refuses it, and refuses it the same way.
         let x = 0x2545f491
         const token = Array.from({ length: 3000 }, () => {
           x = (Math.imul(x, 1664525) + 1013904223) >>> 0
@@ -696,7 +698,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           (runs) => `took ${runs.length}`,
           (error: unknown) => (error instanceof Error ? error.name : String(error)),
         )
-        expect(answer).toMatch(/^(took 1|InvalidDurableStringError)$/)
+        expect(answer).toBe('InvalidDurableStringError')
       })
 
       it('same-token receipt holds the lease expiry to its range, at both ends', async () => {
