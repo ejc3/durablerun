@@ -129,6 +129,30 @@ export function isTreeBuiltStatement(statement: unknown): boolean {
   return typeof statement === 'object' && statement !== null && weakSetHas(treeBuilt, statement)
 }
 
+/** The statements a `FencedBatch` compiled from trees as reads, by identity. */
+const treeBuiltReads = new TrustedWeakSet<object>()
+
+/**
+ * Whether a `FencedBatch` compiled this statement from a tree AS A READ: through `readTree`
+ * or `readPrepared`, which refuse a root that is not a SELECT, inside a grammar whose
+ * functions are a closed list. It is asked of the statement an executor receives, and it
+ * says where that statement came from, where a statement's text can only be guessed at.
+ * Through nodes such a read cannot write. A store's own fragment is text that core reads
+ * for clocks and comments only, so the brand says nothing of a second statement inside a
+ * fragment, or of a function a fragment calls. An executor that sends a branded read
+ * outside a read-only transaction has to see that the server takes one statement.
+ */
+export function isTreeBuiltRead(statement: unknown): boolean {
+  return (
+    typeof statement === 'object' && statement !== null && weakSetHas(treeBuiltReads, statement)
+  )
+}
+
+/** Brand a statement as a read, frozen, so the text an executor trusts is the text core compiled. */
+function brandRead(compiled: object): void {
+  weakSetAdd(treeBuiltReads, Object.freeze(compiled))
+}
+
 /** True only for an authentic compiler bind failure from this module. */
 export function isFencedBatchBindError(value: unknown): value is TypeError {
   return (
@@ -743,6 +767,7 @@ export class FencedBatch {
     // Counted last, so a read refused above leaves no clock read behind.
     this.countClockRead(at, name, drift, shape.readsClock)
     weakSetAdd(treeBuilt, compiled)
+    brandRead(compiled)
     this.statements.push({
       name,
       kind: 'tail',
@@ -1086,6 +1111,7 @@ export class FencedBatch {
       recordsEndOf,
     }
     weakSetAdd(treeBuilt, held.compiled)
+    if (reading) brandRead(held.compiled)
     // Asked and held last, so a statement one of the rules above refused leaves no lock behind.
     const unserialized = eventLockProblem(tree, statement.eventLock)
     if (unserialized !== null) throw new Error(`${at} ${unserialized}`)
