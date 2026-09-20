@@ -262,6 +262,35 @@ describe('poison/invariant mechanism self-tests', () => {
     }
   })
 
+  it('rejects another door of a storage corruption attempt that holds no statement', async () => {
+    // The other doors are tried only once the first is refused, so the first here is a write
+    // that fails, which this attempt's classifier calls a structural rejection.
+    const f = await makeLibsqlFixture('zero-statement-other-door')
+    try {
+      await expect(
+        executeStorageCorruption(
+          {
+            ...f,
+            storageCorruptionAttempt: () => ({
+              statements: [{ sql: 'INSERT INTO no_such_table (x) VALUES (1)', args: [] }],
+              verify: () => undefined,
+              isStructuralRejection: () => true,
+              otherDoors: [{ statements: [], verify: () => undefined }],
+            }),
+          },
+          {
+            table: 'runs',
+            runId: 'unused',
+            column: 'available_at_ms',
+            invalidRepresentation: 'non-integer',
+          },
+        ),
+      ).rejects.toThrow(/every door of a storage corruption attempt must hold an SQL statement/)
+    } finally {
+      await f.close()
+    }
+  })
+
   it('credits a write statement whose dialect SQL begins with a CTE', async () => {
     await expect(
       runPoisonMatrixCase(
