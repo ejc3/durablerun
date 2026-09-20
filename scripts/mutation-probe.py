@@ -7448,7 +7448,7 @@ MUTATION_SPECS.extend(
             "packages/store-mysql/src/tree.ts",
             "    this.append(` force index (${index})`)\n",
             "    // MUTATION: the written table is reached through no named index\n",
-            "a keyed write's table is read last and may still be scanned, as one update of a one-row table was",
+            "a keyed write's keys are read first and its table may still be scanned, as one update of a one-row table was",
         ),
         (
             "mysql-keyed-write-takes-its-key",

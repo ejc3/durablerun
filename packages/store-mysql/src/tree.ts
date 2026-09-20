@@ -3,6 +3,7 @@ import {
   AliasNode,
   AndNode,
   BinaryOperationNode,
+  ColumnNode,
   type ColumnUpdateNode,
   type DeleteQueryNode,
   FromNode,
@@ -34,12 +35,15 @@ function referenced(reference: ReferenceNode): {
   readonly table: string | undefined
   readonly name: string | null
 } {
-  const name = (reference.column as { column?: { name?: unknown } }).column?.name
   return {
     table: reference.table?.table.identifier.name,
-    name: typeof name === 'string' ? name : null,
+    name: ColumnNode.is(reference.column) ? reference.column.column.name : null,
   }
 }
+
+/** The operator a condition names, or null for anything that is not a plain operator. */
+const operatorOf = (node: OperationNode): string | null =>
+  OperatorNode.is(node) ? node.operator : null
 
 function assignedColumn(update: ColumnUpdateNode): string {
   const column = ReferenceNode.is(update.column) ? update.column.column : update.column
@@ -213,28 +217,24 @@ function requiredConditions(node: OperationNode | undefined): readonly Operation
 }
 
 /**
- * The column a write of `target` is keyed by: the one required `column IN (subquery)` of
- * its WHERE, wherever it stands among the conditions. A list of values is no subquery. A
+ * The column a write of `target` is keyed by, with the condition that keys it: the one
+ * required `column IN (subquery)` of its WHERE, wherever it stands among the conditions. A list of values is no subquery. A
  * fragment in a subquery's place arrives bare, where a value or a predicate arrives in
  * parentheses.
  */
 function keyOf(
   where: OperationNode | undefined,
   target: string,
-): {
-  readonly column: string
-  readonly keys: OperationNode
-  readonly condition: BinaryOperationNode
-} | null {
+): { readonly column: string; readonly condition: BinaryOperationNode } | null {
   const found = requiredConditions(where).flatMap((condition) => {
     if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return []
-    const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
+    const operator = operatorOf(condition.operator)
     const subquery =
       SelectQueryNode.is(condition.rightOperand) || RawNode.is(condition.rightOperand)
     if (operator !== 'in' || !subquery) return []
     const { table, name } = referenced(condition.leftOperand)
     return name !== null && (table === undefined || table === target)
-      ? [{ column: name, keys: condition.rightOperand, condition }]
+      ? [{ column: name, condition }]
       : []
   })
   if (found.length > 1) {
@@ -245,15 +245,11 @@ function keyOf(
   return found[0] ?? null
 }
 
-/** The index a write reaches its table through, with its keys, or null for a write no subquery keys. */
+/** The index a write reaches its table through, with the condition that keys it, or null for a write no subquery keys. */
 function keyIndex(
   target: string | null,
   where: OperationNode | undefined,
-): {
-  readonly index: string
-  readonly keys: OperationNode
-  readonly condition: BinaryOperationNode
-} | null {
+): { readonly index: string; readonly condition: BinaryOperationNode } | null {
   if (target === null) return null
   const key = keyOf(where, target)
   if (key === null) return null
@@ -263,7 +259,7 @@ function keyIndex(
       `store-mysql: a write of ${target} keyed by ${key.column} names no index to reach it through`,
     )
   }
-  return { index, keys: key.keys, condition: key.condition }
+  return { index, condition: key.condition }
 }
 
 /**
@@ -284,7 +280,7 @@ const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }
 /** Whether a condition is `alias.fence_stamp = …`, the stamp of the table read as `alias`. */
 function requiresStampOf(alias: string, condition: OperationNode): boolean {
   if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return false
-  const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
+  const operator = operatorOf(condition.operator)
   const { table, name } = referenced(condition.leftOperand)
   return operator === '=' && table === alias && name === 'fence_stamp'
 }
@@ -348,9 +344,10 @@ function stampedKeys(
  * - MySQL refuses a subquery that reads the table its statement writes (error 1093)
  *   unless the read goes through a derived table. A self-read built from nodes is
  *   wrapped in one here. A store fragment wraps its own.
- * - A write keyed by a subquery reads its table last, through the index of its key
- *   (`KEY_INDEXES`). A DELETE takes an index hint only in its multiple-table form, so a
- *   keyed DELETE is written in it.
+ * - A write keyed by a subquery reads its keys first and its table second, through the
+ *   index of its key (`KEY_INDEXES`). A DELETE takes an index hint only in its
+ *   multiple-table form, so a keyed DELETE is written in it, its keys are read through the
+ *   index of their stamp (`STAMP_INDEXES`), and a delete that no subquery keys is refused.
  */
 class MysqlTreeCompiler extends MysqlQueryCompiler {
   #insertTarget: TableNode | null = null
@@ -498,7 +495,7 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
       this.append(` as \`${KEYS.table}\`)`)
       return
     }
-    const operator = OperatorNode.is(node.operator) ? node.operator.operator : null
+    const operator = operatorOf(node.operator)
     if (operator !== 'is distinct from' && operator !== 'is not distinct from') {
       super.visitBinaryOperation(node)
       return
@@ -517,9 +514,8 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         ? node.updates
         : readersBeforeWriters(node.updates, target)
     const keyed = keyIndex(target, node.where?.where)
-    const index = keyed?.index ?? null
     this.writing(target, () => {
-      if (index === null || target === null || node.table === undefined) {
+      if (keyed === null || target === null || node.table === undefined) {
         super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
         return
       }
@@ -528,10 +524,10 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         [node.from, ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause])],
       )
       this.append(`update ${keysFirst(target)} `)
-      this.visitKeyedTarget(node.table, index)
+      this.visitKeyedTarget(node.table, keyed.index)
       this.append(' set ')
       this.compileList(updates ?? [])
-      this.visitKeyedWhere(node.where, keyed?.condition)
+      this.visitKeyedWhere(node.where, keyed.condition)
     })
   }
 
@@ -545,17 +541,12 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         node.using,
         ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause]),
       ])
-      const keysFrom = stampedKeys(target, keyed.keys)
+      const keysFrom = stampedKeys(target, keyed.condition.rightOperand)
       this.append(`delete ${keysFirst(target)} `)
       this.visitNode(table)
       this.append(' from ')
       this.visitKeyedTarget(table, keyed.index)
-      this.#keysFrom = keysFrom
-      try {
-        this.visitKeyedWhere(node.where, keyed.condition)
-      } finally {
-        this.#keysFrom = null
-      }
+      this.visitKeyedWhere(node.where, keyed.condition, keysFrom)
     })
   }
 
@@ -587,17 +578,21 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
     this.append(` force index (${index})`)
   }
 
+  /** A keyed write's WHERE: its key condition is written as a block, and a delete's keys are read by their stamp. */
   private visitKeyedWhere(
     where: OperationNode | undefined,
-    key: BinaryOperationNode | undefined,
+    key: BinaryOperationNode,
+    keysFrom: ReturnType<typeof stampedKeys> | null = null,
   ): void {
     if (where === undefined) throw new Error('store-mysql: a keyed write with no WHERE')
-    this.#key = key ?? null
+    this.#key = key
+    this.#keysFrom = keysFrom
     try {
       this.append(' ')
       this.visitNode(where)
     } finally {
       this.#key = null
+      this.#keysFrom = null
     }
   }
 

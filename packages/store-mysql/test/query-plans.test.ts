@@ -52,6 +52,7 @@ async function shippedBatch(
   db: TestDb,
   label: string,
   act: (store: MysqlSchedulerStore) => Promise<unknown>,
+  ids: IdSource = db.ids,
 ): Promise<SqlStatement[]> {
   const seen: SqlStatement[] = []
   const recorder: SqlExecutor = {
@@ -60,7 +61,7 @@ async function shippedBatch(
       return db.raw.batch(sent, statements, control)
     },
   }
-  await act(new MysqlSchedulerStore(recorder, db.ids))
+  await act(new MysqlSchedulerStore(recorder, ids))
   return seen
 }
 
@@ -791,17 +792,12 @@ describe('a keyed write on MySQL', () => {
       const token = systemIdSource().token()
       const ids: IdSource = { ...db.ids, token: () => token }
       await new MysqlSchedulerStore(db.raw, db.ids).spawn(Q, 'one', '{}')
-      const sent: SqlStatement[] = []
-      const recorder: SqlExecutor = {
-        batch: (label, statements, control) => {
-          if (label === 'claim') sent.push(...statements)
-          return db.raw.batch(label, statements, control)
-        },
-      }
-      await new MysqlSchedulerStore(recorder, ids).claim(Q, 'worker', {
-        leaseSeconds: 60,
-        limit: 1,
-      })
+      const sent = await shippedBatch(
+        db,
+        'claim',
+        (store) => store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 }),
+        ids,
+      )
       const stamps = [
         ...new Set(
           sent
@@ -834,8 +830,7 @@ describe('the hot path beside a history of tasks, on MySQL', () => {
       const walked = new Map<string, number>()
       const measuring: SqlExecutor = {
         batch: async (label, statements, control) => {
-          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
-          if (mode === 'read') return db.raw.batch(label, statements, control)
+          if (sqlBatchMode(control) === 'read') return db.raw.batch(label, statements, control)
           const shifted: SqlStatement[] = statements.map((statement) =>
             statement.skipUnlessWrote === undefined
               ? statement
@@ -896,8 +891,7 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
       const walked = new Map<string, number>()
       const measuring: SqlExecutor = {
         batch: async (label, statements, control) => {
-          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
-          if (mode === 'read') return db.raw.batch(label, statements, control)
+          if (sqlBatchMode(control) === 'read') return db.raw.batch(label, statements, control)
           const shifted: SqlStatement[] = statements.map((statement) =>
             statement.skipUnlessWrote === undefined
               ? statement

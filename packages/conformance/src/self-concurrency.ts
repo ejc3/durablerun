@@ -70,7 +70,30 @@ async function parkWaiters(f: StoreFixture, count: number): Promise<void> {
   if (parked.length !== count) throw new Error(`parked ${parked.length} of ${count} waiters`)
   for (const run of parked) {
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 'wait', 'never', 3600)
+    await awaitOwned(f.store, Q, run, 'wait', 'never', 3600)
+  }
+}
+
+/** A due run for every copy, each claimed under a token of its own, and then what they left. */
+async function distinctClaimers(f: StoreFixture) {
+  for (const copy of EVERY_COPY) await f.store.spawn(Q, `job-${copy}`, '{}')
+  const claim = (token: string) => f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
+  return {
+    call: (copy: number) => claim(`copy-${copy}`),
+    // A claimer skips the runs another has locked, so a claim may come back short of
+    // what is due, or empty, and how the runs are split is not held. What is held is
+    // that no run is claimed twice and that what the claimers left can still be
+    // claimed. A claim sent again under its token is answered with what it took the
+    // first time, so every claim here has a token of its own.
+    afterwards: async () => {
+      const claimed = []
+      for (let next = 0; next <= COPIES; next++) {
+        const more = await claim(`copy-${COPIES}.${next}`)
+        if (more.length === 0) return claimed
+        claimed.push(...more)
+      }
+      throw new Error('the last claimer was never answered nothing')
+    },
   }
 }
 
@@ -108,29 +131,6 @@ async function parentAndLiveChild(f: StoreFixture) {
  * itself. The type makes a port method with no entry here a compile error, so a new
  * method cannot arrive without its contest.
  */
-/** A due run for every copy, each claimed under a token of its own, and then what they left. */
-async function distinctClaimers(f: StoreFixture) {
-  for (const copy of EVERY_COPY) await f.store.spawn(Q, `job-${copy}`, '{}')
-  const claim = (token: string) => f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-  return {
-    call: (copy: number) => claim(`copy-${copy}`),
-    // A claimer skips the runs another has locked, so a claim may come back short of
-    // what is due, or empty, and how the runs are split is not held. What is held is
-    // that no run is claimed twice and that what the claimers left can still be
-    // claimed. A claim sent again under its token is answered with what it took the
-    // first time, so every claim here has a token of its own.
-    afterwards: async () => {
-      const claimed = []
-      for (let next = 0; next <= COPIES; next++) {
-        const more = await claim(`copy-${COPIES}.${next}`)
-        if (more.length === 0) return claimed
-        claimed.push(...more)
-      }
-      throw new Error('the last claimer was never answered nothing')
-    },
-  }
-}
-
 const STORE_RACES = {
   spawn: {
     'under one idempotency key': async (f) => () =>
