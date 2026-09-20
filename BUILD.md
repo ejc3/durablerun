@@ -2963,6 +2963,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     testing entry both packages can import, would serve both, and a server's
     generated check too. Its trigger is that check being built for a server, or
     the second variant that has to be scripted in both.
+  - Option, not a deferral of this PR: a generated surface for the plan reader.
+    Its review found the reader blind to a read of a subquery's rows inside a
+    nest, and not failing closed at three seams, and every such finding lay
+    where no shipped plan goes and no case picked by hand went. The surface
+    would make every kind of line the reader knows stand as the step that drives
+    and as the step that is driven, under each reach, with the expected reading
+    derived and not written by hand. The postmortem of that review names it as
+    the mechanism its root cause asks for. Its trigger is the next finding
+    against the reader.
   - Recorded, and not planned: a statement inside a trigger is never planned.
     libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
     scans `drivers`, a table of one row for each live driver.
