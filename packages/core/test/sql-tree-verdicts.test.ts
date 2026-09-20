@@ -559,6 +559,21 @@ describe('the tree rules', () => {
         'mutation-verdict:construction:tree-read-state-bind-in-parentheses',
       ).toMatch(BOUND)
     })
+
+    it('is refused under a cast, a call, a CASE or a fragment on the right', () => {
+      // The bound value is found wherever it stands below the right side, as the column is
+      // found below the left. A cast of a bind is an ordinary thing to write for PostgreSQL.
+      const rights: ((eb: Loose) => unknown)[] = [
+        (eb) => eb.cast(eb.val('running'), 'text'),
+        (eb) => eb.fn('coalesce', [eb.val('running'), eb.val('pending')]),
+        (eb) => eb.case().when('r.attempt', '>', 1).then('running').else('pending').end(),
+        () => value<string>('lower(?)', ['RUNNING']),
+      ]
+      for (const right of rights) {
+        const compared = (eb: Loose) => eb('r.state', '=', right(eb))
+        expect(String(problem(runs().where(compared)))).toMatch(BOUND)
+      }
+    })
   })
 
   describe('the shape of an INSERT', () => {
