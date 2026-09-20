@@ -3,6 +3,7 @@ import {
   PERSISTED_TEMPORAL_FIELDS,
   type PersistedCounterFieldDescriptor,
   type PersistedTemporalFieldDescriptor,
+  SAGA_PHASE_CHECKPOINT,
   type SqlExecutor,
 } from '@durablerun/core'
 import { attributeReplacedFailure, requireExpectedFailure } from '@durablerun/core/testing'
@@ -15,6 +16,7 @@ import {
   POISON_TARGET_PROFILE_SEEDS,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
+  PROBE_STEP_STARTED,
   type PoisonCounterTargetabilityRecord,
   type PoisonCounterTargetabilityVector,
   type PoisonInvocationOutcome,
@@ -1305,6 +1307,64 @@ describe('poison/invariant mechanism self-tests', () => {
         },
       ),
     ).rejects.toThrow(/claim is not the unactivated one its receipt names/)
+  })
+
+  // The declared-target check refuses a case whose seed no longer stands as its profile
+  // says. Without a refusal such a case runs green against a target its label refuses for
+  // another reason, and holds nothing. Each case below breaks one thing a profile of an arm
+  // that names its target seeds, and requires the check's own sentence.
+  const refusalOf = (targetId: string, sql: string) =>
+    runPoisonTargetCase(makeLibsqlFixture, target(targetId), {
+      beforeSnapshot: (raw) => write(raw, [{ sql, args: [] }]),
+    }).then(
+      () => 'the case ran',
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    )
+
+  it('rejects a failed target that is not a well-formed failure', async () => {
+    const failed = 'counter-bound/task-max-attempts/retry-task-failed'
+    const sentence = expect.stringContaining('task is not a well-formed failure')
+    expect({
+      withNoReason: await refusalOf(
+        failed,
+        `UPDATE tasks SET failure_reason = NULL WHERE task_id = 'poison-task'`,
+      ),
+      withAPayload: await refusalOf(
+        failed,
+        `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = 'poison-task'`,
+      ),
+    }).toEqual({ withNoReason: sentence, withAPayload: sentence })
+  })
+
+  it('rejects a target seeded under a live lease that no longer holds one', async () => {
+    const claimed = 'counter-bound/task-max-attempts/activate-unactivated'
+    const sentence = expect.stringContaining('run is not a live owned claim')
+    expect({
+      leaseRanOut: await refusalOf(
+        claimed,
+        `UPDATE runs SET claim_expires_at_ms = 1000000 WHERE run_id = 'poison-run'`,
+      ),
+      anotherWorkersClaim: await refusalOf(
+        claimed,
+        `UPDATE runs SET claimed_by = 'another-worker' WHERE run_id = 'poison-run'`,
+      ),
+    }).toEqual({ leaseRanOut: sentence, anotherWorkersClaim: sentence })
+  })
+
+  it('rejects a saga target whose checkpoints do not stand where its profile says', async () => {
+    const sentence = expect.stringContaining('saga does not stand where the profile says')
+    const withoutCheckpoint = (name: string) =>
+      `DELETE FROM checkpoints WHERE task_id = 'poison-task' AND checkpoint_name = '${name}'`
+    expect({
+      noStepStarted: await refusalOf(
+        'counter-bound/task-max-attempts/fail-started-step',
+        withoutCheckpoint(PROBE_STEP_STARTED),
+      ),
+      outsideThePhase: await refusalOf(
+        'counter-bound/task-max-attempts/fail-rollback-rolling-back',
+        withoutCheckpoint(SAGA_PHASE_CHECKPOINT),
+      ),
+    }).toEqual({ noStepStarted: sentence, outsideThePhase: sentence })
   })
 
   it('seeds a sleeping claim target from a prior activated generation', async () => {
