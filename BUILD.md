@@ -1496,8 +1496,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     of a subquery and the second side of the test are each dropped by one. The
     first side of the test has none of its own: without it seven cases fail.
     Two of main's entries are aimed at lines that were rewritten, each mutant
-    the one it was. The registry holds 961 mutations: main's 952 and the 9 this
-    pull request adds.
+    the one it was. The registry holds 1007 mutations: main's 998 and the 9
+    this pull request adds.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
