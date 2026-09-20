@@ -18,7 +18,10 @@
 // compared under its own entry. A class's private members are left out, because a consumer
 // cannot use them; one line says that the class has some, because the first one stops a plain
 // object from standing in for the class. A private constructor stays, because it says that a
-// consumer cannot construct the class. The check does not judge whether a difference breaks a
+// consumer cannot construct the class. A value that is exported as a type only says so in one
+// line, because a consumer can no longer use it as a value. That is asked of a consumer's
+// compiler, through a module for each entry point that exists only in the check and uses
+// every exported name as a value. The check does not judge whether a difference breaks a
 // consumer. Any difference is refused until the snapshot says why it is there.
 //
 // A name leaves on purpose through the snapshot's `withdrawn` table, which gives the
@@ -61,6 +64,9 @@ const pinOf = (shape) => sha256(shape.join('\n'))
 const same = (was, now) => was.join('\n') === now.join('\n')
 const by = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
 const find = (table, { packageName, subpath, name }) => table?.[packageName]?.[subpath]?.[name]
+const TYPE_ONLY = '(a value exported as a type only)'
+// TS1362: a name cannot be used as a value because it was exported using `export type`.
+const EXPORTED_AS_A_TYPE = 1362
 
 // A private constructor is not hidden: it says that a consumer cannot construct the class.
 const isPrivate = (member) =>
@@ -109,6 +115,14 @@ function identifiers(node, visit) {
   ts.forEachChild(node, (child) => identifiers(child, visit))
 }
 
+function exportsOf(program, { packageName, subpath, file }) {
+  const checker = program.getTypeChecker()
+  const source = program.getSourceFile(file)
+  const symbol = source && checker.getSymbolAtLocation(source)
+  if (!symbol) throw new Error(`package-surface: cannot read ${packageName} ${subpath} (${file})`)
+  return checker.getExportsOfModule(symbol)
+}
+
 // released({ packageName, subpath, name }) says whether the release exported the name. A
 // released name is compared under its own entry, so no other name's shape reaches into it.
 function packedSurface(unpackedRoot, released = () => true) {
@@ -130,7 +144,7 @@ function packedSurface(unpackedRoot, released = () => true) {
       entries.push({ packageName: manifest.name, subpath, file })
     }
   }
-  const program = ts.createProgram(roots, {
+  const options = {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.NodeNext,
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
@@ -141,8 +155,54 @@ function packedSurface(unpackedRoot, released = () => true) {
     baseUrl: '/',
     paths,
     types: [],
-  })
+  }
+  // How a name is exported is asked of a consumer's compiler. For each entry point a module
+  // that exists only here imports every exported name and uses each as a value, one to a line,
+  // and the compiler says which of them were exported as a type only. The names come from a
+  // first program, and the two programs parse each file once.
+  const host = ts.createCompilerHost(options)
+  const consumers = new Map()
+  const parsed = new Map()
+  const fromDisk = host.getSourceFile.bind(host)
+  host.getSourceFile = (fileName, how, ...rest) => {
+    if (!parsed.has(fileName)) {
+      const text = consumers.get(fileName)
+      parsed.set(
+        fileName,
+        text === undefined
+          ? fromDisk(fileName, how, ...rest)
+          : ts.createSourceFile(fileName, text, how),
+      )
+    }
+    return parsed.get(fileName)
+  }
+  const named = ts.createProgram(roots, options, host)
+  for (const [index, entry] of entries.entries()) {
+    const { packageName, subpath } = entry
+    entry.names = exportsOf(named, entry).map((symbol) => symbol.getName())
+    entry.consumer = join(resolve(unpackedRoot), `package-surface-consumer-${index}.mts`)
+    const imports = entry.names.map((name, at) => `${name} as v${at}`).join(', ')
+    const from = subpath === '.' ? packageName : `${packageName}/${subpath.slice(2)}`
+    consumers.set(
+      entry.consumer,
+      [`import { ${imports} } from '${from}'`, ...entry.names.map((_, at) => `v${at}`)].join('\n'),
+    )
+  }
+  const program = ts.createProgram([...roots, ...consumers.keys()], options, host)
   const checker = program.getTypeChecker()
+  const typeOnly = ({ packageName, subpath, names, consumer }) => {
+    const source = program.getSourceFile(consumer)
+    if (program.getSyntacticDiagnostics(source).length > 0)
+      throw new Error(
+        `package-surface: cannot import every name of ${packageName} ${subpath} to ask how it is exported`,
+      )
+    return new Set(
+      program
+        .getSemanticDiagnostics(source)
+        .filter(({ code }) => code === EXPORTED_AS_A_TYPE)
+        .map(({ start }) => names[ts.getLineAndCharacterOfPosition(source, start).line - 1]),
+    )
+  }
   // Where a declaration sits in the packed packages, or undefined for the compiler's own
   // library and for a dependency, whose declarations are not this repository's to hold.
   const place = (node) => {
@@ -160,12 +220,7 @@ function packedSurface(unpackedRoot, released = () => true) {
     (symbol.declarations ?? [])
       .filter((node) => place(node) !== undefined && topLevel(node))
       .sort((a, b) => by(place)(a, b) || a.pos - b.pos)
-  const exported = entries.map(({ packageName, subpath, file }) => {
-    const source = program.getSourceFile(file)
-    const symbol = source && checker.getSymbolAtLocation(source)
-    if (!symbol) throw new Error(`package-surface: cannot read ${packageName} ${subpath} (${file})`)
-    return { packageName, subpath, symbols: checker.getExportsOfModule(symbol) }
-  })
+  const exported = entries.map((entry) => ({ ...entry, symbols: exportsOf(program, entry) }))
   const compared = new Set()
   for (const { packageName, subpath, symbols } of exported)
     for (const symbol of symbols)
@@ -183,7 +238,9 @@ function packedSurface(unpackedRoot, released = () => true) {
   }
   const label = (symbol) => `${symbol.getName()} ${place(declarationsOf(symbol)[0])}`
   const surface = {}
-  for (const { packageName, subpath, symbols } of exported) {
+  for (const entry of exported) {
+    const { packageName, subpath, symbols } = entry
+    const asTypes = typeOnly(entry)
     const shapes = {}
     for (const symbol of symbols.sort(by((each) => each.getName()))) {
       const own = resolved(symbol)
@@ -191,9 +248,10 @@ function packedSurface(unpackedRoot, released = () => true) {
       reach(own, reached)
       reached.delete(own)
       const beside = [...reached].sort(by(label))
-      shapes[symbol.getName()] = [own, ...beside].flatMap((each) =>
-        declarationsOf(each).flatMap(declared),
-      )
+      shapes[symbol.getName()] = [
+        ...(asTypes.has(symbol.getName()) ? [TYPE_ONLY] : []),
+        ...[own, ...beside].flatMap((each) => declarationsOf(each).flatMap(declared)),
+      ]
     }
     surface[packageName] ??= {}
     surface[packageName][subpath] = shapes
