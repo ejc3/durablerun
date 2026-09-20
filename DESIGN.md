@@ -1094,9 +1094,11 @@ One invocation executes one claimed run to its next suspension point:
     other reads used `runs_held`. On a database with no statistics at all, as
     after a bulk load, PostgreSQL reads the backlog as it did before the index.
     That is slower, never wrong, and it lasts until autovacuum analyzes the
-    table. The pin's fixture also parks one wait, because with `waits` empty the
-    delete of timed-out waits never reaches `runs` and its scans would be judged
-    without having run.
+    table. The pin's fixture also parks one wait, because beside an empty
+    `waits` PostgreSQL may drive the delete of timed-out waits from `waits`, and
+    its scans of `runs` then never run. A scan that never ran is not counted as
+    judged, and the pin fails a statement none of whose scans of `runs` ran, so
+    a statement cannot pass by having read nothing.
   - The plan of every statement libSQL ships. The pins above hold statements
     someone chose, and the two over writes plan no read and no SELECT of an
     INSERT. `store-libsql`'s plan test also sends every batch the store builds,

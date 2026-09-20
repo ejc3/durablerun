@@ -244,6 +244,60 @@ async function cloneRunning(
 }
 
 /**
+ * What a statement's plan says of its scans of `runs`: how many of them ran, and each one
+ * that returned and discarded more rows than a claim's one run bounds. A scan that never
+ * ran read nothing, and says nothing of what it would read, so it is not counted as one
+ * that was judged.
+ */
+function scansOfRuns(lines: readonly string[]): { ran: number; backlog: string[] } {
+  let ran = 0
+  const backlog: string[] = []
+  lines.forEach((line, at) => {
+    if (!/Scan\b.* on runs\b/.test(line) || line.includes('never executed')) return
+    ran += 1
+    const actual = /actual rows=([\d.]+) loops=(\d+)/.exec(line)
+    const loops = Number(actual?.[2] ?? 0)
+    // What the scan discarded is printed under it, ahead of the next node of the plan.
+    const under = lines.slice(at + 1)
+    const next = under.findIndex((other) => /->|SubPlan|InitPlan/.test(other))
+    const removed = (next < 0 ? under : under.slice(0, next))
+      .map((other) => /Rows Removed by Filter: (\d+)/.exec(other)?.[1])
+      .find((count) => count !== undefined)
+    const read = (Number(actual?.[1] ?? 0) + Number(removed ?? 0)) * loops
+    if (read > 20) backlog.push(`${line.trim()} read ${read} rows`)
+  })
+  return { ran, backlog }
+}
+
+it('counts no scan of runs that never ran, and reads what a scan returned and what it discarded', () => {
+  // The delete of timed-out waits as PostgreSQL planned it beside an empty `waits`: driven
+  // from `waits`, so neither scan of `runs` ran. Judged as read, it would pass whatever it
+  // would have read, which is how the pin once held three statements and said four.
+  expect(
+    scansOfRuns([
+      'Delete on waits (actual rows=0 loops=1)',
+      '  ->  Nested Loop Semi Join (actual rows=0 loops=1)',
+      '        ->  Index Scan using waits_pkey on waits (actual rows=0 loops=1)',
+      '        ->  Index Scan using runs_held on runs f (never executed)',
+      '              SubPlan 1',
+      '                ->  Index Scan using runs_pkey on runs f_1 (never executed)',
+    ]),
+  ).toEqual({ ran: 0, backlog: [] })
+  // The same delete with the claim token left out of it, beside 300 running runs.
+  expect(
+    scansOfRuns([
+      '        ->  Index Scan using runs_poll on runs f (actual rows=1 loops=1)',
+      "              Index Cond: ((queue = 'q'::text) AND (state = 'running'::text))",
+      '              Rows Removed by Filter: 301',
+      '        ->  Index Scan using waits_pkey on waits (actual rows=0 loops=1)',
+    ]),
+  ).toEqual({
+    ran: 1,
+    backlog: ['->  Index Scan using runs_poll on runs f (actual rows=1 loops=1) read 302 rows'],
+  })
+})
+
+/**
  * What a claim reads of `runs` on PostgreSQL, beside running runs that other workers hold.
  * A queue's running runs are its work in flight, and a claim that reads them pays for them
  * on every tick: one claim measured 64 ms beside 100,000 running runs against 7 ms beside
@@ -290,29 +344,18 @@ it('reads of runs no more than a claim takes, beside the running runs other work
     await store.spawn('q', 'due', '{}')
 
     const backlogReads: string[] = []
-    let scansOfRuns = 0
+    const scansThatRan: number[] = []
     await planning(client, async () => {
       for (const statement of shipped) {
-        const lines = await explained(client, statement.sql, statement.args)
-        lines.forEach((line, at) => {
-          if (!/Scan\b.* on runs\b/.test(line)) return
-          scansOfRuns += 1
-          const actual = /actual rows=([\d.]+) loops=(\d+)/.exec(line)
-          const loops = Number(actual?.[2] ?? 0)
-          // What the scan discarded is printed under it, ahead of the next node of the plan.
-          const under = lines.slice(at + 1)
-          const next = under.findIndex((other) => /->|SubPlan|InitPlan/.test(other))
-          const removed = (next < 0 ? under : under.slice(0, next))
-            .map((other) => /Rows Removed by Filter: (\d+)/.exec(other)?.[1])
-            .find((count) => count !== undefined)
-          const read = (Number(actual?.[1] ?? 0) + Number(removed ?? 0)) * loops
-          if (read > 20)
-            backlogReads.push(`${head(statement.sql)} -> ${line.trim()} read ${read} rows`)
-        })
+        const judged = scansOfRuns(await explained(client, statement.sql, statement.args))
+        scansThatRan.push(judged.ran)
+        for (const scan of judged.backlog) backlogReads.push(`${head(statement.sql)} -> ${scan}`)
       }
     })
-    // The compare-and-set, the follow-on and the receipt read each scan `runs`.
-    expect(scansOfRuns).toBeGreaterThanOrEqual(6)
+    // Each of the four statements ran a scan of `runs`. One whose scans never ran would
+    // pass by having read nothing, as the delete did while `waits` was empty.
+    expect(scansThatRan).toHaveLength(4)
+    expect(scansThatRan.filter((count) => count === 0)).toEqual([])
     expect(
       backlogReads,
       'mutation-verdict:behavior:postgres-claim-followons-name-the-token',
