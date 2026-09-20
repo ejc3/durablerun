@@ -318,9 +318,11 @@ async function runState(f: StoreFixture, runId: string): Promise<unknown> {
 }
 
 /**
- * The executable twins of specs/ChildTasks.tla, for every dialect. The model's ledger
- * block is read by nothing (`scripts/spec-ledger.py` reads Scheduler.tla), so each of
- * its actions and guards is held here by a case that names it.
+ * The executable twins of specs/ChildTasks.tla, for every dialect. `scripts/spec-ledger.py`
+ * holds the model's ledger block to the stores' labels and to the model's actions, and it
+ * reads no guard, so the model's actions and guards are held here, by cases under
+ * descriptive titles. SpawnChild's guard is held in the scheduler suite, where a child is
+ * created only under its parent's live claim.
  */
 export function childTaskConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`child task conformance [${dialect}]`, () => {

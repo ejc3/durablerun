@@ -1,10 +1,12 @@
 import {
+  LIVE_STATES,
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SqlExecutor,
+  TERMINAL_STATES,
   childSpawnKey,
   encodeRollbackTry,
 } from '@durablerun/core'
@@ -117,6 +119,29 @@ async function refusalsAtEveryEntry(
     }
   }
   return refusals
+}
+
+/**
+ * A store whose calls start when they are awaited and not when they are made. An entry
+ * makes all its calls at once, which is right over a recorder and wrong over a database:
+ * there they would race, and one that refused while another was awaited would be
+ * reported as unhandled. Over this store they run one at a time, in the order read.
+ * The store itself answers no `then`: a proxy that answered one would be a thenable, and
+ * awaiting it, or returning it from an async function, would never resolve.
+ */
+function oneAtATime(store: SchedulerStore): SchedulerStore {
+  return new Proxy(store, {
+    get: (target, method) =>
+      method === 'then'
+        ? undefined
+        : (...args: unknown[]) => ({
+            // biome-ignore lint/suspicious/noThenProperty: a call that starts when it is awaited is a thenable
+            then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+              (Reflect.get(target, method) as (...values: unknown[]) => Promise<unknown>)
+                .apply(target, args)
+                .then(resolve, reject),
+          }),
+  })
 }
 
 /** What one call answered over the recorder: its error, or 'accepted', and whether anything was sent. */
@@ -281,6 +306,25 @@ export function identifierBoundConformance(
         plainCheckpoint: fits,
       })
     })
+
+    it('answers an identifier that spells a task state as it answers any other, at every entry of the port', () =>
+      // A state's name is a word a caller may pass as an identifier. The engine reads its
+      // own statements to know what they do, and a caller's string bound into one must
+      // never read as part of it: every entry answers such a word as it answers a word
+      // that spells nothing. It reads and writes, so it has a migrated fixture of its own.
+      withFixture(makeFixture, 'identifier-bound-state-words', async (live) => {
+        const store = oneAtATime(live.store)
+        const ordinary = await refusalsAtEveryEntry(store, 'spells-nothing')
+        const answers: Record<string, Record<string, string>> = {}
+        for (const word of [...LIVE_STATES, ...TERMINAL_STATES]) {
+          answers[word] = await refusalsAtEveryEntry(store, word)
+        }
+        expect(answers).toEqual(
+          Object.fromEntries(Object.keys(answers).map((word) => [word, ordinary])),
+        )
+        expect(Object.keys(answers)).toHaveLength(6)
+        expect(await engineInvariantViolations(live.raw)).toEqual([])
+      }))
 
     it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', () =>
       // The one case that reads and writes, so it has a migrated fixture of its own.

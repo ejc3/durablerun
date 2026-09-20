@@ -34,7 +34,7 @@ async function harness(seed: string, registry: TaskRegistry) {
       // The launcher URL is late-bound: the worker port is known only
       // after listen(). The loop starts after wiring completes.
       launcher: {
-        launch: (inv) => launcherRef.launch(inv),
+        launch: (inv, options) => launcherRef.launch(inv, options),
       },
       ids,
       clock,

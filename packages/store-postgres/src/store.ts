@@ -33,18 +33,19 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  type TaskDoneDialect,
   type TaskOutcome,
   type TaskResult,
   type WakeSpec,
   activateCas,
   activatedRunRead,
   addTaskDone,
+  awaitTaskDone,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
   checkpointsRead,
-  childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
@@ -60,20 +61,19 @@ import {
   durationToMs,
   emitEventCas,
   emittedEventRead,
-  encodeTaskOutcome,
+  endingTask,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
   heartbeatRemainingRead,
-  isTerminalState,
   mapLimit,
-  materializeTaskDoneCas,
   neverBuggify,
   nextWakeRead,
   normalizeRetryStrategy,
   parseTaskValueJson,
   prepareRead,
   rawSql,
+  readRows,
   refusalStateRead,
   refusedLease,
   refusedWriteError,
@@ -91,7 +91,6 @@ import {
   reviveCas,
   revivedRunRead,
   rollbackPassInsert,
-  runTaskRead,
   serializeTaskHeaders,
   serializeTaskValue,
   spawnIdempotencyKey,
@@ -99,13 +98,14 @@ import {
   spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
+  stampedRunState,
   storageValueKind,
   storedEventRead,
   suspendCas,
   sweepDueCancelsRead,
   sweepExpiredClaimsRead,
-  taskDoneStateRead,
   taskResultRead,
+  taskStateValue,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
 } from '@durablerun/core'
@@ -332,10 +332,8 @@ function taskMirrorsRun(b: FencedBatch, queue: string, runId: string, after: str
     where: 'f.run_id = ?',
     whereArgs: [runId],
     set: {
-      state: `(SELECT f.state FROM runs f
-               WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+      state: stampedRunState(runId, after),
     },
-    setArgs: [runId],
     narrow: `state IN ${LIVE}`,
     rows: 'one',
   })
@@ -458,13 +456,6 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
 const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
   refusalStateRead(binds),
 )
-const RUN_TASK = prepareRead(
-  { queue: 'string', runId: 'string' },
-  (binds: { queue: string; runId: string }) => runTaskRead(binds),
-)
-const TASK_DONE_STATE = prepareRead({ taskId: 'string' }, (binds: { taskId: string }) =>
-  taskDoneStateRead(binds),
-)
 const TASK_RESULT = prepareRead(
   { queue: 'string', taskId: 'string' },
   (binds: { queue: string; taskId: string }) =>
@@ -525,6 +516,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ) {}
 
   private readonly runTasks = new RunTaskMemo()
+  private taskDoneFacts: TaskDoneDialect | undefined
 
   async spawn(
     queue: string,
@@ -764,7 +756,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       where: `f.queue = ? AND f.state = 'running'`,
       whereArgs: [queue],
       set: {
-        state: `'running'`,
+        state: taskStateValue('running'),
         // The eligibility guard makes this exactly one. Keep the expression
         // scalar even under a guard regression so every dialect exposes that
         // regression as the same poisoned-state change instead of relying on
@@ -1056,7 +1048,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
     const launchLost = sqlFragment(guard)
@@ -1120,7 +1111,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -1130,7 +1121,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_RELAUNCH_CAP],
       // Terminal only when this batch placed no rollback pass.
       narrow: `state IN ${LIVE}
@@ -1181,7 +1172,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
@@ -1256,7 +1246,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE}
             AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries)}
@@ -1283,7 +1273,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       whereArgs: [successorId],
       set: {
         infra_retries: INFRA_RETRIES_FROM('?', b.fence('successor')),
-        state: `'pending'`,
+        state: taskStateValue('pending'),
         last_attempt_run: '?',
       },
       setArgs: [successorId, successorId],
@@ -1476,7 +1466,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
       'cancel',
@@ -1533,10 +1522,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
 
   /** The rows of the read a batch holds under a name. A name it does not hold is refused, never read as no row. */
   private async rows(b: FencedBatch, name: string): Promise<SqlRow[]> {
-    const result = (await b.run(this.db)).results[name]
-    if (result === undefined)
-      throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
-    return result.rows
+    return readRows(b, await b.run(this.db), name)
   }
 
   /**
@@ -1744,7 +1730,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     requireIdentifiersFit({ queue, runId })
     const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'complete',
       completeCas({
@@ -1838,11 +1823,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       set: {
         attempts: USER_ATTEMPTS_FROM('?', b.fence(fence)),
         max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))} + 1`,
-        state: `(SELECT f.state FROM runs f
-                 WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('rollback-pass')})`,
+        state: stampedRunState(passId, 'rollback-pass'),
         last_attempt_run: '?',
       },
-      setArgs: [failedRunId, failedRunId, passId, passId],
+      setArgs: [failedRunId, failedRunId, passId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -1870,7 +1854,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
     const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'fail',
       queue,
@@ -1908,7 +1891,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'failRollback',
       queue,
@@ -2063,11 +2045,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [successorId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `(SELECT f.state FROM runs f
-                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')})`,
+          state: stampedRunState(successorId, 'successor'),
           last_attempt_run: '?',
         },
-        setArgs: [runId, successorId, successorId],
+        setArgs: [runId, successorId],
         narrow: `state IN ${LIVE}`,
         rows: 'one',
       })
@@ -2080,7 +2061,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2102,7 +2083,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2270,7 +2251,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -2307,22 +2287,45 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * A run's task, read before the batch that ends the run. A terminal batch names its
-   * task's completion event, and `complete` and `fail` are handed only the run. The
-   * task of a run never changes, so an unfenced read is safe, and so is the answer
-   * `activate` gave this store a moment ago, which costs no read. A run remembered
-   * under another queue still loses, because the batch's compare-and-set names the
-   * queue. A run this queue does not have is refused here as the batch would refuse it.
+   * What this dialect supplies to core's side of a task's ending and of a child await,
+   * built on first use: a worker's own terminal write finds its task in the memo and
+   * needs none of it.
    */
-  private async endingTask(operation: string, queue: string, runId: string): Promise<string> {
-    const remembered = this.runTasks.recall(runId)
-    if (remembered !== undefined) return remembered
-    const b = new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', RUN_TASK, { queue, runId })
-    const rows = await this.rows(b, 'task')
-    const taskId = rows[0]?.task_id
-    if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
-    return taskId
+  private taskDoneDialect(): TaskDoneDialect {
+    this.taskDoneFacts ??= {
+      run: (batch: FencedBatch) => batch.run(this.db),
+      open: {
+        runTask: () => new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        taskDoneState: () =>
+          new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        recordTaskDone: () =>
+          new FencedBatch('record-task-done', this.ids.token(), {
+            now: NOW_MS,
+            tree: TREE_DIALECT,
+          }),
+      },
+      awaitNamedEvent: (awaited, name) =>
+        this.awaitNamedEvent(
+          awaited.queue,
+          awaited.taskId,
+          awaited.runId,
+          awaited.claimToken,
+          awaited.stepName,
+          name,
+          awaited.timeoutSeconds,
+          awaited.childTaskId,
+        ),
+      refusal: (operation, runId) => this.refusal(operation, runId),
+      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      storedPayloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+    }
+    return this.taskDoneFacts
+  }
+
+  /** A run's task, before the batch that ends the run: core's read, behind this store's memo. */
+  private endingTask(operation: string, queue: string, runId: string): Promise<string> {
+    return endingTask(this.taskDoneDialect(), this.runTasks, operation, queue, runId)
   }
 
   /**
@@ -2449,7 +2452,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: `f.wake_event = ? AND f.state = 'pending'`,
       whereArgs: [eventName],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',
     })
@@ -2519,15 +2522,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     return answer
   }
 
-  /**
-   * The child await (DESIGN.md §3.2, specs/ChildTasks.tla): `await-event` for the
-   * completion event of `childTaskId`. The batch decides everything the model's await
-   * does in one step: it hits an event that exists, and it registers only on a live
-   * child in this queue. An await that did neither reads the child, once, to say why.
-   * A child in another queue, or no such task, is refused. A child that ended with
-   * nothing recorded has its outcome recorded by the await itself, in a second batch
-   * fenced on the row that was read. Anything else is this run's own claim, lost.
-   */
+  /** The child await (DESIGN.md §3.2). The protocol is core's `awaitTaskDone`, and this dialect supplies its facts. */
   async awaitTaskDone(
     queue: string,
     taskId: string,
@@ -2538,111 +2533,15 @@ export class PostgresSchedulerStore implements SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
     requireIdentifiersFit({ queue, taskId, runId, stepName })
-    const name = EventName.awaitedTaskDone(childTaskId)
-    // A child revived before the read, or between the read and the batch that records it,
-    // is live again, so the next round registers. Two rounds cover that. A live child that
-    // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
-    // the claim is lost, the task is cancelled, or the timeout does not fit.
-    for (let round = 0; round < 2; round++) {
-      const answer = await this.awaitNamedEvent(
-        queue,
-        taskId,
-        runId,
-        claimToken,
-        stepName,
-        name,
-        timeoutSeconds,
-        childTaskId,
-      )
-      if (answer !== null) return answer
-      const child = await this.taskDoneState(childTaskId)
-      const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
-      if (refusal !== null) throw refusal
-      // A live child was revived since the batch looked, and the next round registers on it.
-      if (child === null || !isTerminalState(child.outcome.state)) continue
-      const recorded = await this.recordTaskDone(
-        { queue, taskId, runId, claimToken },
-        childTaskId,
-        child.stamp,
-        child.outcome as TaskOutcome,
-      )
-      if (recorded !== null) return recorded
-    }
-    throw await this.refusal('awaitTaskDone', runId)
-  }
-
-  /**
-   * A task as a child await sees it: its queue, its outcome, and the stamp its row
-   * carries. Read only off the common path: by an await that neither registered nor
-   * hit, to say why.
-   */
-  private async taskDoneState(taskId: string): Promise<{
-    queue: string
-    outcome: TaskResult
-    stamp: string | null
-  } | null> {
-    const b = new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', TASK_DONE_STATE, { taskId })
-    const rows = await this.rows(b, 'task')
-    const row = rows[0]
-    if (row === undefined) return null
-    return {
-      queue: String(row.queue),
-      outcome: decodeTaskResult(taskId, row),
-      stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
-    }
-  }
-
-  /**
-   * Record the outcome of a child that ended with no completion event, and answer the
-   * await with it (ChildTasks.tla's AwaitMaterialize). Null when the batch recorded
-   * nothing and found no event: the child's row is no longer the one that was read, or
-   * this run's claim is gone.
-   */
-  private async recordTaskDone(
-    claim: { queue: string; taskId: string; runId: string; claimToken: string },
-    childTaskId: string,
-    childStamp: string | null,
-    outcome: TaskOutcome,
-  ): Promise<{ emitted: true; payloadJson: string } | null> {
-    const { queue } = claim
-    const name = EventName.taskDone(childTaskId)
-    const b = new FencedBatch('record-task-done', this.ids.token(), {
-      now: NOW_MS,
-      tree: TREE_DIALECT,
+    return awaitTaskDone(this.taskDoneDialect(), {
+      queue,
+      taskId,
+      runId,
+      claimToken,
+      stepName,
+      childTaskId,
+      timeoutSeconds,
     })
-    b.lockEvent({ queue, eventName: name })
-    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
-    b.casTree(
-      'materialize',
-      materializeTaskDoneCas({
-        ...awaiting,
-        childTaskId,
-        eventName: name,
-        payloadJson: encodeTaskOutcome(outcome),
-        childStamp,
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    b.openTailTree(
-      'hit',
-      'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
-      emittedEventRead({
-        ...awaiting,
-        eventName: name,
-        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const row = results.hit?.rows[0]
-    if (row === undefined) return null
-    if (row.payload_type !== 'text') {
-      throw new RangeError(
-        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
-      )
-    }
-    return { emitted: true, payloadJson: String(row.payload) }
   }
 
   /**
@@ -2673,7 +2572,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by
@@ -2747,7 +2645,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: `f.run_id = ? AND f.state = 'sleeping'`,
       whereArgs: [runId],
-      set: { state: `'sleeping'` },
+      set: { state: taskStateValue('sleeping') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })

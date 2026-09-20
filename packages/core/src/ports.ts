@@ -271,14 +271,29 @@ export interface LaunchInvocation extends LaunchIdentity {
   deadlineHintEpochMs: number
 }
 
+/** What a caller may hand a launcher beside the invocation (§3.9 port 2). */
+export interface LaunchOptions {
+  /**
+   * Fires once the caller has stopped waiting for this launch, which for the resident
+   * driver is when its launch deadline passes. Nothing the launcher answers after that is
+   * read, and the caller reconciles the launch as failed, exactly as it does for a call
+   * that never settles. A launcher may use the signal to let go of what the call holds (a
+   * request in flight, a socket), and may ignore it. The signal says nothing about the
+   * run: the worker may already hold the launch, so a launcher never reads it as evidence
+   * that the run did not start, and never as a reason to stop a worker.
+   */
+  signal?: AbortSignal
+}
+
 /**
  * Execution transport (§3.9 port 2). Fire-and-forget may silently lose
  * launches. Outcomes are constructed via LaunchOutcome's static factories
  * (core/launch.ts) and consumed ONLY via LaunchOutcome.reconcile — callers
- * have no other affordance, by design.
+ * have no other affordance, by design. `options` is optional on both sides: a
+ * caller may pass none, and a launcher may declare the invocation alone.
  */
 export interface Launcher {
-  launch(invocation: LaunchInvocation): Promise<LaunchOutcome>
+  launch(invocation: LaunchInvocation, options?: LaunchOptions): Promise<LaunchOutcome>
 }
 
 /**

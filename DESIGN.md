@@ -317,6 +317,9 @@ the normal lost-launch path, so a hung transport costs one timeout, never a
 stalled driver. With a bounded-slot SYNC launcher (§3.9 — the call runs the
 worker inline and legitimately lasts as long as the run) the watchdog must
 be DISABLED; the slot bound, not a timeout, is the backpressure.
+When the deadline passes, and once the failed launch is decided, the loop also
+fires the abort signal it handed the call (§3.9 port 2), so the transport can
+let go of what the call holds.
 
 ```
 tick():
@@ -443,6 +446,12 @@ One invocation executes one claimed run to its next suspension point:
   infrastructure cap.
 - Loads visible checkpoints (`c_` rows for the task, committed, owner attempt ≤
   current) into memory — Absurd's TaskContext preload, one SELECT.
+  `getCheckpoints` returns them in byte order of the checkpoint name, on every
+  dialect: `B-step`, then `_init`, then `a-step`. A name compares as the bytes
+  of its UTF-8 text, which is code point order, and never under the collation
+  a database was created with. The SDK reads the list into a map and depends
+  on no order. The order is still the port's contract, because a worker in
+  another language reads the same list.
 - Runs the registered task handler with `ctx`: `step(name, fn)` (memoize→execute→
   `set_checkpoint` upsert which also extends the lease), `sleepFor/sleepUntil`
   (throw Suspend CARRYING the sleep marker; the runtime lands marker + park in
@@ -565,7 +574,9 @@ One invocation executes one claimed run to its next suspension point:
 - The worker server and the resident driver's `/wake` server bind to 127.0.0.1
   only. Neither installs a server `error` handler after bind, so a server error
   is an uncaught event that ends the host process. Every pass it was running
-  recovers through the lease, like any other worker death.
+  recovers through the lease, like any other worker death. Their limits, their
+  shutdown order, and the deadline of the ping are in §3.9 (the local HTTP
+  transport's lifecycle).
 - Rolling deploys, ported from Absurd: a worker whose build has no handler for
   the claimed task name **defers** the claim before activation (`deferLaunch`,
   15s + jitter, nothing consumed; the activation bullet above says how the name
@@ -592,8 +603,11 @@ One invocation executes one claimed run to its next suspension point:
     mutually exclusive, and on PostgreSQL only the lock makes them so: without
     it a parent reads no event, the child inserts the event and sees no wait
     row, and the parent then sleeps forever. SQLite's single writer hides the
-    race. Each of the five PostgreSQL sites takes the lock on its own line, and
-    each is held by a PostgreSQL case that keeps the await's transaction open
+    race. No store takes the lock. The completion event's statement names it
+    where core defines it, and a batch holds the lock of a statement it admits,
+    so a batch that adds the completion event holds its lock on every dialect,
+    and a store has no line to leave out (§3.4 rule 2). Each terminal batch is
+    still held by a PostgreSQL case that keeps the await's transaction open
     across the whole terminal batch, with a trigger that sleeps after the wait
     row is inserted: a locked batch waits and wakes the parent, and an unlocked
     one loses the wakeup every time. The await that records an outcome writes
@@ -602,10 +616,21 @@ One invocation executes one claimed run to its next suspension point:
     Without the lock the second inserts the same row, the table's key refuses
     it, and the await is reported as an outage. The emit has a case of the same
     kind, and the await's lock is the other side of every one of them, so each
-    of the eight lines that take the lock has a case that cannot miss and a
-    mutation that removes it. A race of twelve real concurrent awaits
-    against every terminal batch also runs on both dialects. It is a smoke and
-    not the proof: with the lock dropped it caught one site of five.
+    batch that holds the lock has a case that cannot miss, and a mutation that
+    stops the batch of that one label from holding it. A race of twelve real
+    concurrent awaits against every terminal batch also runs on both dialects.
+    It is a smoke and not the proof: with the lock dropped it caught one site
+    of five.
+  - A batch that can end a task holds the lock whether or not it ends one: a
+    `fail` that schedules a retry, a lost-launch sweep that reopens, and a
+    sweep that places a successor all hold it and record nothing. That is
+    decided once, where the completion event's statement names its lock. A
+    lock is taken before the transaction's first statement, on MySQL before
+    the transaction, and only the compare-and-set inside it knows whether the
+    task ends. Taking the lock after that statement won would wait on a lock
+    while holding row locks, which is the order every executor rules out
+    (event first, then rows). The price is one round trip on a dialect that
+    pays one for each statement.
   - The PostgreSQL event lock has two forms, chosen by who owns the name. A
     caller's event takes the row of `event_locks` that every build has taken:
     inserted when it is missing, then locked. A process of an older build keeps
@@ -711,13 +736,44 @@ One invocation executes one claimed run to its next suspension point:
     that ended it, so a batch that ended nothing writes no event, and a `fail`
     that scheduled a retry writes none. It carries no conflict clause, which a
     follow-on insert may not have. An event that exists is left alone by a
-    `NOT EXISTS` guard, which the event lock makes safe. Both stores add the
-    insert and the wake through one core function (`addTaskDone`). Nothing is
-    checked after the batch. A terminal write's answer is its batch's answer,
-    and a read after the commit could only change that answer for a transition
-    that has happened. A batch that named the wrong task or the wrong terminal
-    statement would end the task with no event, and an insert that writes
-    nothing passes every row-count audit. What holds that is
+    `NOT EXISTS` guard, which the event lock makes safe. Every store adds the
+    insert and the wake through one core function (`addTaskDone`). A batch is
+    held to it when it is built. The state a statement gives a task is nodes
+    and never text: a state's name is a value node (`taskStateValue`), which
+    the statement's text is compiled from, and the copy of a run's state is a
+    subquery built from nodes (`stampedRunState`). A fragment anywhere in that
+    value is refused, whatever it holds, because text can spell a state in
+    more ways than a reader of text closes, and a generated UPDATE's type takes
+    no text there. A statement that writes `tasks` and gives `state` a value
+    that names a terminal state where the column can receive it owes the
+    completion event, recorded under that statement's own stamp: a
+    `FencedBatch` that holds such a statement and no follow-on that inserts a
+    completion event gated by its stamp is refused when it runs, before
+    anything is sent, on every dialect. So a terminal path that forgets the
+    event, or names another statement as the one that ended the task, does not
+    run. Nothing is checked after the batch. A terminal write's answer is its
+    batch's answer, and a read after the commit could only change that answer
+    for a transition that has happened. The rule reads what the column can
+    receive and nothing else: the value itself, each result of a CASE and never
+    a condition, and what a subquery selects, from a table or from another
+    subquery, and never what it filters, joins on, groups or orders by. A
+    filter chooses a row and a condition chooses an arm. A run id is a caller's
+    string and may spell a state, and `deferLaunch`, `reschedule` and
+    `suspendRun` bind it in the filter of the copy, so a run nobody has is
+    answered with `LeaseLostError` whatever its id spells. Anything else below
+    the value is read whole, as an operand of what the column receives. Of a
+    derived or joined table it reads every column, whichever one the outer
+    query takes, so there it refuses more than it must. The
+    rule reads declared nodes, so four things are beyond it: a batch that
+    names the wrong task, a value that produces a terminal state and names
+    none, which is the copy of a stored state, even one whose own filter lets
+    a terminal run through alone, a state the database assembles from
+    pieces that name none, and the state of an INSERT ... SELECT that names it
+    in a table its own SELECT reads from or joins, because for an INSERT the
+    rule reads the selection at the state's position and not that SELECT's
+    sources. Every shipped copy reads a run the batch left live, no shipped
+    statement assembles a state, and spawn names `pending` itself. An insert
+    that writes nothing passes every row-count audit, so what holds those is
     `childTaskViolations`, which runs after every case of the surface, over
     every terminal label, in the fuzz, and in the SDK harness.
   - A terminal batch names the task, and `complete` and `fail` are handed only
@@ -743,6 +799,23 @@ One invocation executes one claimed run to its next suspension point:
     `ChildAwaitRefusedError`, classified in core. A child that ended with
     nothing recorded is recorded, as above. A live child means the awaiting
     run's own claim is gone. A child in the parent's queue is never refused.
+    The await's rounds, the classification of a refusal, its read and the read
+    of a run's task before a terminal batch (`run-task`), and the batch that
+    records an unrecorded ending are core's (`awaitTaskDone` and `endingTask`,
+    beside `addTaskDone`), so every dialect runs one protocol and none writes
+    it again. A dialect supplies facts. It opens and runs each of the three
+    batches, so that every batch label stays a literal in a store and every
+    batch reaches the executor from a store, which is where the label ledger,
+    the batch lint, and the fault matrix read them. It supplies its
+    `await-event` batch, how it says why a fence refused a write, and three
+    fragments. Core cannot read what a fragment means, and what holds each
+    fact differs. On consistent rows the recording batch's own claim predicate
+    implies `liveTask` and `taskOwnsRun`, so no conformance case tells a wrong
+    one from a right one, and against rows that are not consistent nothing at
+    that site holds them, as nothing did while each store held them inline. A
+    poison case for the recording batch is open work (BUILD.md, PR3.10). The
+    stored payload's type is held by the libSQL store's child-await error test
+    alone.
     This departs from Absurd, which refuses the same-queue await because its
     await polls and holds a worker slot, so a parent and its child can
     deadlock a small pool. Ours suspends and holds nothing. The model isolates
@@ -1381,9 +1454,26 @@ are load-bearing):
    against emit, so the batch carries a lock coordinate and the executor takes
    it first: a row lock inside the transaction on PostgreSQL, and a session
    named lock around the transaction on MySQL.
-   `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
-   coordinate — never caller SQL — to the dialect executor, which acquires it
-   before the first fenced CAS and holds it through commit or rollback. The
+   No store declares the lock. A statement that records an event or registers
+   a wait names the event it is serialized on where core defines it
+   (`defineStatement`'s third argument), and a `FencedBatch` holds the lock of
+   a statement from the moment it admits it: `emit-event`'s and `await-event`'s
+   compare-and-sets, the compare-and-set that records an unrecorded ending, and
+   a terminal batch's completion event, which is a follow-on and brings the
+   lock all the same, because the executor takes a batch's lock before its
+   first statement wherever the statement stands. A batch holds one lock, and a
+   second statement may name it again. A claim lock is declared before a
+   batch's first statement, and that statement must be the compare-and-set the
+   lock protects. An event lock arrives with the statement that names it, so
+   nothing holds an event-locked batch to open with a compare-and-set, as the
+   declared event lock did. Every shipped one opens with one, and the executor
+   takes the lock before the first statement whatever it is, so a read that
+   stood first would run under the lock. An INSERT into `events` or `waits`
+   whose definition names no lock, or names another event than the row's
+   `event_name`, is refused when the batch is built, on every dialect, libSQL
+   included. The batch carries only that closed lock coordinate, and never
+   caller SQL, to the dialect executor, which acquires it before the first
+   fenced CAS and holds it through commit or rollback. The
    executor binds both coordinate values as data, returns no result slot for
    the prelude, and matching event coordinates are mutually exclusive. A
    dialect may realize the coordinate with a durable sentinel row, as
@@ -1722,6 +1812,9 @@ are load-bearing):
    and treats the write as complete only when metadata now exists at or beyond
    that batch's target. An absent or behind version rethrows the original
    failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
+   On PostgreSQL a version's batch first takes a lock on `meta` that a second
+   migrator waits on, so the loser's error is the sentinel's unique violation
+   and never a deadlock (rule 11).
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
@@ -1857,6 +1950,218 @@ are load-bearing):
    that these two generated surfaces can fail: one of the SDK's hold names the
    harness as the test that catches it, and one of a store entry's hold names
    a pinned case of eight such walks.
+
+11. **A name compares and orders by its bytes, on every dialect.** Every string
+   the engine stores is compared byte for byte and ordered by the bytes of its
+   UTF-8 text, which is code point order. SQLite compares text that way unless
+   a column says otherwise, and none does. The MySQL schema declares
+   `utf8mb4_0900_bin` on every string column. A PostgreSQL text column that
+   declares nothing takes the collation of its database, which its operator or
+   its host chose, so every text column of the PostgreSQL schema declares
+   `COLLATE "C"` (version 7). No statement carries a `COLLATE` clause: the
+   schema owns the collation, so a statement core builds once means the same
+   thing on every dialect.
+
+   Equality was never at risk. PostgreSQL allows only a deterministic
+   collation as a database's default, so two different strings were never
+   equal under it, and a key or a unique index held the same rows under any
+   collation. Order was.
+   Three things take their order from a name or an id.
+   - The list `getCheckpoints` returns (§3.2), which a caller sees. Under ICU's
+     `en-US` it came back `_init`, `a-step`, `b-step`, `B-step`, where every
+     other dialect returns `B-step`, `_init`, `a-step`, `b-step`, and glibc's
+     `en_US.UTF-8` gave a third order.
+   - The attempt record a task result names (§3.10), which breaks a tie
+     between two records of one attempt by the checkpoint name. It is now
+     broken by bytes like the rest.
+   - The ties `claim` and the sweep's scans break by a run id or a task id.
+     The ids the engine mints are UUIDs of one shape, and every collation
+     orders those as their bytes do (measured on each server: 200,000 of them,
+     and no position differs), so this order did not differ for an id the
+     engine mints.
+
+   A range over a name, from a prefix up to the first name past it, is sound
+   only where names order by their bytes. Under ICU the range from `$started:`
+   to `$started;` is empty, because `;` sorts before `:`, and under glibc's
+   `en_US.UTF-8` it holds the bare prefix and no name under it. From version 7
+   on it is sound on PostgreSQL as well.
+
+   Three things hold the rule. The conformance case for the checkpoint list
+   writes names that separate the orders, and it failed on a PostgreSQL with a
+   linguistic collation, and only there, before version 7. CI's PostgreSQL
+   service is created with ICU's `en-US`, because the image's own C library
+   sorts by bytes whatever locale the database names, which hid this. The
+   workflows say so in `DURABLERUN_POSTGRES_LOCALE_PROVIDER`, and a case holds
+   the server to it, so a service that ignored the arguments cannot run the
+   order case green where it cannot fail.
+   `store-postgres/test/text-collation.test.ts` reads the catalog and fails
+   for a text column or an index key whose collation is not `C`, so a column
+   that a later version adds cannot miss the declaration.
+
+   What an operator sees on PostgreSQL. Changing a text column's collation
+   changes no stored byte, so no table is rewritten, which matters because a
+   read batch's older snapshot sees a rewritten table as empty (the same test
+   holds that no version rewrites a table). PostgreSQL does rebuild every
+   index that holds a changed column, which is all fifteen, and revalidates
+   the `CHECK` constraints on the changed columns, which costs a scan and
+   little else. Measured for `state` on a million rows of `runs`: 1,449 ms
+   with its constraint against 1,390 ms without.
+
+   `migrate()` runs the version as one transaction, and its first statement
+   takes an ACCESS EXCLUSIVE lock on all eight tables. Three things follow.
+   The version waits for every transaction that was open when it started and
+   had touched a store table, for as long as that transaction stays open.
+   Store traffic queues behind the version meanwhile, and until it commits:
+   all of it at most. `LOCK TABLE` takes the tables of its list one at a time,
+   so while the version still waits for one of them, what queues is every
+   statement that touches a table the list has already taken.
+   And the version can lose a deadlock to a statement that was in flight: the
+   executor runs it again, and after three losses `migrate()` fails with
+   SQLSTATE 40P01, leaves version 6, and can simply be run again.
+   Measured on PostgreSQL 17 with the data directory in memory and a million
+   rows in each of `tasks`, `runs` and `checkpoints` (870 MB of tables and
+   320 MB of indexes): 3.2 seconds with nothing else running, of which `runs`
+   took 2.0, `tasks` 0.7 and `checkpoints` 0.4. A disk will be slower.
+
+   That first statement takes the tables in the order the engine's own
+   statements do: `event_locks` first, because a batch that locks an event
+   takes it before anything else, then `events`, `waits`, `checkpoints`, `runs`
+   and `tasks`, because a worker's reads name `checkpoints` before `runs` and
+   `runs` before `tasks`, then `drivers`, and `meta` last, because every
+   statement that reads the clock takes its own table and then `meta`. A
+   statement that arrives while the version waits then waits holding nothing,
+   and a waiter that holds nothing cannot deadlock.
+   `store-postgres/test/version-lock-order.test.ts` holds that without a race,
+   for every version whose first statement takes table locks. No one order
+   fits every statement. The sweep's scan and the task result read name
+   `tasks` first, and a write batch of several statements can hold a table the
+   list has passed, so those can still lose a deadlock to the version, or make
+   it lose one.
+
+   A batch that loses a deadlock committed nothing, so the executor runs it
+   again, a read batch like a write batch, three attempts in all
+   (`store-postgres/test/deadlocked-read.test.ts` holds the read without a
+   race). That is true of builds from this change on. A build from before it
+   runs a write again and reports a read, so while version 7 migrates under
+   workers of such a build, a read of theirs that loses is an error at its
+   caller. A batch that loses three times in a row is reported by every
+   build: the driver counts an outage, and a run whose worker saw the error
+   waits out its lease.
+
+   Measured under live traffic. The traffic was four workers and two drivers,
+   each on connections of its own. A worker spawns a task, claims a run,
+   activates it, reads its checkpoints and waits for an event: a run's first
+   pass parks it and emits the event, which wakes it, and its second pass
+   writes a checkpoint and completes. A driver sweeps, reads the next wake and
+   reads a parked run's checkpoints, every 50 ms. So the mix holds write
+   batches, read batches and event batches.
+   With that traffic sent by a build whose last version is 6, the version
+   committed in 12 of 12 runs at a million rows a table (3.9 to 6.4 seconds)
+   and in 6 of 6 at four million (14.1 to 16.3 seconds), and every call waited
+   for as long as it ran. Two runs in three sent the version over a plain
+   connection that counts attempts, and each of those 12 took one. Every third
+   run went through the store's executor, which does not show its attempts.
+   Callers saw 4 errors
+   in those 18 runs, each a driver's sweep scan that lost a deadlock. With the
+   same traffic sent by this build the version committed in 6 of 6 at a
+   million rows (3.6 to 6.7 seconds, once on its second attempt), and no
+   caller saw an error.
+
+   The order was chosen by measurement: an empty schema, that traffic from the
+   older build, 80 migrations an order, and each order on a server of its own.
+   With `meta` first the version committed in 69 of 80 and lost all three
+   attempts in 11, a median migration took 3.0 seconds, the server counted 568
+   deadlocks, and callers saw 13 errors, 11 sweep scans and 2 checkpoint reads.
+   With `meta` last and the other tables as the schema declares them: 80 of
+   80, 1.0 seconds, 339 deadlocks and 65 errors, 42 next-wake reads, 18
+   checkpoint reads and 5 `await-event` writes that lost three times. In the
+   order above: 80 of 80, 1.0 seconds, 126 deadlocks and 51 errors, every one a
+   driver's sweep scan. Under this build's traffic in the order above: 79 of
+   80, 141 deadlocks, and 1 error at a caller, a `complete` that lost three
+   times.
+
+   Two things qualify those rows. The three orders ran one after another and
+   not interleaved, under a load that rose (64, 114 and 142 when each began),
+   and the traffic each met differed: about 38,100 calls under `meta` first,
+   29,000 under `meta` last and 32,000 in the order above. For each thousand
+   calls the server counted 14.9, 11.7 and 3.9 deadlocks. So the gain of the
+   order above stands. Of `meta` last's gain over `meta` first, the commits and
+   the median stand, and most of the deadlock count does not.
+   And errors at callers of the older build rose, from 13 to 51. That is still
+   the right trade. All 51 are a driver's sweep scan, which costs a driver one
+   tick, where 2 of the 13 and 18 of `meta` last's 65 were a worker's
+   checkpoint read, which costs a run its lease. Under `meta` first the version
+   itself failed 11 times in 80. And version 7's own rollout runs under the
+   older build, whose reads are not run again, so which reads can lose is what
+   the order decides.
+
+   Why the locks come first was measured before the order was, with `meta`
+   first and write batches only, under four workers of an older build (one run
+   in each sixteen used eight). The version committed in 16 of 16 runs at a
+   million rows a table and in 6 of 6 at four million. Without that statement
+   the version took each table's lock only after it had rebuilt the tables
+   before it. A worker's transaction that held a later table while it waited
+   for an earlier one then deadlocked with a migration that had indexes built,
+   and once a table's rebuild outlasted PostgreSQL's one second deadlock
+   timeout the migration was the transaction aborted. At a million rows, where
+   a table rebuilds in about that second, that version still committed in 15
+   of 16 runs. At four million it failed in 6 of 6, each time after the
+   executor's three attempts, and left the schema at version 6.
+
+   Migrators that race on one database converge as they did (rule 9), and the
+   second one waits. Every version's batch begins with `LOCK TABLE meta IN
+   SHARE ROW EXCLUSIVE MODE`, ahead of its sentinel row. That lock conflicts
+   with itself and with the lock a sentinel insert takes, so a second migrator
+   stops there holding nothing, and when the first has committed it loses to
+   the committed sentinel and finds the version written. A read does not
+   conflict with it, so it stops no statement's clock read, and the sentinel
+   still comes before every statement of the version. Version 7's own lock on
+   `meta` does stop them, until it commits. Version 7 is why the lock is
+   there: it is the first version to take a table lock on `meta`. With the
+   sentinel written first, a second migrator blocks on that uncommitted row
+   while it holds its own row-exclusive lock on `meta`, the first then waits
+   for that lock, and PostgreSQL takes its one second deadlock timeout to
+   abort one of them, which the executor runs again where nobody sees it.
+
+   Measured with warmed migrators racing on a fresh schema, 100 rounds, by the
+   server's own deadlock counter in a database nothing else used. Without the
+   lock: 61 deadlocks with four migrators and 121 with eight, and 46 and 33
+   rounds over a second. With it: none with either, a median round of 40 ms
+   with four and 47 with eight, and no round over 77 ms. Main, whose last
+   version is 6, takes 23 ms. `store-postgres/test/racing-migrators.test.ts`
+   holds it without a race: two connections replay each version's batch as the
+   admin builds it, and the second starts once the first has written its
+   sentinel. The first must commit. The second must wait for that lock while
+   it holds no lock on a relation of the schema, end in a unique violation, and
+   find the version written. Without the lock it fails at every version.
+
+   An operator's own object over one of these tables can stop the version.
+   PostgreSQL refuses to change the type of a column that a view, a
+   materialized view, a trigger with a column list or a `WHEN` clause, a row
+   security policy or a generated column reads, so `migrate()` fails with
+   `StoreUnavailableError` (SQLSTATE 0A000), the transaction rolls back, and
+   the schema stays at version 6. The message names the kind of object, and
+   the object's own name is in the error's `cause.detail`. Drop the object,
+   migrate, and create it again. Measured for each of the five: the version
+   failed that way, and committed once the object was dropped. A foreign key
+   from an operator's table, an operator's index on a store column and
+   extended statistics did not stop it.
+
+   A process of an older build runs against the new schema unchanged, because
+   its statements are the same statements, and a newer build on a database
+   still at version 6 behaves as every build did before it. An older build
+   that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
+   it does after every migration. From this change on, on every dialect, that
+   message says a newer build migrated the database, that nothing needs
+   repair, and to run that build or a later one. A build from before it says
+   the database must be repaired by hand, which is wrong here: run the newer
+   build. libSQL and MySQL take an empty version 7,
+   which keeps the numbering of the dialects aligned. On a fresh database
+   version 7's nine statements and the runner's lock, one statement in each of
+   the seven versions, cost PostgreSQL 17 ms where opening and migrating a
+   test fixture took 27, and the empty version costs MySQL one more version
+   read and one more locked batch, 4 ms where it took 39 (medians of 75
+   fixtures or more on each side, interleaved, on one machine).
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
@@ -2278,8 +2583,26 @@ Dialect implementations:
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
+| names | TEXT is BINARY: a name compares and orders by its bytes | `utf8mb4_0900_bin`: a name compares and orders by its code points, which is the order of its bytes | TEXT under the database's collation: equal names are the same bytes, and their order is the collation's |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |
 | scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
+
+**A name's equality is portable, and its order is not.** A durable name, which
+is a checkpoint name, an id or a queue, is equal on all three dialects exactly
+when its bytes are: libSQL's TEXT is BINARY, MySQL's indexed strings are
+`utf8mb4_0900_bin`, and a PostgreSQL database's collation is deterministic,
+under which equal strings are the same bytes. Order differs. libSQL and MySQL
+order a name by its bytes. PostgreSQL compares and orders it under the
+database's collation, which the engine does not choose. So a range over a
+name, or an ORDER BY on one, does not mean on PostgreSQL what it means on the
+other two. Measured on PostgreSQL 17: under `COLLATE "und-x-icu"` neither
+`$started:` nor `$started:a` lies in the range from `$started:` up to
+`$started;`, because that collation sorts `;` before `:` and the range is
+empty, and under `COLLATE "C"` both do. A server whose C library sorts by
+bytes whatever the locale is named, as the musl build that the local and CI
+servers run does, cannot show the difference. That is why a saga's reads find
+the names under a prefix as a range of the key on libSQL and MySQL, and by a
+test of each name on PostgreSQL (§3.10).
 
 **What MySQL 8 makes a store do (measured against 8.4 by `store-mysql`).** Every
 shared statement tree and every labeled batch runs on MySQL from the same tree.
@@ -2556,7 +2879,20 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   and idempotency keys outside the portable durable-string domain return 400
   before store I/O. Emit accepts
   `{eventName, payload?}`. Inspection returns the state plus the canonically
-  decoded result/failure when present. Every response is stable JSON with
+  decoded result/failure when present, and for a task whose saga began, how it
+  ended: `rollback.outcome`, with `rollback.error` decoded the same way when a
+  rollback's failure ended the task (§3.10). The SDK stores JSON, and the
+  store's port takes any text, so a stored value that is not JSON is answered
+  as its text under a key of its own, `resultText`, `failureText` or
+  `rollback.errorText`, in place of the decoded key. A value can also parse
+  and still not serialize, as JSON nested deeper than the serializer can walk,
+  and the answer is then sent with every stored value in it as its text. The
+  route returns a stored text whole and sets no bound of its own on its size.
+  An older client that reads a decoded key finds it absent for such a value,
+  where it found a 500, and a client tells such a value from no value by its
+  text key. No value of a task that ended ever changes, so a route that threw
+  on one would answer 500 for that task for good. Every response is stable
+  JSON with
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
@@ -2932,6 +3268,31 @@ stutters.
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).
+   `launch` takes an optional second argument, `{ signal }`. The signal fires
+   once the caller has stopped waiting for the call, which for the resident
+   driver is when its launch deadline passes (§3.1). For the outcome an abort
+   means nothing: the caller has already reconciled the launch as
+   `launch-failed`, exactly as it does for a call that never settles, and it
+   reads nothing the launcher answers afterwards. A launcher may use the signal
+   to let go of what the call holds, and may ignore it: a launcher that declares
+   the invocation alone still satisfies the port, and a caller may pass no
+   options. A launcher never reads the signal as evidence that the run did not
+   start, and never as a reason to stop a worker. The worker may hold the
+   launch, and the lease stays the only recovery. What can start a second body
+   of a run is the timeout, not the abort, and it could before the signal
+   existed. The failed launch expires the lease of a run whose body may still
+   be executing. A heartbeat that comes first revives that lease. Otherwise the
+   next sweep fails the run with `$ClaimTimeout`, and a successor run executes
+   the body again. That is harmless because the successor runs under a claim
+   token of its own, so the first body's late completion carries a stale token
+   and writes nothing. Existing cases hold the pieces: `sync ended:crashed
+   AFTER activation accelerates a $ClaimTimeout successor` in
+   `packages/driver/test/tick.test.ts`, and in the shared conformance suite
+   `rejects stale tokens and stale generations after a re-claim`, `a stale
+   token writes nothing and throws LeaseLostError`, and `expireLeaseNow is
+   advisory: a live heartbeat revives the lease`. No case drives the whole path
+   through the HTTP transport. A driver of a SYNC launcher runs without the
+   launch deadline, so its calls are never aborted.
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
    `{queue, runId, claimToken?, endedAtEpochMs, kind:
@@ -2959,6 +3320,58 @@ brief-overlap window lease expiry already tolerates; the zombie's scheduler
 writes die on the stale token, its checkpoints on attempt guards, and its next
 `heartbeat` tells it to exit. Feed totally lost = reclaim latency degrades to
 the lease timeout; correctness unchanged.
+
+**The local HTTP transport's lifecycle.** The driver package's HTTP `Launcher`
+and its two loopback servers (the worker's `/launch`, the resident driver's
+`/wake`) hold no connection for longer than somebody waits for it:
+
+- The launch request carries the caller's signal, so it ends when the driver's
+  launch deadline passes. A worker that accepts the connection and never
+  answers holds the driver's connection until then and no longer. The
+  connection pool under `fetch` may open one idle connection to the same
+  address once an aborted one is gone, and closes it on its own keep-alive
+  timer.
+- The ping a worker sends after a pass is never awaited, so it carries a
+  deadline of its own: five seconds on the injected clock, after which the
+  request is aborted. A ping that is answered leaves no timer behind.
+- Both servers give a connection ten seconds to deliver its headers and thirty
+  for its whole request, where the platform's defaults are sixty seconds and
+  five minutes. The platform checks its connections every thirty seconds, so a
+  stalled one ends within its limit plus that. The limits bound this process's
+  own stalls as well as a client's: a request that arrived whole is answered
+  408 when the event loop stalls past the limit between accepting the
+  connection and first reading it, where the platform's sixty seconds tolerated
+  a longer stall. With these numbers that takes a stall of more than ten
+  seconds that begins right after an accept. The cost is one failed launch,
+  which the lease recovers.
+- A request that is answered before its body is read, or whose body nobody
+  reads, leaves its kept-alive connection usable, because the platform discards
+  what is left of a request body once its response has finished. The transport
+  adds nothing to that, and a case on each server holds it on every route that
+  answers early. A launch body past the 64 KiB cap is the exception: it is
+  answered 413 and its connection is torn down, because its client may still be
+  sending.
+- The worker server's `close()` stops accepting, which ends the idle kept-alive
+  connections, and then waits for every connection that is still open. One that
+  holds a request is read, answered and run, and once `close()` has begun every
+  answer carries `connection: close`, so a connection ends after its answer is
+  written and is never kept alive for a request the server will not take. An
+  ack is therefore never dropped by the shutdown: a dropped ack is a failed
+  launch counted against a run that ran. One that never sent a byte is waited
+  for as well, because the platform counts a connection as active until it has
+  been answered once, and it holds `close()` for the whole bound. The
+  connection that the pool under `fetch` opens after an aborted launch is one
+  of these for about four seconds. Measured in review: a silent client held
+  `close()` for 5.0 s, where the old `close()` took no time, and the pool's
+  connection held it for 3.9 s when `close()` came 100 ms after the abort. The
+  wait is bounded by five seconds on the injected clock, because a closed
+  server no longer enforces the limits above. What is left is then
+  force-closed, and `close()` resolves once the passes in flight have finished.
+- The wake server's `close()` ends every connection at once. Nothing there is
+  worth a wait: a wake reaches the loop before its answer is written, and the
+  answer tells the pinger nothing. Left alone, a client that connected and sent
+  nothing, or that held a request half sent, would hold `close()` open for as
+  long as it liked.
 
 Any combination of implementations across the five ports is correct, because
 the only load-bearing component is the lease in port 1 — that is the
@@ -3117,9 +3530,30 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 - **The rollback outcome is derived, and stored nowhere.** When a task result
   is read, the outcome is `failed` exactly when a step that started has no
   `$rollback:` checkpoint, and `complete` otherwise, for an ended task whose
-  saga began. `errorJson` is the attempt record of a rollback that did not
-  run. It cannot disagree with the checkpoints, and no checkpoint of an ended
-  task changes.
+  saga began. `errorJson` is the failure of the rollback that ended the task:
+  the attempt record the task's last run wrote. An attempt record is written
+  only by the batch that fails its run, and a failure with budget left places
+  a pass, which becomes the task's last run. So an attempt that ended nothing
+  is never named, and a saga that a cancellation or a cap halts after such an
+  attempt names no rollback error. What an operator loses is that attempt's
+  error in the task's result. It is still in the `$rollback-tries:<step>`
+  record, which `getCheckpoints` reads. The outcome cannot disagree with the
+  checkpoints, and no checkpoint of an ended task changes.
+- **Who sees the rollback outcome.** `getTaskResult` reads it, and the hosted
+  inspect route shows it beside the state. A parent that awaits the child does
+  not see it, and the completion event is why. The wire is not the obstacle. A
+  build that predates the field reads the payload's state and the two fields
+  it knows, and ignores any other, so an added field would ride through a
+  rolling deploy, and a core test holds that. The writer is the obstacle. A
+  terminal batch binds a payload that was built before the batch ran, and the
+  rollback outcome is a fact only that batch's SQL knows: whether the saga
+  began, and whether a rollback is still owed, are read from the checkpoints
+  inside the batch, in a cancellation and a sweep as much as in a failure.
+  Choosing among bound payloads in SQL would need the saga predicates in the
+  select list of the event's follow-on insert, which the statement tree
+  refuses as raw fragments, or a second representation of those predicates as
+  tree nodes. Until the predicates are nodes, the outcome is read from the
+  child's task result, and the parent's view stays open in BUILD.md.
 - **A saga with nothing to roll back skips the phase.** The task fails as it
   did before sagas, and its result carries no rollback field. The model calls
   that saga complete at entry and allows the skip. The engine records nothing
@@ -3171,8 +3605,27 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   decides whether a rollback is owed from its own rows. A caller's hint that
   none is would be a second account of those rows, which a worker of an older
   build could not give. A test pins the count for each batch a saga touches.
-  Every saga read reaches the checkpoints by primary key with the task bound,
-  and query plan pins hold that over every statement of those batches.
+  A saga read reaches its checkpoints by their key, the task and the name. One
+  name is one row of it. The names under a prefix, which are the start markers
+  and the attempt records, are one range of it on libSQL and MySQL, where a
+  name compares by its bytes, so the failure of a task and a read of its
+  result cost the same whatever the task has checkpointed. On PostgreSQL a
+  name orders under the database's collation and that range is not sound
+  (§3.4), so there the names are tested one by one among the task's own
+  checkpoints: a walk keyed by the task, which grows with what the task has
+  checkpointed. There the attempt record is read only for a failed task whose
+  saga began, which spares every other result read that walk, and the plan pin
+  holds the guard. libSQL and MySQL carry no such guard: their read is one
+  seek into a range of the key, empty for a task with no attempt record, so a
+  guard would change no result of a history the store can reach and spare no
+  walk, and nothing could hold it. On rows no history builds the three
+  differ. A task row set to `cancelled` by hand under a running pass, whose
+  rollback then fails for good, names that rollback's error on libSQL and
+  MySQL and none on PostgreSQL. The engine's invariants name those rows while
+  the pass runs, as a terminal task with a live run, and nothing names them
+  after it.
+  A plan pin on each dialect holds what that dialect does, over the statements
+  the real operations send.
 - **A known limit.** The store records the attempt count the SDK hands it and
   does not check it against the last one, and nothing caps how many passes a
   task may take. Rollback budgets are the SDK's to keep.

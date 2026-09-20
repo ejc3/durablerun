@@ -326,7 +326,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       })
     })
 
-    // fenceTwin('Heartbeat') fenceTwin('FailRun') fenceTwin('SleepSuspend'): these cases are
+    // fenceTwin('Heartbeat') fenceTwin('FailRunTerminal') fenceTwin('SleepSuspend'): these cases are
     // the executable twins of those modeled guards. Each refuses a caller whose token is
     // not the claim's, and leaves the rows as they were.
     for (const form of cases) {

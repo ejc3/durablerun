@@ -42,6 +42,22 @@ export const SAGA_ROLLBACK_PREFIX = '$rollback:'
 export const SAGA_TRIES_PREFIX = '$rollback-tries:'
 
 /**
+ * The first name past every name under a reserved prefix, where names compare by their
+ * bytes. A reserved prefix ends in a colon, and the character after a colon is a
+ * semicolon, so the names under `$started:` are exactly the names from `$started:` up to,
+ * and not including, `$started;`. A store whose checkpoint names compare by their bytes
+ * reads the names under a prefix as that range of the checkpoints key. A store whose
+ * names order under a collation must not (DESIGN.md §3.4).
+ */
+export function firstNamePast(prefix: `${string}:`): string {
+  const last = prefix.length - 1
+  if (prefix[last] !== ':') {
+    throw new TrustedRangeError(`'${prefix}' is no reserved prefix: it does not end in a colon`)
+  }
+  return `${prefix.slice(0, last)};`
+}
+
+/**
  * The characters a registered step's key may have: the width of an identifier less the
  * longest name a saga builds from it, `$rollback-tries:` and the key, which leaves 239.
  */

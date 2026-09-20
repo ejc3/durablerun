@@ -36,7 +36,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('running'), `last_attempt_run` = ((SELECT MIN(f.run_id)\n           FROM runs f\n           WHERE f.task_id = tasks.task_id AND f.fence_stamp = ?\n           GROUP BY f.task_id\n            HAVING COUNT(*) = 1)), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.queue = ? AND f.state = 'running') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.queue = ? AND f.state = 'running') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'running', `last_attempt_run` = ((SELECT MIN(f.run_id)\n           FROM runs f\n           WHERE f.task_id = tasks.task_id AND f.fence_stamp = ?\n           GROUP BY f.task_id\n            HAVING COUNT(*) = 1)), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.queue = ? AND f.state = 'running') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.queue = ? AND f.state = 'running') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 9
       },
       {
@@ -100,7 +100,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -120,7 +120,7 @@
         "bindArity": 20
       },
       {
-        "sql": "update `tasks` set `state` = ((SELECT f.state FROM runs f\n               WHERE f.run_id = ? AND f.fence_stamp = ?)), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 10
       },
       {
@@ -136,7 +136,7 @@
         "bindArity": 21
       },
       {
-        "sql": "update `tasks` set `state` = ((SELECT f.state FROM runs f\n               WHERE f.run_id = ? AND f.fence_stamp = ?)), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 10
       },
       {
@@ -156,7 +156,7 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `state` = ((SELECT f.state FROM runs f\n               WHERE f.run_id = ? AND f.fence_stamp = ?)), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 10
       },
       {
@@ -176,7 +176,7 @@
         "bindArity": 19
       },
       {
-        "sql": "update `tasks` set `state` = ('sleeping'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'sleeping', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -194,7 +194,7 @@
         "bindArity": 19
       },
       {
-        "sql": "update `tasks` set `state` = ('sleeping'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'sleeping', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ? AND f.state = 'sleeping') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -226,7 +226,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -262,7 +262,7 @@
         "bindArity": 10
       },
       {
-        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND substr(ss.checkpoint_name, 1, 9) = CAST('$started:' AS BINARY)\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10)))) AND (f.attempt - t.infra_retries) >= t.max_attempts\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
+        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND ss.checkpoint_name >= '$started:'\n   AND ss.checkpoint_name < '$started;'\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10)))) AND (f.attempt - t.infra_retries) >= t.max_attempts\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
         "bindArity": 8
       },
       {
@@ -270,7 +270,7 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = ((SELECT f.state FROM runs f\n                 WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 15
       },
       {
@@ -278,11 +278,11 @@
         "bindArity": 8
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ((SELECT f.state FROM runs f\n                   WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 13
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
         "bindArity": 13
       },
       {
@@ -298,7 +298,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -316,7 +316,7 @@
         "bindArity": 9
       },
       {
-        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND substr(ss.checkpoint_name, 1, 9) = CAST('$started:' AS BINARY)\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
+        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND ss.checkpoint_name >= '$started:'\n   AND ss.checkpoint_name < '$started;'\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
         "bindArity": 8
       },
       {
@@ -324,11 +324,11 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = ((SELECT f.state FROM runs f\n                 WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
         "bindArity": 13
       },
       {
@@ -344,7 +344,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -372,11 +372,11 @@
         "bindArity": 9
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = ((SELECT f.state FROM runs f\n                 WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
         "bindArity": 13
       },
       {
@@ -392,7 +392,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -414,7 +414,7 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)))",
         "bindArity": 13
       },
       {
@@ -430,7 +430,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -482,7 +482,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -518,7 +518,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -542,7 +542,7 @@
         "bindArity": 10
       },
       {
-        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND substr(ss.checkpoint_name, 1, 9) = CAST('$started:' AS BINARY)\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
+        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND ss.checkpoint_name >= '$started:'\n   AND ss.checkpoint_name < '$started;'\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
         "bindArity": 8
       },
       {
@@ -550,15 +550,15 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = ((SELECT f.state FROM runs f\n                 WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
-        "sql": "update `tasks` set `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p\n                WHERE p.run_id = ? AND p.fence_stamp = ?)))",
+        "sql": "update `tasks` set `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p\n                WHERE p.run_id = ? AND p.fence_stamp = ?)))",
         "bindArity": 12
       },
       {
@@ -574,7 +574,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -598,7 +598,7 @@
         "bindArity": 8
       },
       {
-        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND substr(ss.checkpoint_name, 1, 9) = CAST('$started:' AS BINARY)\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
+        "sql": "insert into `runs` (`run_id`, `queue`, `task_id`, `attempt`, `state`, `available_at_ms`, `created_at_ms`, `wake_event`, `event_payload`, `wake_step`, `run_db`, `fence_stamp`, `fence_at_ms`) select ? as `run_id`, `f`.`queue` as `queue`, `f`.`task_id` as `task_id`, `f`.`attempt` + ? as `attempt`, ? as `state`, `f`.`fence_at_ms` + ? as `available_at_ms`, `f`.`fence_at_ms` as `created_at_ms`, `f`.`wake_event` as `wake_event`, `f`.`event_payload` as `event_payload`, `f`.`wake_step` as `wake_step`, `f`.`run_db` as `run_db`, ? as `fence_stamp`, `f`.`fence_at_ms` as `fence_at_ms` from `runs` as `f` inner join `tasks` as `t` on (t.task_id = f.task_id AND t.queue = f.queue) where `f`.`run_id` = ? and `f`.`fence_stamp` = ? and (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = t.task_id\n             AND sp.checkpoint_name = '$rolling-back') AND EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = t.task_id\n             AND ss.checkpoint_name >= '$started:'\n   AND ss.checkpoint_name < '$started;'\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10))))\n           AND (f.attempt - t.infra_retries) < 1000000) and (NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1))",
         "bindArity": 8
       },
       {
@@ -606,15 +606,15 @@
         "bindArity": 4
       },
       {
-        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = ((SELECT f.state FROM runs f\n                 WHERE f.run_id = ? AND f.fence_stamp = ?)), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `max_attempts` = ((SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?) + 1), `state` = (select `f`.`state` from `runs` as `f` where `f`.`run_id` = ? and `f`.`fence_stamp` = ?), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('failed'), `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND ((infra_retries) IS NOT NULL AND infra_retries BETWEEN 0 AND 20)\n            AND infra_retries = 20\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p\n                WHERE p.run_id = ? AND p.fence_stamp = ?)))",
+        "sql": "update `tasks` set `state` = 'failed', `failure_reason` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping')\n            AND ((infra_retries) IS NOT NULL AND infra_retries BETWEEN 0 AND 20)\n            AND infra_retries = 20\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p\n                WHERE p.run_id = ? AND p.fence_stamp = ?)))",
         "bindArity": 12
       },
       {
-        "sql": "update `tasks` set `infra_retries` = ((SELECT f.attempt - 1 - tasks.attempts FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = ('pending'), `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `infra_retries` = ((SELECT f.attempt - 1 - tasks.attempts FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?)), `state` = 'pending', `last_attempt_run` = (?), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 11
       },
       {
@@ -630,7 +630,7 @@
         "bindArity": 15
       },
       {
-        "sql": "update `tasks` set `state` = ('pending'), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
+        "sql": "update `tasks` set `state` = 'pending', `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.wake_event = ? AND f.state = 'pending') and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
         "bindArity": 8
       },
       {
@@ -682,7 +682,7 @@
   "task-result": {
     "read": [
       {
-        "sql": "select `state`, `completed_payload`, `failure_reason`, (CASE WHEN tasks.state NOT IN ('pending','running','sleeping') AND EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = tasks.task_id\n             AND sp.checkpoint_name = '$rolling-back')\n        THEN CASE WHEN EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = tasks.task_id\n             AND substr(ss.checkpoint_name, 1, 9) = CAST('$started:' AS BINARY)\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10)))) THEN 'failed' ELSE 'complete' END\n   END) as `rollback_outcome`, (SELECT st.state FROM checkpoints st\n     WHERE st.task_id = tasks.task_id\n       AND substr(st.checkpoint_name, 1, 16) = CAST('$rollback-tries:' AS BINARY)\n       AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = st.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(st.checkpoint_name, 17)))\n     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1) as `rollback_error` from `tasks` where `task_id` = ? and `queue` = ?",
+        "sql": "select `state`, `completed_payload`, `failure_reason`, (CASE WHEN tasks.state NOT IN ('pending','running','sleeping') AND EXISTS (SELECT 1 FROM checkpoints sp\n           WHERE sp.task_id = tasks.task_id\n             AND sp.checkpoint_name = '$rolling-back')\n        THEN CASE WHEN EXISTS (SELECT 1 FROM checkpoints ss\n           WHERE ss.task_id = tasks.task_id\n             AND ss.checkpoint_name >= '$started:'\n   AND ss.checkpoint_name < '$started;'\n             AND NOT EXISTS (SELECT 1 FROM checkpoints sr\n           WHERE sr.task_id = ss.task_id\n             AND sr.checkpoint_name = CONCAT('$rollback:',\n               substr(ss.checkpoint_name, 10)))) THEN 'failed' ELSE 'complete' END\n   END) as `rollback_outcome`, (SELECT st.state FROM checkpoints st\n     WHERE st.task_id = tasks.task_id\n       AND st.checkpoint_name >= '$rollback-tries:'\n   AND st.checkpoint_name < '$rollback-tries;'\n       AND st.owner_run_id = tasks.last_attempt_run\n     LIMIT 1) as `rollback_error` from `tasks` where `task_id` = ? and `queue` = ?",
         "bindArity": 2
       }
     ]

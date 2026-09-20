@@ -1,6 +1,7 @@
 import { type OperationNode, SqliteQueryCompiler } from 'kysely'
 import { expect } from 'vitest'
 import {
+  EventName,
   FencedBatch,
   type SqlExecutor,
   type SqlFragment,
@@ -11,6 +12,7 @@ import {
   compileOnlyBuilder,
   treeBuilder as db,
   defineStatement,
+  eventLockProblem,
   fenceValue,
   nowValue,
   rawSql,
@@ -24,8 +26,26 @@ const dialect = new TreeDialect(new SqliteQueryCompiler())
 
 export type Builder = { toOperationNode(): OperationNode }
 
-/** A statement minted the way stores mint them, with no binds of its own. */
-export const statement = (builder: Builder) => defineStatement('test', () => builder as never)({})
+/** A statement whose definition names the lock of an event, as core's event statements do. */
+export const onEvent = (builder: Builder, queue = 'q', eventName = 'e') =>
+  defineStatement(
+    'test',
+    () => builder as never,
+    () => ({ queue, eventName: EventName.fromPort('test', eventName) }),
+  )({})
+/** True of a statement the lock rule would refuse for naming no lock: an INSERT of an event or a wait. */
+const insertsAnEvent = (builder: Builder) =>
+  eventLockProblem(builder.toOperationNode(), null) !== null
+/** A statement minted with no lock named, whatever it writes. */
+export const unlocked = (builder: Builder) => defineStatement('test', () => builder as never)({})
+/**
+ * A statement minted the way stores mint them, with no binds of its own. These fixtures
+ * have one event, `e` of queue `q`, and a statement that records it or registers a wait on
+ * it names its lock as core's event statements do, so the rule each test is about is the
+ * one that answers. The lock rule's own cases mint their statements themselves.
+ */
+export const statement = (builder: Builder) =>
+  insertsAnEvent(builder) ? onEvent(builder) : unlocked(builder)
 export const predicate = (text: string, args: SqlFragment['args'] = []) =>
   rawSql<boolean>(sqlFragment(text, args), 'predicate')
 export const value = <T>(text: string, args: SqlFragment['args'] = []) =>
@@ -68,11 +88,14 @@ export function withCas(b: FencedBatch = batch()): FencedBatch {
   return b.casTree('win', statement(winCas()))
 }
 
-/** Tasks owned by the run this batch's compare-and-set stamped. */
+/**
+ * Tasks owned by the run this batch's compare-and-set stamped. The state is a live one: a
+ * batch that ends a task owes its completion event, which is not what these cases are about.
+ */
 export const taskFollowOn = () =>
   db
     .updateTable('tasks')
-    .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+    .set({ state: 'sleeping', fence_stamp: stampValue, fence_at_ms: 5 })
     .where((eb) =>
       eb(
         'task_id',
@@ -249,7 +272,7 @@ export const joinedRead = (stamp: string) =>
     .select('f.state')
     .where(stamp, '=', fenceValue('win'))
 
-export const taskInsert = () =>
+export const taskInsert = (state = 'pending') =>
   db.insertInto('tasks').values({
     task_id: 't1',
     queue: 'q',
@@ -257,7 +280,7 @@ export const taskInsert = () =>
     params: '{}',
     retry_strategy: '{}',
     max_attempts: 1,
-    state: 'pending',
+    state,
     attempts: 0,
     infra_retries: 0,
     enqueue_at_ms: nowValue,

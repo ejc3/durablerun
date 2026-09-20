@@ -6,6 +6,7 @@ import {
   type SqlExecutor,
   aliasedAs,
   treeBuilder as db,
+  defineStatement,
   fenceValue,
   isFencedBatchBindError,
   isTreeBuiltRead,
@@ -16,8 +17,11 @@ import {
   rawSql,
   sqlFragment,
   stampValue,
+  stampedRunState,
+  taskDoneEventInsert,
+  taskDoneEventName,
 } from '../src/index.js'
-import { attributeExpectedFailure } from '../src/testing.js'
+import { attributeExpectedFailure, requireExpectedFailure } from '../src/testing.js'
 import {
   type Loose,
   accepts,
@@ -37,6 +41,7 @@ import {
   keyIn,
   loose,
   many,
+  onEvent,
   predicate,
   recorded,
   refuses,
@@ -46,11 +51,13 @@ import {
   successor,
   tail,
   taskFollowOn,
+  taskInsert,
   tasksSetting,
   tasksWhere,
   throughDerived,
   tiedBy,
   tiedKeys,
+  unlocked,
   value,
   waitInsert,
   winCas,
@@ -1102,7 +1109,12 @@ describe('the tree path', () => {
       refuses(
         'mutation-verdict:construction:tree-statement-defined',
         /must come from defineStatement/,
-        () => batch().casTree('win', { name: 'forged', tree: winCas().toOperationNode() }),
+        () =>
+          batch().casTree('win', {
+            name: 'forged',
+            tree: winCas().toOperationNode(),
+            eventLock: null,
+          }),
       )
     })
 
@@ -1238,12 +1250,433 @@ describe('the tree path', () => {
         /followed immediately by a CAS/,
         () =>
           batch()
-            .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
+            .lockClaim({ queue: 'q', claimToken: 'token' })
             .openTailTree(
               'read',
               'a reason',
               statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
             ),
+      )
+    })
+  })
+
+  describe('the lock of an event', () => {
+    // `unlocked` mints with no lock named, which the fixtures' `statement` never does for these rows.
+    const NO_LOCK = /its definition names no event lock/
+    const ANOTHER_EVENT = /which is not the event_name it writes/
+    const eventUpdate = () =>
+      loose
+        .updateTable('events')
+        .set({ fence_stamp: stampValue, fence_at_ms: nowValue })
+        .where('queue', '=', 'q')
+
+    it('is carried by the statement whose definition names it', () => {
+      expect(
+        onEvent(eventUpdate()).eventLock,
+        'mutation-verdict:construction:statement-carries-the-lock-it-names',
+      ).toEqual({ queue: 'q', eventName: 'e' })
+      expect(unlocked(eventUpdate()).eventLock).toBeNull()
+    })
+
+    it('is asked of an INSERT, and of no other statement', () => {
+      accepts('mutation-verdict:construction:tree-event-lock-inserts-only', () =>
+        batch().casTree('event', unlocked(eventUpdate())),
+      )
+    })
+
+    it('is named by a statement that records an event', () => {
+      expect(() => batch().casTree('event', onEvent(eventInsert()))).not.toThrow()
+      refuses('mutation-verdict:construction:tree-event-lock-events', NO_LOCK, () =>
+        batch().casTree('event', unlocked(eventInsert())),
+      )
+    })
+
+    it('is named by a statement that registers a wait', () => {
+      refuses('mutation-verdict:construction:tree-event-lock-waits', NO_LOCK, () =>
+        batch().casTree('register', unlocked(waitInsert())),
+      )
+    })
+
+    it('says a statement that names no lock names none', () => {
+      refusesAs(
+        'mutation-verdict:construction:tree-event-lock-missing',
+        NO_LOCK,
+        /Cannot read properties of null/,
+        () => batch().casTree('event', unlocked(eventInsert())),
+      )
+    })
+
+    it('is the lock of the event the row names', () => {
+      refuses('mutation-verdict:construction:tree-event-lock-names-the-row', ANOTHER_EVENT, () =>
+        batch().casTree('event', onEvent(eventInsert(), 'q', 'another')),
+      )
+    })
+
+    it('refuses a row that names no event as a plain value', () => {
+      const nameless = () =>
+        loose.insertInto('events').values({
+          queue: 'q',
+          payload: 'p',
+          emitted_at_ms: nowValue,
+          fence_stamp: stampValue,
+          fence_at_ms: nowValue,
+        })
+      expect(() => batch().casTree('event', onEvent(nameless()))).toThrow(ANOTHER_EVENT)
+      // A name the tree cannot read is refused too: here it is a column of another row.
+      const copied = () =>
+        loose
+          .insertInto('events')
+          .columns([
+            'queue',
+            'event_name',
+            'payload',
+            'emitted_at_ms',
+            'fence_stamp',
+            'fence_at_ms',
+          ])
+          .expression(
+            loose
+              .selectFrom('waits as w')
+              .select((eb: Loose) => [
+                eb.ref('w.queue').as('queue'),
+                eb.ref('w.event_name').as('event_name'),
+                eb.val('p').as('payload'),
+                aliasedAs(nowValue, 'emitted_at_ms'),
+                aliasedAs(stampValue, 'fence_stamp'),
+                aliasedAs(nowValue, 'fence_at_ms'),
+              ]),
+          )
+      expect(() => batch().casTree('event', onEvent(copied()))).toThrow(ANOTHER_EVENT)
+    })
+  })
+
+  describe('a statement that ends a task', () => {
+    const OWES = /writes a terminal tasks\.state, and no follow-on of this batch records/
+    /** The task of the run this batch stamped, given a state under that run's stamp. */
+    const taskBecomes = (set: object | ((eb: Loose) => object)) =>
+      loose
+        .updateTable('tasks')
+        .set((eb: Loose) => ({
+          ...(typeof set === 'function' ? set(eb) : set),
+          fence_stamp: stampValue,
+          fence_at_ms: 5,
+        }))
+        .where((eb: Loose) =>
+          eb(
+            'task_id',
+            'in',
+            eb.selectFrom('runs as f').select('f.task_id').where('f.run_id', '=', 'r1').where(gate),
+          ),
+        )
+    /** The completion event of task `t1`, recorded under the stamp of the statement named. */
+    const recordedUnder = (terminal: string) =>
+      taskDoneEventInsert({ queue: 'q', taskId: 't1', payloadJson: '{}', terminal })
+    const ends = (set: object | ((eb: Loose) => object) = { state: 'failed' }) =>
+      withCas().followOnTree('end', statement(taskBecomes(set)), 'one')
+    const run = (b: ReturnType<typeof withCas>) => b.run(capturingExecutor(1).executor)
+
+    it('owes the completion event, recorded under its own stamp', async () => {
+      await expect(
+        run(ends().followOnTree('event', recordedUnder('end'), 'one')),
+      ).resolves.toBeDefined()
+      // Another follow-on under the same stamp is not the event.
+      const unpaid = ends()
+      unpaid.derived('runs', {
+        relation: 'tasks-to-runs',
+        fence: 'end',
+        set: { state: `'failed'` },
+        rows: 'source-keys',
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-owes-its-completion-event' },
+        OWES,
+        () => run(unpaid),
+      )
+    })
+
+    it('is not paid by a completion event recorded under another statement', async () => {
+      const b = withCas()
+        .followOnTree('park', statement(taskBecomes({ state: 'sleeping' })), 'one')
+        .followOnTree('end', statement(taskBecomes({ state: 'failed' })), 'one')
+        .followOnTree('event', recordedUnder('park'), 'one')
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'completion-event-names-the-ending-statement' },
+        OWES,
+        () => run(b),
+      )
+    })
+
+    it('is not paid by a wait registered on the completion event', async () => {
+      const waiting = defineStatement(
+        'test',
+        () =>
+          loose
+            .insertInto('waits')
+            .columns([
+              'run_id',
+              'step_name',
+              'queue',
+              'task_id',
+              'event_name',
+              'fence_stamp',
+              'fence_at_ms',
+            ])
+            .expression(
+              loose
+                .selectFrom('tasks as f')
+                .select((eb: Loose) => [
+                  eb.val('r2').as('run_id'),
+                  eb.val('s').as('step_name'),
+                  eb.ref('f.queue').as('queue'),
+                  eb.ref('f.task_id').as('task_id'),
+                  eb.val(taskDoneEventName('t1')).as('event_name'),
+                  aliasedAs(stampValue, 'fence_stamp'),
+                  eb.ref('f.fence_at_ms').as('fence_at_ms'),
+                ])
+                .where((eb: Loose) =>
+                  eb.and([eb('f.task_id', '=', 't1'), eb('f.fence_stamp', '=', fenceValue('end'))]),
+                ),
+            ) as never,
+        () => ({ queue: 'q', eventName: EventName.taskDone('t1') }),
+      )({})
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'completion-event-is-an-event' },
+        OWES,
+        () => run(ends().followOnTree('wait', waiting, 'one')),
+      )
+    })
+
+    it('is not paid by a statement that updates the completion event and inserts none', async () => {
+      const restamped = defineStatement(
+        'test',
+        () =>
+          loose
+            .updateTable('events')
+            .set({ fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb: Loose) =>
+              eb(
+                'queue',
+                'in',
+                eb
+                  .selectFrom('tasks as f')
+                  .select('f.queue')
+                  .where('f.task_id', '=', 't1')
+                  .where('f.fence_stamp', '=', fenceValue('end')),
+              ),
+            ) as never,
+        () => ({ queue: 'q', eventName: EventName.taskDone('t1') }),
+      )({})
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'completion-event-is-an-insert' },
+        OWES,
+        () => run(ends().followOnTree('restamp', restamped, 'one')),
+      )
+    })
+
+    it('is a statement that writes tasks, and a run that completes owes nothing', async () => {
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-is-of-tasks' },
+        OWES,
+        () => run(withCas()),
+      )
+    })
+
+    it('reads the state a statement writes, and no other column', async () => {
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-the-state-column' },
+        OWES,
+        () => run(ends({ state: 'sleeping', failure_reason: 'failed' })),
+      )
+    })
+
+    it('reads the value, so a live state owes nothing', async () => {
+      accepts('mutation-verdict:construction:terminal-task-state-reads-an-assigned-value', () =>
+        ends({ state: 'sleeping' }),
+      )
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-the-value' },
+        OWES,
+        () => run(ends({ state: 'sleeping' })),
+      )
+    })
+
+    it('reads a terminal state written as a value', async () => {
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-as-a-value' },
+        OWES,
+        () => run(ends({ state: 'cancelled' })),
+      )
+    })
+
+    it('reads a terminal state in any arm of an expression built from nodes', async () => {
+      const arm = (eb: Loose) => ({
+        state: eb.case().when('attempts', '>', 3).then('completed').else('sleeping').end(),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-in-any-arm' },
+        OWES,
+        () => run(ends(arm)),
+      )
+    })
+
+    // What a column receives is a result. A filter chooses a row and a condition chooses
+    // an arm, and neither gives the task anything, whatever text it holds.
+    it("does not read the filter of a copied state, where a run id is a caller's string", async () => {
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-skips-a-filter' },
+        OWES,
+        () => run(ends({ state: stampedRunState('failed', 'win') })),
+      )
+      // The condition a subquery joins on is a filter as well.
+      const joinedOn = (eb: Loose) => ({
+        state: eb
+          .selectFrom('runs as g')
+          .innerJoin('tasks as t2', (join: Loose) =>
+            join.onRef('t2.task_id', '=', 'g.task_id').on('t2.failure_reason', '=', 'failed'),
+          )
+          .select('g.state')
+          .where('g.run_id', '=', 'r1'),
+      })
+      await expect(run(ends(joinedOn))).resolves.toBeDefined()
+    })
+
+    it('does not read the condition of an arm', async () => {
+      const chosen = (eb: Loose) => ({
+        state: eb
+          .case()
+          .when('failure_reason', '=', 'failed')
+          .then('sleeping')
+          .else('pending')
+          .end(),
+      })
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-skips-a-condition' },
+        OWES,
+        () => run(ends(chosen)),
+      )
+      // The other form of CASE compares an operand with each condition.
+      const compared = (eb: Loose) => ({
+        state: eb
+          .case(eb.ref('failure_reason'))
+          .when('failed')
+          .then('sleeping')
+          .else('pending')
+          .end(),
+      })
+      await expect(run(ends(compared))).resolves.toBeDefined()
+    })
+
+    it('reads an expression that has no ELSE', async () => {
+      const noElse = (eb: Loose) => ({
+        state: eb.case().when('attempts', '>', 3).then('sleeping').end(),
+      })
+      await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-case-with-no-else' },
+        /TypeError/,
+        () => run(ends(noElse)),
+      )
+    })
+
+    /** A subquery over `runs` that names a state, the way a derived table would hold it. */
+    const naming = (eb: Loose, state: string) =>
+      eb
+        .selectFrom('runs as g')
+        .select(['g.run_id', eb.val(state).as('named')])
+        .where('g.run_id', '=', 'r1')
+
+    it('reads what a subquery selects', async () => {
+      const selected = (eb: Loose) => ({
+        state: eb.selectFrom('runs as g').select(eb.val('failed').as('named')),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-selection' },
+        OWES,
+        () => run(ends(selected)),
+      )
+      // An arm may be such a subquery.
+      const arm = (eb: Loose) => ({
+        state: eb
+          .case()
+          .when('attempts', '>', 3)
+          .then(eb.selectFrom('runs as g').select(eb.val('cancelled').as('named')))
+          .else('pending')
+          .end(),
+      })
+      await expect(run(ends(arm))).rejects.toThrow(OWES)
+    })
+
+    it('reads a state that reaches the column through a derived table', async () => {
+      const derived = (eb: Loose) => ({
+        state: eb.selectFrom(naming(eb, 'failed').as('d')).select('d.named'),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-derived-table' },
+        OWES,
+        () => run(ends(derived)),
+      )
+    })
+
+    it('reads a state that reaches the column through a joined table', async () => {
+      const joined = (eb: Loose) => ({
+        state: eb
+          .selectFrom('runs as h')
+          .innerJoin(naming(eb, 'failed').as('d'), 'd.run_id', 'h.run_id')
+          .select('d.named')
+          .where('h.run_id', '=', 'r1'),
+      })
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-reads-a-joined-table' },
+        OWES,
+        () => run(ends(joined)),
+      )
+    })
+
+    it('takes no fragment, whatever the fragment holds', () => {
+      const FRAGMENT = /gives tasks\.state a value that holds a SQL fragment/
+      refuses('mutation-verdict:construction:task-state-takes-no-fragment', FRAGMENT, () =>
+        ends({ state: value<string>(`'completed'`) }),
+      )
+      // A live state, a copy of a run's, and one arm of an expression are refused alike.
+      expect(() => ends({ state: value<string>(`'sleeping'`) })).toThrow(FRAGMENT)
+      expect(() =>
+        ends({ state: value<string>('(SELECT f.state FROM runs f WHERE f.run_id = ?)', ['r1']) }),
+      ).toThrow(FRAGMENT)
+      expect(() =>
+        ends((eb: Loose) => ({
+          state: eb
+            .case()
+            .when('attempts', '>', 3)
+            .then(value<string>(`'failed'`))
+            .else('sleeping')
+            .end(),
+        })),
+      ).toThrow(FRAGMENT)
+      // A fragment in another column of tasks stands.
+      expect(() =>
+        ends({ state: 'sleeping', failure_reason: value<string>(`'failed'`) }),
+      ).not.toThrow()
+    })
+
+    it('is asked of tasks alone, so a fragment may give a run its state', () => {
+      expect(() =>
+        withCas().followOnTree(
+          'runs',
+          statement(
+            loose
+              .updateTable('runs')
+              .set({ state: value<string>(`'failed'`), fence_stamp: stampValue, fence_at_ms: 5 })
+              .where((eb: Loose) => eb('run_id', 'in', fenced(eb).select('f.run_id'))),
+          ),
+          'one',
+        ),
+      ).not.toThrow()
+    })
+
+    it('reads the state an INSERT gives a new task', async () => {
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'terminal-task-state-of-an-insert' },
+        OWES,
+        () => run(batch().casTree('born', statement(taskInsert('cancelled')))),
       )
     })
   })

@@ -2721,6 +2721,56 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         )
       })
 
+      // fenceTwin('FailRunWithRetry'): the terminal arm's marker is on the stale-token column,
+      // which calls `fail` with no retry. This case holds both arms. `fail` has two arms
+      // behind one compare-and-set on the live claim, a retry while the budget has room and
+      // the task's end at the budget. A stale token is refused on both, and neither refusal
+      // writes anything. The live token then takes the arm the budget names, so each run
+      // was where this case says it was.
+      it('a stale fail is refused with budget left and at the budget, and writes nothing', async () => {
+        for (const { maxAttempts, runs, failed } of [
+          { maxAttempts: 3, runs: 2, failed: false },
+          { maxAttempts: 1, runs: 1, failed: true },
+        ]) {
+          const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts })
+          const run = await claimActivated(f.store, Q, `w-budget-${maxAttempts}`)
+          expect(run.taskId).toBe(spawned.taskId)
+          const before = await snapshot(f, spawned.taskId)
+          await expect(
+            f.store.fail(Q, run.runId, 'stale', '{"name":"Boom"}', { delaySeconds: 1 }),
+          ).rejects.toThrow(LeaseLostError)
+          expect(await snapshot(f, spawned.taskId), `budget ${maxAttempts}`).toEqual(before)
+          await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
+          const after = await snapshot(f, spawned.taskId)
+          expect(
+            { runs: after.runs?.length, failed: after.tasks?.[0]?.state === 'failed' },
+            `budget ${maxAttempts}`,
+          ).toEqual({ runs, failed })
+        }
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      // A run id is the caller's string, and one that spells a task state is still only an
+      // id. The three writes that copy a run's state into its task find no such run here,
+      // and answer as they do for any other run this queue never had.
+      it('a run id that spells a task state is only an id, and a run nobody has holds no lease', async () => {
+        const answers: Record<string, string> = {}
+        for (const runId of ['no-such-run', 'pending', 'failed', 'completed', 'cancelled']) {
+          answers[`deferLaunch ${runId}`] = await refusalName(
+            f.store.deferLaunch(Q, runId, 'token', 1, 15),
+          )
+          answers[`reschedule ${runId}`] = await refusalName(
+            f.store.reschedule(Q, runId, 'token', { inSeconds: 1 }),
+          )
+          answers[`suspendRun ${runId}`] = await refusalName(
+            f.store.suspendRun(Q, runId, 'token', { inSeconds: 1 }, { key: 's', stateJson: '{}' }),
+          )
+        }
+        expect(answers).toEqual(
+          Object.fromEntries(Object.keys(answers).map((write) => [write, 'LeaseLostError'])),
+        )
+      })
+
       it('suspendRun rejects a non-integer stored attempt atomically', async () => {
         const run = await activatedRun()
         const disposition = await executeStorageCorruption(f, {
@@ -3110,10 +3160,36 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimActivated(f.store, Q, 'w1')
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await checkpointOwned(f.store, Q, run, 'b-step', '{"b":1}', 90)
-        await checkpointOwned(f.store, Q, run, 'a-step', '{"a":1}', 90)
+        // The list is in byte order of the name on every dialect. These names separate
+        // that order from a linguistic one, which puts a lowercase letter before its
+        // capital and weighs `_` and `-` its own way, and they are written in neither.
+        const inByteOrder = [
+          'B-step',
+          'Zeta',
+          '_init',
+          'a-step',
+          'b-step',
+          'step-1',
+          'step_1',
+          'zeta',
+        ]
+        for (const name of [
+          'step_1',
+          'b-step',
+          'Zeta',
+          'a-step',
+          '_init',
+          'zeta',
+          'B-step',
+          'step-1',
+        ]) {
+          await checkpointOwned(f.store, Q, run, name, JSON.stringify({ name }), 90)
+        }
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, run.attempt)
-        expect(checkpoints.map((c) => c.checkpointName)).toEqual(['a-step', 'b-step'])
+        expect(checkpoints.map((c) => c.checkpointName)).toEqual(inByteOrder)
+        expect(checkpoints.map((c) => c.stateJson)).toEqual(
+          inByteOrder.map((name) => JSON.stringify({ name })),
+        )
         expect(checkpoints[0]).toMatchObject({ ownerRunId: run.runId, ownerAttempt: 1 })
         const lease = await readOne(
           f.raw,
