@@ -11,6 +11,7 @@ import {
   META_TABLE_SQL,
   RUNS_STAMP_INDEX,
   createIndexIfMissing,
+  setNotNullWhileNullable,
 } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -309,6 +310,64 @@ describe('MysqlExecutor against a real server', () => {
         await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
       }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone', async () => {
+    // MODIFY restates the whole column. A migrator that planned from a stale read replays
+    // every version that was pending when it read, so a bare MODIFY replayed after a later
+    // version had changed the column would put this declaration back over it. The guarded
+    // form acts on the one fact it is about: a nullable column becomes NOT NULL, and a column
+    // that is not nullable is left as it stands, whatever else has become of it.
+    const db = await openMysqlTestDb({ idNamespace: 'column-repeat' })
+    try {
+      const declaration = 'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'
+      const column = async () => {
+        const [read] = await db.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: `SELECT is_nullable AS nullable, column_comment AS comment
+                      FROM information_schema.columns
+                     WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+        return read?.rows[0]
+      }
+      const version = setNotNullWhileNullable('events', 'payload', declaration).map((sql) => ({
+        sql,
+        args: [],
+      }))
+      const seen: unknown[] = [await column()]
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:a-later-version', [
+        {
+          sql: `ALTER TABLE events MODIFY payload ${declaration} NOT NULL COMMENT 'as a later version left it'`,
+          args: [],
+        },
+      ])
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:nullable-again', [
+        { sql: `ALTER TABLE events MODIFY payload ${declaration} NULL`, args: [] },
+      ])
+      seen.push(await column())
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      expect(seen).toEqual([
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: 'as a later version left it' },
+        { nullable: 'YES', comment: '' },
+        { nullable: 'NO', comment: '' },
+      ])
     } finally {
       await db.close()
     }
