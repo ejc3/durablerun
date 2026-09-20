@@ -2648,6 +2648,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     by the bytes of the checkpoint name from version 7 on, like every other
     order. No way to reach such a tie was found: the batch that fails a
     rollback writes one record and ends its run.
+  - An option, not built: hold the order of a version's lock list among the
+    store tables. `store-postgres/test/version-lock-order.test.ts` holds that
+    `meta` comes last, for two arrivals, a sweep and a spawn, and a list that
+    ends in `meta` and crosses a worker's read passes it: the order among the
+    store tables was chosen by measurement. Two cases would hold it. One is
+    that case over every call of the store's two ports, generated as the
+    self-concurrency surface's contests are. The other blocks a worker read's
+    second table and sees the read hold its first, for each read that names
+    two store tables. Their trigger is the next version that locks tables:
+    version 7's text is frozen once it is on main.
   - An option, not built: a short `lock_timeout` on the version's lock
     statement, with reruns. The version then gives up its place in every lock
     queue when it cannot have the locks at once, where today all store traffic
