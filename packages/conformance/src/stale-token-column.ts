@@ -5,6 +5,7 @@ import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 import {
   HEALTHY_INVOCATION,
+  INVOCATION_SHAPES,
   type InvocationTarget,
   POISON_INVOCATION,
   invoke,
@@ -25,16 +26,17 @@ import { describeFailure, withFixture } from './scenario.js'
  * written by hand, one operation at a time, and `failRollback` had none: with its token
  * comparison removed a stale caller ended a saga and every test stayed green.
  *
- * So the cases are generated. A write label is in the column exactly when the poison
- * matrix's `invoke` hands its port call the target's claim token or generation, which is
- * read by calling `invoke` over a store that records its arguments. A new label that
- * presents a claim gets its case without being listed, and a label that presents none
- * cannot be listed. Each case seeds the label's healthy target from the poison matrix's
- * own seeds, calls the label as a caller that does not hold the claim, and requires the
- * port's lost-lease answer and six unchanged tables. Then it makes the same call as the
- * claim's holder and requires it to win, so the claim presented is the only difference
- * between the call that was refused and the call that was not. A seed in which the label
- * is refused for some other reason fails there, and does not pass for a fence.
+ * So the cases are generated. The poison matrix's `invoke` is called for every write
+ * label, over every shape of target it tells apart, on a store that records the call.
+ * A call is in the column exactly when it carries the target's claim token or
+ * generation. A new label that presents a claim gets its case without being listed, and
+ * a label that presents none cannot be listed. Each case seeds the label's healthy
+ * target from the poison matrix's own seeds, makes the call as a caller that does not
+ * hold the claim, and requires the port's lost-lease answer and six unchanged tables.
+ * Then it makes the same call as the claim's holder and requires it to win, so the claim
+ * presented is the only difference between the call that was refused and the call that
+ * was not. A seed in which the label is refused for some other reason fails there, and
+ * does not pass for a fence.
  *
  * The lease sweeps present no token. They act on the claim their scan read (§3.4), so
  * their stale caller is a scan that read another generation.
@@ -47,11 +49,16 @@ type ClaimPart = 'token' | 'generation'
 const TOKEN_PROBE = 'stale-token-column:token-probe'
 const GENERATION_PROBE = 1_234_567
 
-interface Presented {
+/** One call `invoke` makes: a write label, as one shape of target calls it. */
+interface CallForm {
+  /** The label, and what the target's shape adds to it: `complete`, `spawn of a child`. */
+  readonly name: string
   readonly label: WriteLabel
-  /** The port method the label's invocation calls. */
+  /** The caller that holds the claim, as the label's healthy seed leaves it. */
+  readonly target: InvocationTarget
+  /** The port method the call reaches. */
   readonly method: string
-  /** The parts of its claim the invocation presents, in the order the case checks them. */
+  /** The parts of its claim the call presents, in the order the case checks them. */
   readonly parts: readonly ClaimPart[]
 }
 
@@ -61,8 +68,8 @@ const carries = (value: unknown, probe: string | number): boolean =>
     value !== null &&
     Object.values(value).some((inner) => carries(inner, probe)))
 
-/** What `invoke` presents for `label`, read from the one port call it makes. */
-function presentedBy(label: WriteLabel): Presented {
+/** The one port call `invoke` makes for `label` on `target`. */
+function recordedCall(label: WriteLabel, target: InvocationTarget) {
   const calls: { method: string; args: readonly unknown[] }[] = []
   const recorder = new Proxy({} as SchedulerStore, {
     get:
@@ -74,25 +81,41 @@ function presentedBy(label: WriteLabel): Presented {
   })
   // `invoke` reaches its port call before its first await, so the call is on record by
   // the time `invoke` hands back its promise.
-  invoke(label, recorder, {
-    ...HEALTHY_INVOCATION,
-    token: TOKEN_PROBE,
-    claimGen: GENERATION_PROBE,
-  }).catch(() => undefined)
+  invoke(label, recorder, target).catch(() => undefined)
   const [call, ...others] = calls
   if (call === undefined || others.length > 0) {
     throw new Error(`invoking '${label}' made ${calls.length} port calls, and the column reads one`)
   }
-  const parts: ClaimPart[] = []
-  if (carries(call.args, TOKEN_PROBE)) parts.push('token')
-  if (carries(call.args, GENERATION_PROBE)) parts.push('generation')
-  return { label, method: call.method, parts }
+  return call
 }
 
-const PRESENTED = MATRIX_WRITE_LABELS.map(presentedBy)
+/** Every distinct call `invoke` makes for `label`, over every shape of target it tells apart. */
+function callFormsOf(label: WriteLabel): CallForm[] {
+  const forms: CallForm[] = []
+  const spelled = new Set<string>()
+  for (const shape of Object.values(INVOCATION_SHAPES)) {
+    const target = { ...HEALTHY_INVOCATION, ...shape.set }
+    const call = recordedCall(label, {
+      ...target,
+      token: TOKEN_PROBE,
+      claimGen: GENERATION_PROBE,
+    })
+    // A shape that changes nothing about this label's call is the call already on record.
+    const spelling = JSON.stringify(call)
+    if (spelled.has(spelling)) continue
+    spelled.add(spelling)
+    const parts: ClaimPart[] = []
+    if (carries(call.args, TOKEN_PROBE)) parts.push('token')
+    if (carries(call.args, GENERATION_PROBE)) parts.push('generation')
+    forms.push({ name: `${label}${shape.form}`, label, target, method: call.method, parts })
+  }
+  return forms
+}
 
-/** The column: every write label whose invocation presents a part of its claim. */
-export const STALE_CALLER_CASES: readonly Presented[] = PRESENTED.filter(
+const CALL_FORMS = MATRIX_WRITE_LABELS.flatMap(callFormsOf)
+
+/** The column: every call that presents a part of its claim. */
+export const STALE_CALLER_CASES: readonly CallForm[] = CALL_FORMS.filter(
   ({ parts }) => parts.length > 0,
 )
 
@@ -108,19 +131,19 @@ const outcomeOf = (call: Promise<unknown>): Promise<Outcome> =>
   )
 
 /**
- * The labels whose port method reports a lost lease in its answer, with that answer.
- * Every other label refuses by throwing LeaseLostError, and never RunCancelledError: no
+ * The calls whose port method reports a lost lease in its answer, with that answer.
+ * Every other call refuses by throwing LeaseLostError, and never RunCancelledError: no
  * task here is cancelled.
  */
-const ANSWERED_REFUSALS: Partial<Record<WriteLabel, unknown>> = {
+const ANSWERED_REFUSALS: Readonly<Record<string, unknown>> = {
   activate: null,
   heartbeat: { held: false, remainingMs: 0, reason: 'lease-lost' },
   'expire-lease-now': false,
 }
 
-const refusalOf = (label: WriteLabel): Outcome =>
-  label in ANSWERED_REFUSALS
-    ? { kind: 'resolved', value: ANSWERED_REFUSALS[label] }
+const refusalOf = (form: CallForm): Outcome =>
+  form.name in ANSWERED_REFUSALS
+    ? { kind: 'resolved', value: ANSWERED_REFUSALS[form.name] }
     : { kind: 'rejected', error: 'LeaseLostError' }
 
 /** The callers that do not hold the claim, for each part of it, given the caller that does. */
@@ -139,11 +162,11 @@ const STALE_CALLERS: Record<
   }),
 }
 
-/** Seeds the label's healthy target and answers with the caller that holds its claim. */
-async function seedHolder(f: StoreFixture, presented: Presented): Promise<InvocationTarget> {
+/** Seeds the call's healthy target and answers with the caller that holds its claim. */
+async function seedHolder(f: StoreFixture, form: CallForm): Promise<InvocationTarget> {
   await seedBase(f)
-  await seedHealthyTrigger(f.raw, presented.label)
-  if (!presented.parts.includes('generation')) return HEALTHY_INVOCATION
+  await seedHealthyTrigger(f.raw, form.label, form.target)
+  if (!form.parts.includes('generation')) return form.target
   // The stale caller of a claim receipt is the claim before it, so the run is one that
   // was claimed a second time.
   await f.raw.batch(
@@ -151,12 +174,12 @@ async function seedHolder(f: StoreFixture, presented: Presented): Promise<Invoca
     [
       {
         sql: 'UPDATE runs SET claim_gen = claim_gen + 1 WHERE run_id = ?',
-        args: [HEALTHY_INVOCATION.runId],
+        args: [form.target.runId],
       },
     ],
     'write',
   )
-  return { ...HEALTHY_INVOCATION, claimGen: HEALTHY_INVOCATION.claimGen + 1 }
+  return { ...form.target, claimGen: form.target.claimGen + 1 }
 }
 
 type SweepLabel = Extract<WriteLabel, `sweep:${string}`>
@@ -198,12 +221,15 @@ function scanOfALaterClaim(raw: SqlExecutor, runId: string) {
   return { executor, rewritten: () => rewritten }
 }
 
+const fixtureName = (kind: string, name: string) => `${kind}-${name.replaceAll(' ', '-')}`
+
 export function staleTokenConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`stale-token column [${dialect}] (write label x caller that does not hold the claim)`, () => {
-    it('enrolls exactly the write labels whose invocation presents a claim', () => {
+    it('enrolls exactly the calls that present a claim', () => {
       expect(
-        Object.fromEntries(STALE_CALLER_CASES.map(({ label, parts }) => [label, parts])),
+        Object.fromEntries(STALE_CALLER_CASES.map(({ name, parts }) => [name, parts])),
       ).toEqual({
+        'spawn of a child': ['token'],
         activate: ['token', 'generation'],
         'defer-launch': ['token', 'generation'],
         heartbeat: ['token'],
@@ -217,13 +243,13 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
         'expire-lease-now': ['token'],
         'set-checkpoint': ['token'],
       })
-      expect(STALE_CALLER_CASES).toHaveLength(12)
+      expect(STALE_CALLER_CASES).toHaveLength(13)
       expect({
         answeredRefusalsOutsideTheColumn: Object.keys(ANSWERED_REFUSALS).filter(
-          (label) => !STALE_CALLER_CASES.some((presented) => presented.label === label),
+          (name) => !STALE_CALLER_CASES.some((form) => form.name === name),
         ),
-        sweeps: PRESENTED.filter(({ method }) => method === 'sweep')
-          .map(({ label }) => label)
+        sweeps: CALL_FORMS.filter(({ method }) => method === 'sweep')
+          .map(({ name }) => name)
           .sort(),
       }).toEqual({
         answeredRefusalsOutsideTheColumn: [],
@@ -231,36 +257,36 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
       })
     })
 
-    for (const presented of STALE_CALLER_CASES) {
-      const { label } = presented
-      it(`${label} refuses a caller that does not hold the claim`, () =>
-        withFixture(makeFixture, `stale-token-${label}`, async (f) => {
-          const holder = await seedHolder(f, presented)
+    for (const form of STALE_CALLER_CASES) {
+      it(`${form.name} refuses a caller that does not hold the claim`, () =>
+        withFixture(makeFixture, fixtureName('stale-token', form.name), async (f) => {
+          const holder = await seedHolder(f, form)
           expect(await engineInvariantViolations(f.raw)).toEqual([])
           const before = await snapshot(f.raw)
-          for (const part of presented.parts) {
+          for (const part of form.parts) {
             const answers: Record<string, Outcome> = {}
             for (const [who, caller] of Object.entries(STALE_CALLERS[part](holder))) {
-              answers[who] = await outcomeOf(invoke(label, f.store, caller))
+              answers[who] = await outcomeOf(invoke(form.label, f.store, caller))
             }
             expect({ answers, rows: await snapshot(f.raw) }).toEqual({
               answers: Object.fromEntries(
-                Object.keys(answers).map((who) => [who, refusalOf(label)]),
+                Object.keys(answers).map((who) => [who, refusalOf(form)]),
               ),
               rows: before,
             })
           }
           // The same call under the claim itself wins from the rows the refusals left. If
-          // it did not, the seed would be one in which the label is refused whoever calls,
-          // and the refusals above would hold with the comparison removed.
-          const held = await outcomeOf(invoke(label, f.store, holder))
-          expect(held.kind, `${label} under its own claim: ${JSON.stringify(held)}`).toBe(
+          // it did not, the seed would be one in which the call is refused whoever makes
+          // it, and the refusals above would hold with the comparison removed.
+          const held = await outcomeOf(invoke(form.label, f.store, holder))
+          expect(held.kind, `${form.name} under its own claim: ${JSON.stringify(held)}`).toBe(
             'resolved',
           )
-          expect(held, `${label} under its own claim was refused`).not.toEqual(refusalOf(label))
-          expect(await snapshot(f.raw), `${label} under its own claim wrote nothing`).not.toEqual(
-            before,
-          )
+          expect(held, `${form.name} under its own claim was refused`).not.toEqual(refusalOf(form))
+          expect(
+            await snapshot(f.raw),
+            `${form.name} under its own claim wrote nothing`,
+          ).not.toEqual(before)
         }))
     }
 
@@ -272,7 +298,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
         ? `${label} acts on nothing when its scan read another generation`
         : `${label} is handed no generation by its scan`
       it(title, () =>
-        withFixture(makeFixture, `stale-scan-${label}`, async (f) => {
+        withFixture(makeFixture, fixtureName('stale-scan', label), async (f) => {
           await seedBase(f)
           await seedHealthyTrigger(f.raw, label)
           expect(await engineInvariantViolations(f.raw)).toEqual([])

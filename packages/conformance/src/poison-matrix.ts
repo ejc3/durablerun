@@ -1639,9 +1639,16 @@ const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
     ),
   )
 
-/** A healthy task and run in the state in which `label` is a legal call. */
-export async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
-  if (label === 'driver-heartbeat' || label === 'spawn') return
+/** A healthy task and run in the state in which `label` is a legal call on `target`. */
+export async function seedHealthyTrigger(
+  raw: SqlExecutor,
+  label: string,
+  target?: InvocationTarget,
+): Promise<void> {
+  // A task of its own needs no rows. A child is spawned by a run that is running under
+  // its claim, which is what the default arm seeds.
+  if (label === 'driver-heartbeat') return
+  if (label === 'spawn' && target?.childReplayKey === undefined) return
   let statements: readonly SqlStatement[]
   switch (label) {
     case 'claim':
@@ -1754,6 +1761,29 @@ export interface InvocationTarget {
   completionPayload: string
   failure: string
   endedChildId: string
+  /**
+   * Set, `spawn` creates a child of `runId` at this call site, and presents the target's
+   * claim as the parent's. Unset, it creates a task of its own.
+   */
+  childReplayKey?: string
+}
+
+type OptionalKey<T> = { [K in keyof T]-?: undefined extends T[K] ? K : never }[keyof T]
+
+/**
+ * Every shape of target `invoke` tells apart: the plain one, and one for each optional
+ * field, set. `form` is what the shape adds to a label's name. The type asks a new
+ * optional field for its shape, so a surface generated from these shapes sees every call
+ * form `invoke` can make.
+ */
+export const INVOCATION_SHAPES: Readonly<
+  Record<
+    'plain' | OptionalKey<InvocationTarget>,
+    { readonly form: string; readonly set: Partial<InvocationTarget> }
+  >
+> = {
+  plain: { form: '', set: {} },
+  childReplayKey: { form: ' of a child', set: { childReplayKey: 'child#1' } },
 }
 
 export const POISON_INVOCATION: InvocationTarget = {
@@ -1805,7 +1835,22 @@ export async function invoke(
     case 'driver-heartbeat':
       return store.driverHeartbeat(Q, target.driverId, 30)
     case 'spawn':
-      return store.spawn(Q, target.taskName, '{}', { idempotencyKey: target.idempotencyKey })
+      return store.spawn(
+        Q,
+        target.taskName,
+        '{}',
+        target.childReplayKey === undefined
+          ? { idempotencyKey: target.idempotencyKey }
+          : {
+              childOf: {
+                parentQueue: Q,
+                parentTaskId: target.taskId,
+                runId: target.runId,
+                claimToken: target.token,
+                replayKey: target.childReplayKey,
+              },
+            },
+      )
     case 'claim':
       return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: selectionLimit })
     case 'activate':
