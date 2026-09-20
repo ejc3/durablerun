@@ -1152,6 +1152,49 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect([...differing]).toEqual([])
   })
 
+  it('refuses a walk of a table in any statement, alone or not, and names the table', async () => {
+    // A lone walk drives nothing and nothing drives it, so no nest holds it. One statement
+    // of each kind a store ships stands here as one step that walks: a read under the alias
+    // a generated statement gives its source, the SELECT of an INSERT, an UPDATE, a DELETE,
+    // and a read whose alias follows its table with no AS, as a text statement writes it.
+    const alone = {
+      read: `select "f"."run_id" from "runs" as "f" where "f"."queue" = ? and "f"."state" = ?`,
+      insertSelect: `insert into events (queue, event_name, payload, emitted_at_ms)
+                     select queue, run_id, null, 0 from runs where queue = ? and state = ?`,
+      update: 'update runs set wake_event = null where queue = ? and state = ?',
+      delete: 'delete from waits where status = ?',
+      bareAlias: 'select sibling.run_id from runs sibling where sibling.attempt > ?',
+    }
+    const faults: Record<string, string[]> = {}
+    for (const [kind, sql] of Object.entries(alone)) faults[kind] = (await read(sql)).faults
+    const walkOf = (table: string) => `is a walk of ${table}: neither keyed nor a due range`
+    const queueByState = 'USING COVERING INDEX runs_poll (queue=? AND state=?)'
+    expect(faults).toEqual({
+      read: [`SEARCH f ${queueByState} :: ${walkOf('runs')}`],
+      insertSelect: [`SEARCH runs ${queueByState} :: ${walkOf('runs')}`],
+      update: [`SEARCH runs ${queueByState} :: ${walkOf('runs')}`],
+      delete: [`SCAN waits :: ${walkOf('waits')}`],
+      bareAlias: [`SCAN sibling USING COVERING INDEX runs_task_attempt :: ${walkOf('runs')}`],
+    })
+    // Not alone: the walk is refused as the walk it is, beside what the nest rule says of
+    // the step that runs once for each of its rows.
+    const driving = await read(
+      `select t.task_name from tasks t
+       where t.task_id in (select f.task_id from runs f where f.queue = ? and f.state = ?)`,
+    )
+    expect([...driving.faults].sort()).toEqual([
+      `SEARCH f USING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`,
+      expect.stringMatching(/^SEARCH t .* :: runs once for each row of a walk: SEARCH f /),
+    ])
+    // What is no walk: one run by its key, and the clock's row of `meta` by its key.
+    for (const sql of [
+      'select state from runs where run_id = ?',
+      'select value from meta where key = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
