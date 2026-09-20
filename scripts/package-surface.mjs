@@ -33,9 +33,10 @@
 //
 // --write replaces the snapshot from a directory of release tarballs: it records each
 // tarball's sha256, unpacks it, and prints the shapes. Written over a snapshot of the same
-// release, it refuses a tarball whose sha256 differs from the one recorded and keeps the two
-// tables; a new release starts with both empty. Compare the recorded sha256 of each tarball
-// with the release receipt before committing a new snapshot.
+// release, it refuses a tarball whose sha256 differs from the one recorded, and a directory
+// that lacks a recorded tarball, and keeps the two tables; a new release starts with both
+// empty. Compare the recorded sha256 of each tarball with the release receipt before
+// committing a new snapshot.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -319,6 +320,13 @@ function write(release, tarballDir, snapshotPath) {
     }
     if (Object.keys(assets).length === 0)
       throw new Error(`package-surface: found no tarball in ${tarballDir}`)
+    const absent = Object.keys(same ? (before.assets ?? {}) : {}).filter(
+      (file) => !(file in assets),
+    )
+    if (absent.length > 0)
+      throw new Error(
+        `package-surface: ${tarballDir} lacks ${absent.join(', ')}, which the snapshot of ${release} records`,
+      )
     const snapshot = {
       release,
       source:
