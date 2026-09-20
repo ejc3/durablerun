@@ -259,13 +259,15 @@ a last docs PR gives a live owner to every open bullet that is left.
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
 23. PR3.14c: a check generated from the corpus plans every statement of every
-    label the libSQL store ships, and fails on a statement that reads a protocol
-    table once for each row of another. This is met. `store-libsql`'s plan test
-    sends every batch the store builds from one history of real operations, the
-    generated corpus and the list of text statements hold that history to every
-    statement, and the loop nests of each plan are judged. One registered
-    mutation, a read that joins its task by the queue alone, fails it and passes
-    every older pin of the file.
+    label the libSQL store ships, and fails on a statement in which a step that
+    runs once for each row of another is not keyed, or runs once for each row of
+    a step that is neither keyed nor a due range, but for the statements it
+    names. This is met. `store-libsql`'s plan test sends every batch the store
+    builds from one history of real operations, the generated corpus and the
+    list of text statements hold that history to every statement, and the loop
+    nests of each plan are judged. One registered mutation, a read that joins
+    its task by the queue alone, fails it and passes every older pin of the
+    file.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -2468,36 +2470,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
     column, so this needs its own design.
 - **PR3.14c the plan check generated from the corpus**: `query-plans.test.ts`
   pinned the statements someone chose, and its block over writes planned the
-  UPDATE and DELETE of fourteen labels listed by hand, so no test planned a read
-  or the SELECT of an INSERT, and a new label was planned only if someone listed
-  it. One scripted history of real operations now sends every batch the libSQL
-  store builds, in every variant, recorded once for the file. Every statement of
+  UPDATE and DELETE of fourteen labels listed by hand, so a read, or the SELECT
+  of an INSERT, was planned only where someone chose it, as three reads were,
+  and a new label's writes only if someone listed it. One scripted history of
+  real operations now sends every batch the libSQL store builds, in every
+  variant, recorded once for the file. Every statement of
   `conformance/corpus/libsql.json` must be one that history sent, by its exact
   text, and every label of `scripts/text-statements.json` is sent or named with
   why it is not the store's. The block over writes takes its statements from the
   same history, so its hand list is gone and it plans the writes of every label.
   Each statement is planned under the binds it was sent with, as the tree
-  `EXPLAIN QUERY PLAN` returns, and a reader beside the test judges its loop
-  nests: a step that runs once for each row of another must be keyed, and every
-  step it runs once for each row of must be keyed or a due range. DESIGN.md §3.4
-  has the reading, the two declared lists of column names, why a due range may
-  drive, and what the rule cannot see, as five statements that were run. A step
-  is judged by its constraints whatever it is named, and a plan line the reader
-  cannot read is a fault. Two statements of `claim` break the rule, the task
+  `EXPLAIN QUERY PLAN` returns, and every send of it is held to plan alike. A
+  reader beside the test judges the loop nests of each plan: a step that runs
+  once for each row of another must be keyed, and every step it runs once for
+  each row of must be keyed or a due range. DESIGN.md §3.4 has the reading, the
+  two declared lists of column names, why a due range may drive, what the rule
+  cannot see, as five statements that were run, and what it refuses though it is
+  sound. A step is judged by its constraints whatever it is named, a read of a
+  subquery's rows as a read of a table is, and a plan line the reader cannot
+  read or place is a fault. Two statements of `claim` break the rule, the task
   update and the delete of expired waits, and are excused by name, for that walk
   alone. A plan prints a range the same way whichever way it points and never
   prints a LIMIT, so every statement in which a due range drives another step is
-  named with the limit that bounds it. Four are: the claim's candidate legs, the
+  named with the lines that drive and with what bounds them, a LIMIT its text
+  holds or a recorded open question. Four are: the claim's candidate legs, the
   two sweep scans, and the claim's read of the runs it took, whose range is
-  every lease of its queue that has not expired, under no LIMIT. That read is
-  the first read any test has planned, and it shows that plan only under its
-  real binds, because SQLite plans from bound values. All four statements of
-  `claim` are PR3.14b's. When it removes the claim's walks it also removes the
-  claim's two excuses here and its name in the list of due ranges, which fail as
-  unneeded until it does. One claim of one run on libSQL, median of 7, on a file
-  database, beside running runs of its queue that another worker holds, then
-  each of its statements alone in a transaction that is rolled back, with
-  `activate` as the keyed control:
+  every lease of its queue that has not expired, under no LIMIT. That read had
+  no pin, and it shows that plan only under its real binds, because SQLite plans
+  from bound values. All four statements of `claim` are PR3.14b's. When it
+  removes the claim's walks, the claim's two excuses here and its name in the
+  list of due ranges fail as unneeded until they are deleted, the excuses first,
+  because they are checked first. One claim of one run on libSQL, median of 7,
+  on a file database, beside running runs of its queue that another worker
+  holds, then each of its statements alone in a transaction that is rolled back,
+  with `activate` as the keyed control:
 
   | Running runs | Claim | Runs update | Task update | Waits delete | Read | `activate` |
   |---|---|---|---|---|---|---|
