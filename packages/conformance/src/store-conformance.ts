@@ -1312,18 +1312,43 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         })
       }
 
-      for (const target of POISON_TARGET_CASES) {
-        if (
-          highestOwnedOrdinalTargets.includes(target) ||
-          exhaustedBudgetTargets.includes(target) ||
-          sweepTargets.includes(target) ||
-          fractionalClaimTargets.includes(target) ||
-          relaunchClaimTargets.includes(target)
-        ) {
-          continue
-        }
+      // One registered mutation for each profile of an arm that names its target removes a
+      // guard its cells reach, and the cell named here owns it, so the audit keeps showing
+      // that the profile's cells can fail. A marker is a literal because the audit reads it
+      // from this source.
+      const targetVerdicts: Readonly<Record<string, string>> = {
+        'counter-bound/run-relaunch-count/activate-unactivated':
+          'mutation-verdict:behavior:poison-target-activate-holds-relaunch-bound',
+        'counter-bound/run-relaunch-count/defer-launch-unactivated':
+          'mutation-verdict:behavior:poison-target-defer-launch-holds-receipt-admission',
+        'counter-bound/task-infra-retries/retry-task-failed':
+          'mutation-verdict:behavior:poison-target-retry-task-holds-infra-retries-bound',
+        'accounting/below-top-minus-one/fail-started-step':
+          'mutation-verdict:behavior:poison-target-fail-holds-highest-owned-ordinal',
+        'accounting/below-top-minus-one/fail-rollback-rolling-back':
+          'mutation-verdict:behavior:poison-target-fail-rollback-holds-highest-owned-ordinal',
+      }
+      const generatedTargets = POISON_TARGET_CASES.filter(
+        (target) =>
+          !highestOwnedOrdinalTargets.includes(target) &&
+          !exhaustedBudgetTargets.includes(target) &&
+          !sweepTargets.includes(target) &&
+          !fractionalClaimTargets.includes(target) &&
+          !relaunchClaimTargets.includes(target),
+      )
+      const strandedVerdicts = Object.keys(targetVerdicts).filter(
+        (id) => !generatedTargets.some((target) => target.id === id),
+      )
+      if (strandedVerdicts.length > 0) {
+        throw new Error(`no generated poison target case owns ${strandedVerdicts.join(', ')}`)
+      }
+      for (const target of generatedTargets) {
         it(`${target.profile} contains ${target.witness.id}`, async () => {
-          await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
+          const contained = await runPoisonTargetCase(makeFixture, target).then(
+            ({ label, witness, profile }) => ({ label, witness, profile }),
+            (error: unknown) => ({ refused: String(error) }),
+          )
+          expect(contained, targetVerdicts[target.id]).toEqual({
             label: target.label,
             witness: target.witness.id,
             profile: target.profile,
