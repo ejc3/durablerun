@@ -1,5 +1,6 @@
 import {
   type ClaimedRun,
+  type FailedRollback,
   INFRA_RETRY_CAP,
   MAX_COUNT,
   REASON_CANCELLED,
@@ -28,6 +29,7 @@ import {
   awaitOwned,
   awaitTaskOwned,
   checkpointOwned,
+  checkpointState,
   claimActivated,
   claimOne,
   refusalName,
@@ -49,18 +51,17 @@ async function rowsOf(raw: SqlExecutor, sql: string, args: (string | number)[] =
 const startMarker = (step: string) => `${SAGA_STARTED_PREFIX}${step}`
 const rollbackOf = (step: string) => `${SAGA_ROLLBACK_PREFIX}${step}`
 /**
- * A rollback's attempt record as it is stored. The name is spelled here and not taken from
- * core, so a name that core derives wrongly is seen.
+ * The name of a rollback's attempt record. It is spelled here and not taken from core, so a
+ * name that core derives wrongly is seen.
  */
+const triesName = (step: string) => `${SAGA_TRIES_PREFIX}${step}`
+/** A rollback's attempt record as it is stored, which is what a caller forges at another door. */
 const triesOf = (step: string, tries: number) => ({
-  key: `${SAGA_TRIES_PREFIX}${step}`,
+  key: triesName(step),
   stateJson: encodeRollbackTry({ tries, errorJson: ROLLBACK_BOOM }),
 })
 /** A failed rollback of `step`, as the port takes it. */
-export const failedRollback = (step: string, errorJson: string = ROLLBACK_BOOM) => ({
-  stepKey: step,
-  errorJson,
-})
+export const failedRollback = (step: string) => ({ stepKey: step, errorJson: ROLLBACK_BOOM })
 
 /** A registered step starts: its marker commits, carrying its index, before its body runs. */
 export function startStep(f: StoreFixture, run: ClaimedRun, step: string, index: number) {
@@ -263,13 +264,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
             )
           ).map((row) => `${Number(row.attempt)}:${String(row.state)}`),
           checkpoints: await checkpointNames(f, spawned.taskId),
-          marker: (
-            await rowsOf(
-              f.raw,
-              'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-              [spawned.taskId, SAGA_PHASE_CHECKPOINT],
-            )
-          )[0]?.state,
+          marker: await checkpointState(f.raw, spawned.taskId, SAGA_PHASE_CHECKPOINT),
           completionEvents: await doneEvents(f),
           result: await f.store.getTaskResult(Q, spawned.taskId),
         },
@@ -470,17 +465,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         retried,
         againIsTheNextAttempt: again.attempt === pass.attempt + 1,
         result: await f.store.getTaskResult(Q, taskId),
-        record: decodeRollbackTry(
-          String(
-            (
-              await rowsOf(
-                f.raw,
-                'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-                [taskId, triesOf('a', 2).key],
-              )
-            )[0]?.state,
-          ),
-        ),
+        record: decodeRollbackTry(String(await checkpointState(f.raw, taskId, triesName('a')))),
       }).toEqual({
         retried: { state: 'pending', attempts: 2, maxAttempts: 3, failureReason: null },
         againIsTheNextAttempt: true,
@@ -498,17 +483,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
     // the last one stored, and no caller hands one over.
     it("counts a rollback's failed attempts itself, one more than the last one stored", async () => {
       const { taskId, pass } = await rollingBack(f, ['a'])
-      const record = triesOf('a', 1).key
-      const stored = async () =>
-        String(
-          (
-            await rowsOf(
-              f.raw,
-              'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-              [taskId, record],
-            )
-          )[0]?.state,
-        )
+      const stored = async () => String(await checkpointState(f.raw, taskId, triesName('a')))
       await f.store.failRollback(
         Q,
         pass.runId,
@@ -524,7 +499,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       await f.raw.batch('a-record-an-older-build-wrote', [
         {
           sql: 'UPDATE checkpoints SET state = ? WHERE task_id = ? AND checkpoint_name = ?',
-          args: [triesOf('a', 5).stateJson, taskId, record],
+          args: [triesOf('a', 5).stateJson, taskId, triesName('a')],
         },
       ])
       const again = await claimActivated(f.store, Q, 'w-pass-2')
@@ -559,16 +534,11 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       const underAnotherToken = await failedUnder('not-the-token')
       const held = await failedUnder(pass.claimToken)
       const replayed = await failedUnder(pass.claimToken)
-      const [record] = await rowsOf(
-        f.raw,
-        'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-        [taskId, triesOf('a', 1).key],
-      )
       expect({
         underAnotherToken,
         held,
         replayed,
-        record: decodeRollbackTry(String(record?.state)),
+        record: decodeRollbackTry(String(await checkpointState(f.raw, taskId, triesName('a')))),
       }).toEqual({
         underAnotherToken: 'LeaseLostError',
         held: 'accepted',
@@ -717,13 +687,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         const entered = (await f.store.sweep(Q, 10)).map((swept) => swept.kind)
         const entering = {
           task: (await taskRow(f, spawned.taskId))?.state,
-          marker: (
-            await rowsOf(
-              f.raw,
-              'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-              [spawned.taskId, SAGA_PHASE_CHECKPOINT],
-            )
-          )[0]?.state,
+          marker: await checkpointState(f.raw, spawned.taskId, SAGA_PHASE_CHECKPOINT),
         }
         const [claimed] = await f.store.claim(Q, `w-${cap}-pass`, { leaseSeconds: 60, limit: 1 })
         if (!claimed) {
@@ -1014,7 +978,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
 
     // A plain checkpoint write is one of two doors that take a caller's checkpoint name.
     // A suspension commits the caller's marker in its own batch, and it is refused the
-    // engine's names too. A failed rollback was a third, until its port took the step.
+    // engine's names too. A failed rollback is not one: its port takes the step.
     it('refuses an engine-only name as the marker of a suspension', async () => {
       const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: 3 })
       const forward = await claimActivated(f.store, Q, 'w-forward')
@@ -1042,21 +1006,18 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       }).toEqual({ ordinary: 'accepted', checkpoints: ['$sleep', startMarker('a')].sort() })
     })
 
-    // A failed rollback was the third door: its port took the attempt record from its caller,
-    // and the batch checked the record's name. The port now takes the step, and the store
-    // builds the name, so no caller's name reaches that batch. A caller of the older port
-    // hands over `{ key, stateJson }`, and the entry refuses it before anything is read or
-    // sent, saying what the port takes.
+    // A failed rollback is no door for a caller's checkpoint name. Its port takes the step,
+    // and the store builds the attempt record's name, so no caller's name reaches that batch.
+    // A caller of an older build hands over `{ key, stateJson }`, and the entry refuses it
+    // before anything is read or sent, saying what the port takes.
     it("names a failed rollback's attempt record itself, and refuses the record an older caller hands over", async () => {
       const { taskId, pass } = await rollingBack(f, ['a'])
-      const asAnOlderCaller = f.store.failRollback as unknown as (
-        ...args: unknown[]
-      ) => Promise<unknown>
-      const refused = await asAnOlderCaller
-        .call(f.store, Q, pass.runId, pass.claimToken, CAUSE, null, {
-          key: SAGA_PHASE_CHECKPOINT,
-          stateJson: '"forged"',
-        })
+      const asAnOlderCaller = {
+        key: SAGA_PHASE_CHECKPOINT,
+        stateJson: '"forged"',
+      } as unknown as FailedRollback
+      const refused = await f.store
+        .failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, asAnOlderCaller)
         .then(
           () => 'accepted',
           (error: unknown) =>
@@ -1083,7 +1044,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           checkpoints: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a'].sort(),
         },
         halts: 'accepted',
-        halted: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a', triesOf('a', 1).key].sort(),
+        halted: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a', triesName('a')].sort(),
       })
     })
 

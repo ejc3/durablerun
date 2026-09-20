@@ -2041,6 +2041,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     batch binds its completion payload before it runs, and the outcome is a
     fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
     and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: the phase as a required member of
+    the claim guards. Every statement that presents a worker's claim goes
+    through `whereClaimedRun` or `AwaitingClaim`, and a child spawn was the one
+    such statement whose phase nobody had decided (PR3.4c). With `phase` a
+    required member of both, no claim-fenced statement compiles until it says
+    what the phase asks of it. It re-keys the SQL corpus, the finds of the
+    registered mutations on those statements, and the base gate's arm.
+    Trigger: a statement that presents a claim is added, or one is found with
+    no decision about the phase.
+  - Option, not a deferral of this entry: a fuzz stat and a floor for the reach
+    of the count check. Every walk holds the stored count of a rollback's
+    failed attempts to what it saw recorded (PR3.4c), and nothing says that a
+    walk ever saw a second attempt of one step, so the check could pass over
+    walks that never reach one. At the gate's size 29 of the 32 shards reach
+    it and three do not, so a floor for each shard would fail as the halt
+    count's first floor did, and it needs a measured threshold of its own.
+    Trigger: the walk's saga operations change, or the check is found green
+    over a run in which no walk recorded a second attempt.
   - Option, not a deferral of this entry: a composed model of sagas with child
     tasks. Sagas.tla has no spawn and ChildTasks.tla has no phase, so the
     store's refusal of a child spawn inside the phase (PR3.4c) is held by a

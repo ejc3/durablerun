@@ -742,7 +742,10 @@ for (const { dialect, open } of SAGA_DIALECTS) {
     // refused, and the case below holds it.
     it('throws the phase signal from every durable call that has no memo, and writes nothing for it', async () => {
       const KIDS = 'kids'
-      const calls: Record<string, (ctx: TaskContext, child: ChildTask) => Promise<unknown>> = {
+      // Keyed by the context's own durable calls, so a call added to it does not compile here
+      // until it has a row or is left out by name, as the emit is.
+      type FrozenCall = Exclude<keyof TaskContext, 'attempt' | 'taskName' | 'emitEvent'>
+      const calls: Record<FrozenCall, (ctx: TaskContext, child: ChildTask) => Promise<unknown>> = {
         step: (ctx) => ctx.step('late', () => 'ran inside the phase'),
         sleepFor: (ctx) => ctx.sleepFor(5),
         sleepUntil: (ctx) => ctx.sleepUntil(4_102_444_800_000),

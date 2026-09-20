@@ -16,7 +16,13 @@ import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 import { sagaViolations } from './saga-rows.js'
-import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
+import {
+  awaitOwned,
+  awaitTaskOwned,
+  checkpointOwned,
+  checkpointState,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 
@@ -583,17 +589,9 @@ async function runWalk(
   // so the count it stored is the number of failed attempts the walk saw it record.
   for (const [taskId, saga] of sagas) {
     for (const [step, tries] of saga.tries) {
-      const [record] = await f.raw.batch(
-        'fuzz:the-stored-count',
-        [
-          {
-            sql: 'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
-            args: [taskId, `${SAGA_TRIES_PREFIX}${step}`],
-          },
-        ],
-        'read',
-      )
-      const stored = decodeRollbackTry(String(record?.rows[0]?.state))?.tries
+      const stored = decodeRollbackTry(
+        String(await checkpointState(f.raw, taskId, `${SAGA_TRIES_PREFIX}${step}`)),
+      )?.tries
       if (stored !== tries) {
         throw new Error(
           `fuzz seed ${seed} final: task ${taskId} stores ${stored} failed attempts of the rollback of ${step}, and the walk saw ${tries} recorded`,

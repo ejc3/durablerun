@@ -523,38 +523,48 @@ describe('the saga batches beside a history of tasks, on MySQL', () => {
 })
 
 describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
+  /**
+   * The moves both cases make over one store whose batches are counted: start a task, put a
+   * history of checkpoints beside one of its own, and count the rows one act walked under a
+   * label.
+   */
+  const counted = (db: TestDb, labels: readonly string[]) => {
+    const { executor, walked } = countingRowsWalked(db, labels)
+    const store = new MysqlSchedulerStore(executor, db.ids)
+    const started = async (name: string) => {
+      const task = await store.spawn(Q, name, '{}', { maxAttempts: 1 })
+      const [run] = await store.claim(Q, name, { leaseSeconds: 60, limit: 1 })
+      if (run?.taskId !== task.taskId) throw new Error(`${name} was not claimed`)
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      return run
+    }
+    /** One plain checkpoint of the run's task, and a history of copies beside it. */
+    const beside = async (run: { taskId: string; runId: string; claimToken: string }) => {
+      await store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'step', '1', 60)
+      for (const copy of ['a', 'b', 'c', 'd', 'e']) {
+        await cloneRows(
+          db,
+          'checkpoints',
+          `src.task_id = '${run.taskId}' AND src.checkpoint_name = 'step'`,
+          { checkpoint_name: `CONCAT('step-${copy}-', seq.n)` },
+        )
+      }
+    }
+    const rowsWalked = async (label: string, act: () => Promise<unknown>) => {
+      walked.delete(label)
+      await act()
+      return walked.get(label)
+    }
+    return { store, started, beside, rowsWalked }
+  }
+
   it('fails a task, and reads a result, without walking the checkpoints the task has', async () => {
     // A saga's names are a range of the checkpoints key. Found by a test of each name,
     // the failure of any task walks every checkpoint the task has to learn that no step
     // is owed a rollback, and every read of a result walks them again.
     const db = await openMysqlTestDb({ idNamespace: 'plan-saga-names', nowMs: 1_000_000 })
     try {
-      const { executor, walked } = countingRowsWalked(db, ['fail', 'task-result'])
-      const store = new MysqlSchedulerStore(executor, db.ids)
-      const started = async (name: string) => {
-        const task = await store.spawn(Q, name, '{}', { maxAttempts: 1 })
-        const [run] = await store.claim(Q, name, { leaseSeconds: 60, limit: 1 })
-        if (run?.taskId !== task.taskId) throw new Error(`${name} was not claimed`)
-        await store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        return run
-      }
-      /** One plain checkpoint of the run's task, and a history of copies beside it. */
-      const beside = async (run: { taskId: string; runId: string; claimToken: string }) => {
-        await store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'step', '1', 60)
-        for (const copy of ['a', 'b', 'c', 'd', 'e']) {
-          await cloneRows(
-            db,
-            'checkpoints',
-            `src.task_id = '${run.taskId}' AND src.checkpoint_name = 'step'`,
-            { checkpoint_name: `CONCAT('step-${copy}-', seq.n)` },
-          )
-        }
-      }
-      const rowsWalked = async (label: string, act: () => Promise<unknown>) => {
-        walked.delete(label)
-        await act()
-        return walked.get(label)
-      }
+      const { store, started, beside, rowsWalked } = counted(db, ['fail', 'task-result'])
       // A plain task: no step registered a rollback, so its failure owes none.
       const plain = await started('plain')
       await beside(plain)
@@ -616,36 +626,26 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
     // the checkpoints key, however many checkpoints the parent has.
     const db = await openMysqlTestDb({ idNamespace: 'plan-child-spawn', nowMs: 1_000_000 })
     try {
-      const { executor, walked } = countingRowsWalked(db, ['spawn'])
-      const store = new MysqlSchedulerStore(executor, db.ids)
-      const parentTask = await store.spawn(Q, 'parent', '{}')
-      const [parent] = await store.claim(Q, 'w-parent', { leaseSeconds: 60, limit: 1 })
-      if (parent?.taskId !== parentTask.taskId) throw new Error('the parent was not claimed')
-      await store.activate(Q, parent.runId, parent.claimToken, parent.claimGen)
-      await store.setCheckpoint(Q, parent.taskId, parent.runId, parent.claimToken, 'step', '1', 60)
-      for (const copy of ['a', 'b', 'c', 'd', 'e']) {
-        await cloneRows(
-          db,
-          'checkpoints',
-          `src.task_id = '${parent.taskId}' AND src.checkpoint_name = 'step'`,
-          { checkpoint_name: `CONCAT('step-${copy}-', seq.n)` },
-        )
-      }
-      walked.delete('spawn')
-      const child = await store.spawn('kids', 'child', '{}', {
-        childOf: {
-          parentQueue: Q,
-          parentTaskId: parent.taskId,
-          runId: parent.runId,
-          claimToken: parent.claimToken,
-          replayKey: '$spawn:child',
-        },
+      const { store, started, beside, rowsWalked } = counted(db, ['spawn'])
+      const parent = await started('parent')
+      await beside(parent)
+      let created: boolean | undefined
+      const walked = await rowsWalked('spawn', async () => {
+        const child = await store.spawn('kids', 'child', '{}', {
+          childOf: {
+            parentQueue: Q,
+            parentTaskId: parent.taskId,
+            runId: parent.runId,
+            claimToken: parent.claimToken,
+            replayKey: '$spawn:child',
+          },
+        })
+        created = child.created
       })
-      expect({ created: child.created, walkedFewRows: Number(walked.get('spawn')) < 150 }).toEqual({
+      expect({ created, walkedFewRows: Number(walked) < 150 }).toEqual({
         created: true,
         walkedFewRows: true,
       })
-      console.log()
     } finally {
       await db.close()
     }

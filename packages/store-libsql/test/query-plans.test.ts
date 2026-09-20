@@ -517,7 +517,6 @@ describe('every batch a saga touches', () => {
     return seen.filter((st) => (TOUCHED as readonly string[]).includes(st.label))
   }
 
-  /** What is wrong with one statement's plan, by the rules every saga statement is held to. */
   /**
    * The task update that follows a pass. It is told from a revival, which sets the same
    * budget column, by the batch it rides in, and from a spawn, which inserts that column,
@@ -526,6 +525,7 @@ describe('every batch a saga touches', () => {
   const followsThePass = (label: string, sql: string): boolean =>
     /^\s*update "tasks"/.test(sql) && /"max_attempts"/.test(sql) && label !== 'retry-task'
 
+  /** What is wrong with one statement's plan, by the rules every saga statement is held to. */
   function planFaults(label: string, sql: string, plan: string): string[] {
     const faults: string[] = []
     const lines = plan.split('\n')
