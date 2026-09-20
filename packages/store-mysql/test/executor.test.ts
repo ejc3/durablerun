@@ -1,4 +1,10 @@
-import { FencedBatch, StoreUnavailableError, prepareRead, refusalStateRead } from '@durablerun/core'
+import {
+  FencedBatch,
+  type SqlStatement,
+  StoreUnavailableError,
+  prepareRead,
+  refusalStateRead,
+} from '@durablerun/core'
 import type { FieldPacket, Pool } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
@@ -138,6 +144,42 @@ describe('MysqlExecutor transactions', () => {
       'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
       'a read core built',
       'a read core built',
+      'COMMIT',
+    ])
+  })
+
+  it('decides whether a batch goes alone when it copies the statements, and not from what the array holds later', async () => {
+    // The executor copies what it will send, then waits for a connection. A caller that
+    // changes its array during that wait must not change what the executor decided: here
+    // a delete passed as a read is swapped for a read that core built, and the delete the
+    // executor copied must still go inside the read-only transaction that refuses it.
+    const branded: SqlStatement[] = []
+    await readsFromCore('first').run({
+      batch: async (_label, statements) => {
+        branded.push(...statements)
+        return statements.map(() => ({ rows: [], rowsAffected: 0 }))
+      },
+    })
+    const [read] = branded
+    if (read === undefined) throw new Error('core built no read')
+    const connection = new FakeConnection()
+    const statements: SqlStatement[] = [{ sql: 'DELETE FROM t', args: [] }]
+    const pool = {
+      getConnection: async () => {
+        statements[0] = read
+        return connection
+      },
+      end: async () => undefined,
+      pool: OWNED_POOL_CONFIG,
+    }
+    await MysqlExecutor.fromPool(pool as unknown as Pool).batch('fixture:swap', statements, 'read')
+    expect(
+      afterSessionSetup(connection),
+      'mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy',
+    ).toEqual([
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+      'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
+      'DELETE FROM t',
       'COMMIT',
     ])
   })

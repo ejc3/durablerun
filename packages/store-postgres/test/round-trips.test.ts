@@ -1,12 +1,24 @@
 import {
+  FencedBatch,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
+  defineStatement,
   encodeRollbackTry,
+  rawSql,
+  sqlFragment,
+  treeBuilder,
 } from '@durablerun/core'
+import type { Kysely } from 'kysely'
 import { Pool } from 'pg'
 import { expect, it } from 'vitest'
-import { PgExecutor, PostgresSchedulerStore, PostgresStoreAdmin } from '../src/index.js'
+import {
+  NOW_MS,
+  PgExecutor,
+  PostgresSchedulerStore,
+  PostgresStoreAdmin,
+  TREE_DIALECT,
+} from '../src/index.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
@@ -287,6 +299,53 @@ it('refuses a delete sent behind a select in one read, and keeps the row', async
     expect(
       { outcome, kept: after?.rows[0]?.kept },
       'mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read',
+    ).toEqual({ outcome: 'refused by the server', kept: 1 })
+  } finally {
+    await db.close()
+  }
+}, 120_000)
+
+it('refuses a read that core built whose fragment holds a second statement, and keeps the row', async () => {
+  // Core brands what its read path compiles. It reads a store's fragment for clocks and
+  // comments only, so a fragment can hold a second statement, and the brand says nothing
+  // about it. As plain text a server runs both statements. A read sent alone therefore
+  // goes through the extended protocol, which takes one statement and refuses a second
+  // whatever the text holds.
+  const db = await openPostgresTestDb({ idNamespace: 'read-guard-fragment' })
+  try {
+    await db.raw.batch('fixture:seed', [
+      { sql: "INSERT INTO meta (key, value) VALUES ('kept', 'v')", args: [] },
+    ])
+    // `meta` is no table of the store's trees, so the builder is taken at its widest.
+    const anyTable = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
+    const twoStatements = defineStatement('two-statements', () =>
+      anyTable
+        .selectFrom('meta')
+        .select('value')
+        .where(
+          rawSql<boolean>(
+            sqlFragment("1 = 1); DELETE FROM meta WHERE key = 'kept' AND (1 = 1"),
+            'predicate',
+          ),
+        ),
+    )
+    const batch = new FencedBatch('reads', 'seed', { now: NOW_MS, tree: TREE_DIALECT })
+    batch.readTree('two-statements', twoStatements({}))
+    const outcome = await batch.run(db.raw).then(
+      () => 'accepted',
+      (error: unknown) =>
+        /cannot insert multiple commands into a prepared statement/.test(String(error))
+          ? 'refused by the server'
+          : String(error),
+    )
+    const [after] = await db.raw.batch(
+      'fixture:read',
+      [{ sql: "SELECT COUNT(*) AS kept FROM meta WHERE key = 'kept'", args: [] }],
+      'read',
+    )
+    expect(
+      { outcome, kept: after?.rows[0]?.kept },
+      'mutation-verdict:behavior:postgres-lone-read-is-one-statement',
     ).toEqual({ outcome: 'refused by the server', kept: 1 })
   } finally {
     await db.close()
