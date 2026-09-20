@@ -2679,6 +2679,32 @@ export class S {
         "a mutant list that enrols no module must be named, not crash the reader",
     ),
     (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\n  \\/ BrandNew\n"),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a blank line inside Next must not end the reading, or the actions after it are held to nothing",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "  \\/ LateEmit\n", "  \\/ LateEmit\n\\* a comment at the margin\n  \\/ BrandNew\n"
+        ),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a comment at the margin inside Next must not end the reading",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\t\\/ BrandNew\n"),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a disjunct indented with a tab is a disjunct, and must be read",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\n  /\\ EndChild(o)\n"),
+        "this part of Next is not a named action",
+        "a line inside Next that is no disjunct must be refused by name, wherever it stands",
+    ),
+    (
         "batch-lint.py",
         store(
             """
@@ -4463,6 +4489,14 @@ const pattern = /this\.db\.batch\(/
         "spec-ledger.py",
         side_model_ledger(),
         "a side model whose block maps real labels onto every action of its next-state relation",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "  \\/ LateEmit\n",
+            "\n\\* a comment at the margin\n  \\* and a comment inside\n  \\/ LateEmit\n",
+        ),
+        "blank lines and comments inside Next are passed over, and the actions after them are read",
     ),
 ]
 
