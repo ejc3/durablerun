@@ -669,10 +669,10 @@ One invocation executes one claimed run to its next suspension point:
     rolling back halts instead, with nothing compensated: the refusal ends the
     pass's replay at the group, no step after it registers its rollback, and
     the rollback outcome is `failed` with `$RollbackNotRegistered` naming the
-    step that started last. An operator reads both on the task's result, and
-    compensating the steps that ran is left to them, by hand. It is fail-stop:
-    nothing completes silently. The cost is accepted, because the alternative
-    keeps two histories for one program.
+    step that started last. An operator reads both on the task's result and
+    through the inspect route, and compensating the steps that ran is left to
+    them, by hand. It is fail-stop: nothing completes silently. The cost is
+    accepted, because the alternative keeps two histories for one program.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no

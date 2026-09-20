@@ -2262,7 +2262,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     saga started, and later rolled back, a step that the run with no fault
     never started. The four generated programs were committed failing, by
     name, and a replayed step now holds a guard of its own until it settles.
-    This project's machinery found it, before any review.
+    The refusal's message says a step was pending, where it told the author of
+    calls started together that they had nested a call. This project's
+    machinery found it, before any review.
   - **Known cost for a task in flight when the build changes** (DESIGN.md
     section 3.2 has the whole paragraph). A task that an older build's crash
     carried past such a group, with both members memoized, fails for good on
@@ -2278,11 +2280,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `saga-start-marker-is-written-with-the-guard-up`, which brings back the
     review's finding 2, and `saga-pass-replays-as-the-run-that-failed`, which
     brings back its finding 6.
-  - Measured: the harness file takes 23.7 s where main's takes 13.6 s, at the
-    median of five interleaved rounds on one machine under a load average of
-    17 to 22 (main 13.4 to 14.0 s, this branch 23.3 to 24.1 s), for 44 tests
-    where main has 27. About 10 s are added, and about twice that on CI's
-    slowest runner. A program holds at most one shape and one failed attempt,
+  - Measured on the head that holds main: the harness file takes 23.9 s where
+    main's takes 14.1 s, at the median of five interleaved rounds on one
+    machine (main 13.8 to 14.3 s; this branch 23.6 to 24.1 s, and 28.0 s in the
+    one round where another tenant took the load average from 36 to 77), for
+    44 tests where main has 27. About 10 s are added, and about twice that on
+    CI's slowest runner. A program holds at most one shape and one failed attempt,
     and a program generated for a shape is short. Those are the levers, and no
     shape and no seed was dropped.
   - Open question, recorded and not pursued here: a handler that swallows every
@@ -2298,6 +2301,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     call, or a decision that a swallowed control ends the pass anyway.
   - Not built: `emitEvent` as a member of a group, because it takes no key and
     the order rule says nothing of it, and a group of three or more calls.
+  - An option, not scheduled: the allowance for a refused group's first rows,
+    and the blind spot DESIGN.md names for it, exist because a pass ends while
+    durable calls it started are still in flight. A worker that waited for
+    those calls before its terminal write would remove both, and the two
+    DESIGN.md passages with them. It is an engine change of its own, with a
+    rule for a body that never returns. Trigger: a second comparison that needs
+    the same allowance, or a defect that hides in the blind spot.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
