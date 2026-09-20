@@ -1,3 +1,4 @@
+import { SAGA_PHASE_CHECKPOINT, SAGA_STARTED_PREFIX, SAGA_TRIES_PREFIX } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { childTaskConformance } from './child-tasks.js'
@@ -19,6 +20,7 @@ import {
   POISON_WITNESSES,
   POISON_WITNESS_COUNT,
   POISON_WRITE_LABELS,
+  type PoisonAddressedProfile,
   type PoisonRelationalTargetRecord,
   type PoisonTargetCase,
   type PoisonTargetProfile,
@@ -228,8 +230,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(POISON_WITNESS_COUNT).toBe(146)
       expect(POISON_WRITE_LABELS).toHaveLength(21)
       expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_066)
-      expect(POISON_TARGET_CASES).toHaveLength(82)
-      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(57)
+      expect(POISON_TARGET_CASES).toHaveLength(98)
+      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(83)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
         POISON_TARGET_CASES.length,
       )
@@ -531,6 +533,28 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             observation: {
               label: 'defer-launch',
               profile: 'defer-launch-unactivated',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/fail-started-step',
+            kind: 'observed',
+            observation: {
+              label: 'fail',
+              profile: 'fail-started-step',
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/fail-rollback-rolling-back',
+            kind: 'observed',
+            observation: {
+              label: 'fail-rollback',
+              profile: 'fail-rollback-rolling-back',
               witness: 'accounting/live-run-not-next',
               conditionIds: ['accounting/live-run-not-next'],
               corruptionDisposition: 'injected',
@@ -1163,6 +1187,24 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
                 profile: 'defer-launch-unactivated',
               },
             },
+            {
+              profile: 'fail-started-step',
+              kind: 'resolved',
+              result: {
+                label: 'fail',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'fail-started-step',
+              },
+            },
+            {
+              profile: 'fail-rollback-rolling-back',
+              kind: 'resolved',
+              result: {
+                label: 'fail-rollback',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'fail-rollback-rolling-back',
+              },
+            },
           ],
           receipt: { result: [], after: receiptBefore },
         })
@@ -1233,11 +1275,39 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       // A targeted refusal is the corruption's only if the same call acts on the same
       // profile with nothing corrupt. An arm that scans shows that in the cell itself, where
       // its one call wins the healthy trigger. An arm that names its target shows it here.
+      // Where each clean call leaves the poisoned task: its state, its runs in order, and its
+      // checkpoints. The type asks a new profile for its answer.
+      const cleanEffects = {
+        'activate-unactivated': { task: 'running', runs: ['1 running'], checkpoints: [] },
+        'defer-launch-unactivated': { task: 'sleeping', runs: ['1 sleeping'], checkpoints: [] },
+        'retry-task-failed': { task: 'pending', runs: ['1 failed', '2 pending'], checkpoints: [] },
+        // The failure entered the rolling-back phase where it would have ended the task: the
+        // rollback pass is the task's second run, and the phase marker stands beside the step.
+        'fail-started-step': {
+          task: 'pending',
+          runs: ['1 failed', '2 pending'],
+          checkpoints: [SAGA_PHASE_CHECKPOINT, `${SAGA_STARTED_PREFIX}probe`],
+        },
+        // The failed rollback ended the task, with its attempt recorded.
+        'fail-rollback-rolling-back': {
+          task: 'failed',
+          runs: ['1 failed'],
+          checkpoints: [
+            `${SAGA_TRIES_PREFIX}probe`,
+            SAGA_PHASE_CHECKPOINT,
+            `${SAGA_STARTED_PREFIX}probe`,
+          ],
+        },
+      } as const satisfies Record<
+        PoisonAddressedProfile,
+        { task: string; runs: readonly string[]; checkpoints: readonly string[] }
+      >
       for (const addressed of POISON_ADDRESSED_PROFILES) {
         it(`${addressed.profile} admits ${addressed.arm} when nothing is corrupt`, async () => {
           expect(await observeCleanAddressedProfile(makeFixture, addressed)).toMatchObject({
             invocation: { status: 'fulfilled' },
             poisonSubjectUnchanged: false,
+            effect: cleanEffects[addressed.profile],
           })
         })
       }

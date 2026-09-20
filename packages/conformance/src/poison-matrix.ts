@@ -97,7 +97,12 @@ export type PoisonSelectingArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-ti
  * a target with nothing corrupt, so the corruption is what refuses the poison call, and
  * the healthy trigger wins a call of its own.
  */
-export type PoisonAddressedArm = 'activate' | 'defer-launch' | 'retry-task'
+export type PoisonAddressedArm =
+  | 'activate'
+  | 'defer-launch'
+  | 'retry-task'
+  | 'fail'
+  | 'fail-rollback'
 export type PoisonTargetArm = PoisonSelectingArm | PoisonAddressedArm
 
 type PoisonTargetProfileSeed<
@@ -111,6 +116,7 @@ type PoisonTargetProfileSeed<
   AvailableAtMs extends number | null,
   TaskAttempts extends number = 0,
   FailureReason extends string | null = null,
+  Saga extends 'step-started' | 'rolling-back' | null = null,
 > = Readonly<{
   state: State
   taskAttempts: TaskAttempts
@@ -127,6 +133,11 @@ type PoisonTargetProfileSeed<
   availableAtMs: AvailableAtMs
   /** The reason a failed task and its run carry, and null on every live profile. */
   failureReason: FailureReason
+  /**
+   * Where the task's saga stands: a registered step started and nothing decided yet, or
+   * the rolling-back phase with that step's rollback owed. Null is a task with no saga.
+   */
+  saga: Saga
 }>
 
 export type PoisonTargetProfileSeedRecord = Readonly<{
@@ -166,7 +177,29 @@ export type PoisonTargetProfileSeedRecord = Readonly<{
     1,
     '{"name":"PoisonFailed"}'
   >
+  'fail-started-step': ActivatedClaimSeed<'step-started'>
+  'fail-rollback-rolling-back': ActivatedClaimSeed<'rolling-back'>
 }>
+
+/**
+ * A run activated under a live lease, which is what a worker fails, whose task stands
+ * somewhere in a saga. The failure batch decides differently for each: with a step
+ * started it places a rollback pass where it would have ended the task, and inside the
+ * phase it records the failed rollback's attempt.
+ */
+type ActivatedClaimSeed<Saga extends 'step-started' | 'rolling-back'> = PoisonTargetProfileSeed<
+  'running',
+  'poison-worker',
+  1,
+  1,
+  60_000,
+  1_060_000,
+  1_000_000,
+  null,
+  0,
+  null,
+  Saga
+>
 
 /**
  * A run claimed and not yet activated, under a live lease: what a claim receipt names.
@@ -185,6 +218,25 @@ type UnactivatedClaimSeed = PoisonTargetProfileSeed<
 
 export type PoisonTargetProfile = keyof PoisonTargetProfileSeedRecord
 
+const activatedClaimSeed = <Saga extends 'step-started' | 'rolling-back'>(saga: Saga) =>
+  Object.freeze({
+    state: 'running',
+    taskAttempts: 0,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: TOKEN,
+    claimGen: 1,
+    activatedGen: 1,
+    runRelaunchCount: 0,
+    leaseMs: 60_000,
+    claimExpiresAtMs: 1_060_000,
+    heartbeatAtMs: 1_000_000,
+    availableAtMs: null,
+    failureReason: null,
+    saga,
+  } as const)
+
 const UNACTIVATED_CLAIM_SEED = Object.freeze({
   state: 'running',
   taskAttempts: 0,
@@ -200,6 +252,7 @@ const UNACTIVATED_CLAIM_SEED = Object.freeze({
   heartbeatAtMs: 1_000_000,
   availableAtMs: null,
   failureReason: null,
+  saga: null,
 } as const satisfies UnactivatedClaimSeed)
 
 export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
@@ -218,6 +271,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: null,
     availableAtMs: 999_998,
     failureReason: null,
+    saga: null,
   }),
   'claim-sleeping': Object.freeze({
     state: 'sleeping',
@@ -234,6 +288,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: null,
     availableAtMs: 999_998,
     failureReason: null,
+    saga: null,
   }),
   'sweep-lost-launch': Object.freeze({
     state: 'running',
@@ -250,6 +305,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: 940_000,
     availableAtMs: null,
     failureReason: null,
+    saga: null,
   }),
   'sweep-claim-timeout': Object.freeze({
     state: 'running',
@@ -266,6 +322,7 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: 940_000,
     availableAtMs: null,
     failureReason: null,
+    saga: null,
   }),
   'activate-unactivated': UNACTIVATED_CLAIM_SEED,
   'defer-launch-unactivated': UNACTIVATED_CLAIM_SEED,
@@ -285,7 +342,10 @@ export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
     heartbeatAtMs: null,
     availableAtMs: null,
     failureReason: '{"name":"PoisonFailed"}',
+    saga: null,
   }),
+  'fail-started-step': activatedClaimSeed('step-started'),
+  'fail-rollback-rolling-back': activatedClaimSeed('rolling-back'),
 } as const satisfies PoisonTargetProfileSeedRecord)
 
 type CounterSeedOverrides = Readonly<
@@ -659,6 +719,32 @@ const RETRY_TASK_COUNTER_TARGETABILITY = Object.freeze({
 } as const satisfies Readonly<Record<CounterBoundaryKey, PoisonTargetability>>)
 
 /**
+ * What a failure reads of each counter boundary. `fail` and `failRollback` run one batch
+ * under two labels, whose compare-and-set vouches for the run's ordinal, the task's three
+ * counters, and the relation between them before anything behind it derives a successor's
+ * ordinal or a rollback pass's budget from them. It reads no generation and no relaunch
+ * counter.
+ */
+const FAILURE_COUNTER_TARGETABILITY = Object.freeze({
+  'task-attempts/upper': COUNTER_RELATION_TARGETABILITY,
+  'task-attempts/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-max-attempts/lower': COUNTER_RELATION_TARGETABILITY,
+  'task-infra-retries/upper': TARGETABLE_COUNTER_TARGETABILITY,
+  'task-infra-retries/lower': TARGETABLE_COUNTER_TARGETABILITY,
+  'run-attempt/upper': COUNTER_RELATION_TARGETABILITY,
+  'run-attempt/lower': COUNTER_RELATION_TARGETABILITY,
+  'run-claim-gen/upper': UNREAD_TARGETABILITY,
+  'run-claim-gen/lower': UNREAD_TARGETABILITY,
+  'run-activated-gen/upper': UNREAD_TARGETABILITY,
+  'run-activated-gen/lower': UNREAD_TARGETABILITY,
+  'run-relaunch-count/upper': UNREAD_TARGETABILITY,
+  'run-relaunch-count/lower': UNREAD_TARGETABILITY,
+  'checkpoint-owner-attempt/upper': UNREAD_TARGETABILITY,
+  'checkpoint-owner-attempt/lower': UNREAD_TARGETABILITY,
+} as const satisfies Readonly<Record<CounterBoundaryKey, PoisonTargetability>>)
+
+/**
  * Every counter boundary against every arm that names its target. Activation and the
  * launch deferral apply one admission to the receipt, so they share one classification.
  * The key type asks a new persisted counter, and a new arm, for its answers.
@@ -667,6 +753,8 @@ const ADDRESSED_COUNTER_TARGETABILITY = Object.freeze({
   activate: RECEIPT_COUNTER_TARGETABILITY,
   'defer-launch': RECEIPT_COUNTER_TARGETABILITY,
   'retry-task': RETRY_TASK_COUNTER_TARGETABILITY,
+  fail: FAILURE_COUNTER_TARGETABILITY,
+  'fail-rollback': FAILURE_COUNTER_TARGETABILITY,
 } as const satisfies AddressedTargetability<CounterBoundaryKey>)
 
 /** One row of an addressed table, as the arms of a target. It is the one place that spells them. */
@@ -677,6 +765,8 @@ const addressedArmsOf = <Key extends string>(
   activate: table.activate[key],
   'defer-launch': table['defer-launch'][key],
   'retry-task': table['retry-task'][key],
+  fail: table.fail[key],
+  'fail-rollback': table['fail-rollback'][key],
 })
 
 const ALL_TARGET_ARMS = Object.freeze({
@@ -702,6 +792,11 @@ const EVERY_RELATIONAL_TARGET = Object.freeze({
 } as const satisfies Readonly<Record<keyof PoisonRelationalTargetRecord, PoisonTargetability>>)
 
 /** The relational and fractional targets against every arm that names its target. */
+const FAILURE_RELATIONAL_TARGETS = Object.freeze({
+  ...EVERY_RELATIONAL_TARGET,
+  'counter-fractional/run-relaunch-count': UNREAD_TARGETABILITY,
+} as const satisfies Readonly<Record<keyof PoisonRelationalTargetRecord, PoisonTargetability>>)
+
 const NO_LIVE_RUN_TARGETABILITY = Object.freeze({
   kind: 'unreachable' as const,
   reason: 'profile-has-no-live-run' as const,
@@ -718,6 +813,8 @@ const ADDRESSED_RELATIONAL_TARGETS = Object.freeze({
     'counter-fractional/task-max-attempts': TARGETABLE_COUNTER_TARGETABILITY,
     'counter-fractional/run-relaunch-count': UNREAD_TARGETABILITY,
   }),
+  fail: FAILURE_RELATIONAL_TARGETS,
+  'fail-rollback': FAILURE_RELATIONAL_TARGETS,
 } as const satisfies AddressedTargetability<keyof PoisonRelationalTargetRecord>)
 
 function counterCompanions(
@@ -760,6 +857,8 @@ function counterBoundaryTarget(
       activate: mergeCompanions(addressed.activate),
       'defer-launch': mergeCompanions(addressed['defer-launch']),
       'retry-task': mergeCompanions(addressed['retry-task']),
+      fail: mergeCompanions(addressed.fail),
+      'fail-rollback': mergeCompanions(addressed['fail-rollback']),
     }),
   })
 }
@@ -1421,6 +1520,8 @@ const PROFILES_FOR_ARM = Object.freeze({
   activate: ['activate-unactivated'],
   'defer-launch': ['defer-launch-unactivated'],
   'retry-task': ['retry-task-failed'],
+  fail: ['fail-started-step'],
+  'fail-rollback': ['fail-rollback-rolling-back'],
 } as const satisfies Readonly<Record<PoisonTargetArm, readonly PoisonTargetProfile[]>>)
 
 const POISON_TARGET_ARMS = Object.keys(PROFILES_FOR_ARM) as PoisonTargetArm[]
@@ -1429,9 +1530,11 @@ const isAddressedArm = (label: string): label is PoisonAddressedArm =>
   Object.hasOwn(ADDRESSED_COUNTER_TARGETABILITY, label)
 
 /** Every arm that names its target, with the profile it is targeted in. */
+export type PoisonAddressedProfile = (typeof PROFILES_FOR_ARM)[PoisonAddressedArm][number]
+
 export const POISON_ADDRESSED_PROFILES: readonly {
   readonly arm: PoisonAddressedArm
-  readonly profile: PoisonTargetProfile
+  readonly profile: PoisonAddressedProfile
 }[] = Object.freeze(
   POISON_TARGET_ARMS.filter(isAddressedArm).flatMap((arm) =>
     PROFILES_FOR_ARM[arm].map((profile) => Object.freeze({ arm, profile })),
@@ -1746,6 +1849,7 @@ async function preparePoisonTarget(
           RUN,
         ],
       ),
+      ...(seed.saga === null ? [] : sagaCheckpoints(TASK, RUN, seed.saga)),
     ],
     'write',
   )
@@ -1867,11 +1971,19 @@ function endedChild(taskId: string): SqlStatement {
 /** The attempt record a `fail-rollback` invocation writes. */
 const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}probe`
 
-/** The saga checkpoints of a task that is rolling back with one rollback owed. */
-const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
+/**
+ * The saga checkpoints of a task with one registered step started: that alone while
+ * nothing is decided, and the phase marker beside it once the task is rolling back, with
+ * the step's rollback owed.
+ */
+const sagaCheckpoints = (
+  taskId: string,
+  runId: string,
+  saga: 'step-started' | 'rolling-back',
+): SqlStatement[] =>
   [
     [`${SAGA_STARTED_PREFIX}probe`, '1'],
-    [SAGA_PHASE_CHECKPOINT, '{"name":"ProbeCause"}'],
+    ...(saga === 'rolling-back' ? [[SAGA_PHASE_CHECKPOINT, '{"name":"ProbeCause"}']] : []),
   ].map(([name, state]) =>
     sql(
       `INSERT INTO checkpoints
@@ -1881,11 +1993,16 @@ const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
     ),
   )
 
+const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
+  sagaCheckpoints(taskId, runId, 'rolling-back')
+
 /** A healthy task and run in the state in which `label` is a legal call on `target`. */
 export async function seedHealthyTrigger(
   raw: SqlExecutor,
   label: string,
   target: InvocationTarget = HEALTHY_INVOCATION,
+  /** The poisoned task's saga rows are its target profile's, so none are laid down here. */
+  poisonSeedsItsSaga = false,
 ): Promise<void> {
   // A task of its own needs no rows. A child is spawned by a run that is running under
   // its claim, which is what the default arm seeds.
@@ -1990,7 +2107,7 @@ export async function seedHealthyTrigger(
         triggerTask('running'),
         triggerRun({ state: 'running' }),
         ...rollingBack(TRIGGER_TASK, TRIGGER_RUN),
-        ...rollingBack(TASK, RUN),
+        ...(poisonSeedsItsSaga ? [] : rollingBack(TASK, RUN)),
       ]
       break
     default:
@@ -3112,8 +3229,29 @@ function declaredTargetErrors(
   }
 
   const expires = exactInteger(run?.claim_expires_at_ms)
+  const saga = POISON_TARGET_PROFILE_SEEDS[profile].saga
+  if (live && run?.claimed_by === TOKEN && (expires === undefined || expires <= BigInt(NOW))) {
+    // A sweep profile's claim is expired, and is checked below. Every other claimed
+    // profile is a worker's or a launcher's to act on, under a lease that still runs.
+    if (profile !== 'sweep-lost-launch' && profile !== 'sweep-claim-timeout') {
+      errors.push(`declared ${profile} run is not a live owned claim`)
+    }
+  }
+  if (saga !== null) {
+    const names = before.checkpoints
+      .filter((row) => row.task_id === TASK)
+      .map((row) => row.checkpoint_name)
+    if (
+      run?.claimed_by !== TOKEN ||
+      !names.includes(`${SAGA_STARTED_PREFIX}probe`) ||
+      names.includes(SAGA_PHASE_CHECKPOINT) !== (saga === 'rolling-back')
+    ) {
+      errors.push(`declared ${profile} saga does not stand where the profile says`)
+    }
+    return errors
+  }
   if (profile === 'activate-unactivated' || profile === 'defer-launch-unactivated') {
-    if (run?.claimed_by !== TOKEN || expires === undefined || expires <= BigInt(NOW)) {
+    if (run?.claimed_by !== TOKEN) {
       errors.push(`declared ${profile} run is not a live owned claim`)
     }
     // The receipt names the poison invocation's generation, and the latch admits it only
@@ -3547,7 +3685,15 @@ async function preparePoisonCase(
         beforeFindings: [],
       }
     }
-    if (options.healthyTrigger !== false) await seedHealthyTrigger(fixture.raw, label)
+    if (options.healthyTrigger !== false) {
+      await seedHealthyTrigger(
+        fixture.raw,
+        label,
+        HEALTHY_INVOCATION,
+        options.targetProfile !== undefined &&
+          POISON_TARGET_PROFILE_SEEDS[options.targetProfile].saga !== null,
+      )
+    }
     await options.beforeSnapshot?.(fixture.raw)
 
     const beforeFindings = await engineInvariantFindings(fixture.raw)
@@ -3763,19 +3909,37 @@ export function runPoisonTargetCase(
 export async function observeCleanAddressedProfile(
   makeFixture: StoreFixtureFactory,
   { arm, profile }: (typeof POISON_ADDRESSED_PROFILES)[number],
-): Promise<{ invocation: PromiseSettledResult<unknown>; poisonSubjectUnchanged: boolean }> {
+): Promise<{
+  invocation: PromiseSettledResult<unknown>
+  poisonSubjectUnchanged: boolean
+  /** Where the call left the poisoned task: its state, its runs in order, and its checkpoints. */
+  effect: { task: string; runs: string[]; checkpoints: string[] }
+}> {
   const f = await makeFixture(`poison-clean-${profile}`)
   try {
     await seedBase(f)
     await preparePoisonTarget(f.raw, profile, {})
-    await seedHealthyTrigger(f.raw, arm)
+    await seedHealthyTrigger(
+      f.raw,
+      arm,
+      HEALTHY_INVOCATION,
+      POISON_TARGET_PROFILE_SEEDS[profile].saga !== null,
+    )
     const before = await snapshot(f.raw)
     const [invocation] = await Promise.allSettled([invoke(arm, f.store, POISON_INVOCATION)])
     const after = await snapshot(f.raw)
     if (invocation === undefined) throw new Error(`${profile}: the clean call did not settle`)
+    const closure = poisonOwnedClosure(after)
     return {
       invocation,
-      poisonSubjectUnchanged: same(poisonOwnedClosure(before), poisonOwnedClosure(after)),
+      poisonSubjectUnchanged: same(poisonOwnedClosure(before), closure),
+      effect: {
+        task: (closure.tasks ?? []).map((row) => String(row.state)).join(','),
+        runs: [...(closure.runs ?? [])]
+          .sort((left, right) => Number(left.attempt) - Number(right.attempt))
+          .map((row) => `${row.attempt} ${row.state}`),
+        checkpoints: (closure.checkpoints ?? []).map((row) => String(row.checkpoint_name)).sort(),
+      },
     }
   } finally {
     await f.close()

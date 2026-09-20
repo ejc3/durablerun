@@ -1036,12 +1036,12 @@ describe('poison/invariant mechanism self-tests', () => {
           kind: classification.kind,
         })),
       ),
-    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 6)
+    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 8)
     expect(
       POISON_TARGET_CASES,
       'mutation-verdict:behavior:poison-targetability-inventory',
-    ).toHaveLength(82)
-    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(57)
+    ).toHaveLength(98)
+    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(83)
   })
 
   it('pins every unreachable counter target and its reason', () => {
@@ -1049,60 +1049,86 @@ describe('poison/invariant mechanism self-tests', () => {
       'attempts/at-max-with-live-run/retry-task=profile-has-no-live-run',
       'accounting/live-run-not-next/retry-task=profile-has-no-live-run',
       'counter-fractional/run-relaunch-count/retry-task=transition-does-not-read-field',
+      'counter-fractional/run-relaunch-count/fail=transition-does-not-read-field',
+      'counter-fractional/run-relaunch-count/fail-rollback=transition-does-not-read-field',
       'counter-bound/task-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/activate=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/task-attempts/retry-task=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/fail=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/fail-rollback=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/claim=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/activate=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/defer-launch=counter-relation-needs-another-invalid-field',
       'counter-bound/run-attempt/retry-task=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/fail=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/fail-rollback=counter-relation-needs-another-invalid-field',
       'counter-bound/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound/run-claim-gen/activate=receipt-cannot-name-the-generation',
       'counter-bound/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
       'counter-bound/run-claim-gen/retry-task=transition-does-not-read-field',
+      'counter-bound/run-claim-gen/fail=transition-does-not-read-field',
+      'counter-bound/run-claim-gen/fail-rollback=transition-does-not-read-field',
       'counter-bound/run-activated-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/activate=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/defer-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/retry-task=transition-does-not-read-field',
+      'counter-bound/run-activated-gen/fail=transition-does-not-read-field',
+      'counter-bound/run-activated-gen/fail-rollback=transition-does-not-read-field',
       'counter-bound/run-relaunch-count/retry-task=transition-does-not-read-field',
+      'counter-bound/run-relaunch-count/fail=transition-does-not-read-field',
+      'counter-bound/run-relaunch-count/fail-rollback=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/activate=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/retry-task=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/fail=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/fail-rollback=transition-does-not-read-field',
       'counter-bound-lower/task-max-attempts/claim=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/activate=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/task-max-attempts/defer-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/fail=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/fail-rollback=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/claim=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/activate=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-attempt/defer-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/fail=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/fail-rollback=counter-relation-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-claim-gen/activate=receipt-cannot-name-the-generation',
       'counter-bound-lower/run-claim-gen/defer-launch=receipt-cannot-name-the-generation',
       'counter-bound-lower/run-claim-gen/retry-task=transition-does-not-read-field',
+      'counter-bound-lower/run-claim-gen/fail=transition-does-not-read-field',
+      'counter-bound-lower/run-claim-gen/fail-rollback=transition-does-not-read-field',
       'counter-bound-lower/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
       'counter-bound-lower/run-activated-gen/retry-task=transition-does-not-read-field',
+      'counter-bound-lower/run-activated-gen/fail=transition-does-not-read-field',
+      'counter-bound-lower/run-activated-gen/fail-rollback=transition-does-not-read-field',
       'counter-bound-lower/run-relaunch-count/retry-task=transition-does-not-read-field',
+      'counter-bound-lower/run-relaunch-count/fail=transition-does-not-read-field',
+      'counter-bound-lower/run-relaunch-count/fail-rollback=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/activate=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/defer-launch=transition-does-not-read-field',
       'counter-bound-lower/checkpoint-owner-attempt/retry-task=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/fail=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/fail-rollback=transition-does-not-read-field',
     ])
   })
 
@@ -1127,6 +1153,8 @@ describe('poison/invariant mechanism self-tests', () => {
         'activate-unactivated',
         'defer-launch-unactivated',
         'retry-task-failed',
+        'fail-started-step',
+        'fail-rollback-rolling-back',
       ]),
     )
   })
@@ -1138,12 +1166,14 @@ describe('poison/invariant mechanism self-tests', () => {
     const actual = POISON_TARGET_CASES.filter(({ witness }) =>
       relationalWitnessIds.has(witness.id),
     ).map(({ id }) => id)
-    // A failed task has no live run for two of these relations to hold of, and a revival
-    // does not read the relaunch counter.
+    // A failed task has no live run for two of these relations to hold of, and neither a
+    // revival nor a failure reads the relaunch counter.
     const unreachable = new Set([
       'attempts/at-max-with-live-run/retry-task-failed',
       'accounting/live-run-not-next/retry-task-failed',
       'counter-fractional/run-relaunch-count/retry-task-failed',
+      'counter-fractional/run-relaunch-count/fail-started-step',
+      'counter-fractional/run-relaunch-count/fail-rollback-rolling-back',
     ])
     const expected = witnessIds
       .flatMap((witnessId) => profileIds.map((profileId) => `${witnessId}/${profileId}`))
@@ -1332,6 +1362,14 @@ describe('poison/invariant mechanism self-tests', () => {
         profile: 'retry-task-failed',
         targetId: 'counter-bound/task-max-attempts/retry-task-failed',
       },
+      {
+        profile: 'fail-started-step',
+        targetId: 'counter-bound/task-max-attempts/fail-started-step',
+      },
+      {
+        profile: 'fail-rollback-rolling-back',
+        targetId: 'counter-bound/task-max-attempts/fail-rollback-rolling-back',
+      },
     ] as const
     const observations: unknown[] = []
 
@@ -1488,6 +1526,40 @@ describe('poison/invariant mechanism self-tests', () => {
             lease_ms: null,
             claim_expires_at_ms: null,
             heartbeat_at_ms: null,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'fail-started-step',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 1,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 1_060_000,
+            heartbeat_at_ms: 1_000_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'fail-rollback-rolling-back',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 1,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 1_060_000,
+            heartbeat_at_ms: 1_000_000,
             available_at_ms: null,
           },
         },
