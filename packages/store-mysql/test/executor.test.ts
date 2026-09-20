@@ -498,6 +498,23 @@ describe('MysqlExecutor error typing, by the state and the number the server sen
     })
   })
 
+  it('types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class', async () => {
+    // Another session's release lifts each of these, so a retry cures it. MySQL files all
+    // three under 42000, beside a syntax error, so they are read before the class.
+    expect(
+      {
+        tooManyUserConnections: await typed({ errno: 1203, sqlState: '42000' }),
+        userLimitReached: await typed({ errno: 1226, sqlState: '42000' }),
+        maxPreparedStatementsReached: await typed({ errno: 1461, sqlState: '42000' }),
+      },
+      'mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage',
+    ).toEqual({
+      tooManyUserConnections: 'StoreUnavailableError',
+      userLimitReached: 'StoreUnavailableError',
+      maxPreparedStatementsReached: 'StoreUnavailableError',
+    })
+  })
+
   it('types the permanent answers MySQL files under its general state by their numbers', async () => {
     expect(
       {
