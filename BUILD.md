@@ -75,7 +75,16 @@ a last docs PR gives a live owner to every open bullet that is left.
    the server still refuses a write sent as a read. The counts are pinned
    against a real server on both dialects. The claim's
    `FORCE INDEX (runs_poll)` legs have a plan test, with rows in the table,
-   that fails when the hint is removed from a leg.
+   that fails when the hint is removed from a leg. This is met. In both
+   server executors PR4.4a sends alone a read that core's read path built,
+   and MySQL's schema-version read, which are the statements it knows to be
+   reads. Every write, and every other read sent as text, keeps its
+   transaction.
+   `round-trips.test.ts` in each store pins the counts against a server, and
+   server cases on each dialect hold the refusal and a single write's
+   rollback. The plan case over a small backlog in
+   `store-mysql/test/query-plans.test.ts` fails with the hint removed, which
+   a registered mutation keeps checking.
 3. PR3.3b: the lines that take the event lock leave the dialect stores. Core
    takes it, refuses a batch that adds a completion event without it where that
    batch is built, and decides once whether a batch that ends no task needs it.
@@ -2259,17 +2268,102 @@ these three things; nothing else in the system does I/O, time, or randomness.
     coordinate. With it goes the case no test has: a version that was half
     applied, rerun through `migrate()`. It changes core's batch control and
     every executor, which PR3.9e part 3b and the child-task fold are editing.
-  - Deferred from PR4.3: a read batch costs four round trips and a
-    single-statement write three, where autocommit needs one. Five of the six
-    read batches hold one statement, the per-tick next-wake among them.
+  - Done in PR4.4a: one read that the executor knows to be a read is sent
+    alone, under the session's autocommit, where a read batch cost four round
+    trips. The executor knows because core brands what its read path
+    compiles, which refuses a root that is not a SELECT, and MySQL's canonical
+    schema-version read is matched by its whole text. A read sent as text
+    keeps the read-only transaction, and every write keeps its transaction,
+    because what a transaction gives a write, its rollback when MySQL cut a
+    value to fit or when its result is refused, cannot be shown from the
+    statement. DESIGN.md's MySQL notes say how each part was checked.
+    PostgreSQL has the same rule, where the schema-version read is text and so
+    keeps its transaction. `round-trips.test.ts` in each store pins the counts
+    against a server. Measured on loopback against main, medians of
+    interleaved rounds on one shared machine, in microseconds a call:
+
+    | Call | MySQL, main | MySQL | PostgreSQL, main | PostgreSQL |
+    |---|---|---|---|---|
+    | next-wake | 345 | 156 | 1252 | 1139 |
+    | task result | 301 | 119 | 695 | 521 |
+    | heartbeat, refused | 755 | 523 | 1113 | 981 |
+    | heartbeat, held | 530 | 547 | 1056 | 1118 |
+    | one idle driver tick | 4218 | 4235 | 9181 | 8890 |
+
+    The last two rows did not move. A held heartbeat is two statements. A
+    claim with nothing to claim is most of an idle tick, 3.3 ms of MySQL's
+    4.7 ms and 6.8 ms of PostgreSQL's 11 ms in a second run of the same kind,
+    and the next-wake read's saving is lost in what the rounds spread. Thirteen
+    mutations hold the rule's conditions, the one statement a read sent alone
+    may hold, the place where MySQL decides, the session's autocommit, core's
+    brand, and the plan tests below, and the mutant of MySQL's schema-version
+    read is re-aimed at the rule. The rule first decided from a statement's
+    text and binds. The review of this PR reproduced, against main, a write
+    that MySQL cut at a trailing tab and committed before it was refused, and
+    a DELETE sent behind a SELECT that ran as a read on PostgreSQL. A second
+    review, of the fold, ran a read that core built whose fragment held a
+    DELETE, which PostgreSQL ran once the read went alone as plain text, and
+    found that the MySQL executor decided whether a batch goes alone after its
+    wait for a connection. The postmortem of those reviews records all four.
+    - Option, not a deferral of this PR: the sweep's discovery scan is a read
+      batch of two statements, five round trips on MySQL and four on
+      PostgreSQL. As two batches of one statement it would be two. Nothing a
+      sweep does needs the two reads to share a snapshot, because every
+      transition it then makes checks its own row again, but it changes a
+      batch's shape on all three stores.
+    - Option, not a deferral of this PR: the read brand shows where a statement
+      came from, and not what a store's own fragment holds. Core reads a
+      fragment for clocks and comments only. The review of the fold ran a
+      branded read whose fragment held a second statement, a DELETE. Sent
+      alone on PostgreSQL as plain text it ran, where the same text sent as a
+      read was refused, and MySQL refused both. A read sent alone now goes
+      through PostgreSQL's extended protocol, which takes one statement, so
+      both servers refuse it. What remains is a fragment that CALLS a function
+      that writes: run on a server, a read whose fragment called `nextval` was
+      sent alone and advanced the sequence, where the same text sent as a read
+      was refused. No read of the stores calls a function that writes. The
+      trigger is the first store read that calls a function outside core's
+      grammar list. A rule in core's fragment parser that refuses a semicolon
+      outside a literal would refuse the second statement at build time on
+      every dialect. It is recorded and not built: it is a new condition of a
+      tree rule, with its mutation and a bridge line, and both servers already
+      refuse the statement. A MySQL pool handed to `fromPool` with multiple
+      statements switched on is outside what was checked.
+    - Option, not a deferral of this PR: a shared conformance case that a write
+      sent as a read is refused on every dialect. Server cases hold it on MySQL
+      and on PostgreSQL, where the exit test asks for it.
+    - Option, not a deferral of this PR: the PostgreSQL executor could check a
+      pool's default isolation level once for each client. DESIGN.md states
+      what a read sent alone asks of it, and nothing refuses a pool set to
+      SERIALIZABLE.
   - Deferred from PR4.3: `migrate()` reads the version before each of the four
     empty versions and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
     database for every case.
-  - Deferred from PR4.3: the claim's `FORCE INDEX (runs_poll)` legs have no
-    measured plan test. `store-mysql/test/query-plans.test.ts` is where it
-    goes. The shared concurrency case fails when a leg over-locks, which is
-    how the shape was found.
+  - Done in PR4.4a: the claim's candidate legs have a measured plan test in
+    `store-mysql/test/query-plans.test.ts`, with rows in the table. Beside 800
+    due runs, and as many that are not due or belong to another queue, the
+    statement that owns the legs walked 56 rows and held 8 record locks on
+    `runs`. With a leg that has no LIMIT of its own it walked 3,246 rows and
+    held 1,602 locks, and a registered mutation makes the case refuse that.
+    The index hint changed neither number there, under stale statistics or
+    analyzed ones, so a second case holds the hint where it does: over forty
+    due runs that are the whole table, once the server has counted them, a
+    leg with no hint is a table scan and a sort that locked all forty runs
+    for a claim of two. It held 40 record locks and walked 166 rows, against
+    4 and 49 as shipped, and a second registered mutation makes that case
+    refuse it. With no hint the scan was the plan from twelve due runs to
+    eighty at a limit of one or two, and not at eight, under stale
+    statistics, or where half the table belonged to another queue. Two
+    things measured on the way belong elsewhere. Under statistics InnoDB had
+    not yet recalculated, as after a bulk load, the claim's task update and
+    its receipt read walked every run in the table, 3,213 and 1,606 rows
+    beside 2,000 runs, and 11 and 8 once the tables were analyzed, which
+    bears on the option under PR3.14. And as shipped the claim's update scans
+    `runs` and locks every row of it when the limit is a large part of the
+    table: with a limit of one at five rows and fewer, and with a limit of
+    half the table at 20, 120, and 400 rows, where a quarter of the table
+    was still read by key. The plan tests say so and do not pin it.
   - Deferred from PR4.3: third copies. The test id source, the admin's
     version read and versioned write, the fixture's corruption-table switch,
     and the store's dialect-free declarations are now in three packages.
