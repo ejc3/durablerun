@@ -1109,4 +1109,57 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
     expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
   })
+  it('judges a read of a body as it judges any step, whatever a step is named', async () => {
+    // No statement here is run, so each bind is a placeholder.
+    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
+    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
+    // A materialized body, scanned once for each run of a walk: every task of the queue,
+    // once for each running run of it.
+    const scannedBody = await read(
+      `with s as materialized (select task_id from tasks where queue = ?)
+       select r.run_id from runs r, s
+       where r.queue = ? and r.state = ? and s.task_id > r.task_id`,
+    )
+    // A grouped subquery, reached through an automatic index once for each run of the walk.
+    const indexedBody = await read(
+      `select r.run_id, s.c from runs r
+       join (select task_id, count(*) c from checkpoints group by task_id) s
+         on s.task_id = r.task_id
+       where r.queue = ? and r.state = ?`,
+    )
+    expect([scannedBody, indexedBody].map((reading) => reading.faults)).toEqual([
+      expect.arrayContaining([
+        expect.stringMatching(/^SCAN s :: is not keyed, and runs once for each row of SEARCH r /),
+      ]),
+      expect.arrayContaining([
+        expect.stringMatching(
+          /^SEARCH s USING AUTOMATIC COVERING INDEX \(task_id=\?\) :: is not keyed, /,
+        ),
+      ]),
+    ])
+    // A table whose alias is a body's name reads as the same table does under any other
+    // alias. The body `r` stands first in the plan, and the table inside the EXISTS walks
+    // the running runs of a queue once for each row outside it.
+    const faultsUnder = async (body: string, alias: string) => {
+      const reading = await read(
+        `with r as materialized (select task_id, queue from runs where ${body})
+         select t.task_id from r, tasks t where t.task_id = r.task_id
+           and exists (select 1 from runs ${alias}
+                       where ${alias}.queue = t.queue and ${alias}.state = 'running')`,
+      )
+      return reading.faults.map((fault) =>
+        fault.replaceAll(`SEARCH ${alias} `, 'SEARCH the table '),
+      )
+    }
+    // First the body walks a queue, then it is one run by its key.
+    for (const body of ['queue = ?', 'run_id = ?']) {
+      const underAnotherAlias = await faultsUnder(body, 'x')
+      expect(underAnotherAlias, body).toContainEqual(
+        expect.stringMatching(
+          /^SEARCH the table .* :: is not keyed, and runs once for each row of /,
+        ),
+      )
+      expect(await faultsUnder(body, 'r'), body).toEqual(underAnotherAlias)
+    }
+  })
 })
