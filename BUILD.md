@@ -138,8 +138,9 @@ a last docs PR gives a live owner to every open bullet that is left.
    the `$rollback-tries:<step>` record. The plan pins of `store-libsql` and
    `store-mysql` refuse the walk. The one in `store-postgres` accepts the
    task-keyed walk, and refuses a checkpoint name ordered or compared by
-   order, in an index condition or in a saga statement's text. A hosted router
-   case holds the inspect route.
+   order, in an index condition or in a saga statement's text, where it reads
+   spellings and lists the ones it misses. A hosted router case holds the
+   inspect route.
 10. PR3.10a: the attestation refuses a postmortem that the pull request adds
     when a commit it cites as a red or a green does not resolve, is not an
     ancestor of the head, is the same commit as its pair, or, for a red, is
@@ -1770,7 +1771,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
     every dialect, an empty one on libSQL and MySQL. The trigger is a real
     task with thousands of checkpoints, or result reads showing up in a
-    profile.
+    profile. The other way out is the column's collation: once
+    `checkpoint_name` is declared to compare by byte on PostgreSQL, the range
+    is sound there, PostgreSQL can read it as the other two stores do, and the
+    PostgreSQL pin's text check, which reads spellings, is deleted with the
+    walk it guards.
   - Option, not a deferral of this entry: hold a stored value to JSON on the
     way in, at the port entries that take one: `fail` for a failure reason,
     `failRollback` for the error in its attempt record, and `complete` for a
@@ -1779,8 +1784,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     its text since PR3.4b, where it answered 500, so nothing is lost today.
     Refusing the text at the entry would make the state unwritable. It also
     changes what `fail` accepts from a caller that is not the SDK, so it is a
-    change of the port's contract and a PR of its own. The trigger is a second
-    reader of these values, which would have to repeat the route's care.
+    change of the port's contract and a PR of its own. The trigger is a reader
+    of these values outside the SDK besides the inspect route, which would
+    have to repeat the route's care, or such text seen in a real store. The
+    SDK reads bare what it wrote: its rollback pass parses the saga's cause
+    before it calls a rollback, so a cause that another caller stored as text
+    that is not JSON fails that parse on every attempt.
+  - Option, not a deferral of this entry: measure the shard runner's common
+    floors. They switch on at twenty walks of 50 steps, a size that was chosen
+    and never measured. Measured on libSQL with a correct store, for PR3.4b's
+    halt count: of 300 shards of that size, six older stats each stayed at
+    zero in about 2 to 6 percent (`rollbacks`, `rollbackFailures`,
+    `checkpoints`, `childAwaits`, `awaits` and `recordedEndings`, 5 to 18
+    shards each over three measurements), and `sagasEnded` in under 1 percent.
+    At the sizes the configured runs use, 62 walks of 100 steps and up, none
+    did. So no configured run fails a correct store today, and a run sized
+    near the threshold would, in up to one shard of five. The trigger is any
+    new fuzz size between the threshold and the size `verify:fuzz` runs, or a
+    common floor that fails on a run whose store is right. The fix is a
+    measured size for each rare stat, which `RARE_STAT_FLOOR_STEPS` in the
+    shard runner already holds for the halt count.
 
 - **PR3.4b saga reads and results**: DONE. Three findings of the saga review
   that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,
@@ -1809,7 +1832,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     correct store, a shard of twenty walks of 50 steps names none two times in
     five, and a shard of the size `verify:fuzz` runs names none about once in
     nine hundred, which the common floor would have turned into a false
-    failure in one run of thirty.
+    failure in one run of thirty. The nightly plan test holds every nightly
+    batch at or above that size, because nothing else ties the two. The walk
+    also refuses a failed rollback's answer other than what it asked for, so
+    a store that ends a saga it was asked to retry fails the walk.
   - A saga's start markers and attempt records were found by a test of each
     name, which the checkpoints key cannot serve, so the failure of any task
     and every read of a result walked all the checkpoints the task has. libSQL
@@ -1825,14 +1851,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     attempt record is read only for a failed task whose saga began, which
     spares every other result read the walk. libSQL and MySQL read a range of
     the key and carry no such guard, because there it would change no result
-    and spare no walk, and nothing could hold it. The plan pins hold each
+    of a history the store can reach and spare no walk, and nothing could hold
+    it. On rows no history builds the three differ, and DESIGN.md §3.10 says
+    how. The plan pins hold each
     dialect to what it does. libSQL's refuses the walk it used to accept and
     lets nothing sort. MySQL's counts the rows walked beside 2,000 checkpoints
     of the task, which was 2,030 for a plain task's failure. PostgreSQL's
     accepts a walk keyed by the task, refuses a checkpoint name ordered or
     compared by order, in an index condition or in a saga statement's text,
     and requires that no attempt record is read when no saga began or a
-    cancellation ended it. Medians in ms beside the task's own checkpoints,
+    cancellation ended it. Its text check reads spellings: its table of
+    controls holds the ones it refuses, the legal ones it passes, and the ones
+    it misses, which are a name ordered behind a parenthesis, a row
+    comparison, a comparison behind a COLLATE or a cast, and MIN or MAX.
+    Medians in ms beside the task's own checkpoints,
     main and then this change, from one harness run in a worktree of each,
     five processes a side, interleaved, 200 timed reads in each:
 
@@ -1856,8 +1888,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the store's port accepts from a caller that is not the SDK, is answered as
     its text under a key of its own, where the route answered 500: for a
     rollback's error on this entry's first version, and on main for a failure
-    reason and a result. The parent's view stays open under PR3.4 above, with
-    the reason.
+    reason and a result. A value that parses and cannot be serialized, as JSON
+    nested deeper than the serializer can walk, is answered the same way, with
+    every stored value of the answer as its text. A stored `1e999` parses and
+    is answered as `null`, which is left as it is. The parent's view stays
+    open under PR3.4 above, with the reason.
   - Eight mutations hold the new lines and checks, and the registry holds 883.
     The base gate's one live arm is this entry's, keyed on main's registry,
     and it exempts five verdict markers the base predates. It must be keyed
