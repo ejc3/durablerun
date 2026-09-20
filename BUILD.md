@@ -246,22 +246,25 @@ a last docs PR gives a live owner to every open bullet that is left.
     that and no code changed.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
-    spellings. A batch of reads refuses a state or status column tested against
-    a list under IN that holds a bound value. The registry self-test fails when
-    one spelling of a list written on one line has no mutation of its own.
-    This is met. A verdict case and two bad inputs of the lint self-test were
-    committed failing for `age`, and five verdict cases were committed failing
-    for the read rule: a one-state list, a list of plain values, a list with
-    one bound member, a bound value in parentheses, and one case with a cast,
-    a call, a CASE and a fragment on the right. A sixth case was committed
-    failing for a refusal that spoke of a subtraction to a follow-on that had
-    spelled no clock. Six registered mutations are each caught by one case:
-    one for `age`, four for the conditions of the read rule's predicate, and
-    one for the advice. `clock-lint` holds no list
-    of its own, and its self-test refuses a tree with no list. Removing the
-    mutation of any one clock keyword, date function, counting operator or
-    deadline test from a copy of the registry gives one problem that names it,
-    and five cases in the registry self-test hold that.
+    spellings, and `clock-lint` refuses to run on a list it cannot read in
+    full. A batch of reads refuses a state or status column compared with a
+    bound value, from either side of the test and wherever the value stands
+    below its operand. The registry self-test fails when one spelling of a list
+    written on one line has no mutation of its own. This is met. A verdict case
+    and two bad inputs of the lint self-test were committed failing for `age`,
+    and a third bad input for an arm that interpolates what the lint cannot
+    read. Seven verdict cases were committed failing for the read rule: a
+    one-state list, a list of plain values, a list with one bound member, a
+    bound value in parentheses, one case with a cast, a call, a CASE and a
+    fragment, a bound value on the left of the test, and a subquery that
+    selects a bound value. An eighth case was committed failing for a refusal
+    that spoke of a subtraction to a follow-on that had spelled no clock. Nine
+    registered mutations are each caught by one case: one for `age`, seven for
+    the read rule, and one for that sentence. `clock-lint` holds no list of its
+    own, and its self-test refuses a tree with no list. Removing the mutation
+    of any one clock keyword, date function, counting operator or deadline test
+    from a copy of the registry gives one problem that names it, and five cases
+    in the registry self-test hold that.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1350,11 +1353,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     written inline: they write it inline again (`literalValue`), and a batch of
     reads refuses a state or status column compared with a bound value. Two
     shapes still passed that rule. PR3.9g closed one, a list under IN that
-    holds a bound value. The other still passes: a state bound inside a store
-    fragment, which a tree carries as text. Only the option "Fragments that
-    carry the module they came from", in the options backlog of the milestone
-    that ended on 2026-09-19, would let a tree read it, and that option is not
-    planned. One narrow re-review of that fold found that the fix
+    holds a bound value, and with it every other place a bound value can stand
+    in a test built from nodes, on either side of it. The other still passes: a
+    comparison written whole inside a store fragment, which a tree carries as
+    text. Only the option "Fragments that carry the module they came from", in
+    the options backlog of the milestone that ended on 2026-09-19, would let a
+    tree read it, and that option is not planned. Two shapes built from nodes
+    pass as well, and DESIGN.md names them: a simple CASE on the state with a
+    bound WHEN, and a subquery that selects the state compared with a bound
+    value. One narrow re-review of that fold found that the fix
     had taken each bind's type from the first call a prepared read saw,
     unchecked, in a record every store shares: a malformed first call was
     sent as it was, and every later call of that read was refused. A prepared
@@ -1387,36 +1394,44 @@ these three things; nothing else in the system does I/O, time, or randomness.
     options backlog of the milestone that ended on 2026-09-19.
   - PR3.9g, delivered: three residuals of the tree rules. The clock spellings
     list PostgreSQL's `age`, which measures from the current date when it is
-    given one argument. Every call is refused, the form with two arguments
-    too, which reads no clock: no store statement calls `age`, telling one
-    argument from two would mean reading SQL, and a refusal that found a clock
-    spelled says that a span between two stored instants is a subtraction. A
-    follow-on refused for holding the batch clock's token spelled nothing and
-    is told nothing of it. The spellings have one
-    definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
-    `packages/core/src/sql-tree.ts`. `scripts/clock-lint.py` kept a second
-    list by hand. It now reads that one from the tree it audits, leaves out
-    the one arm a store's admin statements would trip, and refuses to run on a
-    tree whose list it cannot read. Before the change the pattern read from the
-    tree's list was compared with the hand-kept one and was the same string.
-    The lint is exactly as strong as the tree's list, which its self-test
-    keeps as a case: a tree whose list lacks `sysdate` accepts `SYSDATE()`.
-    A batch of reads also refuses a state or status column tested against a
-    bound value wherever it stands below the right side of the test: in a list
-    under IN or NOT IN, in parentheses, or under a cast, a call, a CASE or a
-    value fragment that carries a bind. All of those passed the rule that read
-    only a bare bound value. One predicate walks the right side as
-    `namesColumn` walks the left, and stops at a subquery, which is its own
-    statement. A list of inline literals is admitted, because that is the form
-    a partial index matches. No statement a store sends changed: the generated
-    corpus is the same on three dialects. The registry self-test holds each
-    spelling of a one-line list to a mutation of its own. Counting the
-    mutations on the line would not: eight clock keywords stand on a line that
-    nine mutations touch, the eight and the one that blanks the arm, so one
-    keyword could lose its mutation with the count met. No mutation was added
-    for it, because every such spelling already had one. Its kept false
-    negative is a spelling written inside a character class, which reads as
-    one entry. The registry holds 958 mutations: main's 952 and the 6 this
+    given one argument. Every call is refused, the form with two arguments too,
+    which reads no clock: no store statement calls `age`, telling one argument
+    from two would mean reading SQL, and a refusal that found a clock spelled
+    says that a span between two stored instants is a subtraction. A follow-on
+    refused for holding the batch clock's token spelled nothing and is told
+    nothing of it. The spellings have one definition, `CLOCK_FUNCTIONS` and
+    `CLOCK_SPELLING` in `packages/core/src/sql-tree.ts`.
+    `scripts/clock-lint.py` kept a second list by hand. It now reads that one
+    from the tree it audits, leaves out the one arm a store's admin statements
+    would trip, and refuses to run on a tree whose list it cannot read in full,
+    an arm that interpolates anything but the list of functions included.
+    Before the change the pattern read from the tree's list was compared with
+    the hand-kept one and was the same string. The lint is exactly as strong as
+    the tree's list, which its self-test keeps as a case: a tree whose list
+    lacks `sysdate` accepts `SYSDATE()`. A batch of reads also refuses a state
+    or status column compared with a bound value from either side of the test,
+    wherever the value stands below its operand: in a list under IN or NOT IN,
+    in parentheses, under a cast, a call, a CASE or a value fragment that
+    carries a bind, or among the selections of a subquery. All of those passed
+    the rule that read only a bare bound value on the right. One predicate
+    walks an operand as `namesColumn` walks the other. A subquery is its own
+    statement, so a bind in its WHERE is not read. A list of inline literals is
+    admitted, because that is the form a partial index matches. What the rule
+    refuses beyond its property, and what still passes it, is in DESIGN.md. No
+    statement a store sends changed: the generated corpus is the same on three
+    dialects. The registry self-test holds each spelling of a one-line list to
+    a mutation of its own. Counting the mutations on the line would not: eight
+    clock keywords stand on a line that nine mutations touch, the eight and the
+    one that blanks the arm, so one keyword could lose its mutation with the
+    count met. No mutation was added for it, because every such spelling
+    already had one. Its kept false negative is a spelling written inside a
+    character class, which reads as one entry. This pull request registers nine
+    mutations: one for `age`, one for the sentence about a subtraction, and
+    seven for the read rule, where each operand of the predicate, both readings
+    of a subquery and the second side of the test are each dropped by one. The
+    first side of the test has none of its own: without it seven cases fail.
+    Two of main's entries are aimed at lines that were rewritten, each mutant
+    the one it was. The registry holds 961 mutations: main's 952 and the 9 this
     pull request adds.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put

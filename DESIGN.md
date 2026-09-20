@@ -1313,15 +1313,22 @@ are load-bearing):
      still sees the literal it was declared with. A state a shared read
      compares from nodes is written inline (`literalValue`), and a batch of
      reads refuses a state or status column compared with a bound value, whose
-     placeholder no partial index can match. The bound value is found wherever
-     it stands below the right side of the test, as the column is found below
-     the left: alone, in parentheses, in a list under IN or NOT IN, where the
-     builder binds every plain value, or under a cast, a call, a CASE or a
-     value fragment that carries a bind. A subquery on the right is its own
-     statement and is not read into. A list of inline literals is admitted,
-     because that is the form a partial index matches. A comparison written
-     whole inside a store fragment is not read, because a tree carries a
-     fragment as text. MySQL builds its own `next-wake`,
+     placeholder no partial index can match. The test is read from both sides:
+     the column is found wherever it stands below one operand, and the bound
+     value wherever it stands below the other, alone, in parentheses, in a list
+     under IN or NOT IN, where the builder binds every plain value, or under a
+     cast, a call, a CASE or a value fragment that carries a bind. A subquery
+     is its own statement, so a bind in its WHERE is not read. What it selects
+     is the value compared, so its selections are read. A list of inline
+     literals is admitted, because that is the form a partial index matches.
+     The rule reads names and shapes, so it refuses more than its property and
+     less. More: a test that names a state column only inside a CASE or a call
+     whose value is no state, beside arithmetic on a bound value, is refused
+     with a message about an index the test never concerned, and so is an empty
+     list. No shipped read has either shape. Less: a simple CASE on the state
+     with a bound WHEN, a subquery that selects the state compared with a bound
+     value, and a comparison written whole inside a store fragment, which a
+     tree carries as text, all pass. MySQL builds its own `next-wake`,
      because it does not answer MIN from an index: each leg is a store fragment
      holding a scalar subquery and its index hint, so the grammar lists no
      hint, as for the claim. The libSQL and MySQL query-plan suites pin these
@@ -1349,10 +1356,15 @@ are load-bearing):
      PostgreSQL's `age`, which measures from the current date when it is
      given one argument and is refused whatever it is given. The list has one
      definition, `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in
-     `packages/core/src/sql-tree.ts`, where each entry has a registered
-     mutation. `scripts/clock-lint.py` keeps no list: it reads that one from
-     the tree it audits, applies it to store sources, and refuses to run on a
-     tree whose list it cannot read. One arm is the tree's alone,
+     `packages/core/src/sql-tree.ts`, where a registered mutation deletes each
+     entry. Six function names are the exception: the keyword arm refuses their
+     call as well, so deleting one changes nothing, and the registry lists them
+     with that reason. `scripts/clock-lint.py` keeps no list: it reads that one
+     from the tree it audits, applies it to store sources, and refuses to run
+     on a tree whose list it cannot read in full. An arm that interpolates
+     anything but the list of functions is such a list: left in, it would match
+     nothing, and every spelling it holds would pass. One arm is the tree's
+     alone,
      `fake_now_ms`, the column a store's clock reads under test, which a
      fragment could read with no clock call at all. A store's admin
      statements write that row by name, so the lint refuses a read of it with
