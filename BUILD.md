@@ -2037,6 +2037,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     gate. A registered mutation for each refusal would keep the present tests
     honest and would not see a new one. Its trigger is the next refusal added
     to `declaredTargetErrors`.
+  - PR3.2c's one review found no HIGH, one MEDIUM and four LOW, recorded in
+    `postmortems/pr3.2c-poison-profiles-review.md`. Four are counted there: a
+    sentence in the spec that was false as a universal, three refusals of the
+    matrix's seed check that no test held, and two claims about the new test
+    machinery that said more than is true. All four are folded, and so are a
+    loose registry comment and three missing gate lines, which are not counted.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
