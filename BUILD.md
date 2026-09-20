@@ -268,15 +268,16 @@ a last docs PR gives a live owner to every open bullet that is left.
     task that failed for good, for `retry-task`, and an activated claim whose
     task has a registered step started, for `fail`, or stands in the
     rolling-back phase, for `fail-rollback`. The 48 new target cells each fail
-    under one of eleven guards removed by hand, where the whole matrix stayed
-    green with the receipt's relaunch bound, the revival's bound on
-    infrastructure retries, or the failure batch's guard on the highest owned
-    ordinal removed. The control of `fail` on a started step leaves the
-    rollback pass as the task's second run beside the phase marker. Five
-    registered mutations, one for each profile, are each caught by a generated
-    cell of that profile. Six generated cases hold the ten run inserts of the
-    corpus, and a successor that drops the parked wake step and a revival that
-    carries nothing each fail one by name.
+    under one of eleven guards removed by hand, 44 under their own name and the
+    four over `attempts/at-max-with-live-run` under the name of the aggregate
+    that runs them, where the whole matrix stayed green with the receipt's
+    relaunch bound, the revival's bound on infrastructure retries, or the
+    failure batch's guard on the highest owned ordinal removed. The control of
+    `fail` on a started step leaves the rollback pass as the task's second run
+    beside the phase marker. Five registered mutations, one for each profile,
+    are each caught by a generated cell of that profile. Six generated cases
+    hold the ten run inserts of the corpus, and a successor that drops the
+    parked wake step and a revival that carries nothing each fail one by name.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1792,52 +1793,57 @@ these three things; nothing else in the system does I/O, time, or randomness.
   poisoned run seeded as a claim no activation had reached, all 292 ambient
   `activate` and `defer-launch` cells passed, and stayed green with the
   receipt's relaunch bound, its sole-live-run guard, or its accounting guard
-  removed, because an ambient cell requires no refusal. A targeted cell
-  requires the poison's rows unchanged. The arms that name their target,
-  `activate`, `defer-launch`, `retry-task`, `fail` and `fail-rollback`, are a
-  second kind beside `claim` and the lease sweeps, which scan: the call on the
-  poison must be refused and the healthy trigger wins a call of its own. Each
-  profile has a control, the same call with nothing corrupt, which must act on
-  the poison and whose effect is pinned, so that a refusal is the corruption's
-  and not the profile's (DESIGN.md, the poison matrix). The inventory went from
-  50 target cases and 26 declared unreachable targets to 98 and 83, with two
-  new reasons: a receipt names the generation it holds and the port refuses one
-  outside the bounds, and a failed task has no live run for a relation of one
-  to hold of. A failed task's top run is already charged, so its profile
-  isolates a boundary by the revival's own relation, and two boundaries that no
-  live arm can isolate, the budget's lower bound and a run ordinal's, are
-  isolated there by companions of their own. With the receipt's relaunch bound
-  removed the whole libSQL matrix stayed green at the base, 3,082 of 3,082, and
-  six cells fail now, the first being `activate-unactivated contains
-  counter-bound/run-relaunch-count`. With the revival's bound on infrastructure
-  retries removed it stayed green and two cells fail now. With the failure
-  batch's guard on the highest owned ordinal removed it stayed green and two
-  fail now, and with its accounting guard removed six ambient cells already
-  failed, by the findings the failure left behind, and twelve targeted cells
-  fail as well, ten of them on boundaries no cell held. The control of `fail`
-  on a started step is how the matrix reaches the rollback pass. The pass's own
-  integer guard, that the budget its batch writes fits, stays with the two saga
-  cases that hold it on valid, extreme states, because no single corrupt
-  pre-state reaches it: the failure's compare-and-set in front of it vouches
-  for the run's ordinal, the task's three counters and the relation between
-  them. Five mutations, one for each profile, are each owned by a generated
-  cell of that profile: 977. The successor-carry case is generated from the SQL
-  corpus (`conformance/src/successor-carry.ts`, DESIGN.md §3.8): each of the
-  ten statements that insert a run, across six labels, must be made to insert
-  one by some scenario, through an executor that records which corpus statement
+  removed. An ambient cell requires no refusal, so it holds a guard only where
+  the unguarded write leaves something its oracle objects to, and for the
+  receipt's admission it left nothing. A targeted cell requires the poison's
+  rows unchanged. The arms that name their target, `activate`, `defer-launch`,
+  `retry-task`, `fail` and `fail-rollback`, are a second kind beside `claim`
+  and the lease sweeps, which scan: the call on the poison must be refused and
+  the healthy trigger wins a call of its own. Each profile has a control, the
+  same call with nothing corrupt, which must act on the poison and whose effect
+  is pinned, so that a refusal is the corruption's and not the profile's
+  (DESIGN.md, the poison matrix). The inventory went from 50 target cases and
+  26 declared unreachable targets to 98 and 83, with two new reasons: a receipt
+  names the generation it holds and the port refuses one outside the bounds,
+  and a failed task has no live run for a relation of one to hold of. A failed
+  task's top run is already charged, so its profile isolates a boundary by the
+  revival's own relation, and two boundaries that no live arm can isolate, the
+  budget's lower bound and a run ordinal's, are isolated there by companions of
+  their own. With the receipt's relaunch bound removed the whole libSQL matrix
+  stayed green at the base, 3,082 of 3,082, and six cells fail now, among them
+  `activate-unactivated contains counter-bound/run-relaunch-count`. With the
+  revival's bound on infrastructure retries removed it stayed green and two
+  cells fail now. With the failure batch's guard on the highest owned ordinal
+  removed it stayed green and two fail now, and with its accounting guard
+  removed six ambient cells already failed, by the findings the failure left
+  behind, and twelve targeted cells fail as well, ten of them on boundaries no
+  cell held. The control of `fail` on a started step is how the matrix reaches
+  the rollback pass. The pass's own integer guard, that the budget its batch
+  writes fits, stays with the two saga cases that hold it on valid, extreme
+  states, because no single corrupt pre-state reaches it: the failure's
+  compare-and-set in front of it vouches for the run's ordinal, the task's
+  three counters and the relation between them. Five mutations, one for each
+  profile, are each owned by a generated cell of that profile: 977. The
+  successor-carry case is generated from the SQL corpus
+  (`conformance/src/successor-carry.ts`, DESIGN.md §3.8): each of the ten
+  statements that insert a run, across six labels, must be made to insert one
+  by some scenario, through an executor that records which corpus statement
   inserted which run, and the run is judged as its batch left it. A label with
   a run insert and no scenario fails, and so does an insert no scenario
-  reaches. The hand-written case is deleted, the mutation it owned is owned by
-  the generated case of `fail`, and the rollback passes of `fail`,
-  `fail-rollback` and both sweep cap arms are reached for the first time. The
-  new cells and controls cost 0.7 s of test time on libSQL, 4.3 s on PostgreSQL
-  and 2.7 s on MySQL, and the generated carry cases 0.3, 0.7 and 0.6 s, on a
-  shared machine at a load average of 17 to 70. Against that, the matrix's own
-  total moved by less than its noise: over five interleaved rounds the base
-  took 45.6 to 47.3 s on libSQL, 231.9 to 255.2 s on PostgreSQL and 161.8 to
-  187.4 s on MySQL. `verify` runs the libSQL and PostgreSQL legs, so it gains
-  about 6 s here and about twice that on CI's slowest runner, under a limit
-  that holds the three-times rule until its slowest run reaches 2,400 seconds.
+  reaches, and so does a label a scenario drives to which the corpus gives no
+  run insert. The enumeration is the corpus's, which the corpus test holds to
+  what the stores compile, so these cases are closed only together with it. The
+  hand-written case is deleted, the mutation it owned is owned by the generated
+  case of `fail`, and the rollback passes of `fail`, `fail-rollback` and both
+  sweep cap arms are reached for the first time. The new cells and controls
+  cost 0.7 s of test time on libSQL, 4.3 s on PostgreSQL and 2.7 s on MySQL,
+  and the generated carry cases 0.3, 0.7 and 0.6 s, on a shared machine at a
+  load average of 17 to 70. Against that, the matrix's own total moved by less
+  than its noise: over five interleaved rounds the base took 45.6 to 47.3 s on
+  libSQL, 231.9 to 255.2 s on PostgreSQL and 161.8 to 187.4 s on MySQL.
+  `verify` runs the libSQL and PostgreSQL legs, so it gains about 6 s here and
+  about twice that on CI's slowest runner, under a limit that holds the
+  three-times rule until its slowest run reaches 2,400 seconds.
   - An option, not built: targeted witnesses for the claim receipt's guards
     that are not counters, the sole live run, the stored retry strategy and
     headers, and the lease. No targeted witness of that kind exists on any arm,
@@ -1854,6 +1860,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `invoke`, which would reach the pass that follows a failed rollback from
     the matrix itself. The generated successor-carry case reaches that pass
     today.
+  - An option, not built: seed the ambient cells of the labels that `activate`,
+    `deferLaunch` and `retryTask` send over the state in which the label acts.
+    On this head the call changes the poison's rows in none of those 438 cells,
+    so they hold only that a refused call leaves nothing behind. Seeded over a
+    claim no activation had reached, the call acted in 168 of the 292 cells of
+    the first two and every one stayed green, so the change would make those
+    cells audit a write and would hold no guard. Its trigger is a write outside
+    authority, or a finding laundered, by one of those three labels that no
+    cell saw.
+  - An option, not built: a control for the four profiles of the arms that
+    scan. A cell of theirs shows the one call acting on the healthy trigger,
+    and not on the profile. Run with nothing corrupt in the review, each of the
+    four is acted on, so no cell is vacuous today. Its trigger is a change to
+    one of those four seeds, or to the eligibility a scan applies.
+  - An option, not built: controls over companions. Sixteen of the 48 new cells
+    move their profile's seed by companions, and a control runs the seed alone.
+    For fourteen the companions make sense only beside the corrupt value, so no
+    control can exist, and they are held by failing when their guard is
+    removed. For the other two, the lower bounds of the revival's budget and of
+    a run's ordinal, the companions are a valid failed task on their own, and a
+    control over them could show the revival acting. Its trigger is a change to
+    either of those two companions, or to the revival's charge relation.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:

@@ -2372,39 +2372,48 @@ not depend on careful reading:
   observing that a label was called, or deriving authority from the
   after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
-  An ambient cell does not require a refusal, so it cannot hold a guard however
-  its poison is seeded. Measured: with the poisoned run seeded as a claim no
-  activation had reached, all 292 ambient `activate` and `defer-launch` cells
-  passed, and stayed green with the claim receipt's relaunch bound, its
-  sole-live-run guard, or its accounting guard removed. Guards are held by the
-  targeted cells, whose oracle requires the poison's rows unchanged and the
-  poison not returned. A targeted cell seeds the poisoned task in a lifecycle
-  profile and crosses it with every counter boundary and relational target
-  that the arm's classification calls targetable. There are two kinds of arm.
-  An arm that scans for its target, `claim` and the two lease sweeps, makes one
-  call, in which the poison sorts first and the healthy trigger must win. An
-  arm that names its target, `activate`, `defer-launch`, `retry-task`, `fail`
-  and `fail-rollback`, makes two: the call on the poison must be refused, and
-  the healthy trigger wins a call of its own. Its profile is the state in which
-  its label acts on a target with nothing corrupt, so that the corruption, and
-  not the label's state condition, is what refuses: a claim under a live lease
-  that no activation has reached, a task that failed for good with budget
-  left, an activated claim whose task has a registered step started, and the
-  same claim inside the rolling-back phase. A control for each such profile
-  makes the same call with nothing corrupt, requires it to act, and pins where
-  it leaves the task. That is what makes a targeted refusal the corruption's
-  and not the profile's. The control of `fail` on a started step is how the
-  matrix reaches the rollback pass. The pass's own integer guard, that the
+  An ambient cell does not require a refusal, so it holds a guard only where
+  the unguarded write leaves something its oracle objects to. With the failure
+  batch's accounting guard removed, five ambient cells of `fail` and
+  `fail-rollback` fail, by the findings the failure leaves behind. For the
+  claim receipt's admission the unguarded write left nothing. Measured: with
+  the poisoned run seeded as a claim no activation had reached, all 292 ambient
+  `activate` and `defer-launch` cells passed, and stayed green with the claim
+  receipt's relaunch bound, its sole-live-run guard, or its accounting guard
+  removed. A targeted cell holds a guard whatever the write leaves behind,
+  because its oracle requires the poison's rows unchanged and the poison not
+  returned. A targeted cell seeds the poisoned task in a lifecycle profile and
+  crosses it with every counter boundary and relational target that the arm's
+  classification calls targetable. There are two kinds of arm. An arm that
+  scans for its target, `claim` and the two lease sweeps, makes one call, in
+  which the poison sorts first and the healthy trigger must win. An arm that
+  names its target, `activate`, `defer-launch`, `retry-task`, `fail` and
+  `fail-rollback`, makes two: the call on the poison must be refused, and the
+  healthy trigger wins a call of its own. Its profile is the state in which its
+  label acts on a target with nothing corrupt, so that the corruption, and not
+  the label's state condition, is what refuses: a claim under a live lease that
+  no activation has reached, a task that failed for good with budget left, an
+  activated claim whose task has a registered step started, and the same claim
+  inside the rolling-back phase. A control for each such profile makes the same
+  call with nothing corrupt, requires it to act, and pins where it leaves the
+  task. That is what makes a targeted refusal the corruption's and not the
+  profile's. The control runs the profile's own seed. Sixteen of the 48 new
+  cells move that seed by companions, and for fourteen of them the companions
+  make sense only beside the corrupt value, so no control can show the call
+  acting there. Those cells are held by failing when their guard is removed,
+  which one of them shows under a registered mutation and the others showed
+  under guards removed by hand. The control of `fail` on a started step is how
+  the matrix reaches the rollback pass. The pass's own integer guard, that the
   budget its batch writes fits, is reached by no corrupt pre-state, because the
   failure's compare-and-set vouches for the run's ordinal, the task's counters
   and their relation first, so the two saga cases that hold it on valid,
   extreme states keep it. 98 target cases and 83 declared unreachable targets
-  are pinned, each unreachable one with its reason. One registered mutation
-  for each profile of an arm that names its target removes a guard its cells
-  reach, and one generated cell of the profile owns it. The profiles reach
-  counters and the relations between them. The claim receipt's guards that are
-  not counters, the sole live run, the stored retry strategy and headers, and
-  the lease, have no targeted witness on any arm (BUILD.md, PR3.2c).
+  are pinned, each unreachable one with its reason. One registered mutation for
+  each profile of an arm that names its target removes a guard its cells reach,
+  and one generated cell of the profile owns it. The profiles reach counters
+  and the relations between them. The claim receipt's guards that are not
+  counters, the sole live run, the stored retry strategy and headers, and the
+  lease, have no targeted witness on any arm (BUILD.md, PR3.2c).
 - *The stale-token column* (`conformance/src/stale-token-column.ts`): a worker
   write is fenced on the claim its caller presents (rules 4 and 5), and each
   compare-and-set composes that comparison by its own choice. The rules that
@@ -3202,8 +3211,11 @@ Costs and the consistency discipline (there are **no cross-DB transactions**):
    judged as its batch left it: it carries what the run before it held, or, as
    a task's first run, nothing; every column of it is carried or its own; and
    it is created at the instant of the row its batch stamped. A batch that
-   inserts a run and that no scenario reaches fails, so a new path cannot
-   carry nothing unnoticed, as a revival once did.
+   inserts a run and that no scenario reaches fails, and so does a label a
+   scenario drives to which the corpus gives no run insert, so a new path
+   cannot carry nothing unnoticed, as a revival once did. The enumeration is
+   the corpus's: the corpus test holds the corpus to what the stores compile,
+   and only together with it are these cases closed.
 3. **Events never fan out into other runs' DBs.** `emitEvent` is scheduler-plane
    only: first-write-wins event row + flip waiting runs to pending with the
    payload parked on the run row (`event_payload`, as in Absurd's `r_` table).
