@@ -351,59 +351,31 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          def list_conditions(repaired, candidate, file, lines):
-              # List condition lines of a tree rule whose mutations this tree registers and the
-              # base predates, so the base's derived coverage check reads them as held.
-              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
-              opening = f'    "{file}": {{\n'
-              if repaired.count(table) != 1 or repaired.count(opening, repaired.index(table)) != 1:
-                  raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
-              at = repaired.index(opening, repaired.index(table)) + len(opening)
-              for line in lines:
-                  if f'"{line}": (' in repaired or line not in candidate:
-                      raise SystemExit(f'{line}: the bridge lists only a line this tree mutates and the base does not list.')
-              entries = ''.join(
-                  f'        "{line}": (\n            "held by mutations the head registry registers, which the base predates"\n        ),\n'
-                  for line in lines
-              )
-              return repaired[:at] + entries + repaired[at:]
-          if digest == '24f997ed9c45ead6ff0e18733d1c1570e28bbbd5aaa9fb63261fc5b991ac1a02':
-              # A batch of reads refuses a state or status column compared with a bound value.
-              # The rule now finds that value wherever it stands below an operand, from either
-              # side of the test, so the two lines that two base entries quoted were rewritten:
-              # they take their operands as arguments. Both entries are re-aimed at the lines as
-              # they read now, and each mutant is the one it was: one refuses a state written
-              # inline, the other refuses every bound comparison whatever column it names. This
-              # tree also registers nine mutations the base predates: one for PostgreSQL's age in
-              # the list of clock spellings, seven for the conditions of the read rule, and one
-              # for the condition on the sentence a clock refusal adds where a clock was spelled.
-              # The lines that hold them are listed for the base's coverage check and their
-              # verdict markers are exempted.
+          if digest == '1ec3adc9e2874631b162580b2c774804c19ac53cadc5dffca6a3a55722323aa7':
+              # Five base entries name text this tree rewrote, and each mutant bends the same
+              # condition as before. An event name carries the task of a completion event, so
+              # the two messages about a stored payload that is not text are built from its
+              # display form, and the line that mints a caller's name passes a null task. A
+              # port's refusal of a reserved name or key is a class of its own, so the refusal
+              # of a key together with childOf names that class, and the hosted route's
+              # reserved-key answer moved from a rule of its own to the one mapping of the
+              # family. Five mutations are new, one for each guard this tree added, and each
+              # answers to a verdict marker that is newer than the base. No entry was retired.
               repaired = previous
               for name in (
-                  'tree-read-state-literal-admitted',
-                  'tree-read-state-names-the-column',
+                  'child-await-hit-error-names-the-task',
+                  'child-await-recording-error-names-the-task',
+                  'event-name-is-a-durable-string',
+                  'hosted-enqueue-refuses-reserved-key',
+                  'spawn-child-key-excludes-a-caller-key',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
-              repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  "'age',",
-                  "if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)",
-                  "return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)",
-                  "bindsState(node.rightOperand, node.leftOperand) ||",
-              ))
-              repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
-                  "const advice = spelledClock ? `. ${SPAN_ADVICE}` : ''",
-              ))
               repaired = exempt(repaired, candidate, (
-                  "mutation-verdict:construction:tree-clock-advice-only-where-spelled",
-                  "mutation-verdict:construction:tree-clock-function-age",
-                  "mutation-verdict:construction:tree-read-state-either-side",
-                  "mutation-verdict:construction:tree-read-state-stops-at-a-subquery",
-                  "mutation-verdict:construction:tree-read-state-reads-a-subquery-selection",
-                  "mutation-verdict:construction:tree-read-state-bare-value-is-a-bind",
-                  "mutation-verdict:construction:tree-read-state-plain-list-is-bound",
-                  "mutation-verdict:construction:tree-read-state-list-holds-a-bind",
-                  "mutation-verdict:construction:tree-read-state-bind-in-parentheses",
+                  'mutation-verdict:behavior:recording-statement-takes-a-completion-event-only',
+                  'mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal',
+                  'mutation-verdict:behavior:history-helper-runs-the-child-task-checker',
+                  'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run',
+                  'mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

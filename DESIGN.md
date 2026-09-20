@@ -700,10 +700,19 @@ One invocation executes one claimed run to its next suspension point:
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
-    refuses a name that starts with `$` with `RangeError`, and a name no store
+    refuses a name that starts with `$` with `PortRefusalError`, which is a
+    `RangeError`, and a name no store
     can keep, one with a NUL or a lone surrogate, with
     `InvalidDurableStringError`, and `EventName.taskDone` is the completion
-    event of a task. So the `emitEvent`
+    event of a task. An `EventName` carries that task (`taskId`, null for a
+    caller's event) and the form a message shows a person (`display`): a
+    caller's event by its name, and a completion event as `task <id>`, because
+    the reserved name never reaches task code and the error of an await does.
+    The wait registration reads the awaited child from the name it is given,
+    so no caller passes a child's id beside its event, and no store formats
+    the reserved name for a person or reads a task out of it. One store
+    still tests the reserved prefix: the PostgreSQL executor, to choose the
+    lock of a completion event. So the `emitEvent`
     and `awaitEvent` ports cannot forget the refusal, and they write or
     register nothing for a reserved name. The hosted emit route and the SDK
     already refused one through `UserName.parse`. Any other caller of the emit
@@ -726,8 +735,33 @@ One invocation executes one claimed run to its next suspension point:
     found nothing answers with the run's own refusal. A child that exists is
     found without a claim, which is what a replay asks. Refusing a caller's `$`
     key is a breaking change to the enqueue contract. A caller that used such
-    keys gets `RangeError` at the port and 400 at the hosted route, and has to
+    keys gets `PortRefusalError`, which is a `RangeError`, at the port and 400
+    at the hosted route, and has to
     rename them. Rows already stored under such a key stay as they are.
+  - A port's refusal of what its caller passed has a type a host maps once.
+    `PortRefusalError` extends `RangeError`, and core throws it where it threw
+    a bare `RangeError` for a caller's name, key, or options: an event name
+    that is not a string or is reserved (`refuseReservedEventName`, behind
+    `emitEvent` and `awaitEvent`), a reserved idempotency key
+    (`refuseReservedIdempotencyKey`, behind `spawn`), and `idempotencyKey`
+    together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
+    still holds for them. `error.name` reads `PortRefusalError` where it read
+    `RangeError`, which a caller that compares names will see, and so does
+    the recorded failure of a task whose own code calls a port and lets the
+    refusal escape. The SDK's own calls are not such a path: it makes a
+    refused spawn or await a `FatalTaskError`, as before. `isPortRefusal` is
+    the one definition of the family: that class, `InvalidDurableStringError`,
+    which stays a `TypeError` because it was released as one, and
+    `ChildAwaitRefusedError`. The hosted route answers 400 `invalid_request`
+    for the family in one place and has no rule of its own for a reserved
+    key: the enqueue route sends the key to the port. An answer carries a
+    fixed code and never an error's name or message, so no answer changed. A
+    number, a retry strategy, or a saga step name that a port refuses is
+    still a bare `RangeError`. It is not a member of the family, so the
+    mapping leaves it at 500. What the mapping answers is the family, and
+    not what a route can raise today: no hosted route can raise
+    `ChildAwaitRefusedError`, and it is answered 400 all the same, so a route
+    that gains an await needs no rule of its own.
   - The payload is the child's first outcome, in the shape `getTaskResult`
     answers with: the terminal state, and the completed payload or the failure
     reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds
@@ -781,7 +815,18 @@ One invocation executes one claimed run to its next suspension point:
     worker's own terminal write pays no read. Any other caller pays one read of
     the run's task (`run-task`) before the batch. A run's task never changes
     and run ids are never reused, so neither the read nor the memory can be
-    stale. Passing the task id through the port would remove the read, and
+    stale. The store forgets a run once its own `complete`, `fail`, or
+    `failRollback` has ended it, so it holds the runs it activated and has
+    not ended, a suspended run among them until its next activation tells the
+    store again. The entry of an ended run can change no answer: it names the
+    right task for as long as it stays, and a run remembered under another
+    queue still loses the batch's compare-and-set. What it can do is take
+    room. The memo holds 1,024 runs and the oldest leaves first, so a store
+    that kept ended runs lost a run still at work after 1,024 newer
+    activations, and that run's terminal write then paid the read. A
+    caller sees the forgetting only when it repeats a terminal write through
+    the same store: the repeat reads the run's task again before it is
+    refused. Passing the task id through the port would remove the read, and
     would change the rule that a launch carries only the run and its token. The
     maintainer chose the memory.
   - A child is awaited only within its parent's queue. Events are keyed by
@@ -2201,7 +2246,9 @@ are load-bearing):
 `awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal
 (`refusal-state`), so a write that wins pays for no refusal read. The one read a
 winning `complete` or `fail` can pay is its run's task (`run-task`, §3.2), and
-only in a store that did not activate the run. It throws `RunCancelledError` (AB001)
+only in a store that did not activate the run. A store forgets a run it has
+ended, so a repeat of that write reads the task again before its refusal. It
+throws `RunCancelledError` (AB001)
 when the task's cancellation ended the run and `LeaseLostError` (AB002)
 otherwise, including when that read fails. `heartbeat` reports `held: false`
 with `reason: 'cancelled'` or `reason: 'lease-lost'`, from the same read. A worker retrying `complete` after a lost

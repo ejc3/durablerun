@@ -264,6 +264,32 @@ a last docs PR gives a live owner to every open bullet that is left.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
+17. PR3.3d: the five smaller items of the child-task review. The run-to-task
+    memo forgets a run once its terminal batch has ended it, and DESIGN.md says
+    what a stale entry could and could not do. An `EventName` carries the task
+    of a completion event and the form a message shows a person, so nothing
+    parses or formats the reserved name by hand. A port's refusal of what its
+    caller passed has one typed class, and the hosted route maps the family to
+    its answer once, with a test for each kind of refusal. One helper runs
+    every violation checker, and every generated surface and seeded race
+    whose rows only the engine wrote calls it, the fault matrix included,
+    which is shown by a cell that a bent guard fails. The test
+    helpers that are copies inside the files those four items touch exist
+    once. This is met. PR3.3d added `RunTaskMemo.forget`, which each store
+    calls when its own `complete`, `fail`, or `failRollback` has won, and a
+    case on three dialects, committed failing, in which a repeated terminal
+    write reads the run's task again. `EventName` carries `taskId` and
+    `display`, and the wait registration reads the awaited child from the
+    name, so the stores pass no child id beside it. `PortRefusalError`
+    extends `RangeError`, `isPortRefusal` names the family with
+    `InvalidDurableStringError` and `ChildAwaitRefusedError`, and
+    `hosted.test.ts` holds the one mapping for each class and holds any other
+    error at 500. `engineHistoryViolations` runs the three checkers at every
+    surface that spread them by hand. A fault matrix cell over a store that
+    records every completion event under another task's name, committed
+    failing, is now rejected, and the matrix with every checker is green on
+    three dialects. Of the copies, the SDK tests' `expectCleanRows` exists
+    once, and the label recorders stay with PR4.4d.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -1952,11 +1978,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads the count, because the database's counter is shared by parallel test
     workers. The PR4.4 entry says where it is held. The fuzz is not claimed:
     its walk is one caller on libSQL, so a hold there could not fail.
-  - Smaller, from the same review: the run-to-task memo does not forget a run
-    its terminal batch has ended, `EventName` does not carry the task id or a
-    display form, port refusals have no one typed class mapped once at the hosted
-    route, no single helper runs both violation checkers, and a few test helpers
-    are copies.
   - Promoted to PR3.14 below: the generated follow-ons that select their source
     by key correlated it to `tasks` on the queue, and on libSQL their plan was
     a scan of `tasks`.
@@ -2008,6 +2029,60 @@ these three things; nothing else in the system does I/O, time, or randomness.
   got narrower: a declared event lock had to be followed at once by a
   compare-and-set, and an event lock that arrives with its statement is held
   to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
+- **PR3.3d the child-task review's smaller list**: five small items from the
+  second review of PR3.3, on three stores. The run-to-task memo forgets a run
+  once the store's own `complete`, `fail`, or `failRollback` has ended it. A
+  stale entry could change no answer. It could only take the room of a run
+  still at work, whose terminal write then paid the `run-task` read, and a
+  repeated terminal write through the same store now reads the task again
+  before its refusal. An `EventName` carries the task of a completion event
+  and the form a message shows a person, so the wait registration reads the
+  awaited child from the name, and no store passes the child's id beside it
+  or formats the reserved name. A port's refusal of a reserved event name, a
+  reserved idempotency key, or a key together with `childOf` is a
+  `PortRefusalError`, which extends `RangeError`. `isPortRefusal` names the
+  family with `InvalidDurableStringError` and `ChildAwaitRefusedError`, and
+  the hosted route maps it to 400 once and has no reserved-key rule of its
+  own. `error.name` changed at those sites, and nothing else a caller sees
+  did. One helper, `engineHistoryViolations`, runs the invariant library, the
+  child-task checker, and the saga checker, and every surface that spread
+  them by hand calls it. The fault matrix gained the child-task checker that
+  way and found no violation on any dialect. It excuses one task, the child
+  its workload ends through a simulated older build that writes no completion
+  event (ChildTasks.tla's LegacyTerminal), until an await of that child has
+  answered, and two cases hold the excusal to that task. Of the test helpers
+  that are copies, the SDK tests' `expectCleanRows` exists once. The review of
+  this pull request then changed four things. The matrix excuses that child
+  only while its row is cancelled, because a crash can stop the older build's
+  cancel and the child is then an ordinary task. Three more sites call the
+  helper, the saga surface's race case, the suite's seeded races, and the
+  identifier surface, and a case lists the files that may call the invariant
+  library directly with the reason of each. The name of a completion event is
+  a type, `TaskDoneEventName`, which the recording statement takes. Five
+  registered mutations hold the five guards this entry added. Not built
+  here, each with its reason:
+  - A number, a retry strategy, or a saga step name that a port refuses stays
+    a bare `RangeError`. It is not a member of the refusal family, so the
+    hosted mapping leaves it at 500, and it can take the class when a
+    caller's value of one reaches a route.
+  - One base class for the whole family. `InvalidDurableStringError` was
+    released as a `TypeError`, so moving it under another parent changes the
+    published surface, which is the maintainer's choice.
+  - The label recorders that are copies: `LabelRecorder` and
+    `RecordingExecutor` in the libSQL store's tests, and `recordingLabels` in
+    the child-task surface. They stay with PR4.4d, which hoists the
+    conformance helpers.
+  - The matrix's judge tells the older build's ending from the state of the
+    row. A cancel of that same child by the current build that lost its
+    completion event would be excused too. No batch of the workload does
+    that, and closing it needs the rows to say which build ended a task,
+    which they do not.
+  - Nothing holds a pull request's body to the tree. An option: the
+    attestation refuses a body whose stated registry count or arm key is not
+    the head's.
+  - A file that is listed as calling the invariant library directly can gain
+    a seeded race that calls it alone, and the list does not see it. The
+    suite's scenario cases are the listed sites of that kind today.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,

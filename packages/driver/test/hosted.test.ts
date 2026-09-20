@@ -1,5 +1,9 @@
 import {
+  ChildAwaitRefusedError,
   type Clock,
+  IDENTIFIER_CHARACTERS,
+  InvalidDurableStringError,
+  PortRefusalError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -8,6 +12,7 @@ import {
   parseTaskValueJson,
   systemClock,
 } from '@durablerun/core'
+import { withStoreOverrides } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -59,15 +64,17 @@ async function fixture(
     onWorkAvailable?: () => void | Promise<void>
     scheduleWake?: WakeScheduler
     recordStoreCalls?: string[]
+    wrapStore?: (store: SchedulerStore) => SchedulerStore
   } = {},
 ) {
   const { raw, admin, ids, close } = await openTestDb({ idNamespace: seed })
   await admin.setFakeNowEpochMs(1_000_000)
   const baseStore = new LibsqlSchedulerStore(raw, ids)
-  const store =
+  const recorded =
     options.recordStoreCalls === undefined
       ? baseStore
       : recordingStore(baseStore, options.recordStoreCalls)
+  const store = options.wrapStore === undefined ? recorded : options.wrapStore(recorded)
   const base = {
     store,
     ids,
@@ -510,6 +517,68 @@ describe('hosted-alpha Web Request router', () => {
         { status: response.status, body: await responseBody(response), claimed: tick.claimed },
         'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
       ).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers each kind of port refusal with 400 through one mapping, and any other error with 500', async () => {
+    const thrown: Record<string, Error> = {
+      'a reserved name or key': new PortRefusalError("spawn idempotencyKey '$k' is reserved"),
+      'a string no store can keep': new InvalidDurableStringError('taskId holds a NUL'),
+      'a child that can never end the await': new ChildAwaitRefusedError('child', 'no-such-task'),
+      'a RangeError of the engine': new RangeError('task t has unknown state'),
+      'any other error': new TypeError('a defect'),
+    }
+    const f = await fixture('hosted-port-refusals', {
+      wrapStore: (store) =>
+        withStoreOverrides(store, {
+          getTaskResult: async (_queue: string, taskId: string) => {
+            throw thrown[taskId] ?? new Error(`no error is registered for ${taskId}`)
+          },
+        }),
+    })
+    try {
+      const answers: Record<string, unknown> = {}
+      for (const kind of Object.keys(thrown)) {
+        const response = await f.router.handle(
+          request(`/api/inspect?taskId=${encodeURIComponent(kind)}`, 'GET'),
+        )
+        answers[kind] = { status: response.status, body: await responseBody(response) }
+      }
+      const refused = { status: 400, body: { error: 'invalid_request' } }
+      const fault = { status: 500, body: { error: 'internal_error' } }
+      expect(answers).toEqual({
+        'a reserved name or key': refused,
+        'a string no store can keep': refused,
+        'a child that can never end the await': refused,
+        'a RangeError of the engine': fault,
+        'any other error': fault,
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers a key wider than a durable identifier with 400 through the same mapping, and enqueues nothing', async () => {
+    const f = await fixture('hosted-wide-key')
+    try {
+      const response = await f.router.handle(
+        request(
+          '/api/tasks',
+          'POST',
+          JSON.stringify({
+            taskName: 'job',
+            idempotencyKey: 'k'.repeat(IDENTIFIER_CHARACTERS + 1),
+          }),
+        ),
+      )
+      const tick = await f.router.runTick()
+      expect({
+        status: response.status,
+        body: await responseBody(response),
+        claimed: tick.claimed,
+      }).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
     } finally {
       f.close()
     }
