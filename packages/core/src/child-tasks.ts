@@ -58,8 +58,10 @@ export function refuseReservedEventName(operation: string, eventName: string): v
 /**
  * An event name a statement or a lock may carry. There are two ways to have one, and
  * both are here: a name a caller of the port supplied, which is refused when it is
- * reserved or when no store can keep it, and the completion event of a task, which only
- * the engine reaches. Every
+ * reserved, and the completion event of a task, which only the engine reaches. That a
+ * caller's name is a string every store keeps, within the width, is not checked here:
+ * the port's one check holds it before a store's entry runs, and `fromPort` called from
+ * anywhere else checks only the reserved prefix. Every
  * event statement and the event lock take this and not a string, so a store method
  * cannot forget the refusal, and nothing outside this file can mint a reserved name.
  * It carries the task of a completion event, so nothing that holds one parses the
@@ -216,7 +218,11 @@ export function refuseReservedIdempotencyKey(operation: string, key: string): vo
 
 /**
  * The key a spawn stores: the caller's, the engine's for a child, or none. Every
- * dialect decides it here, so the reserved namespace has one door.
+ * dialect decides it here, so the reserved namespace has one door. It refuses a reserved
+ * key, a key together with a parent, and a child key past the width. It does not check
+ * that a key or a parent's member is a string every store keeps, within the width, or
+ * that a parent's five members are there: the port's one check does, before a store's
+ * entry runs, and this function called from anywhere else checks none of it.
  */
 export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
   const callerKey = opts.idempotencyKey

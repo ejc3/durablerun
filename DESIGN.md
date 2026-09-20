@@ -1915,9 +1915,16 @@ are load-bearing):
    identifier is, at every entry that takes one: one dialect indexes it whole,
    and an index row has a size limit, so a claim under a token of a few thousand
    characters failed on that dialect alone. `claim` refuses one past the width,
-   so no row holds one, and a longer token at another entry could match nothing:
-   refusing it there changes no answer but the error's name. The engine's own
-   tokens are 32 characters. A task name and a payload are not identifiers:
+   so no row holds one, and a longer token at another entry could match nothing.
+   Refusing it there changes nothing that is stored, and it does change what such
+   a call is answered: `heartbeat` answered a lost lease, `activate` and
+   `claimedTaskName` answered null, `expireLeaseNow` answered false and `claim`
+   answered no rows, and each now answers the refusal. A worker handed such a
+   token rejects where it answered superseded, measured at both commits. The HTTP
+   worker has acknowledged the launch by then, with 202 before and after, and
+   drops the rejected pass as it drops any pass that crashed. No claim the engine
+   makes carries such a token: its own tokens are 32 characters. A task name and
+   a payload are not identifiers:
    nothing indexes them, and the port does not bound their length. A child's
    task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
@@ -1965,7 +1972,12 @@ are load-bearing):
    string argument a method gains, and a string inside an options object each stop the
    build until the table names them. One check is built from the table
    (`requirePortStrings`), and every store extends `HeldPort`, whose constructor puts
-   that check in front of every method the table names. A dialect's entry holds nothing
+   that check in front of every method the table names, as an accessor that cannot be
+   defined again: a class field that would replace an entry, an assignment and a
+   redefinition each throw, and a proxy over a store may still answer a method with its
+   own function. The check looks the entry up when it is called, so a method patched
+   onto a store class after a store exists, as a test double is, is reached with the
+   check in front of it. A dialect's entry holds nothing
    and is reached only through the check. A fourth dialect inherits it by extending the
    same class, and the conformance fixture types its store as one that does, so a class
    that implements the port on its own does not reach the suite. The released port type
@@ -1981,12 +1993,22 @@ are load-bearing):
    What the mechanism does not see, stated so that nobody takes it for more:
    - Any name fits any string position. `claim`'s queue written as a payload compiles,
      and the refusal cases, which draw their places from the table, then ask nothing
-     there. So the surface also writes down every place that is NOT an identifier, 25 of
-     them, and a place named a payload in core's table fails that list by its name. It is
-     a second, visible edit, and not a proof.
+     there. So the surface also writes down every place that is NOT an identifier, ten of
+     them, and how many places there are of each kind, and a place named a payload in
+     core's table fails that list by its name. It is a second, visible edit, and not a
+     proof. Two names of one rule that change places, a run id and a claim token, move
+     neither the list nor the counts: only the name inside the refusal is wrong.
    - An entry called from the class's prototype is reached with nothing in front of it.
      Two libSQL cases do that on purpose, to reach a prepared read's own refusal of a
-     malformed bind, and nothing else in the repository does.
+     malformed bind. A patch of the prototype is another thing: it is reached through the
+     check, whenever it was made, and one dogfood case injects an outage that way.
+   - The check reads a member of an options object once and the entry reads it again, so
+     an object whose getter answers a clean string and then another hands the entry what
+     was never checked. A caller that can hand a store such an object holds the store, and
+     can reach the prototype route as well.
+   - The table's type demands a name for a plain string, a branded string and a template
+     literal string. It does not for an optional method of the port, for an argument typed
+     `unknown`, or for a rest parameter of strings. The port has none of the three.
 
    **One hosted answer follows from it.** The inspect route answers 400 `invalid_request`
    for a task id with a NUL in it, through the same refusal line a task id past the width
@@ -2000,7 +2022,8 @@ are load-bearing):
    past the width keeps its row: its holder's next write is refused, its lease runs out, and
    the sweep hands the run to a claim under another token, which is how the engine recovers
    any run whose holder went away. A caller that passes one now is refused where it
-   was stored under another name, or reported as an outage.
+   was stored under another name, or reported as an outage. A caller whose own claim
+   tokens are wider than 255 characters is refused at every claim from now on.
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,

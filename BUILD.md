@@ -327,14 +327,19 @@ a last docs PR gives a live owner to every open bullet that is left.
     met. One shared case was committed failing on libSQL, PostgreSQL and MySQL,
     where 49 of the 56 places an identifier entered sent their statements for a
     name with a NUL or a lone surrogate. All 25 per-entry checks are gone from
-    each of the three stores. Eleven type controls each fail to compile for the
-    reason written beside it. Nine registered mutations are each caught by one
-    case by name: three that named deleted lines and moved, two that bend the
-    check, and four that bend the table, one for each kind of string, a queue,
-    a step key, an event name and a claim token. Two of those four survived
-    their first probes, because a place renamed to a payload name its method
-    already had folded into that place and the surface did not see it, and the
-    fix was committed after them. One hosted answer moved: the inspect route
+    each of the three stores. Seventeen type controls each fail to compile for
+    the reason written beside it. Eighteen registered mutations are each caught
+    by one case by name: seven that named deleted or renamed lines and moved,
+    and eleven that are new, which bend the check, the table, one for each kind
+    of string, a queue, a step key, an event name and a claim token, the rule of
+    a claim token, and the four things the one review found at the mechanism.
+    Two of the table's four survived their first probes, because a place renamed
+    to a payload name its method already had folded into that place and the
+    surface did not see it, and the fix was committed after them. The one review
+    found that a method patched onto a store class after a store exists was not
+    reached, that a class field could replace the check, and that a string the
+    port requires was not refused when it was left out. Each was committed
+    failing before its fix, the last as a case that asks every place left out. One hosted answer moved: the inspect route
     answers 400 where it answered 404 for a task id with a NUL in it.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
@@ -2133,10 +2138,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Any name fits any string position of the table, so a place written as a
     payload compiles. The surface writes down every place that is not an
     identifier and how many places there are, so that edit is visible. It is
-    not a proof.
+    not a proof, and two names of one rule that change places move neither.
   - An entry called from a store class's prototype is reached with nothing in
     front of it. Two libSQL cases do that on purpose. A test that lists every
-    such call in the repository would keep it to them, and is not built.
+    such call in the repository would keep it to them, and is not built. A
+    patch of the prototype is reached through the check.
+  - An option, not built: the hosted router holds its configured queue only to
+    non-empty, so a deployment configured with a queue the port refuses
+    answers every request 400, as it did for a queue past the width before
+    this. Its trigger is a hosted deployment whose queue comes from outside
+    its own configuration.
   - `requireSagaStepFits` is still called by the three entries that carry a
     checkpoint name. It is a rule about a derived name, and PR3.4c rewrites the
     entry that carries one of them.
