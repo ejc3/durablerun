@@ -104,6 +104,8 @@ const BODY = /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/
 const SELECTS =
   /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY|(?:UNION|INTERSECT|EXCEPT)(?: ALL| USING TEMP B-TREE)?)$/
 const SORTS = /^USE TEMP B-TREE FOR /
+/** The rows of a VALUES, one or several: no table is read, and their count is in the text. */
+const CONSTANT_ROWS = /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS)$/
 /** An UPDATE or a DELETE, by its first words: the table it writes, and its alias there. */
 const WRITE = /^\s*(?:update|delete\s+from)\s+(?:"?\w+"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
 const EQUALITY = /^([a-z_]+)=\?$/
@@ -133,13 +135,16 @@ export interface NestReading {
 /**
  * The table a step reads, for the wording of a fault and for nothing else. A plan names a
  * step by the alias its statement gave the table, so the name is looked up in the text:
- * the table that a FROM, a JOIN or an UPDATE calls by it. An INTO is not read, because a
- * plan has no step for the table an INSERT writes. A name the text gives to no table is
- * the table's own.
+ * the table that a FROM, a JOIN, an UPDATE or the comma of a join introduces, under a
+ * schema's name or not, and calls by it. An INTO is not read, because a plan has no step
+ * for the table an INSERT writes. A name the text gives to no table is the table's own.
+ * The name is a best effort, because the text is read with no scope: an alias inside a
+ * subquery that is another table's own name words that table's step with the subquery's
+ * table. A wrong name sends its reader to the wrong table, and it passes nothing.
  */
 function tableCalled(name: string, sql: string): string {
   const called = new RegExp(
-    `\\b(?:from|join|update)\\s+"?(\\w+)"?\\s+(?:as\\s+)?"?${name.replace(/\W/g, '\\$&')}"?(?![\\w"])`,
+    `(?:\\b(?:from|join|update)\\s+|,\\s*)(?:"?\\w+"?\\.)?"?(\\w+)"?\\s+(?:as\\s+)?"?${name.replace(/\W/g, '\\$&')}"?(?![\\w"])`,
     'gi',
   )
   const tables = new Set([...sql.matchAll(called)].map((match) => (match[1] ?? name).toLowerCase()))
@@ -248,7 +253,7 @@ export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
       const step = STEP.exec(node.detail)
       const subquery = SUBQUERY.exec(node.detail)
       const body = BODY.exec(node.detail)
-      if (node.detail === 'SCAN CONSTANT ROW') {
+      if (CONSTANT_ROWS.test(node.detail)) {
         loops.push({ detail: node.detail, reach: 'keyed' })
       } else if (step) {
         loops.push(stepLoop(node, step, drivers, bodies.get(step[2] ?? '')))

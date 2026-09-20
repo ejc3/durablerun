@@ -1131,10 +1131,21 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `SEARCH x USING COVERING INDEX runs_poll (queue=?) :: ${walkOf('runs or tasks')}`,
       `SCAN x :: ${walkOf('runs or tasks')}`,
     ])
-    // What is no walk: one run by its key, and the clock's row of `meta` by its key.
+    // The table is named under the comma of a join and under a schema's name too.
+    const commaJoin = await read(
+      'select r.run_id from runs r, tasks t where r.run_id = ? and t.queue = r.queue',
+    )
+    const qualified = await read('select x.run_id from main.runs x where x.queue = ?')
+    expect([commaJoin.faults[0], qualified.faults[0]]).toEqual([
+      `SCAN t :: ${walkOf('tasks')}`,
+      `SEARCH x USING COVERING INDEX runs_poll (queue=?) :: ${walkOf('runs')}`,
+    ])
+    // What is no walk: one run by its key, the clock's row of `meta` by its key, and the rows
+    // of a VALUES, which read no table.
     for (const sql of [
       'select state from runs where run_id = ?',
       'select value from meta where key = ?',
+      'select * from (values (1), (2), (3))',
     ]) {
       expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
     }
@@ -1181,6 +1192,17 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
   })
 
+  it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
+    // A step is judged by its constrained columns, whatever table it names, so an equality on
+    // a column named `key` reads as keyed on any table. It is true of `meta`, whose key is
+    // that column. A second table with a column of that name would make it a guess.
+    const holders = await raw.execute(
+      `select m.name as name from sqlite_master m, pragma_table_info(m.name) p
+       where m.type = 'table' and p.name = 'key' order by m.name`,
+    )
+    expect(holders.rows.map((row) => String(row.name))).toEqual(['meta'])
+  })
+
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
     // In a read, a due range that stands alone is no walk, and the list of due ranges names
     // only one that drives another step. Under no LIMIT it reads everything due at once, and
@@ -1199,6 +1221,21 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ]) {
       expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
     }
+    // A test for NULL prints as an equality, so a test of an entity column for NULL reads as
+    // keyed: here it is every running run of the queue that no claim holds.
+    const heldByNoClaim = await read(
+      `select run_id from runs where queue = ? and state = 'running' and claimed_by is null`,
+    )
+    expect(heldByNoClaim).toEqual({ faults: [], dueDrivers: [] })
+    // A table aliased to the name of a body of the same select reads as a read of that body,
+    // so its scan is never judged. Under any other alias it is refused.
+    const beside = (alias: string) =>
+      read(
+        `with d as materialized (select task_id from runs where run_id = ?)
+         select 1 from d, tasks as ${alias}`,
+      )
+    expect((await beside('d')).faults).toEqual([])
+    expect((await beside('e')).faults).toContain(`SCAN e :: ${walkOf('tasks')}`)
     // A statement is planned under the binds its sends carried, and SQLite plans from bound
     // values. Sent with a state the history never sends it with, this one walks.
     expect((await nestsOf(leasesUnder('running'))).faults).toEqual([])
