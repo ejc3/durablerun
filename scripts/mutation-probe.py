@@ -12503,6 +12503,55 @@ MUTATION_SPECS.extend(
             "a step stays owed a rollback after its rollback ran",
         ),
         (
+            "saga-error-is-the-last-runs-record",
+            "packages/store-libsql/src/fragments.ts",
+            "       AND st.owner_run_id = ${task}.last_attempt_run\n",
+            "       AND 1 = 1\n",
+            "a failed attempt that had budget left is read as the rollback that halted the saga",
+        ),
+        (
+            "saga-names-begin-at-the-prefix",
+            "packages/store-libsql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "a name below a reserved prefix is read as a name under it",
+        ),
+        (
+            "saga-names-end-before-the-first-name-past-the-prefix",
+            "packages/store-libsql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= '${prefix}'`\n",
+            "every name past a reserved prefix is read as a name under it",
+        ),
+        (
+            "mysql-saga-name-range-keeps-plain-literals",
+            "packages/store-mysql/src/fragments.ts",
+            "  `${alias}.checkpoint_name >= '${prefix}'\n   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`\n",
+            "  `${alias}.checkpoint_name >= ${exactly(prefix)}\n   AND ${alias}.checkpoint_name < ${exactly(firstNamePast(prefix))}`\n",
+            "a binary operand stops the key from serving a saga's name range, so the task's checkpoints are walked",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-failed-task",
+            "packages/store-postgres/src/fragments.ts",
+            "  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${sagaBegan(task)}\n",
+            "the attempt records are read for a saga that a cancellation ended",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-saga",
+            "packages/store-postgres/src/fragments.ts",
+            "  `CASE WHEN ${task}.state = 'failed' AND ${sagaBegan(task)}\n",
+            "  `CASE WHEN ${task}.state = 'failed'\n",
+            "the attempt records are read for a failed task whose saga never began",
+        ),
+        (
+            "saga-first-name-past-needs-a-colon",
+            "packages/core/src/sagas.ts",
+            "  if (prefix[last] !== ':') {\n",
+            "  if (prefix[last] === undefined) {\n",
+            "a prefix that does not end in a colon is given a range end, which bounds other names",
+        ),
+        (
             "saga-task-update-binds-its-queue",
             "packages/store-libsql/src/store.ts",
             "      // for every task row, and the update then walks the table to find one task.\n      queue,\n",
@@ -12634,6 +12683,13 @@ MUTATION_SPECS.extend(
             "      if (!ofThePhase && Number(row.owner_attempt) >= Number(marker.owner_attempt)) {\n",
             "      if (false) {\n",
             "the saga row checker passes rows with the defect saga/forward-checkpoint-in-the-phase",
+        ),
+        (
+            "saga-row-checker-attempt-records-share-a-run",
+            "packages/conformance/src/saga-rows.ts",
+            "    if (new Set(owners).size !== owners.length) {\n",
+            "    if (false) {\n",
+            "the saga row checker passes rows with the defect saga/attempt-records-share-a-run",
         ),
         (
             "saga-replay-harness-reports-the-order",
@@ -12975,6 +13031,17 @@ for _verdict, _names in (
     (
         ExpectedVerdict(
             "behavior",
+            "packages/conformance/test/saga-rows.test.ts",
+            "the saga row checker names saga/attempt-records-share-a-run, and nothing else",
+            "mutation-verdict:behavior:saga-row-checker-names-the-defect",
+        ),
+        (
+            "saga-row-checker-attempt-records-share-a-run",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
             "packages/sdk/test/replay-equivalence.test.ts",
             "saga replay equivalence (generated programs x fault points across the phase) says what a fixed program rolls back, in what order, and what each rollback is handed",
             "mutation-verdict:behavior:saga-replay-harness-reports-the-order",
@@ -13138,6 +13205,65 @@ for _verdict, _names in (
         ),
         (
             "mysql-saga-reserved-name-is-compared-exactly",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] names no rollback error when a cancellation or a cap halts the saga after a failed attempt that had budget left",
+            "mutation-verdict:behavior:saga-error-is-the-ending-rollbacks",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-error-is-the-last-runs-record",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] owes no rollback to a name that only looks like a start marker",
+            "mutation-verdict:behavior:saga-start-markers-are-the-names-under-the-prefix",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-names-begin-at-the-prefix",
+            "saga-names-end-before-the-first-name-past-the-prefix",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the saga reads beside their own task's checkpoints, on MySQL fails a task, and reads a result, without walking the checkpoints the task has",
+            "mutation-verdict:behavior:saga-mysql-reads-walk-no-checkpoints",
+        ),
+        (
+            "mysql-saga-name-range-keeps-plain-literals",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/query-plans.test.ts",
+            "walks a saga's names among one task's rows of the key, and reads no attempt record when no saga began",
+            "mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt",
+        ),
+        (
+            "postgres-saga-attempt-records-need-a-failed-task",
+            "postgres-saga-attempt-records-need-a-saga",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "the names under a reserved saga prefix, as a range of names compared by bytes refuses a prefix that does not end in a colon",
+            "mutation-verdict:behavior:saga-first-name-past-needs-a-colon",
+        ),
+        (
+            "saga-first-name-past-needs-a-colon",
         ),
     ),
 ):
@@ -13488,6 +13614,244 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
+# The local HTTP transport's lifecycle (DESIGN.md S3.9): the launch deadline's abort through the
+# Launcher port, the deadline of the wake ping, the limits of both local servers, and the order
+# in which each of them closes. Every verdict is a case against real loopback servers on ports
+# the OS picks, with the driver or the worker on a hand-cranked clock.
+MUTATION_SPECS.extend(
+    (
+        (
+            "transport-launch-deadline-aborts-the-call",
+            "packages/driver/src/loop.ts",
+            "        gaveUp.abort()\n",
+            "        // MUTATION: the call is never told\n",
+            "a launch the driver stopped waiting for is never told, so its transport keeps the request in flight and a worker that never answers holds the driver's connection for minutes",
+        ),
+        (
+            "transport-launch-call-is-handed-a-signal",
+            "packages/driver/src/loop.ts",
+            "      const launch = launcher.launch(invocation, { signal }).finally(() => settled.abort())\n",
+            "      const launch = launcher.launch(invocation).finally(() => settled.abort()) // MUTATION: no signal is handed over\n",
+            "a launcher is handed nothing to hear the launch deadline through, so no transport can end a launch the driver stopped waiting for",
+        ),
+        (
+            "transport-aborted-launch-answer-is-never-read",
+            "packages/driver/src/loop.ts",
+            "        gaveUp.abort()\n        return LaunchOutcome.launchFailed()\n",
+            "        gaveUp.abort()\n        return launch // MUTATION: what the launcher answers after the abort is read\n",
+            "a transport that lets go on the abort and then claims the launch was taken is believed: the driver counts a launch nobody acked and never expires the lease, so a lost launch waits out its whole lease",
+        ),
+        (
+            "transport-http-launch-carries-the-callers-signal",
+            "packages/driver/src/http.ts",
+            "          signal: options?.signal ?? null,\n",
+            "          signal: null, // MUTATION: the request outlives the caller's wait\n",
+            "a worker that accepts the connection and never answers holds the driver's connection for fetch's own five minutes, one connection for every launch the driver gave up on",
+        ),
+        (
+            "transport-wake-ping-ends-at-its-deadline",
+            "packages/driver/src/http.ts",
+            "  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal).then(end)\n",
+            "  void clock.sleep(WAKE_PING_DEADLINE_MS, over.signal) // MUTATION: the deadline ends nothing\n",
+            "a driver address that accepts the ping and never answers holds a connection of the worker process for minutes, one for every pass",
+        ),
+        (
+            "transport-answered-wake-ping-leaves-no-timer",
+            "packages/driver/src/http.ts",
+            "    .finally(end)\n",
+            "    // MUTATION: the deadline's sleep outlives an answered ping\n",
+            "every answered ping leaves a five second timer behind, so a busy worker carries one pending timer for every pass of its last five seconds",
+        ),
+        (
+            "transport-worker-close-waits-for-a-launch-on-the-wire",
+            "packages/driver/src/http.ts",
+            "      await deps.clock.sleep(CLOSE_DRAIN_MS, drained.signal)\n",
+            "      // MUTATION: nothing on the wire is waited for\n",
+            "close() destroys a launch that is on the wire: it is never answered, or it runs with its ack dropped, and the driver counts a failed launch against a run that ran",
+        ),
+        (
+            "transport-closing-worker-answer-ends-its-connection",
+            "packages/driver/src/http.ts",
+            "    res.writeHead(status, closing ? { connection: 'close' } : undefined).end()\n",
+            "    res.writeHead(status).end() // MUTATION: a closing server keeps the connection alive\n",
+            "a connection answered during close() stays alive, so close() waits out its whole bound for a connection that has nothing left to say, and a request sent on it meanwhile is taken by a server that is going away",
+        ),
+        (
+            "transport-worker-close-ends-what-is-left-at-its-bound",
+            "packages/driver/src/http.ts",
+            "      await deps.clock.sleep(CLOSE_DRAIN_MS, drained.signal)\n      server.closeAllConnections()\n",
+            "      await deps.clock.sleep(CLOSE_DRAIN_MS, drained.signal)\n      // MUTATION: nothing is force-closed\n",
+            "a client that stalls with a request half sent holds the worker's close() open for as long as it likes, because a closed server no longer enforces its limits",
+        ),
+        (
+            "transport-wake-close-ends-every-connection",
+            "packages/driver/src/http.ts",
+            "      const closed = new Promise<void>((resolve) => server.close(() => resolve()))\n      server.closeAllConnections()\n      return closed\n",
+            "      const closed = new Promise<void>((resolve) => server.close(() => resolve()))\n      // MUTATION: only idle connections end\n      return closed\n",
+            "a client that connected and sent nothing, or that holds a request half sent, holds the wake server's close() open for as long as it likes",
+        ),
+        (
+            "transport-local-servers-carry-their-limits",
+            "packages/driver/src/http.ts",
+            "    { headersTimeout: HEADERS_TIMEOUT_MS, requestTimeout: REQUEST_TIMEOUT_MS },\n",
+            "    {}, // MUTATION: the platform's limits stand\n",
+            "a stalled client keeps a connection of either local server for the platform's sixty seconds of headers and five minutes of request",
+        ),
+        (
+            "transport-worker-close-ends-with-its-last-connection",
+            "packages/driver/src/http.ts",
+            "      void closed.then(() => drained.abort())\n",
+            "      // MUTATION: the wait never ends early\n",
+            "every close() of the worker server waits out its whole bound of five seconds, even with nothing on the wire",
+        ),
+        (
+            "transport-launch-deadline-wrapper-hands-on-the-callers-signal",
+            "packages/driver/src/loop.ts",
+            "          : AbortSignal.any([gaveUp.signal, options.signal])\n",
+            "          : gaveUp.signal // MUTATION: the caller's signal is dropped\n",
+            "the wrapper that gives a launch its deadline drops the options its own caller passes, so a caller's abort never reaches the transport",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/loop.test.ts",
+            "DriverLoop the watchdog aborts the launch it stops waiting for, and reads nothing the launcher answers after that",
+            "mutation-verdict:behavior:launch-deadline-tells-the-launcher",
+        ),
+        (
+            "transport-launch-deadline-aborts-the-call",
+            "transport-launch-call-is-handed-a-signal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/loop.test.ts",
+            "DriverLoop the watchdog aborts the launch it stops waiting for, and reads nothing the launcher answers after that",
+            "mutation-verdict:behavior:aborted-launch-answer-is-never-read",
+        ),
+        (
+            "transport-aborted-launch-answer-is-never-read",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "a launch the driver stopped waiting for holds no socket to a worker that accepted the connection and never answered",
+            "mutation-verdict:behavior:http-launch-ends-at-the-callers-deadline",
+        ),
+        (
+            "transport-http-launch-carries-the-callers-signal",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "the wake ping a worker sends after a pass holds no connection, past its deadline, to a driver that accepted it and never answered",
+            "mutation-verdict:behavior:wake-ping-ends-at-its-deadline",
+        ),
+        (
+            "transport-wake-ping-ends-at-its-deadline",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "the wake ping a worker sends after a pass leaves no sleep on the clock once it is answered",
+            "mutation-verdict:behavior:answered-wake-ping-leaves-no-timer",
+        ),
+        (
+            "transport-answered-wake-ping-leaves-no-timer",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the worker server lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both",
+            "mutation-verdict:behavior:worker-close-answers-a-launch-on-the-wire",
+        ),
+        (
+            "transport-worker-close-waits-for-a-launch-on-the-wire",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the worker server lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both",
+            "mutation-verdict:behavior:closing-worker-answer-ends-its-connection",
+        ),
+        (
+            "transport-closing-worker-answer-ends-its-connection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the worker server ends a launch that never finishes arriving once its bound of five seconds passes",
+            "mutation-verdict:behavior:worker-close-is-bounded",
+        ),
+        (
+            "transport-worker-close-ends-what-is-left-at-its-bound",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the wake server is not held open by a client that connected and sent nothing",
+            "mutation-verdict:behavior:wake-server-close-ends-every-connection",
+        ),
+        (
+            "transport-wake-close-ends-every-connection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "the limits of the local servers give a connection ten seconds for its headers and thirty for its whole request",
+            "mutation-verdict:behavior:local-servers-carry-their-limits",
+        ),
+        (
+            "transport-local-servers-carry-their-limits",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/http-lifecycle.test.ts",
+            "closing the worker server lets a launch already on the wire finish: it is acked, its pass runs, and close() waits for both",
+            "mutation-verdict:behavior:worker-close-ends-with-its-last-connection",
+        ),
+        (
+            "transport-worker-close-ends-with-its-last-connection",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/loop.test.ts",
+            "the launch deadline as a wrapper of the port hands a signal of its own caller on to the launcher it wraps, joined with its own",
+            "mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal",
+        ),
+        (
+            "transport-launch-deadline-wrapper-hands-on-the-callers-signal",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -13674,6 +14038,12 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "sdk-await-timeout-single-read": (
         "replacement adds a TypeScript optional-chaining token while re-reading the task accessor"
+    ),
+    "transport-http-launch-carries-the-callers-signal": (
+        "replacement removes TypeScript optional-chaining and nullish-coalescing tokens, not SQL binds"
+    ),
+    "transport-closing-worker-answer-ends-its-connection": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
 }
 
@@ -15597,6 +15967,9 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
         "one test is generated for each condition of the checker, and its title carries the condition"
     ),
     "saga-row-checker-forward-checkpoint-in-the-phase": (
+        "one test is generated for each condition of the checker, and its title carries the condition"
+    ),
+    "saga-row-checker-attempt-records-share-a-run": (
         "one test is generated for each condition of the checker, and its title carries the condition"
     ),
     "saga-nesting-guard-covers-the-start-marker": (
@@ -17987,7 +18360,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 934:
+        if len(MUTATIONS) != 955:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

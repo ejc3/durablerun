@@ -78,6 +78,17 @@ describe('the saga row checker', () => {
     // a was rolled back while b, which started after it, was not.
     'saga/rollback-out-of-order': { rows: without('$rollback:b') },
     'saga/attempt-record-undecodable': { rows: replaced('$rollback-tries:a', '{"tries":"one"}') },
+    // The run that failed a's rollback owns a second attempt record, where a run fails once.
+    'saga/attempt-records-share-a-run': {
+      rows: [
+        ...HEALTHY,
+        {
+          name: '$rollback-tries:b',
+          state: encodeRollbackTry({ tries: 1, errorJson: '{"name":"R"}' }),
+          ownerAttempt: 2,
+        },
+      ],
+    },
     'saga/rollback-outside-the-phase': { rows: without('$rolling-back') },
     'saga/completed-in-the-phase': { rows: HEALTHY, taskState: 'completed' },
     // A forward step committed by the pass that holds the phase marker, or a later one.

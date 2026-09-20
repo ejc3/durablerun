@@ -326,7 +326,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8ff5869b24a87aed0ee73017957fd5d7fe52380d5fd60faa12365d0749627b2f':
+          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
               # The SDK's replay-equivalence harness draws durable calls started together and a
               # step named after the attempt, and three programs it generates each own a
               # mutation. One drops the guard that a replayed step holds, which is what makes

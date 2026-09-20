@@ -1,6 +1,7 @@
 import {
   ChildAwaitRefusedError,
   type ClaimedRun,
+  type FailOutcome,
   IDENTIFIER_CHARACTERS,
   InvalidDurableStringError,
   SAGA_ROLLBACK_PREFIX,
@@ -54,6 +55,8 @@ export interface FuzzStats {
   rollbackFailures: number
   /** Tasks that ended from inside the phase by a pass's own write. */
   sagasEnded: number
+  /** Results read at the end of a walk that named the rollback whose failure ended the task. */
+  haltsNamed: number
   /** Names one character past the width that the port refused (DESIGN.md §3.4 rule 10). */
   overWidthRefusals: number
 }
@@ -107,6 +110,7 @@ async function runWalk(
     rollbacks: 0,
     rollbackFailures: 0,
     sagasEnded: 0,
+    haltsNamed: 0,
     overWidthRefusals: 0,
   }
   /** What the walk knows of each task's saga: its steps in start order, and what ran. */
@@ -116,6 +120,8 @@ async function runWalk(
   >()
   /** Tasks the walk saw enter the phase. One may since have ended by a cancel or a sweep. */
   const rolling = new Set<string>()
+  /** The failure of the rollback that ended a task, by task: the one its result must name. */
+  const haltedBy = new Map<string, string>()
   const sagaOf = (taskId: string) => {
     const known = sagas.get(taskId)
     if (known) return known
@@ -177,8 +183,11 @@ async function runWalk(
     if (step !== undefined && kind < 0.8) {
       const tries = (saga.tries.get(step) ?? 0) + 1
       const halts = kind >= 0.7
-      const failed = await countIfHeld('rollbackFailures', () =>
-        f.store.failRollback(
+      // Each attempt's failure is its own, so a result that names another attempt's is seen.
+      const errorJson = JSON.stringify({ name: 'FuzzRollbackBoom', step, tries })
+      const answered: { outcome?: FailOutcome } = {}
+      const failed = await countIfHeld('rollbackFailures', async () => {
+        answered.outcome = await f.store.failRollback(
           Q,
           run.runId,
           run.claimToken,
@@ -186,14 +195,25 @@ async function runWalk(
           halts ? null : { delaySeconds: rng.int(5) + frac() },
           {
             key: `${SAGA_TRIES_PREFIX}${step}`,
-            stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"FuzzRollbackBoom"}' }),
+            stateJson: encodeRollbackTry({ tries, errorJson }),
           },
-        ),
-      )
+        )
+      })
       if (failed) saga.tries.set(step, tries)
-      if (failed && halts) {
+      // The walk knows what it asked for, and the store says what it did. A pass that does
+      // not fit ends the task whatever was asked, and no delay of this walk fails to fit. So
+      // an answer other than what was asked for is the store's error: a saga it ended that
+      // was owed a retry, or one it kept rolling back that asked for none.
+      if (failed && answered.outcome?.rollingBack !== !halts) {
+        throw new Error(
+          `fuzz seed ${seed}: a failed rollback that asked for ${halts ? 'no retry' : 'a retry that fits'} was answered ${JSON.stringify(answered.outcome)}`,
+        )
+      }
+      // The store's answer says whether this failure ended the task.
+      if (failed && answered.outcome?.rollingBack === false) {
         stats.sagasEnded++
         rolling.delete(run.taskId)
+        haltedBy.set(run.taskId, errorJson)
       }
       return
     }
@@ -561,6 +581,20 @@ async function runWalk(
   const violations = await violationsNow()
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
+  }
+  // FailedOutcomeHonest, for the error beside the outcome: a result names a rollback error
+  // exactly when a rollback's failure ended the task, and the error is that rollback's. An
+  // attempt that failed with budget left, in a saga that something else then halted, is
+  // not it, and no row invariant can say so, because the error is derived when it is read.
+  // Every task the walk spawned is read, so a plain task is held to naming none.
+  for (const taskId of new Set(knownTasks)) {
+    const named = (await f.store.getTaskResult(Q, taskId))?.rollback?.errorJson
+    if (named !== haltedBy.get(taskId)) {
+      throw new Error(
+        `fuzz seed ${seed} final: task ${taskId} names the rollback error ${named}, and the rollback that ended it failed with ${haltedBy.get(taskId)}`,
+      )
+    }
+    if (named !== undefined) stats.haltsNamed++
   }
   // Progress floor: safety-only fuzz cannot see total loss of progress (a
   // fence regression making every transition a fenced no-op stays

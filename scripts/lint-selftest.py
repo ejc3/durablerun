@@ -1438,6 +1438,87 @@ def tree_store_with_a_typed_fragment(fragment: str) -> dict[str, str]:
     )
 
 
+def side_model_ledger() -> dict[str, str]:
+    """Two batches of a store, the main ledger that accounts for them, and a side model.
+
+    `scripts/tla.sh` enrols a side model by the mutant list beside it, and
+    `spec-ledger.py` reads the same enrolment.
+    """
+    return {
+        "packages/store-libsql/src/probe.ts": (
+            "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+            "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+        ),
+        "specs/Scheduler.tla": (
+            "---- MODULE Scheduler ----\n"
+            "\\* BATCH-LABEL LEDGER\n"
+            "\\* 'cancel-task' [read] -- excluded\n"
+            "\\* 'sweep:cancel' [read] -- excluded\n"
+            "\\* --------------------\n\n"
+            "====\n"
+        ),
+        "specs/Side.mutants.json": "[]\n",
+        "specs/Side.tla": (
+            "---- MODULE Side ----\n"
+            "\\* BATCH-LABEL LEDGER -- the batches that implement this model\n"
+            "\\* Modeled (a label and its condition, its actions, its class):\n"
+            "\\*   'cancel-task' -> EndChild  [read]  (prose may follow on the entry line,\n"
+            "\\*     and continue five spaces in)\n"
+            "\\*   'cancel-task', 'sweep:cancel' of the parent -> EndChild / WakeParent\n"
+            "\\* No batch (action -- reason):\n"
+            "\\*   LateEmit -- exists only for a probe\n"
+            "\\* --------------------\n\n"
+            "Next ==\n"
+            "  \\/ \\E o \\in Outcomes : EndChild(o) \\/ WakeParent(o)\n"
+            "  \\/ LateEmit\n\n"
+            "====\n"
+        ),
+    }
+
+
+def side_ledger_with(before: str, after: str) -> dict[str, str]:
+    """That fixture with one fragment of Side.tla changed."""
+    return replaced(side_model_ledger(), "specs/Side.tla", before, after)
+
+
+
+def side_ledger_borrowed(action: str) -> dict[str, str]:
+    """That fixture, with the main ledger mapping 'sweep:cancel' to `action`, and a Next of its own."""
+    mapped = replaced(
+        side_model_ledger(),
+        "specs/Scheduler.tla",
+        "\\* 'sweep:cancel' [read] -- excluded\n",
+        f"\\*   'sweep:cancel' -> {action}  [read]\n",
+    )
+    return replaced(mapped, "specs/Scheduler.tla", "====\n", "Next ==\n  \\/ TimeAdvance\n\n====\n")
+
+
+MAIN_LEDGER_ENTRIES = (
+    "\\*   'cancel-task' -> CancelExplicit  [cas-fenced]\n"
+    "\\*   'sweep:cancel' -> CancelSweep  [receipt]\n"
+)
+
+
+def main_ledger(
+    entries: str = MAIN_LEDGER_ENTRIES, markers: str = "fenceTwin('CancelExplicit')"
+) -> dict[str, str]:
+    """Two batches of a store, a Scheduler.tla whose Next holds two actions, the main
+    ledger that maps them, and a test file that carries `markers`."""
+    store_source = "packages/store-libsql/src/probe.ts"
+    return {
+        store_source: side_model_ledger()[store_source],
+        "packages/store-libsql/test/probe.test.ts": f"// {markers}\n",
+        "specs/Scheduler.tla": (
+            "---- MODULE Scheduler ----\n"
+            "\\* BATCH-LABEL LEDGER\n"
+            f"{entries}"
+            "\\* --------------------\n\n"
+            "Next ==\n"
+            "  \\/ \\E t \\in Tasks : CancelExplicit(t) \\/ CancelSweep(t)\n\n"
+            "====\n"
+        ),
+    }
+
 # Each case: (lint script, fixture files, exact verdict marker, why it must be rejected).
 BAD_CASES = [
     (
@@ -2288,8 +2369,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2311,8 +2392,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2332,8 +2413,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2353,8 +2434,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2374,8 +2455,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2395,8 +2476,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2419,8 +2500,8 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
-                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
+                "\\* 'sweep:cancel' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2449,7 +2530,7 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2495,7 +2576,7 @@ export class S {
             "specs/Scheduler.tla": (
                 "---- MODULE Scheduler ----\n"
                 "\\* BATCH-LABEL LEDGER\n"
-                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'cancel-task' [read] -- excluded\n"
                 "\\* --------------------\n\n"
                 "====\n"
             ),
@@ -2526,6 +2607,226 @@ export class S {
         },
         "batch call shape is opaque",
         "a typed fenced parameter cannot remain authorized after reassignment",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* 'cancel-task' [read] -- excluded\n",
+            "\\* 'cancel-task' -- excluded\n",
+        ),
+        "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
+        "a label whose line in the main ledger states no class must fail",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* 'cancel-task' [read] -- excluded\n",
+            "\\* 'cancel-task' [read] [receipt] -- excluded\n",
+        ),
+        "label 'cancel-task' has no (or ambiguous) duplicate-semantics",
+        "a label whose line in the main ledger states two classes must fail",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(
+            side_model_ledger(),
+            "specs/Scheduler.tla",
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' [read] -- excluded\n"
+            "\\* 'sweep:cancel' [read] -- excluded\n",
+            "\\* prose that names the BATCH-LABEL LEDGER and quotes 'sweep:cancel' [read]\n"
+            "\\* BATCH-LABEL LEDGER\n\\* 'cancel-task' [read] -- excluded\n",
+        ),
+        "batch label 'sweep:cancel' is not in the ledger block",
+        "prose that names the block must not start it, or a label that prose quotes counts as mapped",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("\\* No batch", "\\*   'renamed-away' -> EndChild\n\\* No batch"),
+        "'renamed-away', which is not a batch label of any store",
+        "a label renamed or deleted in the stores must not leave a side model's mapping reading as current",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("EndChild(o) \\/", "EndedChild(o) \\/"),
+        "names action 'EndChild', which is not an action of",
+        "an action renamed in a side model and not in its ledger block leaves a mapping onto nothing",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("\\*   LateEmit -- exists only for a probe\n", ""),
+        "action 'LateEmit' of Side.tla's next-state relation is not in its ledger block",
+        "every action of a side model's next-state relation is mapped from a batch or listed as having none",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("[read]  (prose", "[read] [receipt]  (prose"),
+        "states at most one duplicate-semantics class",
+        "a side model's entry that states two classes states none",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("[read]", "[raed]"),
+        "states at most one duplicate-semantics class",
+        "a misspelt class on a side model's entry must not read as an entry that states no class",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("[read]", "[receipt]"),
+        "so the two must agree",
+        "a label's class is the main ledger's, and a side model's copy of it must not drift",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("BATCH-LABEL LEDGER", "Ledger"),
+        "Side.tla has no BATCH-LABEL LEDGER block",
+        "a side model that tla.sh checks must not keep its mapping where nothing reads it",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("-> EndChild / WakeParent\n", "-> EndChild /\n\\*     WakeParent\n"),
+        "cannot read this line of Side.tla's ledger block",
+        "an action list wrapped onto a continuation line must fail, because a line-oriented reader would drop its tail",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("\\*   LateEmit --", "\\*    LateEmit --"),
+        "cannot read this line of Side.tla's ledger block",
+        "an entry indented as neither an entry nor its continuation must not pass as prose",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ (LateEmit /\\ TRUE)\n"),
+        "cannot read Side.tla's next-state relation",
+        "a next-state relation the reader cannot enumerate must fail closed, not read as a model with fewer actions",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("LateEmit -- exists", "LateEmit / EndChild -- exist"),
+        "and also lists it as having no batch",
+        "an action cannot both be mapped from a batch and have no batch",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            rel: body
+            for rel, body in side_model_ledger().items()
+            if rel != "specs/Side.tla"
+        },
+        "enrols Side.tla, which does not exist",
+        "a mutant list that enrols no module must be named, not crash the reader",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\n  \\/ BrandNew\n"),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a blank line inside Next must not end the reading, or the actions after it are held to nothing",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "  \\/ LateEmit\n", "  \\/ LateEmit\n\\* a comment at the margin\n  \\/ BrandNew\n"
+        ),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a comment at the margin inside Next must not end the reading",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\t\\/ BrandNew\n"),
+        "action 'BrandNew' of Side.tla's next-state relation is not in its ledger block",
+        "a disjunct indented with a tab is a disjunct, and must be read",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with("  \\/ LateEmit\n", "  \\/ LateEmit\n\n  /\\ EndChild(o)\n"),
+        "this part of Next is not a named action",
+        "a line inside Next that is no disjunct must be refused by name, wherever it stands",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "[read]  (prose may follow on the entry line,\n\\*     and continue",
+            "(prose may follow on the entry line,\n\\*     [receipt] and continue",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a class wrapped onto the continuation line must not go unread, here one the main ledger does not give",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "[read]  (prose may follow on the entry line,\n\\*     and continue",
+            "(prose may follow on the entry line,\n\\*     [raed] and continue",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a misspelt class wrapped onto the continuation line must not go unread",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\*     and continue five spaces in)\n",
+            "\\*     and continue five spaces in)\n\\*     'sweep:cancel' -> EndChild  [receipt]\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a whole entry written five spaces in must not pass as prose, here with a class the main ledger does not give",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\*     and continue five spaces in)\n",
+            "\\*     and continue five spaces in)\n\\*     'sweep:cancel' -> NoSuchAction  [read]\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a whole entry written five spaces in must not pass as prose, here naming an action that does not exist",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\* No batch (action -- reason):\n",
+            "\\* 'sweep:cancel' -> NoSuchAction\n\\* No batch (action -- reason):\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "an entry written one space in must not pass as prose",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(MAIN_LEDGER_ENTRIES.replace("CancelSweep", "CancelGone")),
+        "maps 'sweep:cancel' to 'CancelGone', which is not an action of",
+        "a name the main ledger maps a label to must be an action of Scheduler's next-state relation",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(
+            MAIN_LEDGER_ENTRIES.replace("CancelExplicit", "CancelRun"), "fenceTwin('CancelRun')"
+        ),
+        "maps 'cancel-task' to 'CancelRun', which is not an action of",
+        "a twin carried under a name that is no action proves nothing about the actions behind it",
+    ),
+    (
+        "spec-ledger.py",
+        replaced(main_ledger(), "specs/Scheduler.tla", "Next ==\n", "Step ==\n"),
+        "cannot read Scheduler.tla's next-state relation",
+        "a main ledger that maps actions needs a Next to hold them to, and a missing one must not pass",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_borrowed("LateEmit"),
+        "maps 'sweep:cancel' to 'LateEmit', which is not an action of",
+        "the main ledger borrows a side model's action only from the label that side block maps to it",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(markers="no marker"),
+        "fenced action 'CancelExplicit' has no executable twin",
+        "a fenced action of the main ledger with no marker on any test must fail",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(markers="fenceTwin('CancelExplicit') fenceTwin('Gone')"),
+        "fenceTwin('Gone') marks an action that is not a",
+        "a marker for an action the main ledger does not fence must fail",
     ),
     (
         "batch-lint.py",
@@ -4308,6 +4609,29 @@ const pattern = /this\.db\.batch\(/
             "apps/fixture/src/view.tsx": "export const View = () => <p>it's done</p>\n",
         },
         "JSX text in a .tsx source that names no outcome column is not a violation",
+    ),
+    (
+        "spec-ledger.py",
+        side_model_ledger(),
+        "a side model whose block maps real labels onto every action of its next-state relation",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "  \\/ LateEmit\n",
+            "\n\\* a comment at the margin\n  \\* and a comment inside\n  \\/ LateEmit\n",
+        ),
+        "blank lines and comments inside Next are passed over, and the actions after them are read",
+    ),
+    (
+        "spec-ledger.py",
+        main_ledger(),
+        "a main ledger whose every name is an action of Scheduler's next-state relation, its fenced one marked",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_borrowed("WakeParent"),
+        "the main ledger names a side model's action from the label that side block maps to it",
     ),
 ]
 
@@ -6748,7 +7072,7 @@ ledger_no_bytecode = run(
         "specs/Scheduler.tla": (
             "---- MODULE Scheduler ----\n"
             "\\* BATCH-LABEL LEDGER\n"
-            "\\* 'read-probe' -> excluded [read]\n"
+            "\\* 'read-probe' [read] -- excluded\n"
             "\\* --------------------\n\n"
             "====\n"
         ),
