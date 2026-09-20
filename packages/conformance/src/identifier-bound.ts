@@ -126,18 +126,21 @@ async function refusalsAtEveryEntry(
  * makes all its calls at once, which is right over a recorder and wrong over a database:
  * there they would race, and one that refused while another was awaited would be
  * reported as unhandled. Over this store they run one at a time, in the order read.
+ * The store itself answers no `then`: a proxy that answered one would be a thenable, and
+ * awaiting it, or returning it from an async function, would never resolve.
  */
 function oneAtATime(store: SchedulerStore): SchedulerStore {
   return new Proxy(store, {
-    get:
-      (target, method) =>
-      (...args: unknown[]) => ({
-        // biome-ignore lint/suspicious/noThenProperty: a call that starts when it is awaited is a thenable
-        then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
-          (Reflect.get(target, method) as (...values: unknown[]) => Promise<unknown>)
-            .apply(target, args)
-            .then(resolve, reject),
-      }),
+    get: (target, method) =>
+      method === 'then'
+        ? undefined
+        : (...args: unknown[]) => ({
+            // biome-ignore lint/suspicious/noThenProperty: a call that starts when it is awaited is a thenable
+            then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+              (Reflect.get(target, method) as (...values: unknown[]) => Promise<unknown>)
+                .apply(target, args)
+                .then(resolve, reject),
+          }),
   })
 }
 

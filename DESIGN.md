@@ -750,13 +750,18 @@ One invocation executes one claimed run to its next suspension point:
     string and may spell a state, and `deferLaunch`, `reschedule` and
     `suspendRun` bind it in the filter of the copy, so a run nobody has is
     answered with `LeaseLostError` whatever its id spells. Anything else below
-    the value is read whole, as an operand of what the column receives. The
-    rule reads declared nodes, so three things are beyond it: a batch that
+    the value is read whole, as an operand of what the column receives. Of a
+    derived or joined table it reads every column, whichever one the outer
+    query takes, so there it refuses more than it must. The
+    rule reads declared nodes, so four things are beyond it: a batch that
     names the wrong task, a value that produces a terminal state and names
     none, which is the copy of a stored state, even one whose own filter lets
-    a terminal run through alone, and a state the database assembles from
-    pieces that name none. Every shipped copy reads a run the batch left live,
-    and no shipped statement assembles a state. An insert
+    a terminal run through alone, a state the database assembles from
+    pieces that name none, and the state of an INSERT ... SELECT that names it
+    in a table its own SELECT reads from or joins, because for an INSERT the
+    rule reads the selection at the state's position and not that SELECT's
+    sources. Every shipped copy reads a run the batch left live, no shipped
+    statement assembles a state, and spawn names `pending` itself. An insert
     that writes nothing passes every row-count audit, so what holds those is
     `childTaskViolations`, which runs after every case of the surface, over
     every terminal label, in the fuzz, and in the SDK harness.

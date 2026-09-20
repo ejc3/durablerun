@@ -1913,8 +1913,9 @@ describe('FencedBatch tree statements', () => {
     })
   })
 
-  describe('what reading only what a column receives still does not check', () => {
-    // Each exhibit is ACCEPTED and SENT, beside a control the rule refuses.
+  describe('where reading only what a column receives stops', () => {
+    // Each exhibit but the last is ACCEPTED and SENT, beside a control the rule refuses. The
+    // last is refused where it need not be, beside a control the rule accepts.
     const ending = (state: (eb: Loose) => unknown) =>
       withCas().followOnTree(
         'task',
@@ -1952,6 +1953,80 @@ describe('FencedBatch tree statements', () => {
       expect(await sends(ending(pinned))).toEqual(['update "runs" ', 'update "tasks"'])
     })
 
+    it('accepts an INSERT whose state comes from a table its own SELECT joins, which names the state there', async () => {
+      /** A follow-on INSERT of a task, selected from the run this batch stamped. */
+      const inserting = (from: (select: Loose, eb: Loose) => Loose, state: (eb: Loose) => Loose) =>
+        withCas().followOnTree(
+          'child',
+          statement(
+            loose
+              .insertInto('tasks')
+              .columns([
+                'task_id',
+                'queue',
+                'task_name',
+                'params',
+                'retry_strategy',
+                'max_attempts',
+                'state',
+                'attempts',
+                'infra_retries',
+                'enqueue_at_ms',
+                'created_at_ms',
+                'fence_stamp',
+                'fence_at_ms',
+              ])
+              .expression((outer: Loose) =>
+                from(outer.selectFrom('runs as f'), outer)
+                  .select((eb: Loose) => [
+                    eb.val('t9').as('task_id'),
+                    eb.ref('f.queue').as('queue'),
+                    eb.val('job').as('task_name'),
+                    eb.val('{}').as('params'),
+                    eb.val('{}').as('retry_strategy'),
+                    eb.val(1).as('max_attempts'),
+                    aliasedAs(state(eb), 'state'),
+                    eb.val(0).as('attempts'),
+                    eb.val(0).as('infra_retries'),
+                    eb.ref('f.fence_at_ms').as('enqueue_at_ms'),
+                    eb.ref('f.fence_at_ms').as('created_at_ms'),
+                    aliasedAs(stampValue, 'fence_stamp'),
+                    eb.ref('f.fence_at_ms').as('fence_at_ms'),
+                  ])
+                  .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
+              ),
+          ),
+          'one',
+        )
+      // The control: the INSERT's SELECT names the state where the column takes it.
+      await expect(
+        sends(
+          inserting(
+            (select) => select,
+            (eb) => eb.val('failed'),
+          ),
+        ),
+      ).rejects.toThrow(OWES)
+      // The exhibit: the column takes `d.named`, and the name stands in a derived table the
+      // INSERT's own SELECT joins. For an INSERT the rule reads the selection at the state's
+      // position and never what that SELECT reads its rows from, as it never did. A subquery
+      // given as the value has its sources read, and this one is no subquery: it is the
+      // statement. No shipped statement has the shape, and spawn names `pending` itself.
+      const naming = (eb: Loose) =>
+        eb
+          .selectFrom('runs as g')
+          .select(['g.run_id as id', eb.val('failed').as('named')])
+          .as('d')
+      expect(
+        await sends(
+          inserting(
+            (select, eb) => select.innerJoin(naming(eb), 'd.id', 'f.run_id'),
+            (eb) => eb.ref('d.named'),
+          ),
+        ),
+      ).toEqual(['update "runs" ', 'insert into "t'])
+    })
+
     it('accepts a state the database assembles from pieces that name none', async () => {
       // The control: the whole name, as one operand, is read.
       const whole = (eb: Loose) => eb(eb.val('failed'), '||', eb.val(''))
@@ -1959,6 +2034,25 @@ describe('FencedBatch tree statements', () => {
       // The exhibit: no node names a state, and the database joins two that do not.
       const pieces = (eb: Loose) => eb(eb.val('fai'), '||', eb.val('led'))
       expect(await sends(ending(pieces))).toEqual(['update "runs" ', 'update "tasks"'])
+    })
+
+    it('refuses a copy of one column of a derived table when another column of it names a terminal state', async () => {
+      const columns = (unused: string) => (eb: Loose) =>
+        eb
+          .selectFrom(
+            eb
+              .selectFrom('runs as g')
+              .select([eb.val('pending').as('live'), eb.val(unused).as('unused')])
+              .as('d'),
+          )
+          .select('d.live')
+      // The control: no column of the derived table names a terminal state.
+      expect(await sends(ending(columns('sleeping')))).toEqual(['update "runs" ', 'update "tasks"'])
+      // The exhibit: the task can only become pending, and the batch is held to a completion
+      // event all the same. The rule reads every column a derived or joined table selects,
+      // and not only the one the outer query takes, so it refuses more than it must. It
+      // errs toward the refusal a developer sees at once, and no store builds the shape.
+      await expect(sends(ending(columns('failed')))).rejects.toThrow(OWES)
     })
   })
 
