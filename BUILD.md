@@ -136,7 +136,17 @@ a last docs PR gives a live owner to every open bullet that is left.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
    the test id source, the admin's version read and versioned write, the
    fixture's corruption-table switch, and the stores' dialect-free
-   declarations. The PR lists the declarations it moved.
+   declarations. The PR lists the declarations it moved. This is met. The test
+   id source is `testIdSource` in `@durablerun/core/testing`, which
+   store-libsql's released testing entry re-exports. The version read, the
+   versioned write and the check at the end of `migrate()` are
+   `readSchemaVersion`, `applyVersionedWrite` and `requireCurrentSchemaVersion`
+   in core's `schema-version.ts`, and libSQL, which wrote the versioned write
+   inline, calls it too. The switch is `corruptionTarget` in the conformance
+   package's `fixture.ts`. Eleven declarations of `store.ts` moved into core
+   under their own names. No statement changed: the SQL corpus is main's on
+   all three dialects, and each store's harvested text labels still equal
+   `scripts/text-statements.json`.
 7. PR3.14b: the three statements of `claim` that select their source rows by
    queue and state are measured on libSQL beside 100, 1,000, 10,000, and 40,000
    running runs of the claim's queue. Either they are keyed, and the three
@@ -2910,10 +2920,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
     table: with a limit of one at five rows and fewer, and with a limit of
     half the table at 20, 120, and 400 rows, where a quarter of the table
     was still read by key. The plan tests say so and do not pin it.
-  - Deferred from PR4.3: third copies. The test id source, the admin's
-    version read and versioned write, the fixture's corruption-table switch,
-    and the store's dialect-free declarations are now in three packages.
-    Hoisting them is one change to all three stores.
+  - PR4.4d, DONE. The third copies this bullet deferred from PR4.3 each exist
+    once, where a fourth dialect inherits them. The test id source is in core's
+    testing entry. The admin's version read, its versioned write and
+    `migrate()`'s closing check are in core's `schema-version.ts`: the read
+    takes the dialect's own labeled batch as a closure, so the label and the
+    SQL text stay in each `admin.ts`, where the label harvest and each
+    dialect's executor read them. libSQL wrote the versioned write inline, as
+    the shared function at a minimum of 0 and of N, and now calls it. The
+    fixtures' corruption-table switch is `corruptionTarget` in the conformance
+    package. Eleven declarations of `store.ts` that held no SQL text and
+    imported nothing of their dialect are in core under the same names, each
+    beside a neighbour that was already on core's main entry point. What is
+    SQL text stays in the dialect even where three stores spell it alike:
+    each bootstrap, MySQL's one-statement bootstrap and named lock,
+    PostgreSQL's table lock, each version's batch, every fragment, and every
+    member of the three store classes. `migrate()` keeps its control flow for
+    PR4.4b. Sixteen registered mutations follow their lines, carried by the
+    base gate's arm, and the pull request registers none.
+  - An option, not built: a check that a re-aim cannot widen a mutant or make
+    two entries one. PR4.4d's hoist put four entries of three files on one
+    shared line. Two became one mutant and one grew wider, and only the review
+    saw it, because a replacement's text says nothing of its reach on a line
+    with more callers. The check is differential: apply the base's entry at
+    the base and the re-aimed entry at the head, run both against one recorded
+    set of scenarios, and require the same scenarios to break, and different
+    ones for entries that share a find. Its trigger is the next hoist that
+    moves registered lines of several files onto one line.
   - PR4.4c, DONE. The generated surface, `self-concurrency`, in the shared
     suite on all three dialects, races every call of the store's two ports
     against copies of itself. PR #50 and PR4.3 had each found a transition no
@@ -3377,14 +3410,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Its trigger is a MySQL version that takes locks on more than one table at
     once, and `store-postgres/test/deadlocked-read.test.ts` is the shape to
     port.
-  - An option, not built: one definition of the refusal for a schema newer than
-    the build. Each of the three stores builds that message and has a case for
-    it, where main already had the older message three times. A helper in core
-    beside `SchemaMismatchError` would be the single definition. libSQL's
-    `migration-postcondition-old-version` mutation finds its text in that
-    file, so the move needs a re-aim and a line in the base gate's bridge. It
-    fits PR4.4d, which hoists the stores' third copies, and a fourth store is
-    its trigger otherwise.
+  - Done in PR4.4d: one definition of the refusal for a schema newer than the
+    build, and of the older refusal beside it. The three stores built both
+    messages, byte for byte alike. They are `requireCurrentSchemaVersion` in
+    core's `schema-version.ts`, which each `migrate()` calls last. libSQL's
+    `migration-postcondition-old-version` mutation followed its line there,
+    with the re-aim in the base gate's bridge that this bullet foresaw.
   - An option, not built: a short `lock_timeout` on the version's lock
     statement, with reruns. The version then gives up its place in every lock
     queue when it cannot have the locks at once, where today store traffic

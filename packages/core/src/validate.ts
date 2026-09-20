@@ -13,6 +13,7 @@
 import { IDENTIFIER_CHARACTERS, INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
 import { FatalTaskError, InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
+import type { SqlRow } from './primitives.js'
 
 const {
   ArrayIsArray: isArray,
@@ -29,6 +30,7 @@ const {
   ObjectDefineProperty: defineProperty,
   ObjectFreeze: freeze,
   ObjectGetPrototypeOf: getPrototypeOf,
+  ObjectHasOwn: objectHasOwn,
   ObjectKeys: objectKeys,
   ObjectPrototype: objectPrototype,
   RangeError: TrustedRangeError,
@@ -85,6 +87,13 @@ export function requireEpochMs(name: string, epochMs: number): number {
   }
   return epochMs
 }
+
+/**
+ * The own-property check a store classifies a wake by, captured before task code runs. A
+ * wake is relative when `inSeconds` is its own property. Task code shares the realm and
+ * could add an inherited one, which must not choose the statement a store builds.
+ */
+export const wakeHasOwn = objectHasOwn
 
 /**
  * A million. Every count that crosses this port ends up bounding a run
@@ -245,6 +254,11 @@ export const POSITIVE_CLAIM_GENERATION_BOUNDS = refineIntegerBounds(
   PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
   { min: 1 },
 )
+
+/** One table's persisted integer bounds, under the names every store's statements read them by. */
+export const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
+export const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
+export const CHECKPOINT_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.checkpoints
 
 type PersistedCounterFieldContract =
   | Readonly<{
@@ -640,6 +654,44 @@ export function decodeBoundedInteger(value: unknown, bounds: IntegerBounds): Bou
     return { ok: false, reason: 'out-of-range', exact }
   }
   return { ok: true, value: toNumber(exact), exact }
+}
+
+/**
+ * Decode one persisted field through the bounds branded for that exact field.
+ *
+ * The query supplies only its row and a field descriptor. The descriptor owns
+ * both the row key and the interval, so a caller cannot decode one property
+ * through another property's coincidentally equal bounds.
+ */
+export function persistedRowInteger(
+  scope: string,
+  row: SqlRow,
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+): number {
+  return decodePersistedRowInteger(scope, row, bounds)
+}
+
+/** A stored claim generation, which is one or more on every run a claim or a sweep reads. */
+export function persistedPositiveClaimGeneration(scope: string, row: SqlRow): number {
+  return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
+}
+
+function decodePersistedRowInteger(
+  scope: string,
+  row: SqlRow,
+  bounds: PersistedIntegerBounds,
+): number {
+  const separator = bounds.field.indexOf('.')
+  if (separator < 0 || separator === bounds.field.length - 1) {
+    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
+  }
+  const column = bounds.field.slice(separator + 1)
+  const value = row[column]
+  const decoded = decodeBoundedInteger(value, bounds)
+  if (decoded.ok) return decoded.value
+  throw new RangeError(
+    `${scope}.${column} must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
+  )
 }
 
 function requireBrandedInteger(

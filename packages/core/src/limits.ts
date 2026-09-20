@@ -38,3 +38,10 @@ export async function mapLimit<T, R>(
   if (failure !== undefined) throw failure.error
   return results
 }
+
+/**
+ * The sweep runs its per-item batches at most this many at once through
+ * `mapLimit`. The fencing discipline requires per-item atomicity, never
+ * sequential issuance.
+ */
+export const SWEEP_PIPELINE_WIDTH = 8

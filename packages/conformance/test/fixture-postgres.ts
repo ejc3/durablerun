@@ -9,6 +9,7 @@ import {
   type StorageCorruptionAttempt,
   type StoreFixture,
   type StoreFixtureOptions,
+  corruptionTarget,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
@@ -52,41 +53,7 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
   const assignment =
     corruption.invalidRepresentation === 'non-text' ? "convert_from(CAST(? AS BYTEA), 'UTF8')" : '?'
 
-  let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
-  let where: string
-  let identityArgs: string[]
-  switch (corruption.table) {
-    case 'tasks':
-      table = 'tasks'
-      where = 'task_id = ?'
-      identityArgs = [corruption.taskId]
-      break
-    case 'runs':
-      table = 'runs'
-      where = 'run_id = ?'
-      identityArgs = [corruption.runId]
-      break
-    case 'checkpoints':
-      table = 'checkpoints'
-      where = 'task_id = ? AND checkpoint_name = ?'
-      identityArgs = [corruption.taskId, corruption.checkpointName]
-      break
-    case 'events':
-      table = 'events'
-      where = 'queue = ? AND event_name = ?'
-      identityArgs = [corruption.queue, corruption.eventName]
-      break
-    case 'waits':
-      table = 'waits'
-      where = 'run_id = ? AND step_name = ?'
-      identityArgs = [corruption.runId, corruption.stepName]
-      break
-    case 'drivers':
-      table = 'drivers'
-      where = 'queue = ? AND driver_id = ?'
-      identityArgs = [corruption.queue, corruption.driverId]
-      break
-  }
+  const { table, where, identityArgs } = corruptionTarget(corruption)
 
   return {
     statements: [

@@ -313,19 +313,6 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def exempt(repaired, candidate, markers):
-              # Exempt verdict markers this tree registers and the base registry predates.
-              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(table) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              entries = ''.join(
-                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                  for marker in markers
-              )
-              return repaired.replace(table, table + entries)
           def reaim_entry(repaired, candidate, name):
               # Replace one entry of the base registry with this tree's entry of the same name, for a
               # mutation whose target line this tree rewrote. Its name must stand, and so must
@@ -351,32 +338,43 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '1ec3adc9e2874631b162580b2c774804c19ac53cadc5dffca6a3a55722323aa7':
-              # Five base entries name text this tree rewrote, and each mutant bends the same
-              # condition as before. An event name carries the task of a completion event, so
-              # the two messages about a stored payload that is not text are built from its
-              # display form, and the line that mints a caller's name passes a null task. A
-              # port's refusal of a reserved name or key is a class of its own, so the refusal
-              # of a key together with childOf names that class, and the hosted route's
-              # reserved-key answer moved from a rule of its own to the one mapping of the
-              # family. Five mutations are new, one for each guard this tree added, and each
-              # answers to a verdict marker that is newer than the base. No entry was retired.
+          if digest == 'ad98c88952cc01f4d80c3fd383e91ad453a9c22214b4731da36246ddef2fea29':
+              # Four kinds of code that the three store packages each held a copy of now exist once,
+              # and sixteen base entries follow their lines: the test id source into core's testing
+              # module, the claimed run's row decoders into core's validate.ts and claim-receipt.ts,
+              # and the admin's version read, versioned write and post-condition into core's
+              # schema-version.ts. Twelve are the mutants they were. The four that guard a lost
+              # bootstrap now find the one line that decides it for every dialect. In the base two of
+              # them are one defect, never forgive, in two dialects' files, which one line would make
+              # one mutant, so libSQL's now forgives only at exactly the target version. libSQL's
+              # rethrow entry reads an absent version as zero, which keeps its width on a line that
+              # also serves the version writes. All four descriptions now describe a shared line.
+              # A seventeenth entry stays in libSQL's store and changes its replacement only. Its
+              # mutant handed the ambient JSON.stringify a value from core's captured parser, which
+              # that file imported for the decoder that left, and now parses with the ambient
+              # JSON.parse. This tree registers no mutation the base predates, so nothing is
+              # exempted and that helper left the step.
               repaired = previous
               for name in (
-                  'child-await-hit-error-names-the-task',
-                  'child-await-recording-error-names-the-task',
-                  'event-name-is-a-durable-string',
-                  'hosted-enqueue-refuses-reserved-key',
-                  'spawn-child-key-excludes-a-caller-key',
+                  'test-token-source-monotonic',
+                  'test-token-source-valid-serial',
+                  'persisted-row-rejects-spread-descriptor',
+                  'claim-retry-captured-parser',
+                  'claim-headers-captured-parser',
+                  'retry-persisted-normalization',
+                  'schema-absence-is-typed',
+                  'schema-version-missing-result',
+                  'schema-version-extra-results',
+                  'schema-version-missing-row',
+                  'schema-version-extra-rows',
+                  'libsql-bootstrap-loss-forgiven',
+                  'libsql-bootstrap-failure-rethrown',
+                  'postgres-bootstrap-loss-forgiven',
+                  'mysql-bootstrap-loss-forgiven',
+                  'migration-postcondition-old-version',
+                  'spawn-headers-captured-serializer',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
-              repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:behavior:recording-statement-takes-a-completion-event-only',
-                  'mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal',
-                  'mutation-verdict:behavior:history-helper-runs-the-child-task-checker',
-                  'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run',
-                  'mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled',
-              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

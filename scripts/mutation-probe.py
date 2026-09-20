@@ -3049,7 +3049,7 @@ MUTATION_SPECS = [
     ),
     (
         "persisted-row-rejects-spread-descriptor",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/validate.ts",
         "export function persistedRowInteger(\n"
         "  scope: string,\n"
         "  row: SqlRow,\n"
@@ -3806,14 +3806,14 @@ MUTATION_SPECS = [
     ),
     (
         "test-token-source-monotonic",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (proposed <= tokens) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a duplicate proposed serial",
     ),
     (
         "test-token-source-valid-serial",
-        "packages/store-libsql/src/testing.ts",
+        "packages/core/src/testing.ts",
         "      if (!Number.isSafeInteger(proposed)) {\n",
         "      if (false) {\n",
         "the test token sequencer exposes a non-integer or unsafe proposed serial",
@@ -3827,63 +3827,63 @@ MUTATION_SPECS = [
     ),
     (
         "schema-absence-is-typed",
-        "packages/store-libsql/src/admin.ts",
-        "      if (error instanceof SchemaNotInitializedError) return null",
-        "      if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
+        "packages/core/src/schema-version.ts",
+        "    if (error instanceof SchemaNotInitializedError) return null",
+        "    if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
         "schema-version-missing-result",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length === 0) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length === 0) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "an absent schema-version result is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-results",
-        "packages/store-libsql/src/admin.ts",
-        "    const result = results.length === 1 ? results[0] : undefined\n",
-        "    if (results.length > 1) return 0\n"
-        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const result = results.length === 1 ? results[0] : undefined\n",
+        "  if (results.length > 1) return 0\n"
+        "  const result = results.length === 1 ? results[0] : undefined\n",
         "duplicated schema-version results are interpreted as a fresh database",
     ),
     (
         "schema-version-missing-row",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length === 0) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length === 0) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "an absent schema-version row is interpreted as a fresh database",
     ),
     (
         "schema-version-extra-rows",
-        "packages/store-libsql/src/admin.ts",
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
-        "    if (result !== undefined && result.rows.length > 1) return 0\n"
-        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "packages/core/src/schema-version.ts",
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "  if (result !== undefined && result.rows.length > 1) return 0\n"
+        "  const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
         "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
         "libsql-bootstrap-loss-forgiven",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        throw error\n",
-        "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version === minimumVersion) return\n",
+        "a migrator whose bootstrap lost to a winner that went on past version zero is rejected: the recovery every dialect shares forgives a failed write only at exactly its target version",
     ),
     (
         "libsql-bootstrap-failure-rethrown",
-        "packages/store-libsql/src/admin.ts",
-        "        if ((await this.readSchemaVersion()) === null) throw error\n",
-        "        if ((await this.readSchemaVersion()) === undefined) throw error\n",
-        "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if ((version || 0) >= minimumVersion) return\n",
+        "a bootstrap that failed with nothing committed is swallowed and migration runs on: the recovery every dialect shares reads an absent version as zero",
     ),
     (
         "postgres-bootstrap-loss-forgiven",
-        "packages/store-postgres/src/admin.ts",
-        "      if (version !== null && version >= minimumVersion) return\n",
-        "      if (version !== null && version > minimumVersion) return\n",
-        "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+        "packages/core/src/schema-version.ts",
+        "    if (version !== null && version >= minimumVersion) return\n",
+        "    if (version !== null && version > minimumVersion) return\n",
+        "a migrator whose own bootstrap committed and lost only its answer is rejected: the recovery every dialect shares forgives a failed write only past its target version",
     ),
     (
         "postgres-version-read-isolation",
@@ -3936,9 +3936,9 @@ MUTATION_SPECS = [
     ),
     (
         "migration-postcondition-old-version",
-        "packages/store-libsql/src/admin.ts",
-        "    if (version !== CURRENT_SCHEMA_VERSION) {",
-        "    if (version > CURRENT_SCHEMA_VERSION) {",
+        "packages/core/src/schema-version.ts",
+        "  if (version !== current) {",
+        "  if (version > current) {",
         "a committed migration can leave the recorded version behind and still report success",
     ),
     (
@@ -4013,20 +4013,20 @@ MUTATION_SPECS = [
         "      headersInput === undefined\n"
         "        ? null\n"
         "        : JSON.stringify(\n"
-        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
+        "            JSON.parse(serializeTaskValue('task headers', headersInput)),\n"
         "          )",
         "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
         "claim-retry-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
         "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
         "claim retry decoding resolves ambient JSON.parse after the durable guard",
     ),
     (
         "claim-headers-captured-parser",
-        "packages/store-libsql/src/store.ts",
+        "packages/core/src/statements/claim-receipt.ts",
         "      row.headers === null\n"
         "        ? {}\n"
         "        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),",
@@ -5673,7 +5673,7 @@ MUTATION_SPECS.extend(
         ),
         (
             "retry-persisted-normalization",
-            "packages/store-libsql/src/store.ts",
+            "packages/core/src/statements/claim-receipt.ts",
             "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
             "    retryStrategy: parseTaskValueJson(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
             "claim exposes unchecked durable retry JSON",
@@ -7438,10 +7438,10 @@ MUTATION_SPECS.extend(
         ),
         (
             "mysql-bootstrap-loss-forgiven",
-            "packages/store-mysql/src/admin.ts",
-            "      if (version !== null && version >= minimumVersion) return\n",
-            "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
-            "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+            "packages/core/src/schema-version.ts",
+            "    if (version !== null && version >= minimumVersion) return\n",
+            "    if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
+            "a migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded: the recovery every dialect shares forgives no failed write",
         ),
         (
             "mysql-only-an-insert-counts-twice",
