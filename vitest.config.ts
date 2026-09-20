@@ -12,6 +12,7 @@ const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
     'packages/store-postgres/test/query-plans.test.ts',
     'packages/store-postgres/test/racing-migrators.test.ts',
     'packages/store-postgres/test/text-collation.test.ts',
+    'packages/store-postgres/test/version-lock-order.test.ts',
   ],
   mysql: [
     'packages/store-mysql/test/real-server.test.ts',
