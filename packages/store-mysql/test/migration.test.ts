@@ -443,3 +443,83 @@ describe('a MySQL migrator beside one of the released build', () => {
     }
   }, 60_000)
 })
+
+describe('a MySQL database where an event already holds SQL NULL', () => {
+  // The port cannot write this row, so it is a foreign writer's or tampering. Version 10
+  // makes the payload NOT NULL.
+  const FOREIGN_WRITE = text(
+    "INSERT INTO events (queue, event_name, payload, emitted_at_ms) VALUES ('q', 'held-null', NULL, 1)",
+  )
+  const observed = async (db: TestDb) => {
+    const session = await sessionOn(db)
+    try {
+      return {
+        version: (await one(session, RELEASED_VERSION_READ)).value,
+        column: (
+          await one(
+            session,
+            `SELECT is_nullable AS nullable FROM information_schema.columns
+              WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
+          )
+        ).nullable,
+        held: (await one(session, "SELECT payload FROM events WHERE event_name = 'held-null'"))
+          .payload,
+      }
+    } finally {
+      await session.end()
+    }
+  }
+
+  it('stops at the version before, and leaves the column nullable and the row as it was', async () => {
+    // The server refuses the change with error 1138, and only because the executor sets a
+    // strict mode on every connection it takes: the next case is the same change without one.
+    const db = await databaseAt(9, 'null-payload-refused')
+    try {
+      await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
+      const refusal = await new MysqlStoreAdmin(db.raw).migrate().then(
+        () => 'resolved',
+        (error: unknown) => /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+      )
+      const stopped = await observed(db)
+      await db.raw.batch('fixture:repair', [
+        text(`UPDATE events SET payload = '{"repaired":1}' WHERE payload IS NULL`),
+      ])
+      await new MysqlStoreAdmin(db.raw).migrate()
+
+      expect({ refusal, stopped, repaired: await observed(db) }).toEqual({
+        refusal: 'MySQL error 1138',
+        stopped: { version: '9', column: 'YES', held: null },
+        repaired: {
+          version: String(CURRENT_SCHEMA_VERSION),
+          column: 'NO',
+          held: '{"repaired":1}',
+        },
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('is given an empty string by the same change in a session with no strict mode', async () => {
+    // A fact about the server that the case above depends on. Outside a strict mode MySQL
+    // does not refuse to make a column NOT NULL over a row that holds NULL. It stores the
+    // column type's default where the NULL was, with a warning, and a waiter would then read
+    // a delivered event whose payload is not JSON. Version 10's statements are sent here as
+    // they are, over a session that the executor did not set up.
+    const db = await databaseAt(9, 'null-payload-no-strict-mode')
+    try {
+      await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
+      const session = await sessionOn(db)
+      try {
+        await session.query("SET SESSION sql_mode = ''")
+        const version10 = MIGRATIONS.find(({ version }) => version === 10)
+        for (const statement of version10?.statements ?? []) await session.query(statement)
+      } finally {
+        await session.end()
+      }
+      expect(await observed(db)).toEqual({ version: '9', column: 'NO', held: '' })
+    } finally {
+      await db.close()
+    }
+  })
+})

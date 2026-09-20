@@ -39,6 +39,83 @@ async function holdings(db: TestDb): Promise<string> {
 }
 
 describe('a PostgreSQL version that failed', () => {
+  it('stops at the version before over an event that holds SQL NULL, and leaves the row as it was', async () => {
+    // The port cannot write this row, so it is a foreign writer's or tampering. Version 10
+    // makes the payload NOT NULL, the column's own check refuses the row with SQLSTATE
+    // 23502, and the version is one transaction, so nothing of it is left.
+    class StoppedBeforeTheVersion extends Error {}
+    const db = await openPostgresTestDb({ idNamespace: 'null-payload-refused', migrate: false })
+    try {
+      const stopping: SqlExecutor = {
+        batch: async (label, statements, control) => {
+          if (label === 'migrate:v10') throw new StoppedBeforeTheVersion()
+          return db.raw.batch(label, statements, control)
+        },
+      }
+      await expect(new PostgresStoreAdmin(stopping).migrate()).rejects.toBeInstanceOf(
+        StoppedBeforeTheVersion,
+      )
+      await db.raw.batch('fixture:foreign-writer', [
+        {
+          sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                VALUES ('q', 'held-null', NULL, 1)`,
+          args: [],
+        },
+      ])
+      const held = async () =>
+        (
+          await db.raw.batch(
+            'fixture:read',
+            [
+              {
+                sql: `SELECT e.payload, c.is_nullable
+                        FROM events e, information_schema.columns c
+                       WHERE e.event_name = 'held-null' AND c.table_schema = current_schema()
+                         AND c.table_name = 'events' AND c.column_name = 'payload'`,
+                args: [],
+              },
+            ],
+            'read',
+          )
+        )[0]?.rows[0]
+
+      const before = await holdings(db)
+      const admin = new PostgresStoreAdmin(db.raw)
+      const refusal = await admin.migrate().then(
+        () => 'resolved',
+        (error: unknown) => /SQLSTATE \w+/.exec(String(error))?.[0] ?? String(error),
+      )
+      const stopped = {
+        leftBehind: (await holdings(db)) === before ? 'nothing' : 'something',
+        version: await admin.schemaVersion(),
+        held: await held(),
+      }
+      await db.raw.batch('fixture:repair', [
+        { sql: `UPDATE events SET payload = '{"repaired":1}' WHERE payload IS NULL`, args: [] },
+      ])
+      await admin.migrate()
+
+      expect({
+        refusal,
+        stopped,
+        repaired: { version: await admin.schemaVersion(), held: await held() },
+      }).toEqual({
+        refusal: 'SQLSTATE 23502',
+        stopped: {
+          leftBehind: 'nothing',
+          version: 9,
+          held: { payload: null, is_nullable: 'YES' },
+        },
+        repaired: {
+          version: CURRENT_SCHEMA_VERSION,
+          held: { payload: '{"repaired":1}', is_nullable: 'NO' },
+        },
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
   it('leaves nothing behind, at every version, and the next migrate() applies it', async () => {
     // Each version in turn is made to fail after every one of its statements has run. The
     // statement that fails it writes the version's own sentinel a second time, which the
