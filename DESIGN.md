@@ -580,6 +580,59 @@ One invocation executes one claimed run to its next suspension point:
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
+- Durable calls started together, which a task writes as `Promise.all`. Every
+  keyed call (a step, a sleep, an await, a spawn) takes its key when the call is
+  MADE, in the order the task writes the calls and before anything is awaited.
+  A group therefore replays by position, whatever order the store answers its
+  calls in. What the engine promises of a group is what it promises of any
+  program: the same result, the same failure, and the same checkpoints on every
+  schedule. The order the calls are answered in, how often a step's body ran,
+  and the order the rows were written are no part of that.
+  - A durable call made while a step is pending is refused, and the refusal
+    fails the task for good: a `FatalTaskError` that names the call and says it
+    was made inside a step. A step is pending while its body runs, while a
+    registered step writes its start marker, and, on a pass that replays the
+    step from its memo, until the replayed step settles one turn of the
+    microtask queue after it was called. So a group that starts a step ahead of
+    another durable call is refused on EVERY pass, the one that runs the step
+    and any that replays it. The replayed step's guard is what makes that true.
+    Without it the pass that ran the step refused the later call, a crash after
+    the step's checkpoint and before the failure was recorded let the next pass
+    replay the step and admit the call, and one program failed for good on one
+    schedule and completed on another. `emitEvent` takes no key and may be
+    called inside a step, so it is never refused this way.
+  - The refusal ends the pass while the first step's own write may still be in
+    flight: its checkpoint, or a registered step's start marker. That row lands
+    or not by schedule. One that lands holds what it would have held. A saga
+    rolls the step back when and only when its start marker landed, and hands
+    the rollback the step's output when and only when its result landed. The
+    refused call leaves nothing on any schedule.
+  - Every other group is admitted, and replays the same on every schedule: two
+    awaits of one event, two spawns, two awaits of children, two sleeps, and a
+    sleep or an await with a step started AFTER it.
+  - Two sleeps started together run one after the other. `sleepFor(5)` beside
+    `sleepFor(7)` sleeps 5 seconds and then 7, not 7. A sleep suspends the whole
+    run, the first suspension ends the pass, and the second sleep's seconds
+    count from the pass that reaches it. A task that wants the longer of two
+    waits sleeps once, for the longer.
+  - The members of a group must not depend on one another. A task that awaits,
+    in a group, the event the same group emits can park before its emit lands,
+    and then nothing wakes it.
+  - A call made later than the step's own synchronous run, after the task
+    awaited something that is not durable and while the step is still pending,
+    races the step's body on the pass that runs it. No guard makes that the same
+    on two passes, and the engine does not try.
+  - **Known cost for a task in flight when the build changes.** An older build
+    could carry a task past such a group: a crash after the first step's
+    checkpoint, and the next pass admitted the later call. With both members
+    memoized, the first pass of the new build that replays the group refuses
+    it, and the task fails for good. Its failure reason is the refusal, naming
+    the later call, which is how an operator tells. A saga that was already
+    rolling back halts instead, with nothing compensated: the refusal ends the
+    pass's replay at the group, no step after it registers its rollback, and
+    the rollback outcome is `failed` with `$RollbackNotRegistered` naming the
+    step that started last. The cost is accepted, because the alternative keeps
+    two histories for one program.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no
@@ -3233,7 +3286,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     share one. Steps do not start concurrently: a durable call made while a
     registered step is still writing its start marker is refused as a nested
     call, exactly as one made while a step's body runs, so two registered
-    steps under `Promise.all` fail the task as two unregistered ones do. The
+    steps under `Promise.all` fail the task as two unregistered ones do. That
+    holds on every pass: a pass that replays the first step from its memo holds
+    the same guard until the replayed step settles, so a pass that follows a
+    crash does not admit the group (section 3.2, "Durable calls started
+    together", which also says what a task in flight pays). At most one member
+    of such a group ever starts, so a group never owes an order between two of
+    its members. The
     model keys the index by saga generation because a fresh
     revival would forget it. Under the decision below no revival follows a
     saga, so a task has one generation and the key is not needed.
