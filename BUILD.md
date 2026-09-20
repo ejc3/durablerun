@@ -2564,21 +2564,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
   take an empty version 7 so the numbering stays aligned.
   `store-postgres/test/text-collation.test.ts` reads the catalog: no text
   column and no index key keeps its database's collation, and no version
-  rewrites a table. Two registered mutations hold it, one that drops a column
-  from the version and one that makes it rewrite a table. No statement
-  changed, so the corpus is main's.
+  rewrites a table. Three registered mutations hold it: one drops a column
+  from the version, one makes it rewrite a table, and one declares another
+  collation on an index key. A case in the same file holds CI's server to the
+  collation provider the workflows declare. No statement changed, so the
+  corpus is main's.
   What it costs, measured on one machine. With a million rows in each of
   `tasks`, `runs` and `checkpoints` and the data directory in memory, version 7
   commits in 3.2 seconds with nothing else running: no table is rewritten and
   all fifteen indexes are rebuilt. The `CHECK` constraint on `state` costs a
   scan and little else, 1,449 ms against 1,390 ms for the same table without
   it. The version's first statement takes every table's lock before any index
-  is built, and that was measured as well. Under live traffic from four
-  workers of an older build it committed in 16 of 16 runs at a million rows a
-  table and in 6 of 6 at four million, and the same version without that
-  statement committed in 15 of 16 and in 0 of 6, because the migration was
-  then the deadlock victim after it had built indexes. No caller saw an error
-  in any run. On a fresh database the version costs PostgreSQL 17 ms where
+  is built, and that was measured as well, with `meta` first and write batches
+  only. Under four workers of an older build (one run in each sixteen used
+  eight) it committed in 16 of 16 runs at a million rows a table and in 6 of
+  6 at four million, and the same version without that statement committed in
+  15 of 16 and in 0 of 6, because the migration was then the deadlock victim
+  after it had built indexes. Those runs sent no read batch and no event
+  batch, so they could not show what a read that loses a deadlock costs.
+  On a fresh database the version and the runner's lock, one statement in each
+  of the seven versions, cost PostgreSQL 17 ms together where
   opening and migrating a fixture took 27, about a minute over the 3,342
   fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
   read and one more locked batch, 4 ms where it took 39. That cost is PR4.4b's
@@ -2598,21 +2603,55 @@ these three things; nothing else in the system does I/O, time, or randomness.
   sentinel, so a second migrator waits holding nothing. The same probe then
   counts no deadlock, a round takes 40 ms with four migrators and 47 with
   eight, where main's six versions take 23, and none took over 77 ms. A case
-  that replays each version's batch on two connections holds it, committed
-  failing at version 7, with a third registered mutation that removes the
-  lock, so the registry moves from 873 to 876. Under live traffic the version
-  still commits with the lock ahead of the sentinel: 12 of 12 runs at a
-  million rows a table and 6 of 6 at four million, with no error at any
-  caller. The per-fixture cost
+  that replays each version's batch on two connections holds it: the second
+  migrator must wait for `meta`'s lock while it holds no lock on a relation of
+  the schema, which fails at every version without the lock, and a registered
+  mutation removes the lock.
+  A read batch can lose a deadlock to the version's table locks, and the
+  executor reported it where it ran a write again. It now runs a read again
+  too, three attempts in all, held without a race by
+  `store-postgres/test/deadlocked-read.test.ts` and by a registered mutation.
+  That reaches builds from this one on: workers of an older build still report
+  a read of theirs that loses to version 7. The version's lock list is in the
+  order the engine's own statements take their locks, `event_locks` first and
+  `meta` last, so a statement that arrives while the version waits holds
+  nothing while it waits, held by
+  `store-postgres/test/version-lock-order.test.ts` and a registered mutation.
+  The order was measured on an empty schema under write batches, read batches
+  and event batches from four workers and two drivers of the older build, 80
+  migrations an order: `meta` first committed 69 of 80 with 568 deadlocks and
+  13 errors at callers, `meta` last with the tables as declared 80 of 80 with
+  339 and 65, and the engine's order 80 of 80 with 126 and 51, every one of
+  the 51 a driver's sweep scan, whose statement names `tasks` first. At scale
+  with that mix and order the version committed in 12 of 12 runs at a million
+  rows a table (3.9 to 6.4 seconds) and in 6 of 6 at four million (14.1 to
+  16.3), each on its first attempt, and callers saw 4 errors in the 18 runs,
+  each a sweep scan. Under this build's traffic it committed in 6 of 6 at a
+  million rows and no caller saw an error. A batch that loses three deadlocks
+  in a row is still reported: the driver counts an outage, and the run waits
+  out its lease. The version itself lost all three in 1 of 160 migrations in
+  this order, which leaves version 6 and can be run again.
+  The registry moves from 873 to 879. The per-fixture cost
   is also why this PR raises the limits of three CI jobs, by the rule and with
   the arithmetic in the PR3.13 entry. An
-  operator's own view over a store table stops the version: PostgreSQL refuses
-  to change the type of a column a view reads, `migrate()` fails and leaves
-  version 6, and it commits once the view is dropped.
+  operator's own view, materialized view, trigger with a column list or a
+  `WHEN` clause, row security policy or generated column over a store table
+  stops the version: PostgreSQL refuses to change the type of a column such an
+  object reads, `migrate()` fails and leaves version 6, and it commits once
+  the object is dropped. A build older than the schema now hears from
+  `migrate()`, on every dialect, that a newer build migrated the database and
+  that it should run that build, where it was told to repair the database by
+  hand.
   - The task result's tie between two attempt records of one attempt is broken
     by the bytes of the checkpoint name from version 7 on, like every other
     order. No way to reach such a tie was found: the batch that fails a
     rollback writes one record and ends its run.
+  - An option, not built: a short `lock_timeout` on the version's lock
+    statement, with reruns. The version then gives up its place in every lock
+    queue when it cannot have the locks at once, where today all store traffic
+    queues behind it for as long as an older transaction stays open, and it
+    tries again. Its trigger is a deployment that must migrate under sustained
+    traffic, or beside transactions that stay open for long.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is
