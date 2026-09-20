@@ -100,6 +100,19 @@ it('builds the write-plan schema through the production migration contract', asy
   ])
 })
 
+/** The first two words of a statement, which name it among the statements of its label. */
+const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
+
+/** The access a write is allowed to reach each table by: a seek by the key it was handed. */
+const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
+  tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
+  runs: [
+    / USING PRIMARY KEY \(run_id=\?\)$/,
+    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
+  ],
+  waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
+}
+
 describe('claim candidate legs', () => {
   async function shippedClaimStatements(): Promise<{ sql: string; args: unknown[] }[]> {
     const seen: { sql: string; args: unknown[] }[] = []
@@ -167,6 +180,64 @@ describe('claim candidate legs', () => {
     const degraded = st.sql.split(siblingSource).join(`${siblingSource} INDEXED BY runs_poll`)
     const degradedPlan = await writePlan(degraded, st.args as (string | number)[])
     expect(degradedPlan.match(/SCAN sibling/g)?.length ?? 0, degradedPlan).toBeGreaterThanOrEqual(2)
+  })
+
+  /**
+   * How a claim may reach `runs`: by a key, or by the candidate legs' walk of the DUE runs,
+   * which the limit bounds. Anything else reads a backlog. A step pinned by queue and state
+   * alone reads every running run of the queue, a range of `runs_lease` reads every
+   * unexpired lease, and a scan reads the table. An index added later fails here until it
+   * is listed.
+   */
+  const CLAIM_REACHES_RUNS_BY: readonly RegExp[] = [
+    ...(KEYED.runs ?? []),
+    / USING (?:COVERING )?INDEX runs_held \(queue=\? AND claimed_by=\?\)$/,
+    / USING INDEX runs_poll \(queue=\? AND state=\? AND available_at_ms>\? AND available_at_ms<\?\)$/,
+  ]
+
+  it('reaches every run a claim reads by a key or by the due range, in all four statements', async () => {
+    // A queue's running runs are its work in flight, and a claim that reads them pays for
+    // them on every tick, the idle ones included. One claim measured 200 ms beside 100,000
+    // running runs: in the held guard of the compare-and-set, twice in the task follow-on,
+    // in the delete of timed-out waits, and in the receipt read. The statements are the
+    // ones a real claim sent, planned under ITS binds, because SQLite plans from bound
+    // values: `state = ?` reaches a partial index only once it is bound to that index's
+    // state.
+    const sent = await shippedBatch('claim', async (store) => {
+      await store.spawn('q', 'job', '{}')
+      expect(await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })).toHaveLength(1)
+    })
+    expect(sent.map((st) => head(st.sql))).toEqual([
+      'update "runs"',
+      'update "tasks"',
+      'delete from',
+      'select "r"."run_id",',
+    ])
+    const backlogReads: string[] = []
+    for (const st of sent) {
+      // The names this statement reads `runs` under: the table's own, and every alias.
+      const names = new Set(['runs'])
+      for (const m of st.sql.matchAll(/\b(?:from|join)\s+"?runs"?\s+(?:as\s+)?"?([a-z_]+)"?/gi)) {
+        if (m[1]) names.add(m[1].toLowerCase())
+      }
+      const steps = (await writePlan(st.sql, st.args as (string | number)[]))
+        .split('\n')
+        .map((line) => line.trim())
+        // `json_each` is read under the alias `r` too, as a virtual table.
+        .filter((line) => !line.includes('VIRTUAL TABLE'))
+        .filter((line) => names.has(/^(?:SEARCH|SCAN) (\S+)/.exec(line)?.[1]?.toLowerCase() ?? ''))
+      // Every statement reads `runs`, so none of them passes by having no step to judge.
+      expect(steps, head(st.sql)).not.toHaveLength(0)
+      for (const step of steps) {
+        if (!CLAIM_REACHES_RUNS_BY.some((way) => way.test(step))) {
+          backlogReads.push(`${head(st.sql)} -> ${step}`)
+        }
+      }
+    }
+    expect(
+      [...new Set(backlogReads)].sort(),
+      'mutation-verdict:behavior:claim-followons-name-the-token',
+    ).toEqual([])
   })
 })
 
@@ -868,29 +939,7 @@ describe('every write a store ships, by the table it writes', () => {
   const shippedWrites = async () =>
     [...(await shippedStatements()).values()].filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
 
-  /** The access a write is allowed to reach each table by: a seek by the key it was handed. */
-  const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
-    tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
-    runs: [
-      / USING PRIMARY KEY \(run_id=\?\)$/,
-      / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
-    ],
-    waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
-  }
-
-  /**
-   * Statements this file excuses, by name, each with where the open question is recorded.
-   * A claim finds the runs it took by queue and state, because the stamp that says which
-   * they are has no index and a claim has no column like `wake_event` to seek by.
-   */
-  const EXCUSED_SOURCE_WALKS: Readonly<Record<string, string>> = {
-    'claim: update "runs"': 'BUILD.md PR3.14, the option about the claim',
-    'claim: update "tasks"': 'BUILD.md PR3.14, the option about the claim',
-    'claim: delete from': 'BUILD.md PR3.14, the option about the claim',
-  }
-
-  const named = (st: { label: string; sql: string }) =>
-    `${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`
+  const named = (st: { label: string; sql: string }) => `${st.label}: ${head(st.sql)}`
 
   it('reaches the table it writes by the key it was handed, whatever the plan calls that table', async () => {
     // The property, and not one spelling of its failure: the plan step over the written
@@ -915,7 +964,7 @@ describe('every write a store ships, by the table it writes', () => {
     expect([...new Set(unkeyed)].sort()).toEqual([])
   })
 
-  it('walks the runs of a queue by state in no step of any write, but for the claim it names', async () => {
+  it('walks the runs of a queue by state in no step of any write', async () => {
     // Any step, under any alias, through any index, covering or not, that is pinned by a
     // queue and a state and nothing more reads every run of the queue in that state.
     const walks: string[] = []
@@ -928,10 +977,7 @@ describe('every write a store ships, by the table it writes', () => {
         )
       if (walked) walks.push(named(st))
     }
-    const found = [...new Set(walks)].sort()
-    expect(found.filter((name) => !(name in EXCUSED_SOURCE_WALKS))).toEqual([])
-    // An excuse that nothing needs any more is removed, not kept.
-    expect(Object.keys(EXCUSED_SOURCE_WALKS).filter((name) => !found.includes(name))).toEqual([])
+    expect([...new Set(walks)].sort()).toEqual([])
   })
 })
 
@@ -970,16 +1016,13 @@ describe('every statement a store ships, by the nests of its plan', () => {
 
   /**
    * Statements this block excuses, by name, each for the one fault it names and with where
-   * the open question is recorded. A claim finds the runs it took by queue and state, so
-   * whatever it then reads by key it reads once for each running run of its queue, as far
-   * as a plan can show. Any other fault in the same statement still fails.
+   * the open question is recorded. Any other fault in the same statement still fails. None
+   * is excused today. Until schema version 9 a claim found the runs it took by queue and
+   * state, and its task update and its delete of timed-out waits were excused here for that
+   * walk. They reach those runs by the claim token now, and the reader counts that seek as
+   * keyed: one token holds at most one claim's limit of runs.
    */
-  const THE_CLAIMS_WALK =
-    / :: runs once for each row of a walk: SEARCH f USING INDEX runs_poll \(queue=\? AND state=\?\)$/
-  const EXCUSED_NESTS: Readonly<Record<string, { fault: RegExp; because: string }>> = {
-    'claim/claimed#1': { fault: THE_CLAIMS_WALK, because: 'BUILD.md PR3.14b, the claim reads' },
-    'claim/claimed#2': { fault: THE_CLAIMS_WALK, because: 'BUILD.md PR3.14b, the claim reads' },
-  }
+  const EXCUSED_NESTS: Readonly<Record<string, { fault: RegExp; because: string }>> = {}
 
   /**
    * A due range is what is due only if it points that way, and it is bounded only by a
@@ -1000,8 +1043,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
   > = {
     // Each candidate leg takes the runs that are due, and the claim takes the legs' rows.
     'claim/claimed#0': { drivers: [RUNS_DUE, 'SCAN c'], boundedBy: 'LIMIT' },
-    // The range is every lease of the queue that has NOT expired: the backlog, not what is due.
-    'claim/claimed#3': { drivers: [LEASES], boundedBy: 'BUILD.md PR3.14b' },
     'sweep:scan/read#0': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
     // The leases that have expired.
     'sweep:scan/read#1': { drivers: [LEASES], boundedBy: 'LIMIT' },

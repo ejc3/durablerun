@@ -54,7 +54,12 @@ const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
     s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentTaskId: id } }),
     s.spawn('q', 't', '{}', { childOf: { ...PARENT, runId: id } }),
   ],
-  claim: (s, id) => [s.claim(id, 'w', { leaseSeconds: 30, limit: 1 })],
+  claim: (s, id) => [
+    s.claim(id, 'w', { leaseSeconds: 30, limit: 1 }),
+    // The token enters the port here and nowhere else: every other entry that takes one
+    // only compares it with what `claim` stored, and no row holds a token `claim` refused.
+    s.claim('q', id, { leaseSeconds: 30, limit: 1 }),
+  ],
   activate: (s, id) => [s.activate(id, 'r', 'c', 1), s.activate('q', id, 'c', 1)],
   claimedTaskName: (s, id) => [
     s.claimedTaskName(id, 'r', 'c', 1),

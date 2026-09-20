@@ -34,8 +34,10 @@ export interface PlanRow {
 }
 
 /**
- * A column that names one entity: a task, a run, an event, an idempotency key, a driver.
- * A step with an equality on one reads that entity's own rows, however large the queue is.
+ * A column that names one entity: a task, a run, an event, an idempotency key, a driver, a
+ * claim. A step with an equality on one reads that entity's own rows, however large the
+ * queue is. A claim token names one claim, and one claim holds at most its limit of runs,
+ * because `claim` takes nothing under a token that already holds a run.
  */
 const ENTITY_COLUMNS = [
   'task_id',
@@ -44,6 +46,7 @@ const ENTITY_COLUMNS = [
   'wake_event',
   'idempotency_key',
   'driver_id',
+  'claimed_by',
 ]
 
 /**

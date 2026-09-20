@@ -958,9 +958,10 @@ One invocation executes one claimed run to its next suspension point:
     name or its alias in that statement, to be a seek by the key the write was
     handed, so a scan, a walk, or an index added later fails alike. The other
     refuses any step, under any alias, that is pinned by a queue and a state and
-    nothing more. It excuses three statements by name, the claim's, which find
-    the runs that claim took by queue and state because the stamp has no index.
-    BUILD.md records that as open. `store-mysql`'s plan test measures claim,
+    nothing more. It excuses nothing: the claim's three statements, which it
+    excused by name until schema version 9, reach what their token holds
+    through `runs_held`, as the item on a claim's reads of `runs` below says.
+    `store-mysql`'s plan test measures claim,
     activate, and complete beside 2,000 tasks from inside each batch. The
     wake's task
     follow-on selects its source by queue and state, so correlated it ran once
@@ -987,6 +988,129 @@ One invocation executes one claimed run to its next suspension point:
     IF NOT EXISTS`, and its DDL commits on its own, so version 6 chooses its
     statement from the catalog and prepares it, which is safe to repeat after a
     migrator that died between the index and the version.
+  - A claim's reads of `runs`. A claim reads `runs` for what ONE token holds.
+    Its held guard asks whether the token holds a run already, its two
+    follow-ons find the runs the batch just took, and its receipt read returns
+    them. By queue and state alone the only index is `runs_poll`, so each of
+    those read every running run of the queue, on every tick, the idle ones
+    included. Beside 100,000 running runs one claim took 200 ms on libSQL
+    against 6 ms beside eight, and 64 ms on PostgreSQL against 7. On MySQL it
+    took 33 ms beside 10,000 and 638 ms beside 40,000 under the server's default
+    buffer pool, against 4. Schema version 9 is the index `runs_held`, a queue's
+    running runs by their token: `(queue, claimed_by)` over the rows whose state
+    is running on libSQL and PostgreSQL, and `(queue, claimed_by(255), state)`
+    on MySQL, which has no partial index and keeps the token in a LONGTEXT. A
+    claim token is held to an identifier's width where it enters, at `claim`
+    (§3.4 rule 10), because the index must hold it on every dialect and
+    PostgreSQL's btree row may not pass about 2,700 bytes. With no bound, a
+    claim under 3,000 characters that do not compress answered as an outage on
+    PostgreSQL (SQLSTATE 54000) and took its run on the other two, where before
+    the index every dialect took it. 255 characters are at most 1,020 bytes, so
+    the row fits, and MySQL's prefix of 255 holds the whole token. The engine's
+    own tokens are 32 characters. With the index one claim costs 4 to 8 ms on
+    every dialect at every size measured, up to 100,000 running runs on libSQL
+    and PostgreSQL and 40,000 on MySQL, and no other write was measurably
+    slower: on libSQL and PostgreSQL an entry enters the index at claim and
+    leaves it when the run leaves `running`, and those transitions already move
+    the row in `runs_poll` and `runs_lease`. On MySQL, which has no partial
+    index, every run is in the index from its spawn, under no token until it is
+    claimed. The review of this change measured spawn there beside 10,000
+    running runs, in three interleaved rounds of 300 calls: 2.48, 2.43 and 2.34
+    ms before the index and 2.19, 2.20 and 2.30 with it. On PostgreSQL an update
+    that is not heap-only writes every index that holds the row, so heartbeat
+    and activate write this one too, as they already wrote `runs_lease`. It is
+    an index and nothing else: a build that predates it runs against the schema
+    unchanged, and a newer build's statements are valid without it. On
+    PostgreSQL the build blocks writes to `runs` while it reads the whole table,
+    history included, as version 6's does: the review measured 40 ms over
+    500,001 ended runs. An operator cannot build it ahead of the migration
+    there: with `runs_held` built by hand, `migrate()` fails with
+    `SchemaMismatchError` (SQLSTATE 42P07) and the version stays at 8, as it
+    does for version 6's index. And a database that an older build left with a
+    run still running under a token too long for the index cannot take version 9
+    yet: the version fails whole, with SQLSTATE 54000, the database stays at
+    version 8, and the same `migrate()` succeeds once that run has ended, or the
+    sweep has taken its lease, and no transaction that was open at that moment
+    still holds a snapshot in that database or a transaction id of its own
+    anywhere on the server. That last part is PostgreSQL's. An index build also
+    indexes a row version that is dead but that an open snapshot can still see,
+    it judges the index's predicate on that version, and the building session's
+    own snapshot reaches back to the oldest transaction id still running on the
+    server, in any database. Measured with one transaction held open on purpose:
+    a write transaction in another database refused the version, and a read-only
+    snapshot in another database did not. A test in `store-postgres` holds both
+    halves in a database of its own: the version is refused while a snapshot the
+    test opens there is open, and it builds, asked once, after the server's
+    oldest running transaction id has passed one taken when the run ended, which
+    the test waits for. Three things make the index reachable, and a check holds
+    each one.
+    First, the two follow-ons name the claim token beside the stamp. The stamp
+    is the fence. The token is for the planner and narrows nothing, for one
+    reason: a run carries this batch's claim stamp only when this batch's
+    compare-and-set wrote it, that one statement (core's `claimCas`) writes the
+    token in the same update, and under a token that already holds a run it
+    takes nothing. No other statement writes that stamp. If the compare-and-set
+    ever wrote the stamp without the token, the receipt read would find nothing,
+    and the conformance case `claims due runs oldest-first with claim_gen 1 and
+    full task data` fails, as it did when that was tried. Removing the term
+    changes no answer, so no behavioural case can hold it, and plan pins do.
+    libSQL's allows a claim to reach `runs` by a key or by the due range of its
+    candidate legs and by nothing else, in all four statements, planned under
+    the binds a real claim sent. PostgreSQL's counts the rows every scan of
+    `runs` reads beside 300 running runs that other workers hold, because with
+    the term gone the planner can still name `runs_held` and read every running
+    run through it. A registered mutation on each weakens the term to a
+    tautology that keeps its bind. On MySQL the index of the statement stamp
+    already keyed both follow-ons, so the term changes no plan there and a
+    mutant without it survives by construction. It is kept so that the three
+    stores' text stays alike. MySQL's pin counts the rows each statement walks
+    beside 400 running runs, with a run due and with none, and holds the index
+    through the held guard and the receipt read.
+    Second, libSQL writes the receipt's bounds check on the lease expiry with a
+    unary plus (`storedIntegerWithinOffIndex`). With no statistics SQLite rates
+    a two-sided range above two equalities, so with the index in place it still
+    reached the receipt's rows through `runs_lease`, a range over every
+    unexpired lease of the queue: 40 ms at 100,000 running runs. A unary plus
+    keeps a term out of index selection. It also takes the column's affinity out
+    of the comparison, which changes nothing here. The other two operands are
+    the fragment's own integer literals, which have no affinity for the column's
+    to convert, and the fragment's first conjunct has already required the
+    stored value to be an integer, so an integer is compared with integers under
+    either spelling and any other storage class is refused before the comparison
+    counts. The conformance case `same-token receipt holds the lease expiry to
+    its range, at both ends` holds that truth value on every dialect: a stored
+    expiry one below and one above the range is refused, and both ends are
+    admitted. One registered mutation drops the plus, and the libSQL pin catches
+    it. Another drops the check, and that case catches it.
+    Third, the held guard and the receipt read compare the state with a BOUND
+    value, inside the claim's write batch, and a partial index is matched to a
+    bound state only by a planner that has the value. SQLite plans a statement
+    again once a bound value decides a partial index. The PostgreSQL executor
+    sends every statement unnamed with its values, and PostgreSQL plans such a
+    statement with them. The limit is measured: with the server set to
+    `plan_cache_mode = force_generic_plan`, the held guard and the receipt read
+    fall back to the plan they had before the index, the follow-ons keep the
+    index because their state is a literal, and one claim beside 100,000 running
+    runs costs 32.6 ms against 7.4, where it cost 64 before the index. That is
+    slower and never wrong. An executor that prepared named statements would
+    meet the same limit once PostgreSQL chose a generic plan. The PostgreSQL pin
+    plans with real binds, so it cannot see this. It is the pin's first false
+    negative. The state could be written as a literal in those two statements,
+    and PostgreSQL would then match the index under a generic plan too. It was
+    not, because that moves the statements of three dialects for a plan no
+    shipped executor produces, and the limit is measured and stated here. The
+    pin's second false negative is statistics. Its fixture analyzes the two
+    tables it loads, and its plans depend on that: with that line removed the
+    pin fails on all four statements, and beside 10,000 running runs that were
+    never analyzed the receipt read still ranged over `runs_lease` while the
+    other reads used `runs_held`. On a database with no statistics at all, as
+    after a bulk load, PostgreSQL reads the backlog as it did before the index.
+    That is slower, never wrong, and it lasts until autovacuum analyzes the
+    table. The pin's fixture also parks one wait, because beside an empty
+    `waits` PostgreSQL may drive the delete of timed-out waits from `waits`, and
+    its scans of `runs` then never run. A scan that never ran is not counted as
+    judged, and the pin fails a statement none of whose scans of `runs` ran, so
+    a statement cannot pass by having read nothing.
   - The plan of every statement libSQL ships. The pins above hold statements
     someone chose, and the two over writes plan no read and no SELECT of an
     INSERT. `store-libsql`'s plan test also sends every batch the store builds,
@@ -1016,38 +1140,44 @@ One invocation executes one claimed run to its next suspension point:
     columns mean, whatever table or alias it names, from two declared lists of
     column names and no list of index spellings. A step is keyed when it has an
     equality on a column that names one entity (`task_id`, `run_id`,
-    `event_name`, `wake_event`, `idempotency_key`, `driver_id`). It is a due
-    range when it has a range on a column an index hands work out in the order
-    of (`available_at_ms`, `claim_expires_at_ms`, `cancel_at_ms`). It is a walk
-    otherwise, every SCAN and every automatic index included. `meta`, which
-    holds the clock, is read by its key in a subquery of its own, so it joins no
-    nest. The rule is two lines over every nest of every statement: a step that
-    runs once for each row of another must be keyed, and every step it runs once
-    for each row of must be keyed or a due range. A due range may drive because
-    the literal sentence, that no step reads a table once for each row of
-    another, would refuse the claim's two candidate legs and both sweep scans,
-    which read `tasks` by key once for each due run, under a LIMIT, by design. A
-    plan line the reader cannot read is a fault, so a plan it does not
-    understand is not a plan it has passed. So is a line that stands under no
-    line of the plan, a line under a sort, and a body or an index leg with no
-    step under it, whose rows nothing that was read bounds. Two statements of
-    `claim` break the rule, the task update and the delete of expired waits,
-    whose IN list walks the running runs of the queue. They are excused by name
-    and for that walk alone, so any other fault in them still fails. The pins
-    over writes excuse them too, and BUILD.md records the open question under
-    PR3.14b. A plan prints a range the same way whichever way it points, and it
+    `event_name`, `wake_event`, `idempotency_key`, `driver_id`, `claimed_by`).
+    The last is a claim token, which names one claim: one token holds at most
+    one claim's limit of runs, because `claim` takes nothing under a token that
+    already holds a run, so a seek of `runs_held` by it is as bounded as the
+    claim was. It is a due range when it has a range on a column an index hands
+    work out in the order of (`available_at_ms`, `claim_expires_at_ms`,
+    `cancel_at_ms`). It is a walk otherwise, every SCAN and every automatic
+    index included. `meta`, which holds the clock, is read by its key in a
+    subquery of its own, so it joins no nest. The rule is two lines over every
+    nest of every statement: a step that runs once for each row of another must
+    be keyed, and every step it runs once for each row of must be keyed or a due
+    range. A due range may drive because the literal sentence, that no step
+    reads a table once for each row of another, would refuse the claim's two
+    candidate legs and both sweep scans, which read `tasks` by key once for each
+    due run, under a LIMIT, by design. A plan line the reader cannot read is a
+    fault, so a plan it does not understand is not a plan it has passed. So is a
+    line that stands under no line of the plan, a line under a sort, and a body
+    or an index leg with no step under it, whose rows nothing that was read
+    bounds. A statement may be excused by name, for the one fault it names, so
+    any other fault in it still fails, and none is excused today. Until schema
+    version 9 two statements of `claim` broke the rule, the task update and the
+    delete of expired waits, whose IN list walked the running runs of the queue,
+    and they were excused here and by the pins over writes. They reach those
+    runs by the claim token now, as the item on a claim's reads of `runs` above
+    says. A plan prints a range the same way whichever way it points, and it
     never prints a LIMIT, so the test also names every statement in which a due
     range drives another step, with the lines that drive and with what bounds
     them: the statement's own LIMIT, which its text must then hold, or where the
     open question is recorded. A range that drives in a statement nobody named
     fails, and so does another driving line in a statement that is named, and so
-    does a name that nothing needs. Four are named: the claim's candidate legs,
-    the two sweep scans, and the claim's read of the runs it took. Beside
-    100,000 running runs of its queue each of the claim's four statements took
-    about 40 ms on libSQL, against 0.1 to 2 ms beside 8, while a keyed
-    `activate` stayed near 5 ms. What the rule cannot see is below, each written
-    as a statement and run against a real plan, where it passes with its defect
-    present:
+    does a name that nothing needs. Three are named: the claim's candidate legs
+    and the two sweep scans. The claim's read of the runs it took was the fourth
+    until schema version 9, a range over every lease of its queue that had not
+    expired. Beside 100,000 running runs of its queue each of the claim's four
+    statements then took about 40 ms on libSQL, against 0.1 to 2 ms beside 8,
+    while a keyed `activate` stayed near 5 ms. What the rule cannot see is
+    below, each written as a statement and run against a real plan, where it
+    passes with its defect present:
     - Both steps are keyed, and one entity's rows are many. `update runs set
       claim_gen = (select count(*) from checkpoints c where c.task_id =
       runs.task_id) where task_id = ?` reads every checkpoint of a task once for
@@ -1061,8 +1191,8 @@ One invocation executes one claimed run to its next suspension point:
       null, 0 from runs where queue = ? and state = ?` is one step. In an UPDATE
       or a DELETE the pins over writes refuse it. A read, or an INSERT ...
       SELECT, that walks a protocol table alone passes every plan test today.
-      The guard inside the claim's runs update is such a walk, and the pins over
-      writes excuse it by name.
+      The guard inside the claim's runs update was such a walk until schema
+      version 9, and the pins over writes excused it by name.
     - A statement inside a trigger is never planned. The driver's heartbeat
       inserts into a view, and its plan is `SCAN CONSTANT ROW`. The `DELETE FROM
       drivers WHERE expires_at_ms < ...` inside the view's trigger plans, by
@@ -1072,24 +1202,25 @@ One invocation executes one claimed run to its next suspension point:
       r.task_id where r.queue = ? and r.state = 'running' and
       r.claim_expires_at_ms > ?` reads every lease that has NOT expired, and its
       plan is the plan of the sweep's read of the leases that have. The claim's
-      read of the runs it took is that statement in what ships, and only under
-      its real binds: with the state unknown SQLite walks the queue by state,
-      which the rule refuses.
+      read of the runs it took was that statement in what shipped until schema
+      version 9, and only under its real binds: with the state unknown SQLite
+      walked the queue by state, which the rule refuses.
     The list of names is what holds the second and the fifth. That a LIMIT
     stands in the statement's text is checked. That it bounds the range that
     drives is a person's reading, which no plan can check, and another nest
     under a driving line of the same text is not seen. One false positive is by
     construction: a plan does not show which filter runs before a nested step,
     so a walk that filters to a few rows before it probes is refused like one
-    that probes for every row, which is the claim's case. Beyond it the reader
-    refuses sound statements of four kinds, which is strictness, stated: an IN
-    list that filters and does not seek, because a plan does not say which a
-    list does; a materialized body read under an alias, because the step names
-    the alias and not the body; `json_each` as a driver, because nothing bounds
-    its rows; and a due range under a keyed driver, because a step that runs
-    once for each row of another must be keyed. The same generated check is not
-    built for PostgreSQL or MySQL, whose plan tests hold chosen statements, and
-    BUILD.md records that as an option under PR3.14c.
+    that probes for every row, which was the claim's case until it reached its
+    runs by the claim token. Beyond it the reader refuses sound statements of
+    four kinds, which is strictness, stated: an IN list that filters and does
+    not seek, because a plan does not say which a list does; a materialized body
+    read under an alias, because the step names the alias and not the body;
+    `json_each` as a driver, because nothing bounds its rows; and a due range
+    under a keyed driver, because a step that runs once for each row of another
+    must be keyed. The same generated check is not built for PostgreSQL or
+    MySQL, whose plan tests hold chosen statements, and BUILD.md records that as
+    an option under PR3.14c.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
@@ -1997,7 +2128,8 @@ are load-bearing):
    permanent `SchemaMismatchError` classification.
 10. **A durable identifier holds 255 characters, on every dialect.** The
    identifiers are a queue, a task id, a run id, a driver id, an idempotency
-   key, an event name, a step name, and a checkpoint name. A character is a
+   key, an event name, a step name, a checkpoint name, and a claim token. A
+   character is a
    Unicode code point, which is how MySQL counts a `VARCHAR`. It is not a
    UTF-16 unit and not a byte: 255 characters outside the basic plane are 510
    units and 1020 bytes, and they fit. The width is MySQL's, which cannot index
@@ -2009,8 +2141,12 @@ are load-bearing):
    `InvalidDurableStringError`, whatever the excess is, trailing spaces
    included. A driver holds its queue and its id the same way when it is
    constructed, because a refused tick reads as an outage and a refused
-   registry beat is swallowed. A task name, a claim token, and a payload are
-   not identifiers: nothing indexes them, and the port does not bound their
+   registry beat is swallowed. A claim token is held where it enters the
+   port, at `claim`, since `runs_held` indexes it (§3.2). No other entry that
+   takes a token holds it to the width, and none needs to: each only compares
+   it with what `claim` stored, no row can hold a token that `claim` refused,
+   and so a longer one matches no run. A task name and a payload are not
+   identifiers: nothing indexes them, and the port does not bound their
    length. A child's task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
 
@@ -2327,7 +2463,8 @@ are load-bearing):
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. That is true of
-   version 7, which changes no statement the engine sends. It is not true of
+   version 7, which changes no statement the engine sends, and of version 9,
+   whose index serves statements that are valid without it. It is not true of
    MySQL's version 8: a newer build's keyed deletes name the index that
    version adds, so there the database is migrated first, as the note on
    version 8 among the MySQL notes says. An older build

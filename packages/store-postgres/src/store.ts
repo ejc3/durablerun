@@ -669,7 +669,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIdentifiersFit({ queue })
+    requireIdentifiersFit({ queue, claimToken })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
@@ -733,14 +733,23 @@ export class PostgresSchedulerStore implements SchedulerStore {
       }),
       effectiveLimit,
     )
+    // The runs this batch took, as both follow-ons below select them. The stamp is the
+    // fence, and core adds it to every derived source. The token is there for the planner
+    // and narrows nothing: the compare-and-set above wrote the token and the stamp on the
+    // same rows in one statement, and under a token that already holds a run it took
+    // nothing. By queue and state alone the only index is `runs_poll`, so each of these
+    // reads walked every running run of the queue. `runs_held` finds what one token holds.
+    const taken = {
+      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,
+      whereArgs: [queue, claimToken],
+    }
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
       relation: 'runs-to-tasks',
       fence: 'claim',
       queue,
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       set: {
         state: taskStateValue('running'),
         // The eligibility guard makes this exactly one. Keep the expression
@@ -769,8 +778,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     b.derived('waits-timeout', {
       relation: 'runs-to-waits',
       fence: 'claim',
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       narrow: `status = 'waiting'
             AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms)}
             AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,

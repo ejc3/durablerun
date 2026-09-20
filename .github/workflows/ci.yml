@@ -326,13 +326,16 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'd7d085bc42e168e15c6203ab9f8e5a12904a114a5a942b0a51baebd89c8c1d0e':
-              # The plan check over every statement the libSQL store ships registers one
-              # mutation, a read that joins its task by the queue alone, and the base
-              # predates its verdict marker, which is exempted. No base entry is re-aimed,
-              # because this tree changes no line a base mutation quotes.
+          if digest == 'f1466c1488287895fa3cba88092958163f246032d618a436b02d1381e4e27785':
+              # A claim reaches the runs its token holds through an index of the token.
+              # The plan pins that hold the token term of its follow-ons and libSQL's
+              # receipt read, and the conformance case that holds the receipt's lease
+              # expiry to its range, register mutations the base predates, so their
+              # verdict markers are exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:plan-nests',
+                  "mutation-verdict:behavior:claim-followons-name-the-token",
+                  "mutation-verdict:behavior:postgres-claim-followons-name-the-token",
+                  "mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

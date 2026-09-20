@@ -147,12 +147,29 @@ a last docs PR gives a live owner to every open bullet that is left.
    under their own names. No statement changed: the SQL corpus is main's on
    all three dialects, and each store's harvested text labels still equal
    `scripts/text-statements.json`.
-7. PR3.14b: the three statements of `claim` that select their source rows by
-   queue and state are measured on libSQL beside 100, 1,000, 10,000, and 40,000
-   running runs of the claim's queue. Either they are keyed, and the three
-   `claim` entries of `EXCUSED_SOURCE_WALKS` in
-   `store-libsql/test/query-plans.test.ts` are deleted, or the table is
-   recorded with the reason a key is not worth its cost to every write.
+7. PR3.14b: the statements of `claim` that read the running runs of the claim's
+   queue are measured on libSQL beside 100, 1,000, 10,000, and 40,000 running
+   runs of that queue. There are four of them, and not the three this line first
+   counted: the held guard of the compare-and-set, the task follow-on, which
+   reads them twice, the delete of timed-out waits, and the receipt read, which
+   ranges over every unexpired lease through `runs_lease` and not over
+   `runs_poll`. Either they are keyed, and the three `claim` entries of
+   `EXCUSED_SOURCE_WALKS` in `store-libsql/test/query-plans.test.ts` are
+   deleted, or the table is recorded with the reason a key is not worth its cost
+   to every write. This is met. They are keyed. PostgreSQL read the same backlog
+   in three of the four statements, and in the fourth once `waits` holds rows,
+   MySQL in two, the held guard and the receipt read, and an idle tick paid as a
+   claiming one did on all three. Schema version 9 is the index `runs_held`, a
+   queue's running runs by their claim token, the two follow-ons name the token
+   beside the stamp, and libSQL's receipt read keeps its bounds check off the
+   lease index. One claim beside 10,000 running runs went from a mean of 22.1 ms
+   to 4.6 on libSQL and from 12.7 to 7.3 on PostgreSQL. On MySQL it went from a
+   median of 33 ms, whose means ran from 34 to 61 under the server's default
+   buffer pool, to a mean of 4.0. No other write was measurably slower. `claim`
+   holds its token to an identifier's width, because PostgreSQL's index row is
+   bounded. The table of excuses is deleted, a pin on each dialect holds all
+   four statements, and the entry under PR3.14b has the measured table and what
+   a realistic ceiling of running runs is.
 8. PR4.4e: on MySQL a keyed write takes its key on a table of any size. Inside
    a claim's own batch on a four-row `runs` table the update holds a record
    lock on the rows it claims and on no other row, and the concurrent-claim
@@ -2888,13 +2905,193 @@ these three things; nothing else in the system does I/O, time, or randomness.
   This PR merges after PR3.4 and PR3.9e part 3c. Both regenerate the corpus
   and touch these call sites, so the rebase regenerates the corpus and binds
   the queue in part 3c's `completeTaskMirror` too.
-  - Option, not a deferral of this PR: three statements of `claim` select
-    their source rows by queue and state, through `runs_poll`, so every claim
-    walks the running runs of its queue on libSQL: the runs update, the task
-    update, and the delete of expired waits. The stamp that says which runs
-    this claim took has no index. The wake's follow-ons had the same shape and
-    found their rows by `wake_event` through `runs_woken`. A claim has no such
-    column, so this needs its own design.
+  - Promoted to PR3.14b below: the statements of `claim` that read the running
+    runs of their queue. This bullet counted three, all through `runs_poll`.
+    There are four, the receipt read ranges over `runs_lease`, and PostgreSQL
+    and MySQL read the same backlog.
+- **PR3.14b the claim's reads of the running runs of its queue**: DONE. Four
+  statements of `claim` read every running run of the claim's queue, and an idle
+  tick paid as a claiming one did. It was measured before anything was designed,
+  on a file database for libSQL and on servers of the measurement's own for
+  PostgreSQL 17 and MySQL 8.4, analyzed after the load: one claim of limit 1
+  that takes one due run, and one that finds nothing due, the median of 7 after
+  a warm pass, beside N running runs of the queue that other tokens hold, each
+  cloned with its own task, token and stamp from one run the real operations
+  claimed and activated. Milliseconds, a claim that takes a run and then an idle
+  claim:
+
+  | Running runs | libSQL | PostgreSQL | MySQL, default 128 MB pool | MySQL, 2 GB pool |
+  |---|---|---|---|---|
+  | 8 | 5.7, 5.3 | 8.3, 6.1 | 5.2, 4.7 | |
+  | 100 | 5.2, 4.7 | 7.5, 5.9 | 5.0, 4.0 | |
+  | 1,000 | 6.5, 5.3 | 8.1, 6.2 | 5.2, 4.6 | |
+  | 10,000 | 21.7, 15.2 | 12.0, 8.1 | 33.4, 32.5 | 40.3, 37.2 |
+  | 40,000 | 80.2, 49.8 | 28.3, 16.8 | 638.3, 635.2 | 138.1, 134.7 |
+  | 100,000 | 200.2, 124.1 | 69.5, 30.9 | 1,631.9, 1,625.9 | 404.0, 374.2 |
+
+  `activate`, the keyed control, stayed at 2.5 to 3.0 ms on libSQL, 4.6 to 5.6
+  on PostgreSQL and 2.5 to 4.0 on MySQL at every size, and PostgreSQL beside
+  200,000 completed runs as well read the same, 17.6 ms at 10,000 and 72.3 at
+  100,000. libSQL's plans are the same at 8 and at 100,000 running runs, and
+  were read under the binds a real claim sent, because SQLite plans from bound
+  values. The held guard of the compare-and-set walks `runs_poll` by queue and
+  state, and is not evaluated when no run is due. The task follow-on walks it
+  twice when a run was taken, for its keys and for the instant it copies. The
+  delete of timed-out waits walks it once. The receipt read does not: it ranges
+  over `runs_lease`, every unexpired lease of the queue, and filters on the
+  token. Each statement alone at 100,000 took 38.0, 77.0, 36.8 and 40.0 ms. So
+  there are four statements and five reads, where the option under PR3.14
+  counted three statements. On PostgreSQL the held guard, the follow-on twice,
+  and the receipt read each discarded every running run, 12.1, 35.2 and 13.8 ms
+  at 100,000. Its delete is driven from `waits` while that table is empty and
+  from the running runs once it holds rows, so beside 100,000 parked waits a
+  claim took 8.2 and 8.9 ms in two rounds against 7.6 and 8.2 beside none, about
+  8 percent more in each round and inside the noise between rounds, and the
+  delete became a fifth read of the same backlog. On MySQL the follow-on and the
+  delete have found their runs by the statement stamp since version 8, 9 and 3
+  rows walked, and the held guard and the receipt read each walked every running
+  run, N + 12 and N + 13 rows, idle ticks included. Its cliff between 10,000 and
+  40,000 is the server's default buffer pool.
+
+  What a realistic ceiling is, as arithmetic over measured unit costs and not a
+  loaded system. A running run is a worker pass in flight: it holds a lease and
+  heartbeats at half of it, and sleeping and awaiting tasks are not running.
+  Each costs the scheduler a claim, an activate, an ending write and a heartbeat
+  every half lease, and libSQL has one writer. With a flat claim of 5.5 ms, an
+  activate of 2.8, an ending write of 3.6 and a heartbeat taken as 2.8, which
+  was not measured, a 60 second lease fills that writer at about 3,400 running
+  runs of one-minute tasks and 8,800 of ten-minute tasks. With the walk those
+  are about 2,700 and 7,300, where a claim cost 10 to 19 ms and the walk was a
+  fifth of all writer time, and with a five-minute lease and ten-minute tasks
+  the walk halved what was reachable, about 12,700 against 26,000. So the
+  ceiling is a few thousand running runs on libSQL with 10,000 as the top, and
+  10,000 or more on the servers. At 1,000 the walk cost about 1 ms on libSQL and
+  nothing measurable on the servers. At 10,000 it cost 16 ms of the one writer
+  on every claim and 10 on every idle tick, and MySQL's default pool put a cliff
+  just above that, inside a write transaction. That is not small. Recording the
+  table and no more would have needed a stated ceiling of about 1,000 running
+  runs that nothing enforces, and the key is cheap, so the statements are keyed.
+
+  Schema version 9 is an index and nothing else, `runs_held`: `(queue,
+  claimed_by)` over the running rows on libSQL and PostgreSQL, and `(queue,
+  claimed_by(255), state)` on MySQL. The held guard and the receipt read already
+  named the queue, the state and the token. The two follow-ons now name the
+  token beside the stamp, which narrows nothing and is there for the planner,
+  and libSQL's receipt read writes its bounds check on the lease expiry with a
+  unary plus, because SQLite otherwise keeps that read on `runs_lease`.
+  DESIGN.md §3.2 has the reasons and the check behind each, in its item on a
+  claim's reads of `runs`. An index on the stamp, which MySQL has since version
+  8, was considered and not built: it keys the follow-ons only, which is three
+  of libSQL's five reads and neither of MySQL's two, every stamped write of a
+  run writes it, and on PostgreSQL it ends heap-only updates for them. A new
+  column that only claim writes was not built because `claimed_by` already is
+  one.
+
+  Main against the change, interleaved in three rounds with a fresh database
+  each, the mean of 300 calls on libSQL, 200 on PostgreSQL and 100 on MySQL. A
+  claim that takes a run and then an idle claim, in ms:
+
+  | | 1,000 before | 1,000 after | 10,000 before | 10,000 after |
+  |---|---|---|---|---|
+  | libSQL | 6.34, 4.95 | 4.67, 3.92 | 22.06, 14.68 | 4.60, 3.85 |
+  | PostgreSQL | 7.91, 6.48 | 7.25, 6.10 | 12.67, 8.66 | 7.27, 6.18 |
+  | MySQL | 6.56, 5.56 | 4.20, 3.26 | 33, 32 (medians) | 4.03, 3.17 |
+
+  At 100,000 a claim costs 5.0 ms on libSQL and 7.2 to 7.7 on PostgreSQL, and at
+  40,000 it costs 4.1 to 4.5 on MySQL, where it walks 12, 7 to 9, 3 and 3 rows
+  in its four statements at every size. What the index costs the other writes,
+  mean ms before and after at 10,000 running runs: activate 2.54 and 2.19,
+  heartbeat 1.10 and 1.00, complete 3.52 and 3.41, reschedule 1.72 and 1.61 on
+  libSQL; 4.61 and 4.62, 1.32 and 1.37, 5.06 and 5.34, 2.51 and 2.58 on
+  PostgreSQL; 2.94 and 2.32, 0.83 and 0.77, 3.81 and 3.62, 1.98 and 1.88 on
+  MySQL. The same call moves 5 to 7 percent from round to round, and the index's
+  cost is inside that. One PostgreSQL round at 10,000 is left out of its mean,
+  because every call of it was 1.7 times slower, activate included.
+
+  The three `claim` entries of `EXCUSED_SOURCE_WALKS` are deleted with the
+  table, and that pin excuses nothing. A second libSQL pin allows a claim to
+  reach `runs` by a key or by the due range of its candidate legs and by nothing
+  else, in all four statements. PostgreSQL's pin counts the rows every scan of
+  `runs` reads beside 300 running runs, and MySQL's counts the rows each
+  statement walks beside 400, with a run due and with none. Four mutations are
+  registered: the token term on libSQL and on PostgreSQL, libSQL's unary plus,
+  and the receipt's bounds check, which a new conformance case holds at both
+  ends of its range on every dialect. A fifth holds the claim token to an
+  identifier's width at `claim`. The review of this change found that
+  PostgreSQL's index of the token cannot hold a row past about 2,700 bytes, so a
+  claim under 3,000 characters that do not compress answered as an outage there
+  and took its run on the other two, where before the index every dialect took
+  it. `claim` now holds its token with the check it already made for its queue,
+  one shared conformance case shows all three dialects refusing such a token
+  alike, the identifier surface sends an identifier past the width in the
+  token's place too, and a `store-postgres` test holds the one edge that leaves:
+  a database an older build left with a run still running under such a token
+  fails version 9 whole, stays at version 8, and takes the version once that run
+  has ended and no transaction that was open at that moment still holds a
+  snapshot in that database or a transaction id of its own anywhere on the
+  server, because PostgreSQL's index build also indexes a dead row version that
+  an open snapshot can still see, and the building session's own snapshot
+  reaches back to the server's oldest running transaction id. The test runs in a
+  database of its own and holds both halves: refused while a snapshot it opens
+  is open, and built, asked once, after the server's oldest running transaction
+  id has passed the moment the run ended. Its first two forms each passed alone
+  and failed beside other tests' transactions, which is how the gate found both
+  halves of that sentence. PostgreSQL's pin parks one wait, because with `waits`
+  empty the delete never reaches `runs`, and with the token term removed from
+  the delete alone the pin fails by that statement's name. The registry holds
+  1033.
+  - Limit, measured: PostgreSQL matches the partial index to the bound state of
+    the held guard and of the receipt read only when it plans with the values,
+    as it does for the unnamed statements the executor sends. With the server
+    set to `plan_cache_mode = force_generic_plan` those two statements fall back
+    to the plan they had, and a claim beside 100,000 running runs costs 32.6 ms
+    against 7.4, where it cost 64. The pin plans with real binds and cannot see
+    it.
+  - At this PR's merge of main, which holds the plan check (PR3.14c), its rule
+    read a seek of `runs_held (queue=? AND claimed_by=?)` as a walk. Over this
+    PR's statements it still faulted seven nests, in the claim's task follow-on,
+    its delete and its receipt read, and its two excuses for the first two no
+    longer matched, because their pattern named the old walk. So its names did
+    not simply come out. Its reader's list of columns that name one entity
+    gained `claimed_by`, because one token holds at most one claim's limit of
+    runs, with the reason in DESIGN.md. Then its two excuses and its name for
+    the receipt read among the due ranges came out, and its plan test passes
+    with nothing of the claim excused. With `claimed_by` taken out of that list
+    again the test fails on those seven nests, which was tried. Its option of a
+    clause that refuses a lone walk in any statement had this merge as its
+    trigger.
+  - Option, not built, with its trigger: `taken`, the declaration of the runs a
+    claim took, is a byte-identical copy in the three stores, and no mutation
+    holds MySQL's copy, because the term changes no plan there. Hoisting it
+    beside core's claim statement was declined here: the third copies across the
+    stores have an owner, it is a store text fragment, and a hoist re-aims the
+    two store-anchored mutations this PR registers. Trigger: the next change to
+    `taken`.
+  - Option, not built, with its trigger: a check that reads each dialect's
+    catalog for every indexed text column and requires each to be declared with
+    the bound on what enters it. The identifier surface holds what its table
+    names, and nothing ties a column that gains an index to that table, which is
+    how `runs_held` indexed a claim token that no entry held to a width: on
+    PostgreSQL a btree row may not pass about 2,700 bytes, and a claim under a
+    longer token answered as an outage until `claim` held its token. The same
+    shape is open for any text column no entry bounds, a task name for one: with
+    an index on it, a spawn under 3,000 characters that do not compress fails on
+    PostgreSQL with SQLSTATE 54000 and the identifier surface passes. Every
+    indexed text column a caller feeds today is an identifier held to the width.
+    Trigger: the next index over a text column.
+  - Option, not built, with its trigger: renaming the plan check's test `reads
+    no table once for each row of a backlog, but for the claim it names`. The
+    exception it names is empty since this PR, so the title is loose and not
+    false. A registered verdict names that title, so the rename re-aims a base
+    registry entry and needs a helper in the base gate's bridge step. Trigger:
+    the next pull request that re-aims that entry for another reason.
+  - Option, not built, with its trigger: `store-postgres`'s saga plan test
+    judges plans over tiny tables that have no statistics, so a database-wide
+    ANALYZE from any other session can flip them. Alone it passed 4 times of 4,
+    and beside a database-wide ANALYZE issued ten times a second from another
+    session it failed 3 times of 6. This PR's pin analyzes only the two tables
+    it loads, in its own schema. Trigger: the first time that test flakes, or
+    the next test that analyzes a whole database.
 - **PR3.14c the plan check generated from the corpus**: `query-plans.test.ts`
   pinned the statements someone chose, and its block over writes planned the
   UPDATE and DELETE of fourteen labels listed by hand, so a read, or the SELECT
@@ -2915,20 +3112,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
   cannot see, as five statements that were run, and what it refuses though it is
   sound. A step is judged by its constraints whatever it is named, a read of a
   subquery's rows as a read of a table is, and a plan line the reader cannot
-  read or place is a fault. Two statements of `claim` break the rule, the task
-  update and the delete of expired waits, and are excused by name, for that walk
-  alone. A plan prints a range the same way whichever way it points and never
-  prints a LIMIT, so every statement in which a due range drives another step is
-  named with the lines that drive and with what bounds them, a LIMIT its text
-  holds or a recorded open question. Four are: the claim's candidate legs, the
-  two sweep scans, and the claim's read of the runs it took, whose range is
-  every lease of its queue that has not expired, under no LIMIT. That read had
-  no pin, and it shows that plan only under its real binds, because SQLite plans
-  from bound values. All four statements of `claim` are PR3.14b's. When it
-  removes the claim's walks, the claim's two excuses here and its name in the
-  list of due ranges fail as unneeded until they are deleted, the excuses first,
-  because they are checked first. One claim of one run on libSQL, median of 7,
-  on a file database, beside running runs of its queue that another worker
+  read or place is a fault. Two statements of `claim` broke the rule, the task
+  update and the delete of expired waits, and were excused by name, for that
+  walk alone, until PR3.14b keyed them. Nothing is excused now. A plan prints a
+  range the same way whichever way it points and never prints a LIMIT, so every
+  statement in which a due range drives another step is named with the lines
+  that drive and with what bounds them, a LIMIT its text holds or a recorded
+  open question. Four were: the claim's candidate legs, the two sweep scans, and
+  the claim's read of the runs it took, whose range was every lease of its queue
+  that had not expired, under no LIMIT. That read had no pin, and it showed that
+  plan only under its real binds, because SQLite plans from bound values. Three
+  are named now. All four statements of `claim` were PR3.14b's, and it has keyed
+  them. The reader read its seek of `runs_held` by the claim token as a walk and
+  still faulted seven nests, so the reader's list of columns that name one
+  entity gained `claimed_by`, because one token holds at most one claim's limit
+  of runs. Then the claim's two excuses and its name in the list of due ranges
+  came out. As measured before PR3.14b: one claim of one run on libSQL, median
+  of 7, on a file database, beside running runs of its queue that another worker
   holds, then each of its statements alone in a transaction that is rolled back,
   with `activate` as the keyed control:
 
@@ -2946,11 +3146,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statement, alone or not. A lone walk drives nothing and nothing drives it,
     so the nest rule does not see it. In an UPDATE or a DELETE the two pins over
     writes refuse it, and a read, or an INSERT ... SELECT, that walks a protocol
-    table alone passes every plan test today. On `main` the clause would find
-    exactly the four statements of `claim`, so it would sit beside
-    `EXCUSED_SOURCE_WALKS` and say the same thing. Its trigger is PR3.14b
-    merging. It then replaces the two pins over writes, and is not a second list
-    beside them.
+    table alone passes every plan test today. Before PR3.14b the clause would
+    have found exactly the four statements of `claim`, beside
+    `EXCUSED_SOURCE_WALKS`, which is deleted now. Its trigger was PR3.14b
+    merging, which has come: the clause can now replace the two pins over
+    writes, and would not be a second list beside them.
   - Option, not a deferral of this PR: the same generated check on PostgreSQL
     and MySQL, whose plan tests hold chosen statements. Each needs its own
     reading of its own plan format, and MySQL's test already measures rows

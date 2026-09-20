@@ -548,6 +548,58 @@ const KEY_OF: Readonly<Record<string, string>> = {
   'waits.run_id': 'PRIMARY',
 }
 
+describe('a claim beside the running runs of its queue, on MySQL', () => {
+  it('walks none of the runs other workers hold, with a run due and with none', async () => {
+    // A queue's running runs are its work in flight, and a claim that reads them pays for
+    // them on every tick. The held guard of the compare-and-set and the receipt read find
+    // what ONE token holds, and by queue and state alone the only index is `runs_poll`, so
+    // both walked every running run of the queue, idle ticks included: one claim measured
+    // 33 ms beside 10,000 running runs and 638 ms beside 40,000 under the server's default
+    // buffer pool, against 4 ms with `runs_held`. Measured with it: 12, 7 to 9, 3 and 3 rows in
+    // the four statements with a run due, and 5, 0, 0 and 0 with none, at 400 running runs
+    // and at 40,000 alike. The task follow-on and the delete of timed-out waits already
+    // find their runs by the statement stamp.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-claim-running', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const spawned = await store.spawn(Q, 'held', '{}')
+      const [held] = await store.claim(Q, 'another-worker', { leaseSeconds: 3600, limit: 1 })
+      if (held?.taskId !== spawned.taskId) throw new Error('the seed run was not claimed')
+      await store.activate(Q, held.runId, held.claimToken, held.claimGen)
+      await cloneRows(db, 'tasks', `src.task_id = '${held.taskId}'`, {
+        task_id: "CONCAT('held-task-', seq.n)",
+        idempotency_key: 'NULL',
+        last_attempt_run: "CONCAT('held-run-', seq.n)",
+        fence_stamp: "CONCAT('held-task-stamp-', seq.n)",
+      })
+      await cloneRows(db, 'runs', `src.run_id = '${held.runId}'`, {
+        run_id: "CONCAT('held-run-', seq.n)",
+        task_id: "CONCAT('held-task-', seq.n)",
+        claimed_by: "CONCAT('another-worker-', seq.n)",
+        fence_stamp: "CONCAT('held-stamp-', seq.n)",
+      })
+      await db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE runs, tasks', args: [] }])
+      await store.spawn(Q, 'due', '{}')
+      const lease = { leaseSeconds: 60, limit: 1 }
+      const due = await walkedByEachStatement(db, 'claim', async (measured) => {
+        expect(await measured.claim(Q, 'claimer', lease)).toHaveLength(1)
+      })
+      const idle = await walkedByEachStatement(db, 'claim', async (measured) => {
+        expect(await measured.claim(Q, 'idle-claimer', lease)).toHaveLength(0)
+      })
+      expect(due).toHaveLength(4)
+      expect(idle).toHaveLength(4)
+      const walkedTheBacklog = [
+        ...due.map((walked) => ({ ...walked, when: 'a run due' })),
+        ...idle.map((walked) => ({ ...walked, when: 'idle' })),
+      ].filter((walked) => walked.rows >= 40)
+      expect(walkedTheBacklog, `beside ${HISTORY} running runs`).toEqual([])
+    } finally {
+      await db.close()
+    }
+  })
+})
+
 describe('a keyed write on MySQL', () => {
   it('locks the runs a claim takes and no other run, over two rows, over four, and at a limit of half the table', async () => {
     // A write keyed by a subquery, `WHERE key IN (SELECT ...)`, is a join to the server,
