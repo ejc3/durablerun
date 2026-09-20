@@ -117,23 +117,28 @@ function closePeer(server: TcpServer, held: Iterable<Socket>): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()))
 }
 
-/** A peer that accepts every connection, reads what it is sent, and never answers. */
+/**
+ * A peer that accepts every connection, reads what it is sent, and never answers. It
+ * remembers its connections in the order they came, because the one a test asks about is
+ * the one that carried the request. The client's connection pool may open another to the
+ * same address once that one is gone, and closes it on a timer of its own.
+ */
 async function silentPeer() {
-  const open = new Set<Socket>()
-  let accepted = 0
+  const connections: Socket[] = []
+  const closed = new Set<Socket>()
   const server = createTcpServer((socket) => {
-    accepted++
-    open.add(socket)
-    socket.on('close', () => open.delete(socket))
+    connections.push(socket)
+    socket.on('close', () => closed.add(socket))
     socket.on('error', () => {})
     socket.resume()
   })
   const port = await listenOnOsPort(server)
   return {
     url: `http://127.0.0.1:${port}`,
-    accepted: () => accepted,
-    open: () => open.size,
-    close: () => closePeer(server, open),
+    accepted: () => connections.length,
+    /** Whether the nth connection the peer accepted, counted from zero, has closed. */
+    closed: (nth: number) => connections[nth] !== undefined && closed.has(connections[nth]),
+    close: () => closePeer(server, connections),
   }
 }
 
@@ -142,34 +147,33 @@ async function silentPeer() {
  * launch sent through it arrives and its ack never comes back.
  */
 async function oneWayRelay(targetPort: number) {
-  const open = new Set<Socket>()
-  const onward = new Set<Socket>()
-  let accepted = 0
+  const connections: Socket[] = []
+  const onward: Socket[] = []
+  const closed = new Set<Socket>()
   let answers = ''
   const server = createTcpServer((from) => {
-    accepted++
-    open.add(from)
+    connections.push(from)
     const to = connect(targetPort, '127.0.0.1')
-    onward.add(to)
+    onward.push(to)
     from.pipe(to)
     to.on('data', (chunk) => {
       answers += String(chunk)
     })
     from.on('close', () => {
-      open.delete(from)
+      closed.add(from)
       to.destroy()
     })
-    to.on('close', () => onward.delete(to))
     from.on('error', () => {})
     to.on('error', () => {})
   })
   const port = await listenOnOsPort(server)
   return {
     url: `http://127.0.0.1:${port}`,
-    accepted: () => accepted,
-    open: () => open.size,
+    /** Whether the nth connection the relay accepted, counted from zero, has closed. */
+    closed: (nth: number) => connections[nth] !== undefined && closed.has(connections[nth]),
+    /** The status of every answer the target gave, which is one per request that reached it. */
     statuses: () => [...answers.matchAll(/HTTP\/1\.1 (\d{3})/g)].map((match) => Number(match[1])),
-    close: () => closePeer(server, [...open, ...onward]),
+    close: () => closePeer(server, [...connections, ...onward]),
   }
 }
 
@@ -200,8 +204,8 @@ describe('a launch the driver stopped waiting for', () => {
         'the launch deadline counted as a failed launch',
       )
       expect(
-        await reached(() => peer.open() === 0, SOCKET_WAIT_MS),
-        'the driver lets go of the socket of a launch it stopped waiting for',
+        await reached(() => peer.closed(0), SOCKET_WAIT_MS),
+        'the driver closes the connection of a launch it stopped waiting for',
       ).toBe(true)
     } finally {
       await stopLoop(f.clock, loop, done)
@@ -259,8 +263,8 @@ describe('a launch the driver stopped waiting for', () => {
         'the launch deadline counted as a failed launch',
       )
       expect(
-        await reached(() => relay.open() === 0, SOCKET_WAIT_MS),
-        'the driver lets go of the socket of a launch it stopped waiting for',
+        await reached(() => relay.closed(0), SOCKET_WAIT_MS),
+        'the driver closes the connection of a launch it stopped waiting for',
       ).toBe(true)
       // The driver looks again after the reopen backoff and after a whole lease, and
       // launches nothing: the run had ended, so the failed launch changed nothing.
@@ -270,9 +274,9 @@ describe('a launch the driver stopped waiting for', () => {
         await f.advance(ms)
         await until(() => loop.stats.ticks > looked, 'the loop looking again')
       }
-      expect({ bodies, launches: relay.accepted(), state: await state() }).toEqual({
+      expect({ bodies, acks: relay.statuses(), state: await state() }).toEqual({
         bodies: 1,
-        launches: 1,
+        acks: [202],
         state: 'completed',
       })
       expect(await engineInvariantViolations(f.raw)).toEqual([])
