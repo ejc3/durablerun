@@ -801,6 +801,20 @@ async function runProgram(
 }
 
 /**
+ * A generated program that owns a registered mutant fails under it wherever the defect first
+ * shows: where a run checks how it ended, at a row checker, or at the comparison between two
+ * schedules. The failure is the program's, so it is reported under the program's verdict,
+ * with the assertion that failed as its cause.
+ */
+async function owning(verdict: string | undefined, body: () => Promise<unknown>): Promise<void> {
+  try {
+    await body()
+  } catch (error) {
+    throw verdict === undefined ? error : new Error(verdict, { cause: error })
+  }
+}
+
+/**
  * The harness's one comparison: a program interrupted at any sampled store call ends as its
  * reference run did. It answers the reference, so a caller can say more about it.
  */
@@ -1105,10 +1119,19 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (const [title, ops] of RUN_PROGRAMS) {
     it(`${title}: every fault point yields the reference outcome`, async () => {
-      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
-      await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
-        runProgram(ops, runSeed, failAtCall),
-      )
+      // The registered mutant that the program generated for a shape is the owner of.
+      const verdict = (
+        {
+          'a step and then a step, which the engine refuses':
+            'mutation-verdict:behavior:replay-harness-refuses-a-group-on-every-pass',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, async () => {
+        if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
+        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
+          runProgram(ops, runSeed, failAtCall),
+        )
+      })
     }, 60_000)
   }
 })
@@ -1742,6 +1765,37 @@ async function runSagaProgram(
   }
 }
 
+/** A generated saga does what its program says with no fault, and ends the same at every fault point. */
+async function sagaReplaysAsItsReference(title: string, program: SagaProgram): Promise<void> {
+  const expected = expectedSaga(program)
+  const reference = await runSagaProgram(program, `saga-ref-${title}`, 0)
+  // With no fault, the program alone says what ran, in what order, and how often.
+  expect({
+    state: reference.state,
+    outcome: reference.outcome,
+    undone: reference.undone,
+    undoCounts: reference.undoCounts,
+    handed: reference.handed,
+  }).toEqual({
+    state: 'failed',
+    outcome: expected.outcome,
+    undone: expected.undone,
+    undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
+    handed: expected.handed,
+  })
+  const inFlight = rowsARefusalMayLeaveOut(program)
+  for (const call of faultPoints(reference.calls)) {
+    const faulted = await runSagaProgram(program, `saga-fault-${title}-${call}`, call)
+    expect(comparable(faulted, inFlight), `fault at call ${call} of ${reference.calls}`).toEqual(
+      comparable(reference, inFlight),
+    )
+    // The record is exactly once, which the checkpoint table holds. The effect is at
+    // least once, and a second run needs a fault between the handler and its record.
+    const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
+    expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(true)
+  }
+}
+
 /** The generated sagas this file runs at every fault point: six of random ops, and one for each shape. */
 const SAGA_RUN_PROGRAMS: readonly (readonly [string, SagaProgram])[] = [
   ...[0, 1, 2, 3, 4, 5].map(
@@ -1813,36 +1867,16 @@ describe('saga replay equivalence (generated programs x fault points across the 
 
   for (const [title, program] of SAGA_RUN_PROGRAMS) {
     it(`${title}: rollbacks run in reverse start order, once each, at every fault point`, async () => {
-      const expected = expectedSaga(program)
-      const reference = await runSagaProgram(program, `saga-ref-${title}`, 0)
-      // With no fault, the program alone says what ran, in what order, and how often.
-      expect({
-        state: reference.state,
-        outcome: reference.outcome,
-        undone: reference.undone,
-        undoCounts: reference.undoCounts,
-        handed: reference.handed,
-      }).toEqual({
-        state: 'failed',
-        outcome: expected.outcome,
-        undone: expected.undone,
-        undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
-        handed: expected.handed,
-      })
-      const inFlight = rowsARefusalMayLeaveOut(program)
-      for (const call of faultPoints(reference.calls)) {
-        const faulted = await runSagaProgram(program, `saga-fault-${title}-${call}`, call)
-        expect(
-          comparable(faulted, inFlight),
-          `fault at call ${call} of ${reference.calls}`,
-        ).toEqual(comparable(reference, inFlight))
-        // The record is exactly once, which the checkpoint table holds. The effect is at
-        // least once, and a second run needs a fault between the handler and its record.
-        const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
-        expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(
-          true,
-        )
-      }
+      // The registered mutants that the saga generated for a shape is the owner of.
+      const verdict = (
+        {
+          'two registered steps started together, which the engine refuses':
+            'mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together',
+          'steps named after the attempt, and a rollback that fails once':
+            'mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, () => sagaReplaysAsItsReference(title, program))
     }, 120_000)
   }
 })

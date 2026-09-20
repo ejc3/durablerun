@@ -326,23 +326,18 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '0eec60003f1e21025c8fd11c489563f42ba61826fb486c7f681c93bff420eb37':
-              # PostgreSQL's schema gained a version that declares the byte collation on
-              # every text column, and a server test reads the catalog to hold it: no text
-              # column or index key keeps its database's collation, and no migration
-              # rewrites a table. A second server test holds that a second migrator waits
-              # for the first and never deadlocks with it, a third that a read batch which
-              # loses a deadlock is run again, and a fourth that a statement which arrives
-              # while a version waits holds no store table. Their mutations are newer than the
-              # base registry, so their verdict markers are exempted there. No base entry
-              # is re-aimed.
+          if digest == '8ff5869b24a87aed0ee73017957fd5d7fe52380d5fd60faa12365d0749627b2f':
+              # The SDK's replay-equivalence harness draws durable calls started together and a
+              # step named after the attempt, and three programs it generates each own a
+              # mutation. One drops the guard that a replayed step holds, which is what makes
+              # the engine refuse such a group on every pass, and two bring back defects a
+              # review found where the old grammar could not look. The mutations are newer
+              # than the base registry, so their verdict markers are exempted there. No base
+              # entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:postgres-text-column-keeps-database-collation",
-                  "mutation-verdict:behavior:postgres-collation-migration-rewrites-a-table",
-                  "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
-                  "mutation-verdict:behavior:postgres-deadlocked-read-runs-again",
-                  "mutation-verdict:behavior:postgres-index-key-keeps-another-collation",
-                  "mutation-verdict:behavior:postgres-version-locks-meta-before-the-store-tables",
+                  "mutation-verdict:behavior:replay-harness-refuses-a-group-on-every-pass",
+                  "mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together",
+                  "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
