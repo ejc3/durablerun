@@ -310,7 +310,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'e4b71d2e7cf20f7a95ceb2fd9ab59d9f7dd6a6826888124f39d473db5fc56615':
+          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
               # The stale-token column registers a mutation for each comparison it holds:
               # the claim token of every call that presents one, the generation of a claim
               # receipt, and the generation a lease sweep's scan read. The base predates
