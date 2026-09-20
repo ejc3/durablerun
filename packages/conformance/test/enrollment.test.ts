@@ -19,6 +19,7 @@ const EXPECTED_SURFACE_IDS = [
   'identifier-bound',
   'schema-admin',
   'self-concurrency',
+  'stale-token',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 

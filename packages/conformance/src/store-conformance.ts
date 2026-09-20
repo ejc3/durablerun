@@ -32,6 +32,7 @@ import {
 import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
 import { selfConcurrencyConformance } from './self-concurrency.js'
+import { staleTokenConformance } from './stale-token-column.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
 import { timestampBoundaryConformance } from './time-boundaries.js'
 
@@ -1255,4 +1256,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'identifier-bound', run: identifierBoundConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
   { id: 'self-concurrency', run: selfConcurrencyConformance },
+  { id: 'stale-token', run: staleTokenConformance },
 ] as const)

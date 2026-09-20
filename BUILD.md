@@ -231,6 +231,20 @@ a last docs PR gives a live owner to every open bullet that is left.
     one that drops a column from the version, one that makes it rewrite a table
     and one that declares another collation on an index key, are each caught by
     that test.
+14. PR3.1c: unfencing the claim token of any one write label that takes one
+    fails a case of the stale-token column by name, on three dialects. This is
+    met. The column enrolls the thirteen calls that present a claim, read from
+    what the poison matrix's `invoke` passes, and it is green on libSQL,
+    PostgreSQL and MySQL. Fifteen registered mutations each remove the token
+    comparison from a statement one call sends: one for each of the thirteen
+    calls, and one more for each server store's own `expire-lease-now` text.
+    Each is caught by that call's case on its dialect. With `fail-rollback`'s
+    comparison removed, which left the whole libSQL conformance file green
+    before, that file's one red is
+    `fail-rollback refuses a caller that does not hold the claim`, and the
+    same case is red on PostgreSQL and on MySQL. `expire-lease-now` is each
+    store's own text, and with the comparison removed from one store's text
+    that dialect's case is red.
 15. PR2.5b: a launch the resident driver stopped waiting for is aborted through
     the Launcher port and reconciles exactly as a timed-out launch does, held by
     a case in which the worker receives the launch, the driver aborts, and the
@@ -740,9 +754,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   await-before-emit, timeout-vs-emit race, one-shot first-write-wins, plus
   executable twins of the spec's no-lost-wakeup and no-resurrection
   invariants. The review round found five bugs (see
-  postmortems/pr11-events-review.md); it carries three deferrals from that
-  round: a stale-fence fault column in the generated fault matrix
-  (per-label zombie probes with snapshot comparison), a fence-surface lint
+  postmortems/pr11-events-review.md); it carried three deferrals from that
+  round. The stale-fence fault column in the generated fault matrix is
+  built, narrowed to a stale-token column, as PR3.1c below. Two stay here:
+  a fence-surface lint
   (every caller-supplied identity parameter appears in every write fence
   of its batch or carries an explicit waiver), and structural
   wake-consumption binding (a wake bound to its awaiting step instead of
@@ -756,6 +771,50 @@ these three things; nothing else in the system does I/O, time, or randomness.
   with NULL. Attestation-artifact freshness is DONE: the Codex log and
   multi-lens journal each carry one exact review-head binding checked against
   the PR head before the status can post.
+- **PR3.1c stale-token column**: DONE. Narrowed from the stale-fence fault
+  column that PR3.1's entry carried from PR #11's review. Shown needed on
+  2026-09-19: with `fail-rollback`'s claim token unfenced the libSQL
+  conformance file stayed green, 3,342 of 3,342, while a stale token ended a
+  saga, and `complete`'s token was held by one hand-written line. The column
+  (`conformance/src/stale-token-column.ts`, DESIGN.md §3.4) generates one case
+  for each call that presents a claim, read from what the poison matrix's
+  `invoke` passes: thirteen calls, the twelve token-taking write labels and
+  the spawn of a child, which `invoke` did not make until this PR. A case
+  calls under the claim's token one character short, one character long, and
+  under another live claim's token, requires the lost-lease answer and
+  unchanged rows, and then requires the same call under the claim itself to
+  win. Activate and defer-launch are also held to the claim's generation, from
+  both sides. With the same bend in place the whole libSQL conformance file
+  has one red of 3,395, `fail-rollback refuses a caller that does not hold the
+  claim`. The claim-timeout sweep's generation comparison, which nothing
+  pinned and the assessment read as redundant, is pinned and not deleted:
+  DESIGN.md already says every lease sweep acts on the claim its scan read,
+  the lost-launch write reports a scanned count that only the generation ties
+  to the row, and the claim-timeout batch once trusted a scanned attempt. Two
+  cases hold both lease sweeps to it, from the claim before and from a claim
+  not yet made. Twenty mutations, the first to name core's claimed-run,
+  claim-receipt, lease, suspend, complete, fail, checkpoint and sweep
+  statements, are each owned by a case of the column: 972. The hand-written
+  stale-token lines for heartbeat, set-checkpoint, reschedule with a delay,
+  suspend, complete, fail and expireLeaseNow are gone, and the immediate chain
+  keeps its own case. The column adds about 0.5 s to libSQL's conformance,
+  about 1.4 s to PostgreSQL's and about 1.3 s to MySQL's.
+  - An option, not built: seed the lost-launch sweep at the relaunch cap too.
+    The column's lost-launch case reaches the reopen statement, so the cap's
+    statement can lose its generation comparison alone with every case green,
+    which was written and run. The cap's write takes what it needs from the
+    stored row and reports no scanned value, so nothing durable rests on it
+    today.
+  - An option, not built: a second argument form of `fail` in the column, the
+    one that asks for a retry. The column calls `fail` and `failRollback` with
+    none, and the scheduler suite's case of a stale `fail` with budget left
+    holds the retry form by hand. It would move the pinned thirteen calls to
+    fourteen and add a mutation.
+  - PR3.1c's one review found no HIGH, one MEDIUM and five LOW, recorded in
+    `postmortems/pr3.1c-stale-token-column-review.md`. Five are counted there:
+    three holds of the column that could not fail, and two sentences that said
+    more than was held. All six are folded. The fold's own unfiltered audit
+    caught one defect that a fix had introduced, before anything was pushed.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

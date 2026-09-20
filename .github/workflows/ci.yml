@@ -313,6 +313,19 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
+          def exempt(repaired, candidate, markers):
+              # Exempt verdict markers this tree registers and the base registry predates.
+              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(table) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              return repaired.replace(table, table + entries)
           def reaim_entry(repaired, candidate, name):
               # Replace one entry of the base registry with this tree's entry of the same name, for a
               # mutation whose target line this tree rewrote. Its name must stand, and so must
@@ -338,7 +351,7 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
+          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
               # Five base entries name text this tree rewrote, and each mutant bends the same
               # condition as before. An event name carries the task of a completion event, so
               # the two messages about a stored payload that is not text are built from its
@@ -346,7 +359,8 @@ jobs:
               # port's refusal of a reserved name or key is a class of its own, so the refusal
               # of a key together with childOf names that class, and the hosted route's
               # reserved-key answer moved from a rule of its own to the one mapping of the
-              # family. No marker is new, and no entry was added or retired.
+              # family. Five mutations are new, one for each guard this tree added, and each
+              # answers to a verdict marker that is newer than the base. No entry was retired.
               repaired = previous
               for name in (
                   'child-await-hit-error-names-the-task',
@@ -356,6 +370,13 @@ jobs:
                   'spawn-child-key-excludes-a-caller-key',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:recording-statement-takes-a-completion-event-only',
+                  'mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal',
+                  'mutation-verdict:behavior:history-helper-runs-the-child-task-checker',
+                  'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run',
+                  'mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
