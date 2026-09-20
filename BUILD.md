@@ -1416,7 +1416,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     keyword could lose its mutation with the count met. No mutation was added
     for it, because every such spelling already had one. Its kept false
     negative is a spelling written inside a character class, which reads as
-    one entry. The registry holds 937 mutations.
+    one entry. The registry holds 958 mutations: main's 952 and the 6 this
+    pull request adds.
   - Delivered in PR3.9e part 3c, with the rebuild left as an option: the
     checks read a statement's object graph once. A profile of a store call put
     about two fifths of its time in reading node fields generically, once for
