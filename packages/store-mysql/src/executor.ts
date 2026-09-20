@@ -76,6 +76,17 @@ const PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE = new Set([
   3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
 ])
 
+/**
+ * Numbers MySQL files under one of the classes above that a retry cures, so they are read
+ * before the class: a limit on the server's or an account's connections, and on prepared
+ * statements. Another session's release lifts each of them.
+ */
+const OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS = new Set([
+  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections
+  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits
+  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count
+])
+
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
 /** How many times a write batch runs before a deadlock is reported as an outage. */
@@ -480,7 +491,11 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
-    const stateClass = sqlStateClass(error)
+    // A limit that a retry cures is an outage whatever class MySQL files it under, so its
+    // class is not read.
+    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)
+      ? undefined
+      : sqlStateClass(error)
     if (
       (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
       PERMANENT_ERRNOS_UNDER_THE_GENERAL_STATE.has(errno)
