@@ -1495,8 +1495,8 @@ MUTATION_SPECS = [
     (
         "text-statement-list-holds-every-raw-batch",
         "packages/store-libsql/src/admin.ts",
-        "        await this.db.batch('migrate:bootstrap', [\n",
-        "        await this.db.batch('migrate:bootstrapped', [\n",
+        "          'migrate:bootstrap',\n",
+        "          'migrate:bootstrapped',\n",
         "a store sends SQL text under a label that scripts/text-statements.json does not list",
     ),
     (
@@ -3921,10 +3921,38 @@ MUTATION_SPECS = [
     ),
     (
         "postgres-migrator-locks-meta-before-its-sentinel",
-        "packages/store-postgres/src/admin.ts",
-        "    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },\n",
-        "",
+        "packages/store-postgres/src/executor.ts",
+        "        await client.query(MIGRATION_LOCK_SQL)\n",
+        "        void MIGRATION_LOCK_SQL // MUTATION\n",
         "a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
+        "postgres-lock-of-an-unknown-kind-is-refused",
+        "packages/store-postgres/src/executor.ts",
+        "      return refuseUnknownLockKind(lock)\n",
+        "      return async () => undefined // MUTATION\n",
+        "a lock of a kind that a later build of core added is ignored, and the batch runs under no lock",
+    ),
+    (
+        "postgres-migration-write-names-its-lock",
+        "packages/store-postgres/src/executor.ts",
+        "  if (needsTheLock && lock?.kind !== 'migration') {\n",
+        "  if (needsTheLock && lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+        "a version's batch whose control was dropped runs with no lock on meta, where at the commit before the lock was a statement of the batch that no wrapper could drop",
+    ),
+    (
+        "postgres-version-batch-names-the-migration-lock",
+        "packages/store-postgres/src/admin.ts",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),\n",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)), // MUTATION\n",
+        "a version's batch names no lock, so a second migrator blocks on the first one's uncommitted sentinel while it holds a lock on meta, and deadlocks with a version that locks the table",
+    ),
+    (
+        "libsql-migration-write-names-the-migration-lock",
+        "packages/store-libsql/src/admin.ts",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),\n",
+        "          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)), // MUTATION\n",
+        "a migration write names the migration lock on two dialects and not on the third, so a recorder, a wrapper, or a port in another language meets two rules",
     ),
     (
         "postgres-deadlocked-read-runs-again",
@@ -7485,9 +7513,72 @@ MUTATION_SPECS.extend(
         (
             "mysql-bootstrap-is-one-statement",
             "packages/store-mysql/src/admin.ts",
-            "        () => this.db.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }]),\n",
-            "        () =>\n          this.db.batch('migrate:bootstrap', [\n            { sql: META_BOOTSTRAP_SQL.split(' AS SELECT ')[0] as string, args: [] }, // MUTATION\n            { sql: \"INSERT INTO meta (`key`, value) VALUES ('schema_version', '0')\", args: [] },\n          ]),\n",
+            "            [{ sql: META_BOOTSTRAP_SQL, args: [] }],\n",
+            "            [\n              { sql: META_BOOTSTRAP_SQL.split(' AS SELECT ')[0] as string, args: [] }, // MUTATION\n              { sql: \"INSERT INTO meta (`key`, value) VALUES ('schema_version', '0')\", args: [] },\n            ],\n",
             "MySQL commits the version table before its row, and a concurrent version read reports a foreign database",
+        ),
+        (
+            "mysql-migration-write-names-its-lock",
+            "packages/store-mysql/src/executor.ts",
+            "  if (lock?.kind !== 'migration') {\n",
+            "  if (lock?.kind !== 'migration' && label === '') { // MUTATION\n",
+            "a migration write under a label that no list knows runs its DDL under no lock, beside another migrator, and MySQL cannot undo what it did",
+        ),
+        (
+            "mysql-migration-batch-sent-as-a-read-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode === 'read') {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "  if (mode === 'read' && lock !== undefined) {\n    throw new TypeError(\n      `batch(${label}) is a migration batch sent as a read",
+            "a migrate: batch sent as a read runs its DDL with no lock, because a DDL statement's own commit ends the read-only transaction first",
+        ),
+        (
+            "mysql-lock-of-an-unknown-kind-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "      return refuseUnknownLockKind(lock)\n",
+            "      return [MIGRATION_LOCK, '', ''] // MUTATION\n",
+            "a lock of a kind that a later build of core added is taken for one this executor knows, and the batch runs under the wrong lock",
+        ),
+        (
+            "mysql-migration-lock-keeps-the-released-name",
+            "packages/store-mysql/src/executor.ts",
+            "const MIGRATION_LOCK = 'durablerun:migrate'\n",
+            "const MIGRATION_LOCK = 'durablerun:migration' // MUTATION\n",
+            "a migrator of this build and one of the released build take different locks, and run their DDL side by side for the length of a deploy",
+        ),
+        (
+            "mysql-index-form-is-safe-to-repeat",
+            "packages/store-mysql/src/schema.ts",
+            "        WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') = 0,\n",
+            "        WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') >= 0,\n",
+            "a migrator that died after MySQL committed an index cannot be finished: the next migrate() fails on a duplicate key name, on every start",
+        ),
+        (
+            "mysql-failed-batch-is-forgiven-where-the-version-moved",
+            "packages/store-mysql/src/admin.ts",
+            "        plannedFrom + 1,\n",
+            "        CURRENT_SCHEMA_VERSION, // MUTATION\n",
+            "a batch that failed while a slower migrator was part of the way through fails migrate(), where nothing was wrong",
+        ),
+        (
+            "mysql-migrator-plans-again-only-after-progress",
+            "packages/store-mysql/src/admin.ts",
+            "      if (recorded <= plannedFrom) break\n",
+            "      if (recorded < plannedFrom) break // MUTATION\n",
+            "a batch that reports success and moves nothing is planned again for ever, and migrate() never returns",
+        ),
+        (
+            "mysql-advance-is-guarded-on-the-version-before",
+            "packages/store-mysql/src/admin.ts",
+            "      sql: \"UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND value = ?\",\n",
+            "      sql: \"UPDATE meta SET value = ? WHERE `key` = 'schema_version' AND ? IS NOT NULL\",\n",
+            "a batch planned from a version that has since moved writes the recorded version back, under a schema that is already past it",
+        ),
+        (
+            "mysql-pending-batch-names-the-migration-lock",
+            "packages/store-mysql/src/admin.ts",
+            "            versionBatch(migration),\n            MIGRATION_WRITE,\n",
+            "            versionBatch(migration),\n            'write', // MUTATION\n",
+            "the batch of pending versions names no lock, and the executor refuses every migrate() of a MySQL database",
         ),
         (
             "mysql-bootstrap-loss-forgiven",
@@ -10398,6 +10489,30 @@ VERDICTS = {
         "racing PostgreSQL migrators make the second wait for the first at every version, and never deadlock",
         "mutation-verdict:behavior:postgres-migrator-locks-meta-before-its-sentinel",
     ),
+    "postgres-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
+        "mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused",
+    ),
+    "postgres-migration-write-names-its-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing",
+        "mutation-verdict:construction:postgres-migration-write-names-its-lock",
+    ),
+    "postgres-version-batch-names-the-migration-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/admin.test.ts",
+        "PostgresStoreAdmin migrates a typed-fresh database through every fenced version",
+        "mutation-verdict:construction:postgres-version-batch-names-the-migration-lock",
+    ),
+    "libsql-migration-write-names-the-migration-lock": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/schema.test.ts",
+        "a migration write names the migration lock in its control, the bootstrap and every version",
+        "mutation-verdict:construction:libsql-migration-write-names-the-migration-lock",
+    ),
     "postgres-deadlocked-read-runs-again": ExpectedVerdict(
         "behavior",
         "packages/store-postgres/test/deadlocked-read.test.ts",
@@ -11888,6 +12003,60 @@ VERDICTS.update(
             "packages/store-mysql/test/admin.test.ts",
             "MysqlStoreAdmin bootstraps in one statement that creates the version table with its row",
             "mutation-verdict:construction:mysql-bootstrap-is-one-statement",
+        ),
+        "mysql-migration-write-names-its-lock": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration write that names no migration lock, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-write-names-its-lock",
+        ),
+        "mysql-migration-batch-sent-as-a-read-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a migration batch sent as a read, and sends nothing",
+            "mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused",
+        ),
+        "mysql-lock-of-an-unknown-kind-is-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a lock of a kind it does not implement, and sends nothing",
+            "mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused",
+        ),
+        "mysql-migration-lock-keeps-the-released-name": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator beside one of the released build waits for the migration lock as that build takes it, and migrates once it is free",
+            "mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name",
+        ),
+        "mysql-index-form-is-safe-to-repeat": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator that died inside its batch is finished by the next migrate(), wherever it died and whatever it had planned from",
+            "mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat",
+        ),
+        "mysql-failed-batch-is-forgiven-where-the-version-moved": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin plans again after a batch that failed while the version moved on, and only then",
+            "mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved",
+        ),
+        "mysql-migrator-plans-again-only-after-progress": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin sends one batch and then fails when a batch reports success and the version did not move",
+            "mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress",
+        ),
+        "mysql-advance-is-guarded-on-the-version-before": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/migration.test.ts",
+            "a MySQL migrator that planned from a version that has since moved runs its whole batch over a database another migrator finished, and changes nothing",
+            "mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before",
+        ),
+        "mysql-pending-batch-names-the-migration-lock": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin crosses every pending version with one version read and one batch, each version advanced only from the one before",
+            "mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock",
         ),
         "mysql-bootstrap-loss-forgiven": ExpectedVerdict(
             "behavior",
@@ -19768,7 +19937,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1033:
+        if len(MUTATIONS) != 1046:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

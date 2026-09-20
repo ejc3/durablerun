@@ -1,4 +1,9 @@
-import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
+import {
+  InvalidDurableStringError,
+  MIGRATION_WRITE,
+  SchemaMismatchError,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import {
@@ -296,12 +301,12 @@ describe('MysqlExecutor against a real server', () => {
           args: [],
         }))
         expect(await columns()).toBe(expected)
-        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
         await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
         expect(await columns()).toBeNull()
-        await db.raw.batch('migrate:index', version)
-        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
       }
     } finally {
@@ -516,13 +521,21 @@ describe('the version table on a real server', () => {
   it('is created with its row by one statement, which leaves a recorded version alone', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'bootstrap-once', migrate: false })
     try {
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(0)
       await db.raw.batch('fixture:set-schema-version', [
         { sql: "UPDATE meta SET value = '3' WHERE `key` = 'schema_version'", args: [] },
       ])
       // Over a table that is there, the statement inserts nothing.
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(3)
     } finally {
       await db.close()
