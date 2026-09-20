@@ -1132,6 +1132,34 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
   })
 
+  it('refuses a write whose plan has no step over the table it writes, or a due range over it', async () => {
+    // A DELETE with no WHERE takes SQLite's truncate path and plans as no rows at all, so no
+    // step is a walk and no nest is broken. A due range over the written table takes
+    // everything due at once, because an UPDATE or a DELETE carries no LIMIT to bound it.
+    const everyWait = await read('delete from waits')
+    const everyExpiredLease = await read(
+      `update runs set state = 'failed'
+       where queue = ? and state = 'running' and claim_expires_at_ms <= ?`,
+    )
+    const expired =
+      'SEARCH runs USING COVERING INDEX runs_lease (queue=? AND claim_expires_at_ms<?)'
+    expect([everyWait, everyExpiredLease].map((reading) => reading.faults)).toEqual([
+      ['no step of the plan is over waits, the table the statement writes'],
+      [
+        `${expired} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`,
+      ],
+    ])
+    // What is no such write: a DELETE by its key, an UPDATE whose OR finds its table through
+    // two keys, and an INSERT of values, which also plans as no rows and writes one.
+    for (const sql of [
+      'delete from waits where run_id = ?',
+      'update runs set wake_event = null where run_id = ? or task_id = ?',
+      'insert into events (queue, event_name, payload, emitted_at_ms) values (?, ?, ?, ?)',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
     // A due range that stands alone is no walk, and the list of due ranges names only one
     // that drives another step. Under no LIMIT it reads everything due at once, as an UPDATE
