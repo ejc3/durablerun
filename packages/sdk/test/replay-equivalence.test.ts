@@ -371,14 +371,20 @@ interface Watch {
 const INJECTED_OUTAGE = 'injected outage'
 
 /**
- * The store fault a run injects at one call. A permanent answer of the store must end a pass
- * exactly as an outage does, at every store call of every generated program, so the harness
- * draws either kind, by the call it fails, and the number of runs does not grow.
+ * The kinds of store fault a run can inject. A permanent answer of the store must end a pass
+ * exactly as an outage does, so every sampled fault point is run once with each kind. The
+ * sample is `faultPoints`: the odd calls from the third, and the last call. It is not every
+ * call.
  */
-const injectedFault = (failAtCall: number): Error =>
-  failAtCall % 2 === 0
+const FAULT_KINDS = ['outage', 'permanent'] as const
+type FaultKind = (typeof FAULT_KINDS)[number]
+const injectedFault = (kind: FaultKind): Error =>
+  kind === 'permanent'
     ? new PermanentStoreError('injected permanent answer')
     : new StoreUnavailableError('injected outage')
+/** The outage's run keeps the seed it has always had, and the other kind's run names its kind. */
+const faultSeed = (seed: string, kind: FaultKind): string =>
+  kind === 'outage' ? seed : `${seed}-${kind}`
 
 /**
  * Which kinds of fault each store method has met, over every run of this file. A sweep is
@@ -386,11 +392,23 @@ const injectedFault = (failAtCall: number): Error =>
  * of the file holds the sweeps to that: every method they failed met both kinds.
  */
 const faultsMet = new Map<string, Set<string>>()
+/** The fault that landed last, so a sweep can hold each run to the kind it asked for. */
+let faultLanded: string | undefined
 const meetsFault = (method: string, fault: Error): Error => {
   const kinds = faultsMet.get(method) ?? new Set<string>()
   kinds.add(fault.name)
   faultsMet.set(method, kinds)
+  faultLanded = fault.name
   return fault
+}
+/** Run one faulted run of a sweep, and require that the kind it asked for is the kind that landed. */
+async function landing<T>(fault: FaultKind, run: () => Promise<T>): Promise<T> {
+  faultLanded = undefined
+  const faulted = await run()
+  expect(faultLanded, `the fault that landed, where the sweep asked for ${fault}`).toBe(
+    injectedFault(fault).name,
+  )
+  return faulted
 }
 
 interface RunOptions {
@@ -398,6 +416,8 @@ interface RunOptions {
   /** Every generated program completes. A name past its room fails its task for good. */
   readonly ends?: 'completed' | 'failed'
   readonly watch?: Watch
+  /** The kind of fault the failed call meets. An outage, unless a sweep says otherwise. */
+  readonly fault?: FaultKind
 }
 
 /**
@@ -422,7 +442,12 @@ async function runProgram(
   longestTaskId: number
   calls: number
 }> {
-  const { tamper = (store: SchedulerStore) => store, ends = 'completed', watch } = options
+  const {
+    tamper = (store: SchedulerStore) => store,
+    ends = 'completed',
+    watch,
+    fault = 'outage',
+  } = options
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
@@ -459,7 +484,7 @@ async function runProgram(
           watch?.trace.push(String(prop))
           if (calls === failAtCall) {
             watch?.trace.push(INJECTED_OUTAGE)
-            return Promise.reject(meetsFault(String(prop), injectedFault(failAtCall)))
+            return Promise.reject(meetsFault(String(prop), injectedFault(fault)))
           }
           if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
           try {
@@ -578,13 +603,17 @@ async function runProgram(
  */
 async function everyFaultPointYieldsTheReference(
   label: string,
-  run: (seed: string, failAtCall: number) => ReturnType<typeof runProgram>,
+  run: (seed: string, failAtCall: number, fault: FaultKind) => ReturnType<typeof runProgram>,
 ): ReturnType<typeof runProgram> {
-  const reference = await run(`ref-${label}`, 0)
+  const reference = await run(`ref-${label}`, 0, 'outage')
   for (const call of faultPoints(reference.calls)) {
-    const faulted = await run(`fault-${label}-${call}`, call)
-    // Everything a run reports, but for how many store calls it took, which a fault changes.
-    expect({ ...faulted, calls: reference.calls }, `fault at call ${call}`).toEqual(reference)
+    for (const fault of FAULT_KINDS) {
+      const faulted = await landing(fault, () =>
+        run(faultSeed(`fault-${label}-${call}`, fault), call, fault),
+      )
+      // Everything a run reports, but for how many store calls it took, which a fault changes.
+      expect({ ...faulted, calls: reference.calls }, `${fault} at call ${call}`).toEqual(reference)
+    }
   }
   return reference
 }
@@ -655,8 +684,8 @@ describe('replay equivalence (generated programs x fault points x adversarial va
   for (let seed = 0; seed < 6; seed++) {
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
-      await everyFaultPointYieldsTheReference(String(seed), (runSeed, failAtCall) =>
-        runProgram(ops, runSeed, failAtCall),
+      await everyFaultPointYieldsTheReference(String(seed), (runSeed, failAtCall, fault) =>
+        runProgram(ops, runSeed, failAtCall, { fault }),
       )
     }, 60_000)
   }
@@ -828,7 +857,8 @@ describe('the name-length axis (every call that passes a name: under its room, a
         const name = 'n'.repeat(length)
         const reference = await everyFaultPointYieldsTheReference(
           `${call.id}-${length}`,
-          (seed, failAtCall) => runProgram([...call.ops(name), PLAIN_STEP], seed, failAtCall),
+          (seed, failAtCall, fault) =>
+            runProgram([...call.ops(name), PLAIN_STEP], seed, failAtCall, { fault }),
         )
         // The run really left what the member says it leaves, at the length it says.
         if (call.stored !== undefined) {
@@ -851,9 +881,9 @@ describe('the name-length axis (every call that passes a name: under its room, a
       const refusedAt = ops.length - 2
       const reference = await everyFaultPointYieldsTheReference(
         `${call.id}-past`,
-        async (seed, failAtCall) => {
+        async (seed, failAtCall, fault) => {
           const watch: Watch = { trace: [], bodies: [] }
-          const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+          const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch, fault })
           // On every schedule: no body at or after the refused call ran. Every attempt that
           // started the refused call then made the store calls the member names and recorded
           // the failure, and nothing else. The one attempt the injected outage cut short made
@@ -1020,6 +1050,7 @@ async function runSagaProgram(
   program: SagaProgram,
   seed: string,
   failAtCall: number,
+  fault: FaultKind = 'outage',
   tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
 ) {
   const raw = LibsqlExecutor.open(':memory:')
@@ -1035,7 +1066,7 @@ async function runSagaProgram(
         return (...args: unknown[]) => {
           calls++
           if (calls === failAtCall) {
-            return Promise.reject(meetsFault(String(prop), injectedFault(failAtCall)))
+            return Promise.reject(meetsFault(String(prop), injectedFault(fault)))
           }
           return (value as (...a: unknown[]) => unknown).apply(target, args)
         }
@@ -1153,31 +1184,36 @@ describe('saga replay equivalence (generated programs x fault points across the 
         handed: expected.handed,
       })
       for (const call of faultPoints(reference.calls)) {
-        const faulted = await runSagaProgram(program, `saga-fault-${seed}-${call}`, call)
-        expect(
-          {
-            state: faulted.state,
-            failure: faulted.failure,
-            outcome: faulted.outcome,
-            checkpoints: faulted.checkpoints,
-            undone: faulted.undone,
-            handed: faulted.handed,
-          },
-          `fault at call ${call} of ${reference.calls}`,
-        ).toEqual({
-          state: reference.state,
-          failure: reference.failure,
-          outcome: reference.outcome,
-          checkpoints: reference.checkpoints,
-          undone: reference.undone,
-          handed: reference.handed,
-        })
-        // The record is exactly once, which the checkpoint table holds. The effect is at
-        // least once, and a second run needs a fault between the handler and its record.
-        const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
-        expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(
-          true,
-        )
+        for (const fault of FAULT_KINDS) {
+          const faulted = await landing(fault, () =>
+            runSagaProgram(program, faultSeed(`saga-fault-${seed}-${call}`, fault), call, fault),
+          )
+          expect(
+            {
+              state: faulted.state,
+              failure: faulted.failure,
+              outcome: faulted.outcome,
+              checkpoints: faulted.checkpoints,
+              undone: faulted.undone,
+              handed: faulted.handed,
+            },
+            `${fault} at call ${call} of ${reference.calls}`,
+          ).toEqual({
+            state: reference.state,
+            failure: reference.failure,
+            outcome: reference.outcome,
+            checkpoints: reference.checkpoints,
+            undone: reference.undone,
+            handed: reference.handed,
+          })
+          // The record is exactly once, which the checkpoint table holds. The effect is at
+          // least once, and a second run needs a fault between the handler and its record.
+          const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
+          expect(
+            repeats.every((n) => n === 2) && repeats.length <= 1,
+            `fault at call ${call}`,
+          ).toBe(true)
+        }
       }
     }, 120_000)
   }
