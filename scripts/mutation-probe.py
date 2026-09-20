@@ -6946,6 +6946,48 @@ MUTATION_SPECS.extend(
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
         ),
         (
+            "core-read-brand-marks-reads-alone",
+            "packages/core/src/fenced-batch.ts",
+            "    if (reading) brandRead(held.compiled)\n",
+            "    brandRead(held.compiled)\n",
+            "a compare-and-set is branded as a read, so the brand an executor trusts to send a statement alone no longer says the statement writes nothing",
+        ),
+        (
+            "core-read-brand-is-frozen",
+            "packages/core/src/fenced-batch.ts",
+            "  weakSetAdd(treeBuiltReads, Object.freeze(compiled))\n",
+            "  weakSetAdd(treeBuiltReads, compiled)\n",
+            "a statement branded as a read can have its text changed between core and the executor, which then sends what is no longer a read alone",
+        ),
+        (
+            "postgres-lone-statement-is-the-whole-batch",
+            "packages/store-postgres/src/executor.ts",
+            "  if (statement === undefined || statements.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two reads that core built is sent outside a transaction block, so the two read through different snapshots",
+        ),
+        (
+            "postgres-lone-statement-is-a-read",
+            "packages/store-postgres/src/executor.ts",
+            "  if (mode !== 'read') return false\n",
+            "  if (mode !== 'read') return true // MUTATION\n",
+            "a single write is sent outside a transaction block, so a write whose result the executor refuses is already committed",
+        ),
+        (
+            "postgres-lone-read-is-known-to-be-a-read",
+            "packages/store-postgres/src/executor.ts",
+            "  return isTreeBuiltRead(statement)\n",
+            "  return true // MUTATION\n",
+            "a read sent as text runs alone, outside the read-only transaction, so a write the text holds is run",
+        ),
+        (
+            "postgres-lone-read-is-one-statement",
+            "packages/store-postgres/src/executor.ts",
+            "  return { text, values: [...values], queryMode: 'extended' }\n",
+            "  return { text, values: [...values] } as never // MUTATION: the driver chooses the protocol\n",
+            "a read sent alone with no bind goes through the simple protocol, which runs every statement of its text, so a second statement in a store's fragment is run",
+        ),
+        (
             "postgres-event-lock-is-advisory",
             "packages/store-postgres/src/executor.ts",
             "           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text\n",
@@ -7243,8 +7285,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-version-read-is-read-committed",
             "packages/store-mysql/src/executor.ts",
-            "        for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {\n",
-            "        for (const statement of schemaVersionRead ? BEGIN_READ : BEGIN_READ) { // MUTATION\n",
+            "  return schemaVersionRead || isTreeBuiltRead(statement)\n",
+            "  return isTreeBuiltRead(statement) // MUTATION\n",
             "a version read racing a bootstrap reads through a snapshot older than the table and MySQL refuses it with error 1412",
         ),
         (
@@ -7316,6 +7358,55 @@ MUTATION_SPECS.extend(
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 1\n",
             "          if (isDeadlockVictim(error)) this.deadlockVictims += 0 // MUTATION\n",
             "a deadlock the executor absorbed by running the victim again is counted nowhere, so a wrong lock order stays hidden from every test",
+        ),
+        (
+            "mysql-lone-statement-is-the-whole-batch",
+            "packages/store-mysql/src/executor.ts",
+            "  if (statement === undefined || statements.length !== 1) return false\n",
+            "  if (statement === undefined) return false\n",
+            "a batch of two reads that core built is sent with no transaction around it, so the two read through different views",
+        ),
+        (
+            "mysql-lone-statement-is-a-read",
+            "packages/store-mysql/src/executor.ts",
+            "  if (mode !== 'read') return false\n",
+            "  if (mode !== 'read') return true // MUTATION\n",
+            "a single write is sent alone, so a write MySQL cut to fit has committed before the executor reads its warning, and the refusal leaves the cut identifier stored",
+        ),
+        (
+            "mysql-lone-read-is-known-to-be-a-read",
+            "packages/store-mysql/src/executor.ts",
+            "  return schemaVersionRead || isTreeBuiltRead(statement)\n",
+            "  return true // MUTATION\n",
+            "a write sent as a read in text runs alone under autocommit, where the read-only transaction refused it",
+        ),
+        (
+            "mysql-lone-send-is-decided-with-the-copy",
+            "packages/store-mysql/src/executor.ts",
+            "      return await this.transact(connection, prepared, mode, lock, alone)\n",
+            "      return await this.transact(connection, prepared, mode, lock, sentAlone(statements, mode, schemaVersionRead)) // MUTATION\n",
+            "whether a batch goes alone is asked of the caller's array after the wait for a connection, so a statement swapped in during the wait decides for the statement that was copied",
+        ),
+        (
+            "mysql-session-autocommit-on",
+            "packages/store-mysql/src/executor.ts",
+            "  autocommit = 1,\n",
+            "  autocommit = 0,\n",
+            "a read sent alone opens a transaction that stays open on the pooled connection it returns",
+        ),
+        (
+            "mysql-claim-leg-stops-at-the-limit",
+            "packages/store-mysql/src/store.ts",
+            "        ORDER BY r.available_at_ms, r.run_id\n        LIMIT ?\n        FOR UPDATE SKIP LOCKED)`\n",
+            "        AND ? IS NOT NULL\n        ORDER BY r.available_at_ms, r.run_id\n        FOR UPDATE SKIP LOCKED)`\n",
+            "a claim leg reads and locks every due run of its state, so concurrent claimers skip runs this claim never takes",
+        ),
+        (
+            "mysql-claim-leg-names-its-index",
+            "packages/store-mysql/src/store.ts",
+            "        FROM runs r FORCE INDEX (runs_poll)\n",
+            "        FROM runs r\n",
+            "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
         ),
     )
 )
@@ -9854,6 +9945,42 @@ VERDICTS = {
         "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
         "mutation-verdict:construction:postgres-version-read-isolation",
     ),
+    "postgres-lone-statement-is-the-whole-batch": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions gives two reads that core built one repeatable-read, read-only snapshot",
+        "mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch",
+    ),
+    "postgres-lone-statement-is-a-read": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "rolls back a single write whose result it refuses",
+        "mutation-verdict:behavior:postgres-lone-statement-is-a-read",
+    ),
+    "postgres-lone-read-is-known-to-be-a-read": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a delete sent behind a select in one read, and keeps the row",
+        "mutation-verdict:behavior:postgres-lone-read-is-known-to-be-a-read",
+    ),
+    "postgres-lone-read-is-one-statement": ExpectedVerdict(
+        "behavior",
+        "packages/store-postgres/test/round-trips.test.ts",
+        "refuses a read that core built whose fragment holds a second statement, and keeps the row",
+        "mutation-verdict:behavior:postgres-lone-read-is-one-statement",
+    ),
+    "core-read-brand-is-frozen": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times brands what it compiled as a read, and no write, as a read",
+        "mutation-verdict:construction:core-read-brand-is-frozen",
+    ),
+    "core-read-brand-marks-reads-alone": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads prepared once and sent many times brands what it compiled as a read, and no write, as a read",
+        "mutation-verdict:construction:core-read-brand-marks-reads-alone",
+    ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/schema-gate.test.ts",
@@ -11320,6 +11447,48 @@ VERDICTS.update(
             "packages/store-mysql/test/executor.test.ts",
             "MysqlExecutor transactions a deadlock counts every deadlock victim, the one it runs again and the one it reports",
             "mutation-verdict:behavior:mysql-deadlock-victims-are-counted",
+        ),
+        "mysql-lone-statement-is-the-whole-batch": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions gives two reads that core built one consistent read-only snapshot",
+            "mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch",
+        ),
+        "mysql-lone-statement-is-a-read": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server refuses a single write whose key ends in a tab and would be cut to fit, and writes nothing",
+            "mutation-verdict:behavior:mysql-lone-statement-is-a-read",
+        ),
+        "mysql-lone-read-is-known-to-be-a-read": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read",
+            "mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read",
+        ),
+        "mysql-lone-send-is-decided-with-the-copy": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions decides whether a batch goes alone when it copies the statements, and not from what the array holds later",
+            "mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy",
+        ),
+        "mysql-session-autocommit-on": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions turns autocommit on with the session settings, which a read sent alone depends on",
+            "mutation-verdict:construction:mysql-session-autocommit-on",
+        ),
+        "mysql-claim-leg-stops-at-the-limit": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks each state in claim order and stops at the limit, locking only the runs it takes, beside a backlog of due runs",
+            "mutation-verdict:behavior:mysql-claim-leg-stops-at-the-limit",
+        ),
+        "mysql-claim-leg-names-its-index": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
+            "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
         ),
     }
 )
@@ -17129,7 +17298,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 880:
+        if len(MUTATIONS) != 893:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
