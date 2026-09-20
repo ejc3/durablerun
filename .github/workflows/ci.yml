@@ -311,13 +311,18 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '918b8d397f1cf4fbcc129effd45509abaf5c3898c63089e7f07af82db83b8c31':
-              # On MySQL a write keyed by a subquery reads its table last, through the index
-              # of its key, and a delete reads its keys through the index of their stamp.
+              # On MySQL a write keyed by a subquery reads its keys first and its table second,
+              # through the index of its key, and a delete reads its keys through the index of
+              # their stamp.
               # The compiler's conditions, the index's width and the two server cases
               # register mutations the base predates, so their verdict markers are
               # exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last",
+                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
+                  "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
+                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second",
+                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-named",
+                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
                   "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
                   "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
                   "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",

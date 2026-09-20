@@ -132,9 +132,9 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(statement.sql, 'mutation-verdict:construction:mysql-self-read-derived-table').toContain(
       'not exists (select `held`.`run_id` from (select * from `runs`) as `held` where',
     )
-    expect(statement.sql.startsWith('update /*+ JOIN_SUFFIX(`runs`) */ `runs` force index')).toBe(
-      true,
-    )
+    expect(
+      statement.sql.startsWith('update /*+ JOIN_PREFIX(`k`@`keys`, `runs`) */ `runs` force index'),
+    ).toBe(true)
     expect(binds(statement)).toBe(statement.args.length)
   })
 
@@ -216,13 +216,31 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(binds(statement)).toBe(statement.args.length)
   })
 
-  it('reads a keyed update last, through the index of its key', async () => {
+  it("reads a keyed update's keys first, and its table through the index of its key", async () => {
     const statement = await sentClaim()
     expect(
       statement.sql,
       'mutation-verdict:construction:mysql-keyed-write-names-its-key-index',
     ).toContain('`runs` force index (primary) set ')
-    expect(statement.sql.startsWith('update /*+ JOIN_SUFFIX(`runs`) */ `runs` ')).toBe(true)
+    expect(statement.sql.startsWith('update /*+ JOIN_PREFIX(`k`@`keys`, `runs`) */ `runs` ')).toBe(
+      true,
+    )
+    expect(binds(statement)).toBe(statement.args.length)
+  })
+
+  it("puts a keyed write's keys in a block of its own, named and kept whole", async () => {
+    // The order hint names the block's one table, so the block needs its name, and the
+    // server may not merge the block away, or there is no such table to name.
+    const statement = await sentClaim()
+    expect(
+      statement.sql,
+      'mutation-verdict:construction:mysql-keyed-write-keys-block-is-named',
+    ).toContain('`run_id` in (select /*+ QB_NAME(`keys`) ')
+    expect(
+      statement.sql,
+      'mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole',
+    ).toContain(' NO_MERGE(`k`) */ * from (SELECT run_id FROM ')
+    expect(statement.sql).toContain(') as `k`')
     expect(binds(statement)).toBe(statement.args.length)
   })
 
@@ -239,7 +257,7 @@ describe('MySQL spelling of the shared statement trees', () => {
         ),
     )
     expect(sql, 'mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index').toBe(
-      'delete /*+ JOIN_SUFFIX(`waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where `f`.`fence_stamp` = ?)',
+      'delete /*+ JOIN_PREFIX(`k`@`keys`, `waits`) */ `waits` from `waits` force index (primary) where `run_id` in (select /*+ QB_NAME(`keys`) NO_MERGE(`k`) */ * from (select `f`.`run_id` from `runs` as `f` force index (runs_stamp) where `f`.`fence_stamp` = ?) as `k`)',
     )
   })
 

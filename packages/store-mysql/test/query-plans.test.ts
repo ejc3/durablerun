@@ -525,7 +525,7 @@ describe("the claim's candidate legs on MySQL", () => {
 
 /** A keyed write's table and key column: `update` or `delete`, then a required `column in (subquery)`. */
 const KEYED_WRITE =
-  /^(?:update|delete)\b[^`]*`(\w+)`[\s\S]*?(?<![.\w])`(\w+)` in \(\s*\(?\s*select\b/i
+  /^(?:update|delete)\s+(?:\/\*\+.*?\*\/\s+)?`(\w+)`[\s\S]*?(?<![.\w])`(\w+)` in \(\s*\(?\s*select\b/i
 
 /** The index each keyed write should reach its target through, by table and key column. */
 const KEY_OF: Readonly<Record<string, string>> = {
@@ -574,7 +574,7 @@ describe('a keyed write on MySQL', () => {
       .toBe('eq_ref on PRIMARY')
     expect(
       claims.map((claim) => claim.rowsLocked),
-      'mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last',
+      'mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first',
     ).toEqual([1, 1, 10])
   })
 
@@ -867,10 +867,19 @@ describe('the hot path beside a history of tasks, on MySQL', () => {
       if (run === undefined) throw new Error('the job was not claimed')
       await store.activate(Q, run.runId, run.claimToken, run.claimGen)
       await store.complete(Q, run.runId, run.claimToken, '{}')
-      const hot = ['claim', 'activate', 'complete'].map((label) => [label, walked.get(label)])
-      for (const [label, rows] of hot) {
-        expect(rows, `rows ${String(label)} walked beside ${5 * HISTORY} tasks`).toBeLessThan(150)
+      for (const label of ['claim', 'activate']) {
+        expect(walked.get(label), `rows ${label} walked beside ${5 * HISTORY} tasks`).toBeLessThan(
+          150,
+        )
       }
+      // A completion wakes whoever awaits the task, by an update of `runs` keyed by their
+      // waits, which also asks whether each run's task is live. With the keys ordered ahead
+      // of `runs` and no more, the server read `tasks` first here, under the statistics a
+      // bulk load leaves, and the batch walked 1,254 rows. It walks about thirty.
+      expect(
+        walked.get('complete'),
+        'mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second',
+      ).toBeLessThan(150)
     } finally {
       await db.close()
     }

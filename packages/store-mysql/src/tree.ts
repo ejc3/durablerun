@@ -147,16 +147,24 @@ function readersBeforeWriters(
  * other and one was rolled back. 16 of the 165 keyed writes a small database sent did not
  * take their key, and an emit held four runs to write one.
  *
- * So the written table is read LAST, through the index of its key. The order is an
- * optimizer hint that names the statement's own table, so it always resolves. The index is
- * an index hint, which the server refuses when the index is gone. Neither is enough alone:
- * with the index alone the claim still scanned at one and two rows, and four updates of
- * `tasks` that had gone through another index became scans. With the order alone one
- * update still scanned its table. With both, all 165 took their key, and the claim held
- * exactly the runs it took from one row to 400, at limits from one to the whole table,
- * under fresh statistics and stale ones. A semijoin materialization hint, and first match
- * switched off, each held a small table and lost a limit of half the table, where the
- * server scans the written table and looks each row up in the materialized keys.
+ * So the keys are read FIRST, the written table SECOND, through the index of its key, and
+ * whatever else the statement joins after them. The compiler puts the key source, a
+ * generated selection and a store's fragment alike, in a query block of its own, named and
+ * kept whole, and an optimizer hint opens the join order with that block's one table and
+ * then the written table. A statement's other subqueries, which the server may turn into
+ * joins, ask about the written row, so they have to come after it to be looked up by it.
+ * Two looser orders were measured and lost. With the written table after EVERY table
+ * (`JOIN_SUFFIX`) the emit's update reached `tasks` with no run in hand and walked the live
+ * tasks of its queue, 2,009 rows beside 2,000, where this walks 9. With the keys merely
+ * ahead of the written table (`JOIN_ORDER`) the server, under statistics it had not yet
+ * recalculated, still read `tasks` first, and a completion walked 1,204 rows beside 2,000
+ * tasks, where this walks 1. The index is an index hint, which
+ * the server refuses when the index is gone. Neither is enough alone: with the index alone
+ * the claim still scanned at one and two rows, and four updates of `tasks` that had gone
+ * through another index became scans, and with an order alone one update still scanned
+ * its table. A semijoin materialization hint, and first match switched off, each held a
+ * small table and lost a limit of half the table, where the server scans the written
+ * table and looks each row up in the materialized keys.
  */
 const KEY_INDEXES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   runs: { run_id: 'primary', task_id: 'runs_task_attempt' },
@@ -177,8 +185,12 @@ const NOT_IN_A_KEYED_WRITE = [
   'endModifiers',
 ] as const
 
-/** Read this table after every other: it names the statement's own table, so it resolves. */
-const targetLast = (target: string): string => `/*+ JOIN_SUFFIX(\`${target}\`) */`
+/** The query block a write's keys are read in, and the name the block's one table goes by. */
+const KEYS = { block: 'keys', table: 'k' } as const
+
+/** Read the keys, then the written table, then whatever else the statement joins. */
+const keysFirst = (target: string): string =>
+  `/*+ JOIN_PREFIX(\`${KEYS.table}\`@\`${KEYS.block}\`, \`${target}\`) */`
 
 /** The conditions a WHERE requires together: its chain of ANDs, flattened, through any parentheses. */
 function requiredConditions(node: OperationNode | undefined): readonly OperationNode[] {
@@ -198,7 +210,11 @@ function requiredConditions(node: OperationNode | undefined): readonly Operation
 function keyOf(
   where: OperationNode | undefined,
   target: string,
-): { readonly column: string; readonly keys: OperationNode } | null {
+): {
+  readonly column: string
+  readonly keys: OperationNode
+  readonly condition: BinaryOperationNode
+} | null {
   const found = requiredConditions(where).flatMap((condition) => {
     if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return []
     const operator = OperatorNode.is(condition.operator) ? condition.operator.operator : null
@@ -207,7 +223,7 @@ function keyOf(
     if (operator !== 'in' || !subquery) return []
     const { table, name } = referenced(condition.leftOperand)
     return name !== null && (table === undefined || table === target)
-      ? [{ column: name, keys: condition.rightOperand }]
+      ? [{ column: name, keys: condition.rightOperand, condition }]
       : []
   })
   if (found.length > 1) {
@@ -222,7 +238,11 @@ function keyOf(
 function keyIndex(
   target: string | null,
   where: OperationNode | undefined,
-): { readonly index: string; readonly keys: OperationNode } | null {
+): {
+  readonly index: string
+  readonly keys: OperationNode
+  readonly condition: BinaryOperationNode
+} | null {
   if (target === null) return null
   const key = keyOf(where, target)
   if (key === null) return null
@@ -232,7 +252,7 @@ function keyIndex(
       `store-mysql: a write of ${target} keyed by ${key.column} names no index to reach it through`,
     )
   }
-  return { index, keys: key.keys }
+  return { index, keys: key.keys, condition: key.condition }
 }
 
 /**
@@ -325,6 +345,7 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
   #insertTarget: TableNode | null = null
   #writeTarget: string | null = null
   #keysFrom: { readonly from: AliasNode; readonly index: string } | null = null
+  #key: BinaryOperationNode | null = null
 
   protected override visitInsertQuery(node: InsertQueryNode): void {
     if (node.onConflict === undefined) {
@@ -456,6 +477,16 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
   }
 
   protected override visitBinaryOperation(node: BinaryOperationNode): void {
+    if (node === this.#key) {
+      // A keyed write's keys, in a block of the compiler's own, kept whole so it can be named.
+      this.visitNode(node.leftOperand)
+      this.append(
+        ` in (select /*+ QB_NAME(\`${KEYS.block}\`) NO_MERGE(\`${KEYS.table}\`) */ * from `,
+      )
+      this.visitNode(node.rightOperand)
+      this.append(` as \`${KEYS.table}\`)`)
+      return
+    }
     const operator = OperatorNode.is(node.operator) ? node.operator.operator : null
     if (operator !== 'is distinct from' && operator !== 'is not distinct from') {
       super.visitBinaryOperation(node)
@@ -474,7 +505,8 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
       target === null || node.updates === undefined
         ? node.updates
         : readersBeforeWriters(node.updates, target)
-    const index = keyIndex(target, node.where?.where)?.index ?? null
+    const keyed = keyIndex(target, node.where?.where)
+    const index = keyed?.index ?? null
     this.writing(target, () => {
       if (index === null || target === null || node.table === undefined) {
         super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
@@ -484,11 +516,11 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         [node.table],
         [node.from, ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause])],
       )
-      this.append(`update ${targetLast(target)} `)
+      this.append(`update ${keysFirst(target)} `)
       this.visitKeyedTarget(node.table, index)
       this.append(' set ')
       this.compileList(updates ?? [])
-      this.visitKeyedWhere(node.where)
+      this.visitKeyedWhere(node.where, keyed?.condition)
     })
   }
 
@@ -507,13 +539,13 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause]),
       ])
       const keysFrom = stampedKeys(target, keyed?.keys)
-      this.append(`delete ${targetLast(target)} `)
+      this.append(`delete ${keysFirst(target)} `)
       this.visitNode(table)
       this.append(' from ')
       this.visitKeyedTarget(table, index)
       this.#keysFrom = keysFrom
       try {
-        this.visitKeyedWhere(node.where)
+        this.visitKeyedWhere(node.where, keyed?.condition)
       } finally {
         this.#keysFrom = null
       }
@@ -548,10 +580,18 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
     this.append(` force index (${index})`)
   }
 
-  private visitKeyedWhere(where: OperationNode | undefined): void {
+  private visitKeyedWhere(
+    where: OperationNode | undefined,
+    key: BinaryOperationNode | undefined,
+  ): void {
     if (where === undefined) throw new Error('store-mysql: a keyed write with no WHERE')
-    this.append(' ')
-    this.visitNode(where)
+    this.#key = key ?? null
+    try {
+      this.append(' ')
+      this.visitNode(where)
+    } finally {
+      this.#key = null
+    }
   }
 
   private writing(target: string | null, visit: () => void): void {

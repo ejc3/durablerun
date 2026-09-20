@@ -7409,11 +7409,39 @@ MUTATION_SPECS.extend(
             "the server plans a claim leg for itself, and over a small backlog it scans the table and sorts, locking every due run for a claim of two",
         ),
         (
-            "mysql-keyed-write-reads-its-target-last",
+            "mysql-keyed-write-reads-its-keys-first",
             "packages/store-mysql/src/tree.ts",
-            "const targetLast = (target: string): string => `/*+ JOIN_SUFFIX(\\`${target}\\`) */`\n",
-            "const targetLast = (_target: string): string => ''\n",
-            "the server reads a keyed write's table first over a small table, so a claim locks every run of it and two claimers deadlock",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  ''\n",
+            "nothing orders a keyed write, so over a small table the server reads the written table first, a claim locks every run of it, and two claimers deadlock",
+        ),
+        (
+            "mysql-keyed-write-orders-only-its-keys",
+            "packages/store-mysql/src/tree.ts",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  `/*+ JOIN_SUFFIX(\\`${target}\\`) */`\n",
+            "the written table is read after every table, so a subquery that asks about the written row is reached with no row in hand, and an emit walks the live tasks of its queue",
+        ),
+        (
+            "mysql-keyed-write-reads-its-table-second",
+            "packages/store-mysql/src/tree.ts",
+            "  `/*+ JOIN_PREFIX(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "  `/*+ JOIN_ORDER(\\`${KEYS.table}\\`@\\`${KEYS.block}\\`, \\`${target}\\`) */`\n",
+            "the keys come ahead of the written table and the server may still read another table first, as it did under stale statistics, where a completion walked the tasks of its queue",
+        ),
+        (
+            "mysql-keyed-write-keys-block-is-named",
+            "packages/store-mysql/src/tree.ts",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "        ` in (select /*+ NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "the block of the keys has no name, so the order hint names a block the statement does not have",
+        ),
+        (
+            "mysql-keyed-write-keys-block-is-kept-whole",
+            "packages/store-mysql/src/tree.ts",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) NO_MERGE(\\`${KEYS.table}\\`) */ * from `,\n",
+            "        ` in (select /*+ QB_NAME(\\`${KEYS.block}\\`) */ * from `,\n",
+            "the server may merge the block of the keys away, and then the order hint names a table the statement does not have",
         ),
         (
             "mysql-keyed-write-names-its-key-index",
@@ -11623,16 +11651,40 @@ VERDICTS.update(
             "the claim's candidate legs on MySQL walks the index over a small backlog too, where the server alone would scan the table and lock every due run",
             "mutation-verdict:behavior:mysql-claim-leg-names-its-index",
         ),
-        "mysql-keyed-write-reads-its-target-last": ExpectedVerdict(
+        "mysql-keyed-write-reads-its-keys-first": ExpectedVerdict(
             "behavior",
             "packages/store-mysql/test/query-plans.test.ts",
             "a keyed write on MySQL locks the runs a claim takes and no other run, over two rows, over four, and at a limit of half the table",
-            "mutation-verdict:behavior:mysql-keyed-write-reads-its-target-last",
+            "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
+        ),
+        "mysql-keyed-write-orders-only-its-keys": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a keyed write on MySQL orders only its keys ahead of the table it writes, so an emit walks none of the live tasks of its queue",
+            "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
+        ),
+        "mysql-keyed-write-reads-its-table-second": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "the hot path beside a history of tasks, on MySQL claims, activates, and completes without walking the tasks of the database",
+            "mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second",
+        ),
+        "mysql-keyed-write-keys-block-is-named": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees puts a keyed write's keys in a block of its own, named and kept whole",
+            "mutation-verdict:construction:mysql-keyed-write-keys-block-is-named",
+        ),
+        "mysql-keyed-write-keys-block-is-kept-whole": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees puts a keyed write's keys in a block of its own, named and kept whole",
+            "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
         ),
         "mysql-keyed-write-names-its-key-index": ExpectedVerdict(
             "construction",
             "packages/store-mysql/test/tree.test.ts",
-            "MySQL spelling of the shared statement trees reads a keyed update last, through the index of its key",
+            "MySQL spelling of the shared statement trees reads a keyed update's keys first, and its table through the index of its key",
             "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
         ),
         "mysql-keyed-write-takes-its-key": ExpectedVerdict(
@@ -17545,7 +17597,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 912:
+        if len(MUTATIONS) != 916:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
