@@ -926,6 +926,57 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // The ordinal the pass is checked against is the failed run's USER ordinal, which leaves
+    // the task's infrastructure retries out. Both tasks here have one infrastructure retry
+    // and sit at the bound: one user attempt below it, which rolls back, and at it, which
+    // cannot. A guard that read the run's own ordinal would refuse the first.
+    it('holds the pass to the user ordinal at the bound, for a task that has infrastructure retries', async () => {
+      const failedAt = async (userOrdinal: number) => {
+        // A queue of its own, so the claim below takes this task's run and no pass.
+        const queue = `bound-${userOrdinal}`
+        const spawned = await f.store.spawn(queue, 'saga', '{}', { maxAttempts: MAX_COUNT })
+        const run = await claimActivated(f.store, queue, 'w-forward')
+        // The accounting identity holds: a run's ordinal is its task's attempts and
+        // infrastructure retries plus one.
+        await f.raw.batch('one-infrastructure-retry-at-the-bound', [
+          {
+            sql: 'UPDATE tasks SET attempts = ?, infra_retries = 1 WHERE task_id = ?',
+            args: [userOrdinal - 1, spawned.taskId],
+          },
+          {
+            sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+            args: [userOrdinal + 1, run.runId],
+          },
+        ])
+        await checkpointOwned(f.store, queue, run, startMarker('a'), '1', 60)
+        const decided = await f.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
+        return { decided, task: await taskRow(f, spawned.taskId) }
+      }
+      expect(
+        { below: await failedAt(MAX_COUNT - 1), at: await failedAt(MAX_COUNT) },
+        'mutation-verdict:behavior:saga-pass-budget-counts-user-attempts',
+      ).toEqual({
+        below: {
+          decided: { rollingBack: true },
+          task: {
+            state: 'pending',
+            attempts: MAX_COUNT - 1,
+            maxAttempts: MAX_COUNT,
+            failureReason: null,
+          },
+        },
+        at: {
+          decided: { rollingBack: false },
+          task: {
+            state: 'failed',
+            attempts: MAX_COUNT,
+            maxAttempts: MAX_COUNT,
+            failureReason: CAUSE,
+          },
+        },
+      })
+    })
+
     // The engine alone writes the phase marker and a rollback's attempt record, each from
     // the batch that decides a failure. A caller of the port that holds a lease is refused
     // both names in either phase, so it cannot forge a saga or spend a rollback's budget.

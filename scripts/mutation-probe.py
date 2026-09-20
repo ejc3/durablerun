@@ -12468,6 +12468,13 @@ MUTATION_SPECS.extend(
             "the relaunch cap enters the phase and ends the task in one batch",
         ),
         (
+            "saga-pass-budget-is-the-user-ordinal",
+            "packages/store-libsql/src/store.ts",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "           AND f.attempt < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
+            "the pass is checked against the run's own ordinal, so a task with an infrastructure retry one attempt below the bound never rolls back",
+        ),
+        (
             "saga-pass-needs-room-in-the-budget",
             "packages/store-libsql/src/store.ts",
             "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
@@ -13134,6 +13141,18 @@ for _verdict, _names in (
         ),
         (
             "saga-rollback-checkpoint-refused-outside-the-phase",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] holds the pass to the user ordinal at the bound, for a task that has infrastructure retries",
+            "mutation-verdict:behavior:saga-pass-budget-counts-user-attempts",
+            "packages/conformance/src/sagas.ts",
+        ),
+        (
+            "saga-pass-budget-is-the-user-ordinal",
         ),
     ),
     (
@@ -18131,7 +18150,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 946:
+        if len(MUTATIONS) != 947:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
