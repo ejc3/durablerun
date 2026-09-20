@@ -22,6 +22,9 @@ jobs:
       # The dialects this job has servers for. MySQL runs the same suite in its
       # own job below, beside this one, so this job stays the length it was.
       DURABLERUN_CONFORMANCE_DIALECTS: libsql,postgres
+      # What the service below is created with. A PostgreSQL test holds the server to it, so
+      # an image that stopped honouring the arguments cannot pass for a linguistic server.
+      DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
     services:
       postgres:
         image: postgres:17-alpine
@@ -98,6 +101,8 @@ jobs:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
       # Some registered mutations are killed by tests that need a MySQL server.
       DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
+      # What the PostgreSQL service below is created with, as in the verify job.
+      DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
     services:
       postgres:
         image: postgres:17-alpine

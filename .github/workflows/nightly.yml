@@ -17,6 +17,8 @@ jobs:
       # The dialects this job has servers for. MySQL's conformance runs on every
       # pull request and push, in ci.yml's own job.
       DURABLERUN_CONFORMANCE_DIALECTS: libsql,postgres
+      # What the service below is created with, as in ci.yml's verify job.
+      DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
     services:
       postgres:
         image: postgres:17-alpine

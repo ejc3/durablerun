@@ -75,6 +75,29 @@ describe('PostgreSQL text collation', () => {
     }
   })
 
+  // The conformance suite's order case can fail only on a server with a linguistic
+  // collation, so the workflows create their PostgreSQL service with ICU and say so in
+  // DURABLERUN_POSTGRES_LOCALE_PROVIDER. This holds the server to what they say: a service
+  // that stopped honouring the arguments would otherwise run the order case green where it
+  // cannot fail. Where the variable is unset any server will do, and the case holds only
+  // that the provider can be read.
+  it('runs on the collation provider the workflow declares', async () => {
+    const declared = process.env.DURABLERUN_POSTGRES_LOCALE_PROVIDER
+    const db = await openPostgresTestDb({ idNamespace: 'text-collation-provider' })
+    try {
+      const [database] = await catalog(
+        db.raw,
+        `SELECT datname AS name, datlocprovider::text AS value
+           FROM pg_database WHERE datname = current_database()`,
+      )
+      const provider = { b: 'builtin', c: 'libc', i: 'icu' }[database?.value ?? '']
+      expect(provider, `provider code ${database?.value}`).toBeDefined()
+      expect(provider).toBe(declared ?? provider)
+    } finally {
+      await db.close()
+    }
+  })
+
   // A read batch holds a snapshot taken before it resolves names, and PostgreSQL shows a
   // rewritten table as empty to a snapshot older than the rewrite (schema.ts). Changing a
   // text column's collation changes no stored byte, so it rebuilds indexes and keeps the
