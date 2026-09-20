@@ -90,6 +90,55 @@ function inspect(f: Awaited<ReturnType<typeof fixture>>, taskId: string): Promis
   return f.router.handle(request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'))
 }
 
+type HostedFixture = Awaited<ReturnType<typeof fixture>>
+
+/** The status and the body of an inspect answer. */
+async function inspected(f: HostedFixture, taskId: string) {
+  const response = await inspect(f, taskId)
+  return { status: response.status, body: await responseBody(response) }
+}
+
+/** Claim the queue's one claimable run, and activate it. */
+async function claimed(f: HostedFixture, worker: string) {
+  const [run] = await f.store.claim(Q, worker, { leaseSeconds: 60, limit: 1 })
+  if (run === undefined) throw new Error(`nothing to claim for ${worker}`)
+  await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+  return run
+}
+
+const SAGA_CAUSE = '{"name":"CardDeclined"}'
+
+/** A task whose one registered step started, and whose failure placed a rollback pass. */
+async function rollingBack(f: HostedFixture) {
+  const spawned = await f.store.spawn(Q, 'saga', '{}')
+  const forward = await claimed(f, 'forward')
+  await f.store.setCheckpoint(
+    Q,
+    forward.taskId,
+    forward.runId,
+    forward.claimToken,
+    `${SAGA_STARTED_PREFIX}charge`,
+    '1',
+    60,
+  )
+  await expect(
+    f.store.fail(Q, forward.runId, forward.claimToken, SAGA_CAUSE, null),
+  ).resolves.toEqual({ rollingBack: true })
+  return { taskId: spawned.taskId, pass: await claimed(f, 'pass') }
+}
+
+/** The pass fails its rollback for good, and `errorJson` is the failure its attempt record holds. */
+function haltRollback(
+  f: HostedFixture,
+  pass: { runId: string; claimToken: string },
+  errorJson: string,
+) {
+  return f.store.failRollback(Q, pass.runId, pass.claimToken, SAGA_CAUSE, null, {
+    key: `${SAGA_TRIES_PREFIX}charge`,
+    stateJson: encodeRollbackTry({ tries: 1, errorJson }),
+  })
+}
+
 describe('hosted-alpha Web Request router', () => {
   it('rearms both HTTP and trusted ticks through sleep, completion, and idle', async () => {
     const wakes: WakeRequest[] = []
@@ -245,37 +294,7 @@ describe('hosted-alpha Web Request router', () => {
   it('shows how the saga ended when inspecting a task that rolled back', async () => {
     const f = await fixture('hosted-inspect-rollback')
     try {
-      const claimed = async (worker: string) => {
-        const [run] = await f.store.claim(Q, worker, { leaseSeconds: 60, limit: 1 })
-        if (run === undefined) throw new Error(`nothing to claim for ${worker}`)
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        return run
-      }
-      const CAUSE = '{"name":"CardDeclined"}'
-      /** A task whose one registered step started, and whose failure placed a rollback pass. */
-      const rollingBack = async () => {
-        const spawned = await f.store.spawn(Q, 'saga', '{}')
-        const forward = await claimed('forward')
-        await f.store.setCheckpoint(
-          Q,
-          forward.taskId,
-          forward.runId,
-          forward.claimToken,
-          `${SAGA_STARTED_PREFIX}charge`,
-          '1',
-          60,
-        )
-        await expect(
-          f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null),
-        ).resolves.toEqual({ rollingBack: true })
-        return { taskId: spawned.taskId, pass: await claimed('pass') }
-      }
-      const inspected = async (taskId: string) => {
-        const response = await inspect(f, taskId)
-        expect(response.status).toBe(200)
-        return responseBody(response)
-      }
-      const rolledBack = await rollingBack()
+      const rolledBack = await rollingBack(f)
       await f.store.setCheckpoint(
         Q,
         rolledBack.taskId,
@@ -285,28 +304,83 @@ describe('hosted-alpha Web Request router', () => {
         'null',
         60,
       )
-      await f.store.fail(Q, rolledBack.pass.runId, rolledBack.pass.claimToken, CAUSE, null)
-      const halted = await rollingBack()
-      await f.store.failRollback(Q, halted.pass.runId, halted.pass.claimToken, CAUSE, null, {
-        key: `${SAGA_TRIES_PREFIX}charge`,
-        stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RefundDown"}' }),
-      })
+      await f.store.fail(Q, rolledBack.pass.runId, rolledBack.pass.claimToken, SAGA_CAUSE, null)
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, '{"name":"RefundDown"}')
       expect({
-        rolledBack: await inspected(rolledBack.taskId),
-        halted: await inspected(halted.taskId),
+        rolledBack: await inspected(f, rolledBack.taskId),
+        halted: await inspected(f, halted.taskId),
       }).toEqual({
         rolledBack: {
-          taskId: rolledBack.taskId,
-          state: 'failed',
-          failure: { name: 'CardDeclined' },
-          rollback: { outcome: 'complete' },
+          status: 200,
+          body: {
+            taskId: rolledBack.taskId,
+            state: 'failed',
+            failure: { name: 'CardDeclined' },
+            rollback: { outcome: 'complete' },
+          },
         },
         halted: {
+          status: 200,
+          body: {
+            taskId: halted.taskId,
+            state: 'failed',
+            failure: { name: 'CardDeclined' },
+            rollback: { outcome: 'failed', error: { name: 'RefundDown' } },
+          },
+        },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  // A store caller that is not the SDK can store text that is no JSON, and no value of a task
+  // that ended ever changes. A route that throws on such a value answers 500 for that task
+  // for good, so it answers with the text, under a key of its own.
+  it('answers with the text of a rollback error that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-error-text')
+    try {
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, 'refund service down')
+      expect(await inspected(f, halted.taskId)).toEqual({
+        status: 200,
+        body: {
           taskId: halted.taskId,
           state: 'failed',
           failure: { name: 'CardDeclined' },
-          rollback: { outcome: 'failed', error: { name: 'RefundDown' } },
+          rollback: { outcome: 'failed', errorText: 'refund service down' },
         },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers with the text of a failure reason that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-failure-text')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const run = await claimed(f, 'worker')
+      await f.store.fail(Q, run.runId, run.claimToken, 'disk full', null)
+      expect(await inspected(f, spawned.taskId)).toEqual({
+        status: 200,
+        body: { taskId: spawned.taskId, state: 'failed', failureText: 'disk full' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers with the text of a result that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-result-text')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const run = await claimed(f, 'worker')
+      await f.store.complete(Q, run.runId, run.claimToken, 'done, mostly')
+      expect(await inspected(f, spawned.taskId)).toEqual({
+        status: 200,
+        body: { taskId: spawned.taskId, state: 'completed', resultText: 'done, mostly' },
       })
     } finally {
       f.close()
