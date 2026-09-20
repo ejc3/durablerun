@@ -2141,7 +2141,11 @@ are load-bearing):
 
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
-   still at version 6 behaves as every build did before it. An older build
+   still at version 6 behaves as every build did before it. That is true of
+   version 7, which changes no statement the engine sends. It is not true of
+   MySQL's version 8: a newer build's keyed deletes name the index that
+   version adds, so there the database is migrated first, as the note on
+   version 8 among the MySQL notes says. An older build
    that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
    it does after every migration. From this change on, on every dialect, that
    message says a newer build migrated the database, that nothing needs
@@ -2738,7 +2742,17 @@ realized in the store's compiler, executor, fragments, or schema:
   tree, `migrate()` took 3.1 ms against 3.0 on libSQL, 46.0 against 44.7 on
   PostgreSQL, where the empty version is one more batch under the runner's
   lock, and 35.6 against 29.5 on MySQL, where it builds the index.
-- **Version 8 on a live MySQL database.** It is one `CREATE INDEX`, in the form
+- **Version 8 on a live MySQL database.** Migrate first: version 8 is the first
+  MySQL version a newer build's statements require. Every keyed delete names
+  `runs_stamp`, so a database that has not reached version 8 answers each
+  batch that holds one, a claim among them, with error 1176, the key does not
+  exist. The executor answers that as `SchemaMismatchError` and not as an
+  outage, because no retry repairs it, and a server case holds the answer. The
+  two host programs call `migrate()` when they start. An embedder that
+  migrates as a separate deploy step runs that step to its end before the
+  first process of the newer build takes traffic. Processes of the older build
+  keep running against version 8 meanwhile, as measured below. The version is
+  one `CREATE INDEX`, in the form
   that is safe to repeat, under the named lock every MySQL migration takes, so
   racing migrators run one after another and the second finds the index there.
   InnoDB builds it online and holds an exclusive metadata lock on `runs` only

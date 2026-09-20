@@ -330,9 +330,10 @@ jobs:
               # On MySQL a write keyed by a subquery reads its keys first and its table second,
               # through the index of its key, and a delete reads its keys through the index of
               # their stamp.
-              # The compiler's conditions, the index's width and the two server cases
-              # register mutations the base predates, so their verdict markers are
-              # exempted. No base entry is re-aimed.
+              # The compiler's conditions, the index's width, the server cases and the
+              # executor's answer to a forced index that is not there register mutations
+              # the base predates, so their verdict markers are exempted. No base entry
+              # is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
                   "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
@@ -358,6 +359,7 @@ jobs:
                   "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
                   "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
                   "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
+                  "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

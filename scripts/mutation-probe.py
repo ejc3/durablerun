@@ -7618,6 +7618,13 @@ MUTATION_SPECS.extend(
             "  // MUTATION: a condition under parentheses is not read\n",
             "a write keyed under parentheses is compiled as any other, so the server plans it and a delete of that shape slips past the rule for its keys",
         ),
+        (
+            "mysql-missing-forced-index-is-a-schema-mismatch",
+            "packages/store-mysql/src/executor.ts",
+            "  1176, // ER_KEY_DOES_NOT_EXITS, as MySQL spells it: a statement forces an index that is not there\n",
+            "  // MUTATION: a forced index that is not there is no schema mismatch\n",
+            "a database that has not reached the version whose index a statement forces answers as an outage, which callers retry and no retry repairs",
+        ),
     )
 )
 
@@ -11879,6 +11886,12 @@ VERDICTS.update(
             "packages/store-mysql/test/tree.test.ts",
             "MySQL spelling of the shared statement trees finds the key of a write wherever it stands among the conditions",
             "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
+        ),
+        "mysql-missing-forced-index-is-a-schema-mismatch": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs",
+            "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
         ),
     }
 )
@@ -18599,7 +18612,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 976:
+        if len(MUTATIONS) != 977:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
