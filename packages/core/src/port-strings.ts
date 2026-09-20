@@ -4,6 +4,7 @@ import type { SchedulerStore } from './ports.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
 const {
+  ObjectCreate: createObject,
   ObjectDefineProperty: defineProperty,
   ObjectFreeze: freeze,
   ObjectHasOwn: hasOwn,
@@ -144,11 +145,26 @@ export type PortStringsOf<Port> = {
 
 export type PortStrings = PortStringsOf<SchedulerStore>
 
+/** Freeze a part of the table, and every array and object under it. */
+function frozenThroughout<Part>(part: Part): Part {
+  if (typeof part !== 'object' || part === null) return part
+  const keys = objectKeys(part)
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]
+    if (key !== undefined) frozenThroughout(reflectGet(part, key))
+  }
+  return freeze(part)
+}
+
 /**
  * Where each named string enters the port: for every method, its arguments in order. A
  * value under `'?'` is one the caller may leave out. Every other the port requires.
+ *
+ * It is frozen throughout, its inner arrays and its marks too. The table is on core's main
+ * entry, and a caller that could write null over a name would switch the check off at that
+ * place for every store in the process.
  */
-export const PORT_STRINGS = freeze({
+export const PORT_STRINGS = frozenThroughout({
   spawn: [
     'queue',
     'taskName',
@@ -266,6 +282,21 @@ export function requirePortStrings(method: PortMethod, args: readonly unknown[])
 export const PORT_METHODS: readonly PortMethod[] = freeze(objectKeys(PORT_STRINGS) as PortMethod[])
 
 /**
+ * The descriptor of a checked entry: a getter, no setter, and it cannot be defined again.
+ * It is built on an object with no prototype, so it says what is written here and nothing
+ * that `Object.prototype` holds while a store is constructed. A literal inherits from
+ * there, and a store built while `configurable` read true there could have its check
+ * defined away.
+ */
+function checkedEntry(checked: unknown): PropertyDescriptor {
+  const descriptor = createObject(null) as PropertyDescriptor
+  descriptor.configurable = false
+  descriptor.enumerable = false
+  descriptor.get = () => checked
+  return descriptor
+}
+
+/**
  * What every dialect's store extends, and the only place the port's strings are checked.
  *
  * The constructor puts `requirePortStrings` in front of every method the table names, as
@@ -315,7 +346,7 @@ export abstract class HeldPort {
       // where a property that could be defined again let a field replace the check in
       // silence. A proxy over a store may still answer the method with its own function:
       // only a data property that cannot be written binds a proxy to its value.
-      defineProperty(this, method, { get: () => checked })
+      defineProperty(this, method, checkedEntry(checked))
     }
   }
 }

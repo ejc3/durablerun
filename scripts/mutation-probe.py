@@ -14211,8 +14211,8 @@ MUTATION_SPECS.extend(
         (
             "port-check-cannot-be-defined-away",
             "packages/core/src/port-strings.ts",
-            "      defineProperty(this, method, { get: () => checked })\n",
-            "      defineProperty(this, method, { configurable: true, get: () => checked })\n",
+            "  descriptor.configurable = false\n",
+            "  descriptor.configurable = true\n",
             "a subclass written with an arrow field for an entry constructs without a word, and the field is handed a queue with a NUL in it",
         ),
         (
@@ -14275,6 +14275,56 @@ for _verdict, _names in (
         ),
         (
             "port-required-string-left-out-is-refused",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# What the accessor and the table hold against the realm they are built in. The checked
+# entry's descriptor is built on an object with no prototype, so a store constructed while
+# Object.prototype names the fields of a descriptor still cannot have its check defined away.
+# The table is frozen throughout, so no caller can write over a name in it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-accessor-descriptor-inherits-nothing",
+            "packages/core/src/port-strings.ts",
+            "  const descriptor = createObject(null) as PropertyDescriptor\n",
+            "  const descriptor = {} as PropertyDescriptor\n",
+            "a store built while a library has assigned set or configurable on Object.prototype holds entries that an assignment replaces without a word, and the replacement is handed a queue with a NUL in it",
+        ),
+        (
+            "port-table-frozen-throughout",
+            "packages/core/src/port-strings.ts",
+            "export const PORT_STRINGS = frozenThroughout({\n",
+            "export const PORT_STRINGS = freeze({\n",
+            "any code in the process writes null over a name in the table, and every store then passes a queue with a NUL in it at that place",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port cannot have its check defined away when the store was built while Object.prototype named the fields of a descriptor",
+            "mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing",
+        ),
+        (
+            "port-accessor-descriptor-inherits-nothing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/port-strings.test.ts",
+            "the strings a port call carries is frozen throughout, so no caller can write over a name and switch the check off at that place",
+            "mutation-verdict:construction:port-table-frozen-throughout",
+        ),
+        (
+            "port-table-frozen-throughout",
         ),
     ),
 ):
@@ -19590,7 +19640,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1023:
+        if len(MUTATIONS) != 1025:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

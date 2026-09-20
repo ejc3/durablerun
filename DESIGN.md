@@ -1975,7 +1975,11 @@ are load-bearing):
    that check in front of every method the table names, as an accessor that cannot be
    defined again: a class field that would replace an entry, an assignment and a
    redefinition each throw, and a proxy over a store may still answer a method with its
-   own function. The check looks the entry up when it is called, so a method patched
+   own function. The accessor's descriptor is built on an object with no prototype, and
+   the table is frozen throughout, its inner arrays and its marks too: a store constructed
+   while a library has assigned `configurable` on `Object.prototype` holds the same
+   accessor, and no code in the process can write null over a name in the table. The
+   check looks the entry up when it is called, so a method patched
    onto a store class after a store exists, as a test double is, is reached with the
    check in front of it. A dialect's entry holds nothing
    and is reached only through the check. A fourth dialect inherits it by extending the

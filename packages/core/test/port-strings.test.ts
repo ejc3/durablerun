@@ -100,6 +100,29 @@ describe('the strings a port call carries', () => {
     expect([...used].sort()).toEqual(Object.keys(PORT_STRING_RULES).sort())
   })
 
+  it('is frozen throughout, so no caller can write over a name and switch the check off at that place', () => {
+    const parts: object[] = []
+    const walk = (part: unknown): void => {
+      if (typeof part !== 'object' || part === null) return
+      parts.push(part)
+      for (const inner of Object.values(part)) walk(inner)
+    }
+    walk(PORT_STRINGS)
+    walk(PORT_STRING_RULES)
+    // The walk went two marks deep, to the members of a spawn's parent.
+    expect(parts).toContain(PORT_STRINGS.spawn[3]['?'].childOf['?'])
+    expect(
+      parts.filter((part) => !Object.isFrozen(part)),
+      'mutation-verdict:construction:port-table-frozen-throughout',
+    ).toEqual([])
+    expect(() => {
+      ;(PORT_STRINGS.claim as unknown as unknown[])[0] = null
+    }).toThrow(TypeError)
+    expect(refusalOf(() => requirePortStrings('claim', [NUL, 'w', null]))).toBe(
+      'queue must be a string without NUL or lone UTF-16 surrogates',
+    )
+  })
+
   it('holds every argument of a call in order, and names what the caller passed', () => {
     const childOf = {
       parentQueue: 'q',
@@ -382,6 +405,52 @@ describe('a store that extends the held port', () => {
     expect(refused, 'mutation-verdict:behavior:port-constructor-loops-by-index').toBe(
       'InvalidDurableStringError',
     )
+  })
+
+  it('cannot have its check defined away when the store was built while Object.prototype named the fields of a descriptor', async () => {
+    class Entry extends HeldPort {
+      claim(): Promise<unknown> {
+        return Promise.resolve('the entry')
+      }
+    }
+    for (const method of Object.keys(PORT_STRINGS)) {
+      if (method !== 'claim')
+        Object.defineProperty(Entry.prototype, method, { value: () => Promise.resolve() })
+    }
+    let built: (Entry & SchedulerStore) | undefined
+    try {
+      // Two plain assignments, as a careless library makes them. A descriptor written as a
+      // literal inherits both: it can be defined again, and it has a setter.
+      const inherited = Object.prototype as unknown as Record<string, unknown>
+      inherited.configurable = true
+      inherited.set = () => undefined
+      built = new Entry() as Entry & SchedulerStore
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'set')
+      Reflect.deleteProperty(Object.prototype, 'configurable')
+    }
+    const held = built
+    const descriptor = Object.getOwnPropertyDescriptor(held, 'claim')
+    expect(
+      {
+        configurable: descriptor?.configurable,
+        enumerable: descriptor?.enumerable,
+        getter: typeof descriptor?.get,
+        setter: typeof descriptor?.set,
+      },
+      'mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing',
+    ).toEqual({ configurable: false, enumerable: false, getter: 'function', setter: 'undefined' })
+    expect(() =>
+      Object.defineProperty(held, 'claim', { value: () => Promise.resolve('unchecked') }),
+    ).toThrow(TypeError)
+    expect(() => {
+      ;(held as { claim: unknown }).claim = () => Promise.resolve('unchecked')
+    }).toThrow(TypeError)
+    const refused = await held.claim(NUL, 'w', { leaseSeconds: 30, limit: 1 }).then(
+      () => 'accepted',
+      (error: unknown) => (error instanceof Error ? error.name : String(error)),
+    )
+    expect(refused).toBe('InvalidDurableStringError')
   })
 
   it('refuses to construct a store that lacks a method of the port', () => {
