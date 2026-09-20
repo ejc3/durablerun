@@ -152,7 +152,6 @@ export async function makeLibsqlFixture(
     // SQLite has one writer at a time and never picks a victim: a writer that cannot get
     // the lock waits out its busy timeout and fails, and the executor runs nothing again.
     deadlocks: () => 0,
-    selfRaceDeadlocksExcused: {},
     close: async () => raw.close(),
   }
 }

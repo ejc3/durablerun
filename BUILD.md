@@ -149,6 +149,12 @@ a last docs PR gives a live owner to every open bullet that is left.
    contest of PR4.4c's surface meets no deadlock victim. That surface found the
    defect: at five rows or fewer the claim's update scans `runs` and locks
    every row, so concurrent claimers deadlock.
+   This is met. PR4.4e's MySQL compiler reads a keyed write's keys first and
+   its table second, a claim over four rows locks the run it takes and no
+   other, and the surface's claim contest meets no victim beside an empty
+   `waits` or beside parked waiters, with the MySQL excusal deleted. The plan
+   cases of `store-mysql` hold the locks and the walks from inside the batch,
+   and the surface holds the victims.
 9. PR3.4b: `rollback_error` names a rollback only when that rollback's failure
    ended the task, so it names none when a cancellation or a cap follows a
    failed attempt that had budget left, held by a case on three dialects that
@@ -2831,40 +2837,98 @@ these three things; nothing else in the system does I/O, time, or randomness.
     running run" stays green, where the contract has one true and three false.
     It would give each of the 37 entries an expectation written by hand, which
     the scheduler suite's own cases hold today one call at a time.
-  - Deferred to PR4.4e, found by PR4.4c's surface before any review: concurrent
-    claims deadlock on MySQL while `runs` holds five rows or fewer. Measured on
-    MySQL 8.4: up to five rows the claim's `UPDATE runs ... WHERE run_id IN
-    (candidates)` is planned as a scan of `runs` with the FirstMatch semijoin
-    strategy, and that one statement holds an X record lock on every row of
-    `runs`. From six rows the plan is the materialized candidates and then
-    `runs` by primary key, and it holds the claimed rows alone. It follows the
-    size of the table and not the number of due runs. A claimer already holds
-    the run its locking leg chose, so two claimers wait on each other, which
-    InnoDB's deadlock report shows. With four claimers at limit 1 over four
-    due runs, 20 runs of 20 came back short, one run claimed of four, and 17
-    of the 20 met victims: one run met one, two met two, and fourteen met
-    three. In 300 more rounds, run by a review, 61 met none, 36 one, 30 two
-    and 173 three, none met more, and none met an outage. PostgreSQL and
-    libSQL were clean in 20
-    of 20, and so was every other MySQL contest. The older native claim case
-    never met it: it has eight rows, and it opens its connections inside the
-    race, which puts the claims one after another. No run is claimed twice or
-    lost. Two fixes were measured to give the production plan and one lock on
-    a four-row table: `FORCE INDEX (PRIMARY)` on the `UPDATE` target, which the
-    MySQL tree compiler renders, and `/*+ SEMIJOIN(MATERIALIZATION) */` in the
-    candidate subquery, which core's rule against a comment in a SQL fragment
-    refuses today. PR4.4e fixes the class, every keyed `UPDATE` or `DELETE`
-    whose keys come from a subquery over a small table, with a deterministic
-    lock-count test, and deletes the entry of `selfRaceDeadlocksExcused` in
-    the MySQL fixture, that member of `StoreFixture`, and the special case
-    that reads it in the surface's final expectation. Until then the entry
-    excuses that contest's victim count, up to eight, which is four copies
-    times the two attempts a copy can lose without an outage, and nothing
-    else. If `conformance-mysql` ever fails on that contest with `outages`
-    that is not empty, a claimer was the victim on all three of its attempts,
-    and that is this defect. One probe of different calls, and of one call on
-    different targets, over tables of two or three rows met no victim on
-    either server, in 13 pairs of 10 rounds each.
+  - Done in PR4.4e, found by PR4.4c's surface before any review, and then found
+    to be two defects: concurrent claims deadlocked on MySQL. First, while
+    `runs` held five rows or fewer, or the limit was half the table, the
+    claim's `UPDATE runs ... WHERE run_id IN (candidates)` was planned as a
+    scan of `runs` and held an X record lock on every row: 2, 4 and 20 rows
+    over two rows, over four, and over twenty at a limit of ten. A claimer
+    already holds the run its locking leg chose, so two claimers waited on each
+    other. Second, and with no small table involved, a `DELETE` reads its
+    subquery's table with shared locks under READ COMMITTED, where a
+    single-table `UPDATE` reads it with none. The claim's delete of expired
+    waits finds the runs it took by queue, state and stamp, and once `waits`
+    held a few dozen rows the server read those runs first, through
+    `runs_poll`, whose range covers every other claimer's uncommitted run.
+    PR4.4c's contest ran beside an empty `waits`, where the second defect was
+    hidden. Measured with four claimers at limit 1 over 20 contests, main's
+    statements against this PR's: beside an empty `waits`, victims in 19
+    contests and 55 in all against none; with 40 runs due beside 1,000 waits,
+    victims in all 20 and 86 in all with a failed claim in 5, against none;
+    beside 50 waiters parked through the port, victims in all 20 against none.
+    A failed claim is a claimer that lost all three of its attempts. Draining a
+    four-row queue with a token for every call, main's claimers made no
+    progress: a median of 3 of 4 due runs were claimed when a 60 s deadline
+    passed, beside about 31,660 empty claims a round, where this PR claims the
+    four in 27 ms. At 100, 1,000 and 10,000 rows the two are level: 438 to 461
+    claims a second against 441 to 460, 439 against 441, and 427 against 436.
+    The MySQL compiler now writes every write keyed by a subquery one way: the
+    key source in a query block of its own, named and kept whole, a
+    `JOIN_PREFIX` hint that reads the keys first and the written table second,
+    and the written table through the index of its key. A keyed `DELETE` reads
+    its keys through `runs_stamp`, the index of a run's statement stamp that
+    schema version 8 adds on MySQL, and the compiler refuses a keyed delete
+    whose keys are anything but a generated selection of one plain table fenced
+    on its stamp. libSQL and PostgreSQL hold an empty version 8. A fresh
+    database's `migrate()` takes 0.1 ms longer on libSQL, about 1 ms on
+    PostgreSQL and about 6 ms on MySQL, at the median of 80 fresh databases a
+    tree on main's build and on this one. `SKIP LOCKED`
+    in the key source held the same contests at zero and was not taken: InnoDB
+    skips by index record, and a transaction skipped a row it had stamped
+    itself when another held that row's entry in the index the keys were read
+    through. DESIGN.md has the rule, that false negative, the width of the
+    index's prefix, and what version 8 does to a live database: on a million
+    runs under traffic from the older build, reads and event batches included,
+    the index built in 2.3 s and 2.8 s and no call failed. The surface's MySQL
+    excusal is deleted in all three parts, and the claim by distinct claimers
+    runs a second time beside 50 parked waiters, which costs 0.7 s on libSQL,
+    1.6 s on PostgreSQL and 1.1 s on MySQL. The first build of this PR had four
+    defects of its own, each found by a measurement before anything was pushed.
+    The delete made to read its keys first through `runs_poll` moved the
+    deadlock to the delete, 104 victims against main's 55. A 64-character
+    prefix did not hold a conformance fixture's token, and the older native
+    claim case failed 5 times of 5. With the written table read after every
+    table an emit walked the live tasks of its queue, and took 66 ms beside
+    200,000 runs against 21. With the keys merely ahead of the written table a
+    completion walked 1,204 rows under statistics the server had not
+    recalculated. The class survey had checked only how a keyed write reaches
+    the table it writes, so plan cases now count the rows every statement of a
+    batch walks, from inside the batch. The review's fold added three things. A
+    database that has not reached version 8 answers a keyed delete with MySQL
+    error 1176, and the executor now answers that as a schema mismatch and not
+    as an outage, so DESIGN.md says to migrate first. A delete keyed by the
+    table it writes is refused where it is built, because it was sent as text
+    the server refuses. The schema file defines the two index names the
+    compiler forces, so a rename moves a frozen schema hash. Twenty-six
+    mutations hold the rule.
+    For PR3.14b: with every fenced read of `runs` forced through `runs_stamp` a
+    claim was 7 percent faster beside 2,000 running runs on MySQL, 3.31 ms
+    against 3.57, so the walk it removes is small at that size; libSQL's three
+    `claim` entries of `EXCUSED_SOURCE_WALKS` are the acceptance there; and an
+    indexed `fence_stamp` on PostgreSQL would end heap-only updates for every
+    stamped write, so it needs a measurement before anyone adds it. One probe
+    of different calls, and of one call on different targets, over tables of
+    two or three rows met no victim on either server, in 13 pairs of 10 rounds
+    each.
+  - Option for the MySQL compiler, not built, with its trigger: read a keyed
+    delete's keys through an index of the stamp on a table other than `runs`,
+    or from a derived table. Core's generator can build a delete over a self
+    relation, or one keyed from `tasks`, `waits` or `events`, and the MySQL
+    compiler alone refuses both, because its rule takes one plain table that
+    declares an index of its stamp. Trigger: the first statement of either
+    shape, which fails when its batch is built in `conformance-mysql`.
+  - Option for the MySQL executor, not built, with its trigger: classify the
+    server's permanent answers by SQLSTATE class in place of error numbers kept
+    by hand. A value too long for its column has a branch of its own by number,
+    error 1176 joined the schema mismatch set in PR4.4e's fold, and error 1064,
+    a statement the server will never accept, is still answered as an outage
+    that callers retry. Trigger: another number is added by hand.
+  - Option for the conformance surface, not built, with its trigger: run every
+    labeled batch against a database stopped at each earlier schema version and
+    expect a typed mismatch or success, never an outage. MySQL's version 8 is
+    the first version a newer build's statements require, and it has a server
+    case of its own. Trigger: the next schema version that a statement
+    requires.
 
 - **PR4.5 one identifier width in core**: DONE. The maintainer decided the open
   item of PR4.3: the engine behaves identically on every dialect, so the 255

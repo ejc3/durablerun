@@ -326,30 +326,41 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '426f7cb4d6f56eb6b9953d9b7676b29aa243e5513dbb65fe1ffae386a6980a9c':
-              # The stale-token column registers a mutation for each comparison it holds:
-              # the claim token of every call that presents one, the generation of a claim
-              # receipt, and the generation a lease sweep's scan read. The base predates
-              # them all, so their verdict markers are exempted. No base entry is re-aimed,
-              # because this tree changes no line a base mutation quotes.
+          if digest == '7eba1145e5e39ca5bdaa0d39f462043fbc036621ccfcd7fd80d1dc9dbd6e8cba':
+              # On MySQL a write keyed by a subquery reads its keys first and its table second,
+              # through the index of its key, and a delete reads its keys through the index of
+              # their stamp.
+              # The compiler's conditions, the index's width, the server cases and the
+              # executor's answer to a forced index that is not there register mutations
+              # the base predates, so their verdict markers are exempted. No base entry
+              # is re-aimed.
               repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:stale-token-spawn-of-a-child',
-                  'mutation-verdict:behavior:stale-token-activate',
-                  'mutation-verdict:behavior:stale-token-defer-launch',
-                  'mutation-verdict:behavior:stale-token-heartbeat',
-                  'mutation-verdict:behavior:stale-token-reschedule',
-                  'mutation-verdict:behavior:stale-token-suspend',
-                  'mutation-verdict:behavior:stale-token-await-event',
-                  'mutation-verdict:behavior:stale-token-record-task-done',
-                  'mutation-verdict:behavior:stale-token-complete',
-                  'mutation-verdict:behavior:stale-token-fail',
-                  'mutation-verdict:behavior:stale-token-fail-rollback',
-                  'mutation-verdict:behavior:stale-token-expire-lease-now',
-                  'mutation-verdict:behavior:stale-token-set-checkpoint',
-                  'mutation-verdict:behavior:stale-generation-activate',
-                  'mutation-verdict:behavior:stale-generation-defer-launch',
-                  'mutation-verdict:behavior:stale-scan-sweep-lost-launch',
-                  'mutation-verdict:behavior:stale-scan-sweep-claim-timeout',
+                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-keys-first",
+                  "mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys",
+                  "mutation-verdict:behavior:mysql-keyed-write-reads-its-table-second",
+                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-named",
+                  "mutation-verdict:construction:mysql-keyed-write-keys-block-is-kept-whole",
+                  "mutation-verdict:construction:mysql-keyed-write-names-its-key-index",
+                  "mutation-verdict:behavior:mysql-keyed-write-takes-its-key",
+                  "mutation-verdict:construction:mysql-unkeyed-delete-refused",
+                  "mutation-verdict:construction:mysql-keyed-write-key-stands-anywhere",
+                  "mutation-verdict:construction:mysql-keyed-write-key-is-a-subquery",
+                  "mutation-verdict:construction:mysql-keyed-write-undeclared-key-refused",
+                  "mutation-verdict:behavior:mysql-keyed-delete-reads-its-keys-by-their-stamp",
+                  "mutation-verdict:behavior:mysql-stamp-index-holds-the-token",
+                  "mutation-verdict:construction:mysql-keyed-delete-names-the-stamp-index",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-aliased",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-table-is-plain",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-name-one-table",
+                  "mutation-verdict:construction:mysql-keyed-delete-keys-join-nothing",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-stamp",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-the-sources",
+                  "mutation-verdict:construction:mysql-keyed-delete-fence-is-an-equality",
+                  "mutation-verdict:construction:mysql-keyed-delete-unfenced-keys-refused",
+                  "mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused",
+                  "mutation-verdict:construction:mysql-keyed-write-key-stands-under-parentheses",
+                  "mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch",
+                  "mutation-verdict:construction:mysql-keyed-delete-own-table-refused",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
