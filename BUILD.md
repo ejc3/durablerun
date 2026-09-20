@@ -112,7 +112,7 @@ a last docs PR gives a live owner to every open bullet that is left.
    the label match allows today. A test on MySQL builds a version that was half
    applied, some of its statements run and its version row absent, runs
    `migrate()` again, and holds the schema and the version: no test has that
-   case. On MySQL `migrate()` crosses the four empty versions with one version
+   case. On MySQL `migrate()` crosses the five empty versions with one version
    read and one locked batch, where today each costs a read and the lock, and
    the counts are pinned.
 6. PR4.4d: the four kinds of third copy the PR4.3 review named each exist once:
@@ -2250,11 +2250,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     coordinate. With it goes the case no test has: a version that was half
     applied, rerun through `migrate()`. It changes core's batch control and
     every executor, which PR3.9e part 3b and the child-task fold are editing.
+    PostgreSQL's runner takes its own lock as a statement, `LOCK TABLE meta IN
+    SHARE ROW EXCLUSIVE MODE` ahead of each version's sentinel (PR4.6). Once
+    the migration lock travels as a coordinate, PostgreSQL's coordinate can
+    replace that statement.
   - Deferred from PR4.3: a read batch costs four round trips and a
     single-statement write three, where autocommit needs one. Five of the six
     read batches hold one statement, the per-tick next-wake among them.
-  - Deferred from PR4.3: `migrate()` reads the version before each of the four
-    empty versions and takes the lock for each. One read and one locked batch
+  - Deferred from PR4.3: `migrate()` reads the version before each of the five
+    empty versions (2, 3, 4, 5 and 7) and takes the lock for each. One read and one locked batch
     would do, which matters most to the conformance suite, which migrates a
     database for every case.
   - Deferred from PR4.3: the claim's `FORCE INDEX (runs_poll)` legs have no
@@ -2578,8 +2582,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   opening and migrating a fixture took 27, about a minute over the 3,342
   fixtures of the PostgreSQL conformance leg, and costs MySQL one more version
   read and one more locked batch, 4 ms where it took 39. That cost is PR4.4b's
-  to remove: its exit test counts the four empty versions before this one, and
-  this is a fifth. libSQL showed no difference. Creating CI's database with ICU
+  to remove: its exit test counts MySQL's five empty versions, and this is the
+  fifth. libSQL showed no difference. Creating CI's database with ICU
   cost the conformance leg nothing one run could show, 471 seconds against
   465. With version 7 the leg took 554 and 556 seconds in one run and 609 and
   612 in another, on a byte-ordered and an ICU server each time and under more
@@ -2599,9 +2603,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   lock, so the registry moves from 873 to 876. Under live traffic the version
   still commits with the lock ahead of the sentinel: 12 of 12 runs at a
   million rows a table and 6 of 6 at four million, with no error at any
-  caller. The lock is a statement of PostgreSQL's
-  runner. When PR4.4b carries the migration lock as a lock coordinate,
-  PostgreSQL's coordinate can replace that statement. The per-fixture cost
+  caller. The per-fixture cost
   is also why this PR raises the limits of three CI jobs, by the rule and with
   the arithmetic in the PR3.13 entry. An
   operator's own view over a store table stops the version: PostgreSQL refuses
