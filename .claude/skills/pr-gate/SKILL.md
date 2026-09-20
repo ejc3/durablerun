@@ -349,6 +349,16 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   itself. [CLAUDE.md standing rule]
 - **DESIGN.md updates in the same diff** for any observable behavior change
   (thrown error types, LWW semantics, mirror rules — all were missed once).
+- **A changed released declaration is listed**: `pnpm verify:packages` refuses
+  a pull request that changes the declaration of a name v0.1.0-alpha.1
+  exported, or of an unexported name that such a declaration reaches, until the
+  `changed` table of `scripts/published-surface-v0.1.0-alpha.1.json` lists the
+  name with a reason and the `declarationSha256` the refusal prints. The reason
+  says why, names the pull request, and says what a consumer does about it. A
+  name that is already listed is pinned again, and its reason says what changed
+  this time. A port change usually needs two entries, `SchedulerStore` and
+  `LibsqlSchedulerStore`. Run the check again after a rebase, because another
+  pull request may have moved the same pin. [scripts/package-surface.mjs]
 - **BUILD.md scope reconciliation**: promised-but-deferred items get an
   explicit deferral note, never silence (repeat counters were silently
   dropped once).

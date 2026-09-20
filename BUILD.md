@@ -2147,29 +2147,57 @@ these three things; nothing else in the system does I/O, time, or randomness.
   packages that the release did not export, because a consumer's compiler reads
   through such a name. A class's private members are left out, and one line
   says that the class has some. A private constructor stays, because it says
-  that a consumer cannot construct the class. The check does not judge whether
-  a difference breaks a consumer. Any difference in a released name's lines is
-  refused unless the snapshot's `changed` table lists the name with the reason,
-  what a consumer does about it, and the sha256 of the declaration as it is
-  now, so a second change to a listed name is refused until its entry is
-  written again.
-  An entry is refused when its name was never released, is also withdrawn, has
-  no reason, or is declared as the release declared it. Nineteen released names
-  differ on main, each traced to the pull request that changed it, and the
-  table lists them. `--write <release> <tarball-dir> <snapshot>` writes the
-  snapshot of the next release, and over a snapshot of the same release it
-  refuses a tarball whose sha256 differs and keeps both tables.
-  `package-smoke.sh` holds thirteen controls, which build the entries they
-  break, so they also pass on the empty tables of a new release. Each of the
-  check's eleven refusals was deleted in a copy of the script, and the control
-  that owns it went red. Two controls are the historical false negative from
-  both sides: a copy of the packed packages in which `Checkpoint` lost a member,
-  and a snapshot in which that member was declared another way. What the check does not see: a
-  declaration that refers to a dependency's type changes with the dependency,
-  whose declarations are not packed, and a private member's name, which a
-  consumer's subclass can collide with. A rewrite that means the same, an
-  interface turned into an equal type alias for one, is refused until it is
-  listed, because the comparison is of printed lines.
+  that a consumer cannot construct the class. A value that is exported as a
+  type only says so in one line: a consumer's compiler is asked, through a
+  module for each entry point that exists only in the check and uses every
+  exported name as a value. A whole module exported as a namespace has no shape
+  and is refused by name. The check does not judge whether a difference breaks
+  a consumer. Any difference in a released name's lines is refused unless the
+  snapshot's `changed` table lists the name. An entry has a `reason` and a
+  `declarationSha256`, the sha256 of the declaration as it is now. The check
+  requires that the reason is not blank, that the name was released, is not
+  also withdrawn, and differs from the release, and that the recorded sha256 is
+  the packed declaration's, so a second change to a listed name is refused
+  until its entry is edited. What the reason says is a convention that review
+  holds: why the declaration changed, with the pull request, and what a
+  consumer does about it. A refusal names the snapshot file and where in it the
+  entry goes. Nineteen released names differ on main, each traced to the pull
+  request that changed it, and the table lists them.
+  `--write <release> <tarball-dir> <snapshot>` writes the snapshot of the next
+  release, laid out by the repository's formatter from whatever directory the
+  command is given in. Over a snapshot of the same release it keeps both tables
+  and refuses a tarball whose sha256 differs, a tarball the snapshot does not
+  record, and a directory that lacks a recorded one. `--packed` prints the
+  packed shapes as the check reads them. `package-smoke.sh` holds twenty-one
+  controls. Fifteen are of the check. Six are of `--write`: its five refusals,
+  and a snapshot written from the packed tarballs by a command given in another
+  directory, which must be the formatter's layout and must pass the check with
+  nothing withdrawn and nothing changed. A control that needs an entry that
+  holds builds it, and the eight that borrow `Checkpoint`, `UserName` or
+  `systemClock` start from a copy of the snapshot in which those names are
+  declared as they are packed now. So the controls pass on the empty tables of
+  a new release, and after a real, listed change to a name they borrow. Each of
+  the check's twelve refusals and of the five of `--write`, the line that marks
+  a value exported as a type only, and the formatter's directory was deleted in
+  a copy of the script, and the control that owns it went red. Two controls are
+  the historical false negative from both sides: a copy of the packed packages
+  in which `Checkpoint` lost a member, and a snapshot in which that member was
+  declared another way. What the check does not see: a declaration that refers
+  to a dependency's type changes with the dependency, whose declarations are
+  not packed; a private member's name, which a consumer's subclass can collide
+  with; and a `declare global` block added to an entry point, which belongs to
+  no exported name. Two things are refused until they are listed although a
+  consumer sees no difference, because the comparison is of printed lines: a
+  rewrite that means the same, an interface turned into an equal type alias for
+  one, and a withdrawn name that another released name still reaches, whose
+  declaration then joins that name's shape.
+  - An option, not built: show what changed since an entry was written. For a
+    name that is already listed, the refusal prints the whole difference
+    against the release, 70 lines for `FencedBatch` today, so an author who
+    changes it again cannot see the new part. An entry that also recorded the
+    listed lines would let the refusal print the difference against them.
+    Trigger: a second change to a listed name whose author or reviewer has to
+    work out by hand what the new part is.
 
 ## Phase 4 — dialect matrix
 
