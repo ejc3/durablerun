@@ -15309,6 +15309,82 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# Executor error typing: what each store's executor types permanent, from the driver's
+# code and never from message text, and what a worker pass does with the type.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-permanent-result-code-is-typed",
+            "packages/store-libsql/src/executor.ts",
+            "      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "      if (false && error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {\n",
+            "a broken constraint is answered as an outage, which every consumer retries until a run's infrastructure budget is gone",
+        ),
+        (
+            "postgres-permanent-sqlstate-class-is-typed",
+            "packages/store-postgres/src/executor.ts",
+            "    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "    if (false && error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {\n",
+            "a constraint violation, a value out of range and a syntax error are answered as outages, which every consumer retries and no retry repairs",
+        ),
+        (
+            "mysql-permanent-sqlstate-class-is-typed",
+            "packages/store-mysql/src/executor.ts",
+            "      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||\n",
+            "      false || // MUTATION: no state is permanent\n",
+            "a duplicate entry, a value out of range and a statement the server will never accept are answered as outages, which every consumer retries",
+        ),
+        (
+            "mysql-wrong-value-for-field-is-permanent",
+            "packages/store-mysql/src/executor.ts",
+            "      errno === ER_TRUNCATED_WRONG_VALUE_FOR_FIELD\n",
+            "      errno === -ER_TRUNCATED_WRONG_VALUE_FOR_FIELD // MUTATION\n",
+            "a value of the wrong type for its column, which MySQL files under its general state, is answered as an outage and retried",
+        ),
+        (
+            "sdk-permanent-store-error-aborts-the-pass",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
+            "    // MUTATION: a permanent store error is no control of the pass\n",
+            "a permanent store error from a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "libsql-permanent-result-code-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/executor.test.ts",
+            "error typing, by the result code and never by the message types a broken constraint and a datatype mismatch permanent, and every other code an outage",
+            "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
+        ),
+        "postgres-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage",
+            "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-permanent-sqlstate-class-is-typed": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage",
+            "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
+        ),
+        "mysql-wrong-value-for-field-is-permanent": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor error typing, by the state and the number the server sends types a value of the wrong type for its column permanent by its number, because its state is the general one",
+            "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
+        ),
+        "sdk-permanent-store-error-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a permanent store error at a context store call aborts the pass and is never billed to the task",
+            "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -19075,7 +19151,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 998:
+        if len(MUTATIONS) != 1003:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
