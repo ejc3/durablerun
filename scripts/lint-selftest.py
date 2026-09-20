@@ -2705,6 +2705,51 @@ export class S {
         "a line inside Next that is no disjunct must be refused by name, wherever it stands",
     ),
     (
+        "spec-ledger.py",
+        side_ledger_with(
+            "[read]  (prose may follow on the entry line,\n\\*     and continue",
+            "(prose may follow on the entry line,\n\\*     [receipt] and continue",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a class wrapped onto the continuation line must not go unread, here one the main ledger does not give",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "[read]  (prose may follow on the entry line,\n\\*     and continue",
+            "(prose may follow on the entry line,\n\\*     [raed] and continue",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a misspelt class wrapped onto the continuation line must not go unread",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\*     and continue five spaces in)\n",
+            "\\*     and continue five spaces in)\n\\*     'sweep:cancel' -> EndChild  [receipt]\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a whole entry written five spaces in must not pass as prose, here with a class the main ledger does not give",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\*     and continue five spaces in)\n",
+            "\\*     and continue five spaces in)\n\\*     'sweep:cancel' -> NoSuchAction  [read]\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "a whole entry written five spaces in must not pass as prose, here naming an action that does not exist",
+    ),
+    (
+        "spec-ledger.py",
+        side_ledger_with(
+            "\\* No batch (action -- reason):\n",
+            "\\* 'sweep:cancel' -> NoSuchAction\n\\* No batch (action -- reason):\n",
+        ),
+        "is not an entry, and only an entry's own line holds",
+        "an entry written one space in must not pass as prose",
+    ),
+    (
         "batch-lint.py",
         store(
             """
