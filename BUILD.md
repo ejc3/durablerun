@@ -127,13 +127,14 @@ a last docs PR gives a live owner to every open bullet that is left.
     ancestor of the head, is the same commit as its pair, or, for a red, is
     not an ancestor of its green. A postmortem that cites the copy of a commit
     from before a rebase is refused.
-11. The chaos process test (`packages/driver/test/chaos-process.test.ts`)
-    picks no port. Each host it spawns starts on port 0 and reports the port it
-    bound in its ready message, so a host's first bind cannot meet a port that
-    a child stranded by a failed run, or a second run on the same machine,
-    already holds. A replacement worker is the one host started on a port by
-    number: it takes over the port the killed worker reported. This is met. A
-    case in that file, committed failing, starts both hosts on port 0 and
+11. PR2.4a: the chaos process test,
+    `packages/driver/test/chaos-process.test.ts`, picks no port. A host that
+    binds starts on port 0 and reports the port it bound in its ready message,
+    and a driver host given no wake port binds nothing, so no first bind can
+    meet a port that a child stranded by a failed run, or a second run on the
+    same machine, already holds. A replacement worker is the one host started on
+    a port by number: it takes over the port the killed worker reported. This is
+    met. A case in that file, committed failing, starts both hosts on port 0 and
     reaches each on the port it reported.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
@@ -540,6 +541,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   with per-operation bounds asserted — curated fault lists missed the
   duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup
   task) running continuously on the engine.*
+- **PR2.4a the chaos process test picks no port**: DONE. PR2.4's test of real
+  processes, `packages/driver/test/chaos-process.test.ts`, picked its ports by
+  arithmetic on the process id. Two runs on one machine whose ids agreed modulo
+  1,000 asked for the same ports, and the later run failed with `host exited
+  early: 1`, which reads like the engine bug the test exists to catch. Each host
+  bin now reports the port it bound in its one ready message, and the test reads
+  it. Of the ten hosts the file starts, five bind on port 0, four drivers are
+  given no wake port and bind nothing, and one replacement worker takes over, by
+  number, the port the OS gave the worker it replaces, because the driver was
+  told that URL. The start helpers take a started worker and refuse a bare
+  number. The test determinism review rule flags any port number fixed before
+  the bind and passes port 0.
 
 ## Phase 3 — full Absurd semantics
 

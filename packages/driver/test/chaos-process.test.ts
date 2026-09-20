@@ -29,19 +29,20 @@ function isReady(message: unknown): message is { ready: true; port: number | nul
 }
 
 /**
- * Start a host and wait for its ready message. No port in this file is chosen
- * by the test: every host starts on port 0 and reports the port the OS gave
- * it, which is free at the moment it is bound.
+ * Start a host and wait for its ready message. The test picks no port. A host
+ * that binds starts on port 0 and reports the port the OS gave it, which is
+ * free at the moment it is bound. A driver host given no wake port binds
+ * nothing. A replacement worker is the one host started on a port by number:
+ * it takes over the port the OS gave the worker it replaces, because the
+ * driver was told that URL.
  *
  * A port the test picks can already be taken. A fixed port is held by a child
  * that outlived a run which failed partway. A port derived from the process id
  * is held by a second run on the same machine whose id agrees modulo the
  * range. Either way the host dies on "address in use", which is reported here
  * as the host exiting early, and that reads exactly like the engine bug these
- * tests exist to catch. So the helpers below take a started worker, never a
- * number. The one port asked for by number is a replacement worker's: it takes
- * over the port the killed worker reported, because the driver was told that
- * URL.
+ * tests exist to catch. So the helpers below take a started worker and refuse
+ * a bare number.
  */
 function host(script: string, args: string[]): Promise<Host> {
   const child = spawn('node', ['--import', 'tsx', join(ROOT, script), ...args], {
