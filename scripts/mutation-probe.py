@@ -4279,6 +4279,72 @@ MUTATION_SPECS = [
         "emit launders a stored SQL NULL payload into an emitted timeout wake",
     ),
     (
+        # SQLite cannot add NOT NULL to a column that exists, so two triggers hold the payload,
+        # and they hold it only if no statement gets past both. Each is switched off in turn.
+        "libsql-payload-insert-trigger-refuses-null",
+        "packages/store-libsql/src/schema.ts",
+        "       BEFORE INSERT ON events\n"
+        "       WHEN NEW.payload IS NULL\n",
+        "       BEFORE INSERT ON events\n"
+        "       WHEN NEW.payload IS NULL AND 0\n",
+        "an insert stores SQL NULL as an event's payload on libSQL, which a waiter reads as a timeout",
+    ),
+    (
+        "libsql-payload-update-trigger-refuses-null",
+        "packages/store-libsql/src/schema.ts",
+        "       BEFORE UPDATE OF payload ON events\n"
+        "       WHEN NEW.payload IS NULL\n",
+        "       BEFORE UPDATE OF payload ON events\n"
+        "       WHEN NEW.payload IS NULL AND 0\n",
+        "an update stores SQL NULL over an event's payload on libSQL, which a waiter reads as a timeout",
+    ),
+    (
+        "libsql-version-checks-the-payloads-already-stored",
+        "packages/store-libsql/src/schema.ts",
+        "      'UPDATE events SET payload = payload WHERE payload IS NULL',\n",
+        "      'UPDATE events SET payload = payload WHERE payload IS NULL AND 0',\n",
+        "libSQL reaches version 10 over an event that already holds SQL NULL, and its schema then claims what is false",
+    ),
+    (
+        "postgres-payload-is-not-null",
+        "packages/store-postgres/src/schema.ts",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],\n",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload DROP NOT NULL'],\n",
+        "PostgreSQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        "mysql-payload-is-not-null",
+        "packages/store-mysql/src/schema.ts",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL',\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL',\n",
+        "MySQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        # MODIFY restates the whole column, and a migrator that planned from a stale read replays
+        # every version that was pending when it read. The mutant alters whatever the catalog says.
+        "mysql-column-form-acts-only-while-nullable",
+        "packages/store-mysql/src/schema.ts",
+        "AND column_name = '${column}') = 'YES',\n",
+        "AND column_name = '${column}') IS NOT NULL,\n",
+        "a replayed version 10 restates the payload column over what a later version made of it",
+    ),
+    (
+        # Outside a strict mode MySQL does not refuse that change. It stores the column type's
+        # default where the NULL was, and migrate() reports success.
+        "mysql-strict-mode-refuses-a-null-payload",
+        "packages/store-mysql/src/executor.ts",
+        "  sql_mode = 'STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,",
+        "  sql_mode = 'ERROR_FOR_DIVISION_BY_ZERO,",
+        "MySQL makes the payload NOT NULL over a row that holds NULL and stores an empty string there",
+    ),
+    (
+        "event-payload-null-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "    if (event.payload === null) {\n",
+        "    if (event.payload === undefined) {\n",
+        "no sim, scenario or fuzz walk reports an event row that holds SQL NULL",
+    ),
+    (
         "sdk-owned-retry-attempt",
         "packages/sdk/src/run-worker.ts",
         "    const taskControls = createTaskControlScope()\n"
@@ -10709,6 +10775,56 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance a stored SQL NULL event payload is never delivered as a timeout",
         "mutation-verdict:behavior:null-event-payload-never-becomes-timeout",
+    ),
+    "libsql-payload-insert-trigger-refuses-null": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema.test.ts",
+        "an event payload is never SQL NULL refuses SQL NULL through every statement that can write the column",
+        "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
+    ),
+    "libsql-payload-update-trigger-refuses-null": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema.test.ts",
+        "an event payload is never SQL NULL refuses SQL NULL through every statement that can write the column",
+        "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
+    ),
+    "libsql-version-checks-the-payloads-already-stored": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema.test.ts",
+        "an event payload is never SQL NULL stops at the version before over a row that holds NULL, and leaves the row as it was",
+        "mutation-verdict:behavior:libsql-version-refuses-a-null-payload-already-stored",
+    ),
+    "postgres-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [postgres] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [mysql] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-column-form-acts-only-while-nullable": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/real-server.test.ts",
+        "MysqlExecutor against a real server makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone",
+        "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
+    ),
+    "mysql-strict-mode-refuses-a-null-payload": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/migration.test.ts",
+        "a MySQL database where an event already holds SQL NULL stops at the version before, and leaves the column nullable and the row as it was",
+        "mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload",
+    ),
+    "event-payload-null-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
     ),
     "sdk-owned-retry-attempt": ExpectedVerdict(
         "behavior",
@@ -19770,7 +19886,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1037:
+        if len(MUTATIONS) != 1045:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

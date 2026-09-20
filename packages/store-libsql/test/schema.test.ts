@@ -216,7 +216,7 @@ describe('an event payload is never SQL NULL', () => {
       )
       answers[door] = { refusal, events: await events(db) }
     }
-    expect(answers).toEqual(
+    expect(answers, 'mutation-verdict:behavior:libsql-payload-triggers-shut-every-door').toEqual(
       Object.fromEntries(
         Object.keys(DOORS).map((door) => [
           door,
@@ -280,7 +280,10 @@ describe('an event payload is never SQL NULL', () => {
     ])
     await admin.migrate()
 
-    expect({ refusal, stopped, repaired: await observed() }).toEqual({
+    expect(
+      { refusal, stopped, repaired: await observed() },
+      'mutation-verdict:behavior:libsql-version-refuses-a-null-payload-already-stored',
+    ).toEqual({
       refusal: 'SQLITE_CONSTRAINT_TRIGGER: NOT NULL constraint failed: events.payload',
       stopped: { version: 9, events: [{ event_name: 'held-null', payload: null }], triggers: [] },
       repaired: {

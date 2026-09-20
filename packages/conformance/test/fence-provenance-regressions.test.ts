@@ -1511,6 +1511,28 @@ describe('fence provenance', () => {
     }
   })
 
+  it('an event row that holds SQL NULL is an invariant violation, whoever wrote it', async () => {
+    // The schema refuses the write and the port never makes it, so the invariant library's
+    // condition can only be seen firing behind a schema that was tampered with. This is its
+    // positive control: a checker that no test has seen fire checks nothing.
+    const f = await fixture()
+    try {
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_insert')
+      await exec(
+        f.raw,
+        `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+         VALUES (?, 'orphan', NULL, ?)`,
+        [Q, NOW],
+      )
+      expect(
+        await engineInvariantViolations(f.raw),
+        'mutation-verdict:behavior:event-payload-null-is-an-invariant-violation',
+      ).toEqual([`event-payload-null: events/${Q}/orphan`])
+    } finally {
+      await f.close()
+    }
+  })
+
   it('awaitEvent does not park on a wait row it did not register', async () => {
     // The wait insert does nothing on a conflicting (run, step) key, so a
     // pre-existing wait for the SAME run, step and event makes registration

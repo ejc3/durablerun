@@ -467,7 +467,10 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
           ],
           'read',
         )
-        expect({ disposition, payload: stored?.rows[0]?.payload }).toEqual({
+        expect(
+          { disposition, payload: stored?.rows[0]?.payload },
+          'mutation-verdict:behavior:schema-refuses-a-null-event-payload',
+        ).toEqual({
           disposition: 'structurally-rejected',
           payload: '{"kept":1}',
         })

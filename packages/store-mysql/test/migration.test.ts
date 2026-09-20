@@ -486,7 +486,10 @@ describe('a MySQL database where an event already holds SQL NULL', () => {
       ])
       await new MysqlStoreAdmin(db.raw).migrate()
 
-      expect({ refusal, stopped, repaired: await observed(db) }).toEqual({
+      expect(
+        { refusal, stopped, repaired: await observed(db) },
+        'mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload',
+      ).toEqual({
         refusal: 'MySQL error 1138',
         stopped: { version: '9', column: 'YES', held: null },
         repaired: {

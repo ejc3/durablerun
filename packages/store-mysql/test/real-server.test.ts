@@ -361,7 +361,7 @@ describe('MysqlExecutor against a real server', () => {
       await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
       await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
       seen.push(await column())
-      expect(seen).toEqual([
+      expect(seen, 'mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable').toEqual([
         { nullable: 'NO', comment: '' },
         { nullable: 'NO', comment: '' },
         { nullable: 'NO', comment: 'as a later version left it' },

@@ -313,31 +313,6 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def reaim_entry(repaired, candidate, name):
-              # Replace one entry of the base registry with this tree's entry of the same name, for a
-              # mutation whose target line this tree rewrote. Its name must stand, and so must
-              # whatever comment the entry opens with, so only the file, the find, the replacement and
-              # the description move. The file moves when the text a mutant rewrites moved to another
-              # file, as a store's line does when core takes it over. An entry stands at the top of
-              # the list or inside an extension of it, and its name may also stand in the verdict
-              # group that lists it, so the entry is the one whose next line is its file.
-              def span(text):
-                  found = list(re.finditer(
-                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
-                      text,
-                      re.M,
-                  ))
-                  if len(found) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  entry = found[0]
-                  named = entry.end() - len(entry.group('indent') + '    "packages/')
-                  close = '\n' + entry.group('indent') + '),\n'
-                  return entry.start(), named, text.index(close, named) + len(close)
-              start, named, end = span(repaired)
-              new_start, new_named, new_end = span(candidate)
-              if repaired[start:named] != candidate[new_start:new_named]:
-                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -351,39 +326,20 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '280fc3236dcfd909362d06e5074568d158c747d7d2fa5574291a02dd1b865d2e':
-              # The migration lock travels in the batch control, so three base entries follow
-              # their lines. Two bootstrap calls gained the control as a third argument and are
-              # laid out one argument to a line: libSQL's label and MySQL's one-statement list
-              # each stand on a line of their own now, and each entry is the mutant it was.
-              # PostgreSQL's lock on meta left the admin's statement list for the executor, which
-              # sends the same statement in the same place, so the mutant that removed the
-              # statement from the list now removes the executor's send. Eleven mutations are
-              # newer than the base, which has to exempt their markers.
-              repaired = previous
-              for name in (
-                  'text-statement-list-holds-every-raw-batch',
-                  'postgres-migrator-locks-meta-before-its-sentinel',
-                  'mysql-bootstrap-is-one-statement',
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
-              repaired = exempt(
-                  repaired,
-                  candidate,
-                  (
-                      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
-                      'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
-                      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
-                      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
-                      'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat',
-                      'mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved',
-                      'mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress',
-                      'mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before',
-                      'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
-                  ),
-              )
+          if digest == 'a48070b271307b43e31aa59fde6b4cdbdb38385dc6c6cf71bf4d61f9c2c88ca9':
+              # An event's payload is NOT NULL in every dialect's schema from version 10. The
+              # mutations that hold it (libSQL's two triggers and its check of the rows already
+              # there, the two servers' column change, MySQL's guarded form and the strict mode
+              # it refuses under, and the invariant library's condition) are newer than the
+              # base, which has to exempt their verdict markers. No base entry is re-aimed.
+              repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:libsql-payload-triggers-shut-every-door",
+                  "mutation-verdict:behavior:libsql-version-refuses-a-null-payload-already-stored",
+                  "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+                  "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
+                  "mutation-verdict:behavior:mysql-strict-mode-refuses-a-null-payload",
+                  "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
