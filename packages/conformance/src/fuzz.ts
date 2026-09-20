@@ -2,7 +2,6 @@ import {
   ChildAwaitRefusedError,
   type ClaimedRun,
   type FailOutcome,
-  InvalidDurableStringError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -14,11 +13,13 @@ import { Rng } from '@durablerun/harness'
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import { HELD_PLACES, OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
-import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
-
-/** What a call answered when it was not the refusal, without the name that was passed. */
-const describeAnswer = (answer: unknown): string =>
-  answer instanceof Error ? `the port answered ${answer.name}` : `the port ${String(answer)}`
+import {
+  awaitOwned,
+  awaitTaskOwned,
+  checkpointOwned,
+  refusalName,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 
@@ -248,23 +249,19 @@ async function runWalk(
    * holds no claim.
    */
   const passNameThePortRefuses = async (): Promise<void> => {
-    const place = HELD_PLACES[refusedNameRng.int(HELD_PLACES.length)]
-    if (place === undefined) throw new Error('the port holds no string')
-    const names = Object.entries(
-      place.rule === 'identifier' && refusedNameRng.next() < 0.5
-        ? PAST_THE_WIDTH
-        : OUTSIDE_THE_DOMAIN,
+    const place = refusedNameRng.pick(HELD_PLACES)
+    const [what, name] = refusedNameRng.pick(
+      Object.entries(
+        place.rule === 'identifier' && refusedNameRng.next() < 0.5
+          ? PAST_THE_WIDTH
+          : OUTSIDE_THE_DOMAIN,
+      ),
     )
-    const [what, name] = names[refusedNameRng.int(names.length)] ?? []
-    const answer = await place.call(f.store, name).then(
-      () => 'accepted it',
-      (error: unknown) => error,
-    )
-    if (answer instanceof InvalidDurableStringError) {
-      stats.portStringRefusals++
-      return
+    const answer = await refusalName(place.call(f.store, name))
+    if (answer !== 'InvalidDurableStringError') {
+      throw new Error(`${place.place} was passed ${what}, and the port answered: ${answer}`)
     }
-    throw new Error(`${place.place} was passed ${what}, and ${describeAnswer(answer)}`)
+    stats.portStringRefusals++
   }
 
   for (let step = 0; step < steps; step++) {
