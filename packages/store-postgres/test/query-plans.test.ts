@@ -198,10 +198,13 @@ it('reaches tasks by an index condition in every shipped task update', async () 
  * under the database's collation, and under a linguistic one the names that begin
  * `$started:` are not the range from `$started:` to `$started;` (DESIGN.md §3.4). An
  * index that holds only saga names would make the read one seek, and BUILD.md records it
- * with its measurement and what would call for it. What this holds: the walk is keyed by
- * the task. No checkpoint name is ordered or compared by order: not in an index
- * condition, where the plan shows it, and not elsewhere in the statement, where the text
- * is read for it, because an ORDER BY that the key's own order serves shows in no plan.
+ * with its measurement and what would call for it. What this holds, of the statements
+ * that read checkpoints under one of the four saga aliases: the walk is keyed by the
+ * task. No checkpoint name is ordered or compared by order: not in an index condition,
+ * where the plan shows it, and not in a spelling of the statement's text that the table
+ * of controls below says is read. The text is read because an ORDER BY that the key's own
+ * order serves shows in no plan. It is a check of spellings, and the table lists the ones
+ * it misses.
  * And the attempt records are not read at all for a task whose saga never began, which
  * is every read of a plain task's result, nor for one that a cancellation ended. They
  * are read for every other failed task whose saga began.
@@ -259,42 +262,79 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
      * What a statement's text says of a checkpoint name's order. An ORDER BY on a name that
      * the key's own order serves plans with no sort, and a comparison outside the index
      * condition is a filter like any other, so no line of a plan shows either. This reads
-     * text, so it sees these spellings and no other.
+     * text, so it sees spellings: the table of controls below says which it refuses, which
+     * it passes and which it misses. An operator is a whole run of operator characters, so
+     * `->>`, `@>` and `<>` beside a name are no comparison by order, and an ORDER BY is read
+     * up to the clause that ends it, so a name mentioned after it is not ordered by it.
      */
+    const OPERATOR = '[-+*/<>=~!@#%^&|]'
+    const BY_ORDER = `(?<!${OPERATOR})(?:<=|>=|<|>)(?!${OPERATOR})`
+    const ENDS_AN_ORDER_BY =
+      'limit|offset|fetch|for|returning|union|intersect|except|on\\s+conflict'
     const ordersAName = (sql: string) =>
       [
-        ...sql.matchAll(/\border\s+by\b[^)]*?\bcheckpoint_name\b/gi),
-        ...sql.matchAll(/\bcheckpoint_name"?\s*(?:<=|>=|<(?!>)|(?<![-<])>|between\b)/gi),
-        ...sql.matchAll(/(?:<=|>=|<(?!>)|(?<![-<])>)\s*(?:"?\w+"?\.)?"?checkpoint_name\b/gi),
-      ].map((found) => `its text orders a name: ${found[0].replace(/\s+/g, ' ')}`)
+        `\\border\\s+by\\b(?:(?!\\b(?:${ENDS_AN_ORDER_BY})\\b)[^)])*?\\bcheckpoint_name\\b`,
+        `\\bcheckpoint_name"?\\s*(?:${BY_ORDER}|(?:not\\s+)?between\\b)`,
+        `${BY_ORDER}\\s*(?:"?\\w+"?\\.)?"?checkpoint_name\\b`,
+      ]
+        .flatMap((spelling) => [...sql.matchAll(new RegExp(spelling, 'gi'))])
+        .map((found) => `its text orders a name: ${found[0].replace(/\s+/g, ' ')}`)
     const faultsOf = async (sql: string) => [
       ...notKeyed(await planLines(client, sql)),
       ...ordersAName(sql),
     ]
-    // Each check can say no. The plan cannot say it of an ORDER BY, because the key's own
-    // order serves one with no sort, and that is why the text is read.
+    // Each check can say no, and this table says what each one sees. The plan cannot see an
+    // ORDER BY, because the key's own order serves one with no sort, and that is why the
+    // text is read. The text check refuses the first group. It passes the second, where an
+    // operator beside a name is no comparison by order and an ORDER BY ends before a later
+    // mention of the name. It misses the third, each of which orders a name or compares one
+    // by order, so no test catches a change that writes one.
+    const TRIES =
+      "SELECT st.state FROM checkpoints st WHERE st.task_id = ? AND substr(st.checkpoint_name, 1, 16) = '$rollback-tries:'"
     const UNBOUND =
       "SELECT 1 FROM checkpoints ss WHERE substr(ss.checkpoint_name, 1, 9) = '$started:'"
     const RANGED =
       "SELECT 1 FROM checkpoints ss WHERE ss.task_id = ? AND ss.checkpoint_name >= '$started:' AND ss.checkpoint_name < '$started;'"
-    const ORDERED =
-      "SELECT st.state FROM checkpoints st WHERE st.task_id = ? AND substr(st.checkpoint_name, 1, 16) = '$rollback-tries:' ORDER BY st.checkpoint_name LIMIT 1"
-    const EQUAL =
-      "SELECT 1 FROM checkpoints sr WHERE sr.task_id = ? AND sr.checkpoint_name = ? AND sr.checkpoint_name <> '$rolling-back'"
+    const ORDERED = `${TRIES} ORDER BY st.checkpoint_name LIMIT 1`
+    const text: Record<'refuses' | 'passes' | 'misses', Record<string, string>> = {
+      refuses: {
+        ranged: RANGED,
+        ordered: ORDERED,
+        reversed: `${TRIES} AND '$rollback-tries:' <= st.checkpoint_name`,
+        notBetween: `${TRIES} AND st.checkpoint_name NOT BETWEEN '$rollback-tries:' AND '$rollback-tries;'`,
+      },
+      passes: {
+        equal:
+          "SELECT 1 FROM checkpoints sr WHERE sr.task_id = ? AND sr.checkpoint_name = ? AND sr.checkpoint_name <> '$rolling-back'",
+        jsonArrows:
+          'SELECT st.state::jsonb ->> st.checkpoint_name FROM checkpoints st WHERE st.task_id = ? AND st.state::jsonb @> st.checkpoint_name::jsonb',
+        upsertAfterAnOrderBy:
+          "INSERT INTO checkpoints (task_id, checkpoint_name) SELECT st.task_id, '$x' FROM checkpoints st WHERE st.task_id = ? ORDER BY st.owner_attempt DESC LIMIT 1 ON CONFLICT (task_id, checkpoint_name) DO NOTHING",
+      },
+      misses: {
+        orderedBehindAParenthesis: `${TRIES} ORDER BY (st.owner_attempt), st.checkpoint_name LIMIT 1`,
+        rowComparison: `${TRIES} AND (st.task_id, st.checkpoint_name) >= (st.task_id, '$rollback-tries:')`,
+        collated: `${TRIES} AND st.checkpoint_name COLLATE "und-x-icu" < '~'`,
+        least: 'SELECT MIN(st.checkpoint_name) FROM checkpoints st WHERE st.task_id = ?',
+      },
+    }
+    const seenByTheText = (group: Record<string, string>) =>
+      Object.entries(group).flatMap(([name, sql]) => (ordersAName(sql).length > 0 ? [name] : []))
     expect({
-      unboundInThePlan: notKeyed(await planLines(client, UNBOUND)).length,
-      rangedInThePlan: notKeyed(await planLines(client, RANGED)).length,
-      rangedInTheText: ordersAName(RANGED).length,
-      orderedInThePlan: notKeyed(await planLines(client, ORDERED)).length,
-      orderedInTheText: ordersAName(ORDERED).length,
-      equalInTheText: ordersAName(EQUAL).length,
+      planRefuses: {
+        unbound: notKeyed(await planLines(client, UNBOUND)).length,
+        ranged: notKeyed(await planLines(client, RANGED)).length,
+      },
+      planCannotSee: { ordered: notKeyed(await planLines(client, ORDERED)).length },
+      textRefuses: seenByTheText(text.refuses),
+      textPasses: seenByTheText(text.passes),
+      textMisses: seenByTheText(text.misses),
     }).toEqual({
-      unboundInThePlan: 1,
-      rangedInThePlan: 1,
-      rangedInTheText: 2,
-      orderedInThePlan: 0,
-      orderedInTheText: 1,
-      equalInTheText: 0,
+      planRefuses: { unbound: 1, ranged: 1 },
+      planCannotSee: { ordered: 0 },
+      textRefuses: ['ranged', 'ordered', 'reversed', 'notBetween'],
+      textPasses: [],
+      textMisses: [],
     })
     const faults: string[] = []
     const reached = new Set<string>()
