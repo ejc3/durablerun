@@ -1784,7 +1784,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR3.4b saga reads and results**: DONE. Three findings of the saga review
   that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,
-  findings 10 to 12).
+  findings 10 to 12). Its own review round is
+  `postmortems/pr3.4b-saga-reads-review.md`.
   - The rollback error named the wrong rollback. It was the latest attempt
     record of any step not rolled back, so a rollback that failed with budget
     left was read as the halt when a cancellation or a capped failure ended
