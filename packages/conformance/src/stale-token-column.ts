@@ -175,10 +175,14 @@ const refusalOf = (form: CallForm): Outcome =>
  * The callers that do not hold the claim, for each part of it, given the caller that does.
  * Each names only what it presents in place of the holder's, so the claim presented is
  * the one difference between a stale call and the holder's. They are chosen against what
- * a statement can spell. The statement grammar lists no function, so a comparison that
- * folds the token's case or reads part of it cannot be written. An ordering comparison
- * can, and it admits every value on one side of the claim's, so each part is presented
- * from both sides, as near as a value can stand.
+ * a statement can spell. The statement grammar is closed over node kinds and lists one
+ * function, `coalesce`, so a comparison that folds the token's case or reads part of it
+ * through a function cannot be written. It holds no list of operators, so an ordering
+ * comparison and a pattern match both can. An ordering comparison admits every value on
+ * one side of the claim's, so each part is presented from both sides, as near as a value
+ * can stand. A pattern match reads the caller's token as a pattern, and SQLite's folds
+ * ASCII case, so the token is also presented as the pattern that matches every token,
+ * with its last character as the wildcard for one character, and in upper case.
  */
 const STALE_CALLERS: Record<
   ClaimPart,
@@ -189,8 +193,14 @@ const STALE_CALLERS: Record<
       token: holder.token.slice(0, -1),
     },
     'the token of this claim with a character added': { token: `${holder.token}~` },
+    // A pattern match reads each of the next three as the claim's token. Equality reads none.
+    'the pattern that matches every token': { token: '%' },
+    'the token of this claim with its last character as a wildcard': {
+      token: `${holder.token.slice(0, -1)}_`,
+    },
+    'the token of this claim in upper case': { token: holder.token.toUpperCase() },
     // A comparison that asks whether any run is held under the token, and not whether
-    // this run is, refuses the two callers above and admits this one.
+    // this run is, refuses every caller above and admits this one.
     'the token of another live claim': { token: POISON_INVOCATION.token },
   }),
   generation: (holder) => ({

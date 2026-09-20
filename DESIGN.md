@@ -2095,13 +2095,21 @@ not depend on careful reading:
   outside the rolling-back phase, the refusal and the unchanged rows held with
   the token unfenced, and the case failed only at the holder's call. The
   stale callers are chosen against what a statement can spell. The statement
-  grammar lists no function, so a comparison that folds the token's case or
-  reads part of it cannot be written: a call of `lower` is refused when the
-  batch is built. An ordering comparison can be written, and it admits every
-  value on one side of the claim's: with `<=` in place of `=` in the shared
-  claim predicate, a column that presented two arbitrary tokens stayed green.
-  So the token is presented with its last character dropped and with one
-  added, beside the token of another live claim in the queue, which a
+  grammar is closed over node kinds and lists one function, `coalesce`, so a
+  comparison that folds the token's case or reads part of it through a
+  function cannot be written: a call of `lower` is refused when the batch is
+  built. The grammar holds no list of operators, so an ordering comparison
+  and a pattern match can both be written. An ordering comparison admits
+  every value on one side of the claim's: with `<=` in place of `=` in the
+  shared claim predicate, a column that presented two arbitrary tokens stayed
+  green. So the token is presented with its last character dropped and with
+  one added. A pattern match reads the caller's token as a pattern: with
+  `like` in place of `=` the batch builds, and a column with no pattern
+  among its callers stayed green, 17 of 17, on all three dialects. So the
+  token is also presented as `%`, which matches every token, with its last
+  character as `_`, and in upper case, which SQLite's `like` folds. A
+  registered mutation makes that edit, and the `complete` case owns it.
+  Beside these stands the token of another live claim in the queue, which a
   comparison that asks whether any run holds the token would admit. A
   receipt's generation is presented from the claim before and from a claim
   not yet made. The lease sweeps present no token and act on the claim their
