@@ -1,12 +1,13 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
-import type {
-  PersistedNumericTable,
-  StorageCorruption,
-  StorageCorruptionAttempt,
-  StoreFixture,
-  StoreFixtureOptions,
+import {
+  type PersistedNumericTable,
+  type StorageCorruption,
+  type StorageCorruptionAttempt,
+  type StoreFixture,
+  type StoreFixtureOptions,
+  unboundedOverWidthAttempt,
 } from '../src/index.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
@@ -29,6 +30,9 @@ function persistedIntegerCatalogStatements(tables: readonly PersistedNumericTabl
 }
 
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'over-width') {
+    return unboundedOverWidthAttempt(corruption)
+  }
   const fractionalValue =
     corruption.column === 'max_attempts' ||
     corruption.column === 'attempt' ||

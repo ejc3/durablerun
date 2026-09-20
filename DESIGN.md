@@ -1810,10 +1810,13 @@ are load-bearing):
      longer be woken by an emit.
    - A task in a longer queue is out of the port's reach, because claim,
      sweep, read, and cancel all refuse its queue, until its rows are renamed
-     in SQL. Nothing detects such rows: no invariant and no admin check reads
-     the length of a name.
+     in SQL. The invariant library reports each such row, and any other stored
+     name past the width, as `identifier-over-width`. That is a check of the
+     table snapshots that tests, sims, and fuzz walks read. It is not an admin
+     check: nothing reads the length of a name in a production database, and
+     no command lists such rows.
 
-   Three things hold this. The `identifier-bound` conformance surface runs on
+   This is what holds it. The `identifier-bound` conformance surface runs on
    every dialect: a table typed by the port, so a method without an entry does
    not compile, with a call for each place an identifier enters each method,
    refused before anything is sent; the code point count; each derived name at
@@ -1822,7 +1825,28 @@ are load-bearing):
    `packages/sdk/test/identifier-width.test.ts` runs on libSQL and PostgreSQL:
    each SDK key one past its room fails its task on the first pass, and the
    task and the saga in flight finish. Two cases in `legacy-rows.test.ts` hold
-   the readable row and the unreachable queue at the port.
+   the readable row and the unreachable queue at the port, and the violations
+   the invariant library reports for exactly those rows. The
+   replay-equivalence harness runs every generated call that passes a name
+   with a name one character under its room, at its room, and one past it,
+   each room computed from the width and what the engine adds to the name:
+   under and at its room a program replays like any other, and past it the
+   task fails for good before the body runs, and the SDK then makes no store
+   call but the one that records the failure. That harness and the table case
+   of `identifier-width.test.ts` take every length from one table of what the
+   engine adds to a name, `packages/sdk/test/name-rooms.ts`. The invariant
+   library's `identifier/over-width` condition is this rule's executable twin
+   on libSQL and PostgreSQL, whose columns do not bound a name. It reads every
+   identifier column of the six table snapshots, counted with core's function.
+   Its inventory of columns is described with the invariant library, below.
+   The operation fuzz passes the port names one character past the width,
+   drawn from a random stream of its own so that no other op's draws move, and
+   leaves an accepted one for the condition to report at the walk's next
+   check. It is the one op that builds a name that long, so it is what lets
+   the condition fail in a walk. Two registered mutations keep the audit checking
+   that these two generated surfaces can fail: one of the SDK's hold names the
+   harness as the test that catches it, and one of a store entry's hold names
+   a pinned case of eight such walks.
 
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
@@ -1973,7 +1997,7 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 113 typed condition IDs for every semantic arm. The eight durable
+  one of 115 typed condition IDs for every semantic arm. The eight durable
   counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
@@ -1993,11 +2017,18 @@ not depend on careful reading:
   dialect-owned—libSQL projects real `PRAGMA table_info` rows—but the shared
   runner executes, validates, and compares the evidence.
   Snapshot results are assembled by each projection's declared table key,
-  never by a second hard-coded positional table list.
+  never by a second hard-coded positional table list. One identifier inventory,
+  `IDENTIFIER_COLUMNS`, names every column of those tables that holds a durable
+  identifier (§3.4 rule 10): it selects them into the snapshot, the `identifier/over-width`
+  condition reads each, one checker case plants a name past the width in
+  every one, and a test holds every VARCHAR column of MySQL's schema, by name
+  and width, to that inventory or to a short named list of bounded columns
+  that are not identifiers. The test's reader refuses a migration statement
+  that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 19 classified
-  write labels with 145 corrupt-state witnesses covering that exact
-  condition inventory: 2,755 generated cells,
+  keep the poison matrix complete. The poison surface crosses the 21 classified
+  write labels with 146 corrupt-state witnesses covering that exact
+  condition inventory: 3,066 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state
@@ -2154,7 +2185,7 @@ Dialect implementations:
 | Concern | Turso/libSQL | MySQL 8 | Postgres |
 |---|---|---|---|
 | claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; the shared claim `UPDATE`, its candidates a derived table of one `FOR UPDATE SKIP LOCKED` leg per state; no RETURNING, so the receipt is the batch's own read by token | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
-| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
+| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | a transaction at READ COMMITTED for every write batch, and for every read batch but one: a single read the executor knows to be a read is sent alone under autocommit (the 20s PlanetScale cap is ample for a claim of a few statements) | the same split: a transaction for every batch but a single read the executor knows to be a read |
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
@@ -2203,7 +2234,11 @@ realized in the store's compiler, executor, fragments, or schema:
   all, the second claim waits for the first's row locks, re-checks only the id
   list, and overwrites the first claim. Each state is therefore its own
   index-ordered `FOR UPDATE SKIP LOCKED` leg, which locked exactly the runs it
-  returned.
+  returned. Each leg names its index, because the plan the server picks for
+  itself moves with its statistics: over forty due runs that are the whole of
+  a freshly counted table, a leg with no hint is a table scan and a sort,
+  which locked all forty for a claim of two. `query-plans.test.ts` holds the
+  limit and the hint, each with a registered mutation.
 - **Rows written.** MySQL reports rows changed, where the port means rows
   matched, and counts an upsert that updated as two. The executor runs without
   `CLIENT_FOUND_ROWS`, so an upsert whose conflict arm changes nothing reports
@@ -2220,6 +2255,69 @@ realized in the store's compiler, executor, fragments, or schema:
   the same reason, a pool handed to `fromPool` must not have its session state
   changed by anything else that uses it: the store does not send the settings
   again.
+- **One read that the executor knows to be a read is sent alone.** A
+  transaction around one statement cost a read batch three more round trips,
+  because two statements begin it. The session has autocommit on, which the
+  store sets with its other session settings, so the server commits a
+  statement sent alone by itself. Seven of the store's eight tree-built read
+  batches hold one statement, the next-wake read of every driver tick and the
+  read that tells a refused worker write why among them. What the transaction
+  gave such a read still holds, each part checked against a server:
+  - *The executor knows, and does not guess.* Core brands what `readTree` and
+    `readPrepared` compile (`isTreeBuiltRead`). Both refuse a root that is not
+    a SELECT, inside a grammar whose functions are a closed list, so through
+    nodes such a statement writes nothing. The executor asks that of the
+    statement it receives, and of nothing else, apart from the canonical
+    schema-version read, which it matches by its whole text. How a statement's
+    text begins shows nothing, because a text that begins with SELECT can call
+    what writes. A read sent as text therefore keeps the read-only
+    transaction, so the server still refuses a write sent as a read, which a
+    server test holds.
+  - *What the brand does not say.* It says where a statement came from, and
+    not what a store's own fragment holds, because core reads a fragment for
+    clocks and comments only. A fragment can hold a second statement. MySQL
+    takes one statement in a text unless a connection asked for more, and a
+    pool the store opens never does. A pool handed to `fromPool` that does is
+    outside what was checked. A fragment can also call a function that
+    writes, and once the read goes alone nothing refuses that. No read of the
+    stores calls one, and BUILD.md records the option.
+  - *The snapshot.* Under READ COMMITTED one statement reads through one view,
+    its subqueries included: a statement that counts a table, sleeps, and
+    counts it again answered with one count while another session committed a
+    row during the sleep, where two statements of one READ COMMITTED
+    transaction answered with two counts. A read batch of more than one
+    statement keeps its consistent snapshot.
+  - *The schema-version read* needs READ COMMITTED with no snapshot taken
+    ahead of it (rule 9). One statement sent alone under the session's READ
+    COMMITTED is exactly that, so the executor has no transaction of its own
+    for it, and the migrator races of the shared suite hold it as before.
+  - *The session settings* are sent once for each physical connection and
+    never reset, as above. Autocommit is one of them, and a unit case holds
+    it: with autocommit off, a read sent alone would open a transaction that
+    stays open on the pooled connection it returns.
+
+  **A write always keeps its transaction.** The transaction is what rolls a
+  write back when MySQL cut a value to fit, or when the executor refuses its
+  result, and the executor learns of either only after the server has run the
+  statement. Nothing about a statement's text or binds shows that neither
+  will happen: MySQL cuts a trailing tab or line break with a note as it cuts
+  a space, in a bind sent as bytes or a literal in the text as in a bound
+  string. On a server, a single write of a key of 255 characters and a tab is
+  refused with nothing written. The only single writes the store sends are
+  `expire-lease-now` and the two test clock writes.
+
+  Counted where the executor sends them, and pinned against a server by
+  `round-trips.test.ts`: the next-wake read, the task result, and the
+  schema-version read each went from four queries to one, and a refused
+  heartbeat from seven to four, because its second batch is the prepared read
+  of why it was refused. `expire-lease-now` stays at three. Measured on
+  loopback against main, medians of interleaved rounds on one shared machine:
+  next-wake went from 345 to 156 microseconds a call, the task result from
+  301 to 119, and a refused heartbeat from 755 to 523. A held heartbeat, which
+  is two statements, did not move. Neither did one idle driver tick, 4218
+  microseconds against 4235 in the same run. A claim with nothing to claim is
+  most of a tick, 3.3 of 4.7 milliseconds in a second run of the same kind,
+  and the next-wake read's saving is a twentieth of it.
 - **A write with no index to find its rows locks every row it scans**, under
   READ COMMITTED too, and waits on rows other transactions hold. The driver
   registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats
@@ -2305,6 +2403,58 @@ realized in the store's compiler, executor, fragments, or schema:
   325 lines sagas added to the PostgreSQL store are in this one verbatim, and
   so are 64 of the 67 lines of saga fragments. That one operator is why the
   saga fragments stay in the stores and are not hoisted into core.
+
+**PostgreSQL sends one read alone too, when the executor knows it for a
+read**, outside a transaction block, where the server runs it in a
+transaction of its own: one query where `BEGIN`, the statement, and `COMMIT`
+were three. The same parts, in the same order:
+
+- *The executor knows, and does not guess.* It asks `isTreeBuiltRead` of the
+  statement it receives, as MySQL's does. A text that begins with SELECT can
+  call `nextval`, and the simple query protocol runs `SELECT 1; DELETE ...`
+  whole, so a read sent as text keeps the read-only transaction. A server
+  test holds that a DELETE, a SELECT that names INTO, and a DELETE sent behind
+  a SELECT are each refused with nothing changed.
+- *One statement, whatever the text holds.* The brand says nothing of a
+  store's own fragment, and the simple query protocol, which the driver
+  chooses for a statement with no bind, runs every statement of its text. The
+  review of this rule ran a branded read whose fragment held a DELETE: sent
+  alone it ran, where the same text sent as a read was refused. A read sent
+  alone therefore goes through the extended protocol, which takes one
+  statement and refuses a second, and a server test holds that the DELETE is
+  refused and the row kept. It is parse, bind, execute and sync in one flush.
+  Over loopback a statement with no bind cost 61 microseconds that way against
+  57, and the driver already chose that protocol for every statement with a
+  bind, which every read of the stores has, so no pinned count and no timing
+  moved. What nothing refuses is a fragment that calls a function that writes.
+- *The snapshot.* One statement reads through one snapshot, its subqueries
+  included, at any isolation level, measured the way MySQL's was. Sent alone
+  it runs at the session's default level, which belongs to whoever owns the
+  pool, where the transaction asked for REPEATABLE READ by name. Under READ
+  COMMITTED the server takes the snapshot after the statement has resolved
+  its names and waited for its locks, where REPEATABLE READ took it before
+  them, which `postgres-bootstrap-window.test.ts` shows on a server. It is
+  one snapshot either way. Under a pool whose default is SERIALIZABLE the
+  read runs at that level, and a serialization failure there is reported as
+  an outage and not run again, so the owner of a pool leaves its default at
+  READ COMMITTED or REPEATABLE READ.
+- *The schema-version read* is text, so it keeps its transaction, and with it
+  the READ COMMITTED that rule 9 needs.
+
+**A write always keeps its transaction**, as on MySQL. The transaction is what
+rolls a write back when the executor refuses its result, which it learns only
+after the server has run the statement: on a server, a single UPDATE whose
+RETURNING the executor refuses leaves the row as it was. A statement such as
+LOCK TABLE needs the block as well.
+
+Counted the same way, and pinned by the store's `round-trips.test.ts`: the
+next-wake read and the task result each went from three queries to one, and a
+refused heartbeat from six to four. `expire-lease-now` stays at three, and a
+held heartbeat at four, because it is two statements. Measured against main as
+MySQL was: the task result went from 695 to 521 microseconds a call, a refused
+heartbeat from 1113 to 981, and next-wake from 1252 to 1139, where the
+statement itself is most of the call. A held heartbeat and an idle driver tick
+did not move.
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
 `events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot

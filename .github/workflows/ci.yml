@@ -310,7 +310,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8ac91bb84a232d3845e2d754d142399ef65ea6bf3353c3e55b57acc40c5dc832':
+          if digest == 'a524df16911b144e36ff7adb1ea34e1134b65e69b2afe242c589eef2a2a56529':
               # The saga reads changed shape. A rollback error is the record the task's last
               # run wrote, the names under a prefix are a range of the checkpoints key on
               # libSQL and MySQL, and on PostgreSQL the attempt records are read only for a
