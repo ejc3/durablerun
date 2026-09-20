@@ -2545,7 +2545,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     its keys through `runs_stamp`, the index of a run's statement stamp that
     schema version 8 adds on MySQL, and the compiler refuses a keyed delete
     whose keys are anything but a generated selection of one plain table fenced
-    on its stamp. libSQL and PostgreSQL hold an empty version 8. `SKIP LOCKED`
+    on its stamp. libSQL and PostgreSQL hold an empty version 8. A fresh
+    database's `migrate()` takes 0.1 ms longer on libSQL, about 1 ms on
+    PostgreSQL and about 6 ms on MySQL, at the median of 80 fresh databases a
+    tree on main's build and on this one. `SKIP LOCKED`
     in the key source held the same contests at zero and was not taken: InnoDB
     skips by index record, and a transaction skipped a row it had stamped
     itself when another held that row's entry in the index the keys were read

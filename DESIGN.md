@@ -2710,7 +2710,11 @@ realized in the store's compiler, executor, fragments, or schema:
   0.43 MB for the 10,000 runs. libSQL and PostgreSQL hold an empty version 8,
   so the three dialects keep one numbering. Neither has the defect. On
   PostgreSQL an indexed `fence_stamp` would end heap-only updates for every
-  stamped write, so it needs a measurement before anyone adds it.
+  stamped write, so it needs a measurement before anyone adds it. A fresh
+  database pays for version 8 once: at the median of 80 fresh databases a
+  tree, `migrate()` took 3.1 ms against 3.0 on libSQL, 46.0 against 44.7 on
+  PostgreSQL, where the empty version is one more batch under the runner's
+  lock, and 35.6 against 29.5 on MySQL, where it builds the index.
 - **Version 8 on a live MySQL database.** It is one `CREATE INDEX`, in the form
   that is safe to repeat, under the named lock every MySQL migration takes, so
   racing migrators run one after another and the second finds the index there.
