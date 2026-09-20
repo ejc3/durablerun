@@ -205,8 +205,19 @@ describe('the numbers MySQL files apart from what their names say', () => {
   /** A name that says the statement's own value or row was refused. */
   const SAYS_A_REFUSED_VALUE =
     /CONSTRAINT|NO_DEFAULT|TRUNCAT|WRONG_VALUE|BAD_NULL|OUT_OF_RANGE|DUP_ENTRY|DIVISION_BY_ZERO|DATA_TOO_LONG|NOT_NULL/
+  /** What a reason below says the store's schema lacks. The last case reads each one. */
+  type SchemaFact =
+    | 'views'
+    | 'autoIncrementColumns'
+    | 'temporalColumns'
+    | 'functionalKeyParts'
+    | 'storedPrograms'
   /** Why a number whose name says so is still not typed permanent, by what its name says. */
-  const NOT_A_REFUSED_WRITE_OF_THE_STORE: readonly (readonly [RegExp, string])[] = [
+  const NOT_A_REFUSED_WRITE_OF_THE_STORE: readonly (readonly [
+    names: RegExp,
+    reason: string,
+    restsOn?: SchemaFact,
+  ])[] = [
     [
       /^ER_WRONG_VALUE_COUNT/,
       'a statement whose column count is wrong, SQLSTATE class 21, which stays an outage by a recorded decision (BUILD.md, PR2.5a)',
@@ -219,22 +230,36 @@ describe('the numbers MySQL files apart from what their names say', () => {
       /REPLICA_|SOURCE_|RPL_|GTID|WRONG_VALUE_FOR_VAR/,
       'a replication or server setting, which no statement of the store sets',
     ],
-    [/^ER_(LH_|LOAD_BULK_DATA)/, 'bulk load, which the store does not use'],
+    [/^ER_(LH_|LOAD_BULK_DATA)/, 'a bulk load, and the store sends no LOAD DATA statement'],
     [
       /^ER_WRONG_VALUE(_FOR_TYPE)?$/,
-      'an argument a function or an administrative statement refuses: the store binds values to columns, which answers 1366 or a class 22 number',
+      'an argument a function or an administrative statement refuses: the store binds values to columns, which answers 1366 or a class 22 number. 1525 also answers a DATE column compared with text that is no date, and the store has no temporal column',
+      'temporalColumns',
     ],
-    [/^ER_NO_DEFAULT_FOR_VIEW_FIELD$/, 'an insert through a view, and the store has no view'],
-    [/^ER_DUP_ENTRY_AUTOINCREMENT_CASE$/, 'no table of the store has an auto-increment column'],
+    [
+      /^ER_NO_DEFAULT_FOR_VIEW_FIELD$/,
+      'an insert through a view, and the store has no view',
+      'views',
+    ],
+    [
+      /^ER_DUP_ENTRY_AUTOINCREMENT_CASE$/,
+      'no table of the store has an auto-increment column',
+      'autoIncrementColumns',
+    ],
     [
       /^WARN_COND_ITEM_TRUNCATED$/,
-      "a SIGNAL statement's condition item, and the store has no stored program",
+      "a SIGNAL statement's condition item: the store sends no SIGNAL, and has no stored program that could",
+      'storedPrograms',
     ],
     [/^ER_STD_OUT_OF_RANGE_ERROR$/, 'an exception inside the server, not a refusal of a value'],
-    [/^ER_WARN_DATA_TRUNCATED_FUNCTIONAL_INDEX$/, 'the store has no functional index'],
+    [
+      /^ER_WARN_DATA_TRUNCATED_FUNCTIONAL_INDEX$/,
+      'the store has no functional index',
+      'functionalKeyParts',
+    ],
     [
       /^ER_VALUE_OUT_OF_RANGE$/,
-      "the server's list does not say what it refuses, and no statement of the store has met it: a number nobody understands stays an outage, which is the map's rule",
+      "a setting outside its valid range, which the server clamps (its message file: '%s=%llu is outside the valid range [%llu,%llu]. %llu will be used.'), and no statement of the store sets one",
     ],
   ]
 
@@ -271,5 +296,53 @@ describe('the numbers MySQL files apart from what their names say', () => {
       leftAnOutageWithNoOneReason: [],
       reasonsThatExplainNothing: [],
     })
+  })
+
+  /**
+   * A reason that rests on what the store's schema lacks is only as true as the schema. The
+   * facts are read here from a migrated database, so a migration that adds a view, say, fails
+   * this case until its reason is looked at again. A reason about which STATEMENTS the store
+   * sends, a bulk load or a SIGNAL, is held by no read.
+   */
+  it('reads from a migrated database what the reasons above say its schema lacks', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'schema-facts' })
+    try {
+      const [read] = await db.raw.batch(
+        'fixture:schema-facts',
+        [
+          {
+            sql: `SELECT
+              (SELECT COUNT(*) FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE') AS baseTables,
+              (SELECT COUNT(*) FROM information_schema.VIEWS
+                WHERE TABLE_SCHEMA = DATABASE()) AS views,
+              (SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND EXTRA LIKE '%auto_increment%') AS autoIncrementColumns,
+              (SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND DATA_TYPE IN ('date', 'datetime', 'timestamp', 'time', 'year')) AS temporalColumns,
+              (SELECT COUNT(*) FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE() AND EXPRESSION IS NOT NULL) AS functionalKeyParts,
+              (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE())
+                + (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE())
+                + (SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA = DATABASE())
+                AS storedPrograms`,
+            args: [],
+          },
+        ],
+        'read',
+      )
+      const counted = (fact: string): number => Number(read?.rows[0]?.[fact])
+      expect(counted('baseTables'), 'the read saw the migrated schema').toBeGreaterThan(3)
+      const restedOn = NOT_A_REFUSED_WRITE_OF_THE_STORE.flatMap(([, , fact]) =>
+        fact === undefined ? [] : [fact],
+      )
+      expect(new Set(restedOn).size, 'the reasons name the facts this case reads').toBe(5)
+      expect(Object.fromEntries(restedOn.map((fact) => [fact, counted(fact)]))).toEqual(
+        Object.fromEntries(restedOn.map((fact) => [fact, 0])),
+      )
+    } finally {
+      await db.close()
+    }
   })
 })
