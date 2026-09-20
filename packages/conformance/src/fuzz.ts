@@ -1,6 +1,7 @@
 import {
   ChildAwaitRefusedError,
   type ClaimedRun,
+  type FailOutcome,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -179,8 +180,9 @@ async function runWalk(
       const halts = kind >= 0.7
       // Each attempt's failure is its own, so a result that names another attempt's is seen.
       const errorJson = JSON.stringify({ name: 'FuzzRollbackBoom', step, tries })
-      const failed = await countIfHeld('rollbackFailures', () =>
-        f.store.failRollback(
+      const answered: { outcome?: FailOutcome } = {}
+      const failed = await countIfHeld('rollbackFailures', async () => {
+        answered.outcome = await f.store.failRollback(
           Q,
           run.runId,
           run.claimToken,
@@ -190,10 +192,12 @@ async function runWalk(
             key: `${SAGA_TRIES_PREFIX}${step}`,
             stateJson: encodeRollbackTry({ tries, errorJson }),
           },
-        ),
-      )
+        )
+      })
       if (failed) saga.tries.set(step, tries)
-      if (failed && halts) {
+      // The store says whether the failure ended the task. A pass it could not place ends
+      // the task as a failure with no retry does, whatever this walk asked for.
+      if (failed && answered.outcome?.rollingBack === false) {
         stats.sagasEnded++
         rolling.delete(run.taskId)
         haltedBy.set(run.taskId, errorJson)
@@ -522,7 +526,8 @@ async function runWalk(
   // exactly when a rollback's failure ended the task, and the error is that rollback's. An
   // attempt that failed with budget left, in a saga that something else then halted, is
   // not it, and no row invariant can say so, because the error is derived when it is read.
-  for (const taskId of sagas.keys()) {
+  // Every task the walk spawned is read, so a plain task is held to naming none.
+  for (const taskId of new Set(knownTasks)) {
     const named = (await f.store.getTaskResult(Q, taskId))?.rollback?.errorJson
     if (named !== haltedBy.get(taskId)) {
       throw new Error(
