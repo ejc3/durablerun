@@ -8,7 +8,10 @@ import {
   type SqlExecutor,
   type SqlResult,
 } from '@durablerun/core'
-import { MIGRATIONS as MYSQL_MIGRATIONS } from '@durablerun/store-mysql'
+import {
+  META_TABLE_SQL as MYSQL_META_TABLE_SQL,
+  MIGRATIONS as MYSQL_MIGRATIONS,
+} from '@durablerun/store-mysql'
 import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../src/fuzz.js'
 import {
@@ -22,8 +25,11 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
 /**
  * Every column a migration list types as VARCHAR, and its width. MySQL is the one dialect
  * whose schema bounds a durable identifier, so its migrations say which columns hold one.
- * Any `name VARCHAR(n)` in a CREATE TABLE or an ALTER TABLE is read, however it is laid out,
- * so a column cannot be missed, and text that is read and is no column fails the pin loudly.
+ * Any `name VARCHAR(n)` in a statement that starts with CREATE TABLE or ALTER TABLE is read,
+ * however it is laid out. A statement that types a VARCHAR this reader did not read is
+ * refused, not skipped: this schema writes DDL that is safe to repeat as a statement inside
+ * a string, and a column added that way would otherwise never reach the pin. What the
+ * reader cannot see is a column bounded by another type, CHAR(n) for one.
  */
 function boundedColumns(
   migrations: readonly { readonly statements: readonly string[] }[],
@@ -34,12 +40,21 @@ function boundedColumns(
       const table = /^\s*(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE)\s+`?(\w+)`?/i.exec(
         sql,
       )?.[1]
-      if (table === undefined) return []
-      return [...sql.matchAll(/`?(\w+)`?\s+VARCHAR\((\d+)\)/gi)].map((match) => ({
-        table,
-        column: String(match[1]),
-        width: Number(match[2]),
-      }))
+      const read =
+        table === undefined
+          ? []
+          : [...sql.matchAll(/`?(\w+)`?\s+VARCHAR\((\d+)\)/gi)].map((match) => ({
+              table,
+              column: String(match[1]),
+              width: Number(match[2]),
+            }))
+      const typed = [...sql.matchAll(/VARCHAR\s*\(/gi)].length
+      if (typed !== read.length) {
+        throw new Error(
+          `a migration statement types ${typed} VARCHAR column(s) and the reader read ${read.length}: ${sql.trim().replace(/\s+/g, ' ').slice(0, 80)}`,
+        )
+      }
+      return read
     })
 }
 
@@ -693,18 +708,31 @@ describe('invariant checkers fire on constructed corruption', () => {
   })
 
   it('reads every column MySQL bounds at the width, and no other', () => {
-    const tables = Object.keys(IDENTIFIER_COLUMNS)
-    expect(
-      boundedColumns(MYSQL_MIGRATIONS)
-        .filter(({ table, width }) => tables.includes(table) && width === IDENTIFIER_CHARACTERS)
-        .map(({ table, column }) => `${table}.${column}`)
-        .sort(),
-      'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
-    ).toEqual(
-      Object.entries(IDENTIFIER_COLUMNS)
-        .flatMap(([table, columns]) => columns.map((column) => `${table}.${column}`))
-        .sort(),
+    // Every VARCHAR column of MySQL's schema is an identifier column, which the width
+    // condition reads, or is named here with its width and the reason it is not one. So a
+    // new column, a new width, and a column in another table each fail this case.
+    const notIdentifiers = {
+      // One of a closed set of words the engine writes, never a name a caller passes.
+      'tasks.state': 16,
+      'runs.state': 16,
+      'checkpoints.status': 16,
+      'waits.status': 16,
+      // The schema version's key, in a table outside the six snapshots.
+      'meta.key': IDENTIFIER_CHARACTERS,
+    }
+    const identifiers = Object.fromEntries(
+      Object.entries(IDENTIFIER_COLUMNS).flatMap(([table, columns]) =>
+        columns.map((column) => [`${table}.${column}`, IDENTIFIER_CHARACTERS]),
+      ),
     )
+    expect(
+      Object.fromEntries(
+        boundedColumns([{ statements: [MYSQL_META_TABLE_SQL] }, ...MYSQL_MIGRATIONS]).map(
+          ({ table, column, width }) => [`${table}.${column}`, width],
+        ),
+      ),
+      'mutation-verdict:construction:identifier-columns-are-the-bounded-columns',
+    ).toEqual({ ...identifiers, ...notIdentifiers })
   })
 
   it('finds bounded columns in SQL formatting it did not anticipate', () => {
@@ -741,6 +769,10 @@ describe('invariant checkers fire on constructed corruption', () => {
         },
       ]),
     ).toThrow(/VARCHAR/)
+    // A column the pattern does not read, inside a statement it does read, is refused too.
+    expect(() =>
+      boundedColumns([{ statements: ['CREATE TABLE a (id VARCHAR (255), name VARCHAR(16))'] }]),
+    ).toThrow(/types 2 VARCHAR column\(s\) and the reader read 1/)
   })
 
   it('stays silent on the consistent seed world', async () => {
