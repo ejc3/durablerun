@@ -351,31 +351,26 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '1ec3adc9e2874631b162580b2c774804c19ac53cadc5dffca6a3a55722323aa7':
-              # Five base entries name text this tree rewrote, and each mutant bends the same
-              # condition as before. An event name carries the task of a completion event, so
-              # the two messages about a stored payload that is not text are built from its
-              # display form, and the line that mints a caller's name passes a null task. A
-              # port's refusal of a reserved name or key is a class of its own, so the refusal
-              # of a key together with childOf names that class, and the hosted route's
-              # reserved-key answer moved from a rule of its own to the one mapping of the
-              # family. Five mutations are new, one for each guard this tree added, and each
-              # answers to a verdict marker that is newer than the base. No entry was retired.
+          if digest == 'ad98c88952cc01f4d80c3fd383e91ad453a9c22214b4731da36246ddef2fea29':
+              # Three base entries name lines this tree deleted. Each store checked its own
+              # entries, and the driver loop held its two names to the width alone. One check
+              # in core now stands in front of every entry, built from one table of the port's
+              # strings, so each mutant moved to what holds its property now: the spawn queue's
+              # to the table's first place, the emitted name's to the width half of the check's
+              # rule, and the loop's to the line that asks the port's check of its driver id.
+              # Each keeps its owner, and each owner still fails under it. Six mutations are
+              # new, and they answer to two verdict markers that are newer than the base. No
+              # entry was retired.
               repaired = previous
               for name in (
-                  'child-await-hit-error-names-the-task',
-                  'child-await-recording-error-names-the-task',
-                  'event-name-is-a-durable-string',
-                  'hosted-enqueue-refuses-reserved-key',
-                  'spawn-child-key-excludes-a-caller-key',
+                  'spawn-queue-is-a-durable-string',
+                  'libsql-emitted-name-held-at-the-entry',
+                  'driver-identifiers-held-at-construction',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
               repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:behavior:recording-statement-takes-a-completion-event-only',
-                  'mutation-verdict:behavior:port-refusal-family-holds-the-durable-string-refusal',
-                  'mutation-verdict:behavior:history-helper-runs-the-child-task-checker',
-                  'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run',
-                  'mutation-verdict:behavior:fault-matrix-excuses-the-older-builds-child-only-while-cancelled',
+                  'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+                  'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

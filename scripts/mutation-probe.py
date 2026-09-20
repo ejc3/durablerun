@@ -6744,9 +6744,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "spawn-queue-is-a-durable-string",
-            "packages/store-libsql/src/store.ts",
-            "    requireDurableString('queue', queue)\n",
-            "    // MUTATION: any queue name\n",
+            "packages/core/src/port-strings.ts",
+            "  spawn: [\n    'queue',\n",
+            "  spawn: [\n    'paramsJson',\n",
             "a queue name with a NUL or a lone surrogate is stored as a different string on one dialect and aborts the statement on another",
         ),
         (
@@ -13900,7 +13900,7 @@ MUTATION_SPECS.extend(
         (
             "driver-identifiers-held-at-construction",
             "packages/driver/src/loop.ts",
-            "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
+            "    requirePortString('driverId', this.driverId)\n",
             "    // MUTATION: not held at construction\n",
             "a driver configured with a queue or an id past the width runs forever and does nothing: every tick reads as an outage and every registry beat is swallowed",
         ),
@@ -14044,10 +14044,10 @@ MUTATION_SPECS.extend(
         ),
         (
             "libsql-emitted-name-held-at-the-entry",
-            "packages/store-libsql/src/store.ts",
-            "    requireIdentifiersFit({ queue, eventName })\n",
-            "    // MUTATION: an emitted name is not held at this entry\n",
-            "the libSQL store stores an event name past the width, which the port admits on no dialect and no emit can reach again, and no walk fails for it",
+            "packages/core/src/port-strings.ts",
+            "  if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })\n",
+            "  // MUTATION: an identifier is not held to the width\n",
+            "every store stores a name past the width at every place an identifier enters the port, and no walk fails for it",
         ),
     )
 )
@@ -14090,6 +14090,94 @@ for _verdict, _names in (
             "mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width",
         ),
         ("libsql-emitted-name-held-at-the-entry",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
+# every string once, and every store is reached only through the check built from that
+# table. The first two bend the check: the rule of an identifier, and the wrapper that
+# puts the check in front of an entry. The last four bend the table, one for each kind
+# of string: a queue, a step key, an event name, and a claim token. The identifier
+# surface draws its places from the same table, so a place the table stops holding is
+# asked nothing by the refusal cases. What fails is the surface's written list of the
+# places that are not identifiers, by the name of the place.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-identifier-held-to-the-domain",
+            "packages/core/src/port-strings.ts",
+            "  requireDurableString(name, raw)\n",
+            "  if (rule !== 'identifier') requireDurableString(name, raw) // MUTATION\n",
+            "a queue, a task id, a run id, a step name or a checkpoint name with a NUL or a lone surrogate reaches every store, where a NUL ends it on one dialect and is an outage on another, and two names that differ in a lone surrogate are one row",
+        ),
+        (
+            "port-check-runs-before-the-entry",
+            "packages/core/src/port-strings.ts",
+            "            requirePortStrings(method, args)\n",
+            "            // MUTATION: the entry is reached with nothing checked\n",
+            "no store holds any string of any call: every entry of every dialect is reached with whatever its caller passed",
+        ),
+        (
+            "port-table-holds-a-queue",
+            "packages/core/src/port-strings.ts",
+            "  claim: ['queue', 'claimToken', null],\n",
+            "  claim: ['paramsJson', 'claimToken', null],\n",
+            "a claim is made on a queue no store keeps: PostgreSQL reports a NUL as an outage that a driver retries for ever, and libSQL claims nothing",
+        ),
+        (
+            "port-table-holds-a-step-key",
+            "packages/core/src/port-strings.ts",
+            "  setCheckpoint: ['queue', 'taskId', 'runId', 'claimToken', 'checkpointName', 'stateJson', null],\n",
+            "  setCheckpoint: ['queue', 'taskId', 'runId', 'claimToken', 'stateJson', 'stateJson', null],\n",
+            "two checkpoint names that differ only in a lone surrogate are stored as one row on every dialect, so one step's memo is replaced by another's result",
+        ),
+        (
+            "port-table-holds-an-event-name",
+            "packages/core/src/port-strings.ts",
+            "  emitEvent: ['queue', 'eventName', 'payloadJson'],\n",
+            "  emitEvent: ['queue', 'payloadJson', 'payloadJson'],\n",
+            "an event is emitted under a name past the width or outside the domain, which no await can name again",
+        ),
+        (
+            "port-table-holds-a-claim-token",
+            "packages/core/src/port-strings.ts",
+            "  heartbeat: ['queue', 'runId', 'claimToken', null],\n",
+            "  heartbeat: ['queue', 'runId', 'paramsJson', null],\n",
+            "a heartbeat under a token that differs from the claim's only in a lone surrogate holds the claim, so two workers hold one run",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses a name outside the durable string domain at every entry of the port, before anything is sent",
+            "mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-identifier-held-to-the-domain",
+            "port-check-runs-before-the-entry",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] leaves a payload to its serializer, at exactly the places that are written here",
+            "mutation-verdict:construction:places-that-are-not-identifiers-are-written-down",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-table-holds-a-queue",
+            "port-table-holds-a-step-key",
+            "port-table-holds-an-event-name",
+            "port-table-holds-a-claim-token",
+        ),
     ),
 ):
     for _name in _names:
@@ -19404,7 +19492,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1012:
+        if len(MUTATIONS) != 1018:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

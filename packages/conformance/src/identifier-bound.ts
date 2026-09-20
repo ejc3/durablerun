@@ -141,7 +141,10 @@ export function identifierBoundConformance(
           rule,
         ]),
       )
-      expect(notAnIdentifier).toEqual({
+      expect(
+        notAnIdentifier,
+        'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
+      ).toEqual({
         'spawn(taskName)': 'durable',
         'spawn(paramsJson)': 'payload',
         'spawn(childOf.claimToken)': 'durable',

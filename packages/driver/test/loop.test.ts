@@ -431,6 +431,15 @@ describe('DriverLoop review regressions', () => {
     expect(() => new DriverLoop(deps, { ...OPTS, queue: 'q'.repeat(256) })).toThrow(
       InvalidDurableStringError,
     )
+    // The same holds for a name outside the durable string domain, which no store keeps.
+    for (const undurable of ['d\u0000', 'd\uD800']) {
+      expect(() => new DriverLoop(deps, { ...OPTS, driverId: undurable })).toThrow(
+        InvalidDurableStringError,
+      )
+      expect(() => new DriverLoop(deps, { ...OPTS, queue: undurable })).toThrow(
+        InvalidDurableStringError,
+      )
+    }
     // A registry interval whose doubled TTL fails downstream validation
     // must fail HERE, not silently on every beat.
     expect(() => new DriverLoop(deps, { ...OPTS, registryIntervalSeconds: 2_000_000_000 })).toThrow(
