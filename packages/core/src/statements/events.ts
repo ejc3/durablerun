@@ -1,5 +1,5 @@
 import { type ExpressionBuilder, expressionBuilder } from 'kysely'
-import { EventName, taskDoneEventName } from '../child-tasks.js'
+import { EventName, type TaskDoneEventName, taskDoneEventName } from '../child-tasks.js'
 import type { SagaPhasePredicate } from '../sagas.js'
 import {
   FENCE_ASSIGNMENTS,
@@ -360,16 +360,17 @@ export const materializeTaskDoneCas = defineStatement(
   'await-event materialize',
   (
     binds: AwaitingClaim & {
-      eventName: EventName
+      eventName: TaskDoneEventName
       payloadJson: string
       /** The stamp the child's row carried when its outcome was read, or null. */
       childStamp: string | null
       liveTask: SqlFragment
     },
   ) => {
-    // The child is the one the name carries. A caller's event names no task, and an
-    // insert keyed on a null task id would write nothing and say nothing.
-    const childTaskId = binds.eventName.taskId
+    // The child is the one the name carries, and the bind's type holds typed code to a
+    // completion event. An untyped caller that passes another is refused here, because
+    // an insert keyed on a null task id would write nothing and say nothing.
+    const childTaskId: string | null = binds.eventName.taskId
     if (childTaskId === null) {
       throw new Error('await-event materialize records a completion event, and was given another')
     }

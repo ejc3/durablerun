@@ -69,7 +69,7 @@ describe('the completion event contract', () => {
     })
   })
 
-  it('records a completion event only: the recording statement refuses a name that carries no task', () => {
+  it('records a completion event only: the recording statement takes no other name, by type and when built', () => {
     const binds = {
       queue: 'q',
       taskId: 'parent',
@@ -82,6 +82,7 @@ describe('the completion event contract', () => {
     }
     expect({
       aCallersEvent: refusal(() =>
+        // @ts-expect-error a caller's event carries no task, so it is not a completion event's name
         materializeTaskDoneCas({ ...binds, eventName: EventName.fromPort('emitEvent', 'paid') }),
       ),
       aCompletionEvent: refusal(() =>

@@ -79,8 +79,8 @@ export class EventName {
     return new EventName(requireDurableString(`${operation} eventName`, raw), null)
   }
 
-  static taskDone(taskId: string): EventName {
-    return new EventName(taskDoneEventName(taskId), taskId)
+  static taskDone(taskId: string): TaskDoneEventName {
+    return new EventName(taskDoneEventName(taskId), taskId) as TaskDoneEventName
   }
 
   /**
@@ -90,13 +90,13 @@ export class EventName {
    * terminal batch names the event of a task it read from its own rows, through
    * `taskDone`, and is never refused.
    */
-  static awaitedTaskDone(childTaskId: string): EventName {
+  static awaitedTaskDone(childTaskId: string): TaskDoneEventName {
     const name = taskDoneEventName(childTaskId)
     requireIdentifiersFit({
       childTaskId,
       'childTaskId, as the name of its completion event,': name,
     })
-    return new EventName(name, childTaskId)
+    return new EventName(name, childTaskId) as TaskDoneEventName
   }
 
   /**
@@ -108,6 +108,12 @@ export class EventName {
     return this.taskId === null ? this.value : `task ${this.taskId}`
   }
 }
+
+/**
+ * The name of a completion event: an `EventName` known to carry its task. A statement
+ * that records a completion event takes this, so typed code cannot hand it a caller's.
+ */
+export type TaskDoneEventName = EventName & { readonly taskId: string }
 
 /**
  * The first outcome a task reached, as its completion event carries it. It is
@@ -248,8 +254,9 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
  * the run, and the worker that calls them activated the run through the same store a
  * moment earlier. A run's task never changes and run ids are never reused, so an entry
  * cannot go stale, and a miss only costs the read. A store lets a run go once its own
- * terminal batch has ended it, so what is held is the runs it activated and has not
- * ended, and an ended run takes no room from them. The oldest leaves first.
+ * terminal write has won, so a run it has ended itself takes no room. A run that ended
+ * any other way, by a refused write, a cancel, a sweep, or another process, stays
+ * until newer activations push it out. The oldest leaves first.
  */
 export class RunTaskMemo {
   readonly #tasks = new Map<string, string>()
