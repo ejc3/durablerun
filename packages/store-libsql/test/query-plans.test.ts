@@ -1062,6 +1062,12 @@ describe('every statement a store ships, by the nests of its plan', () => {
   const nameOf = (st: Shipped) =>
     placeInCorpus.get(keyOf(st.label, st.sql)) ?? `${st.label}#${st.index}`
 
+  /** One statement's plan, read. Every reading in this block is this one, the generated check's too. */
+  const nestsOf = async (st: { sql: string; args: unknown[] }) =>
+    readNests(await planTree(st.sql, st.args))
+  /** The same reading of a statement that nothing runs, so each bind is a placeholder. */
+  const read = (sql: string) => nestsOf({ sql, args: (sql.match(/\?/g) ?? []).map(() => 0) })
+
   it("sends every statement of the corpus, and every text statement that is the store's", async () => {
     const sent = await shippedStatements()
     // Every statement of every variant, by its text: a label reached through one of its
@@ -1088,7 +1094,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const textOf = new Map<string, string>()
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
-      const reading = readNests(await planTree(st.sql, st.args))
+      const reading = await nestsOf(st)
       if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
       textOf.set(name, st.sql)
       const excuse = EXCUSED_NESTS[name]
@@ -1147,9 +1153,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
-    // No statement here is run, so each bind is a placeholder.
-    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
-    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
     const correlated = await read(
@@ -1221,9 +1224,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
   })
   it('judges a read of a body as it judges any step, whatever a step is named', async () => {
-    // No statement here is run, so each bind is a placeholder.
-    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
-    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
     // A materialized body, scanned once for each run of a walk: every task of the queue,
     // once for each running run of it.
     const scannedBody = await read(
