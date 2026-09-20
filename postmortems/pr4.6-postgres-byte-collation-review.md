@@ -123,7 +123,7 @@ One message for two states (finding 6). No earlier instance was found.
 
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
-| The deadlocked read case and its mutation | 3 | Run: `(mode !== 'read' \|\| statements.length === 1) &&` put ahead of the attempt bound in the executor's decision. The case and the unit case both pass, 23 of 23, and the sweep's scan, a read batch of two statements, is reported to its caller again. The case drives one read of one statement |
+| The deadlocked read case and its mutation | 3 | Run: `(mode !== 'read' \|\| statements.length === 1) &&` put ahead of the attempt bound in the executor's decision. The case and the unit case both pass, 23 of 23, and the sweep's scan, a read batch of two statements, is reported to its caller again. The case drives one read of one statement. Its one timed step has five seconds of room, and a longer stall fails the case with a message and cannot pass it |
 | The lock order case and its mutation | 3 | Run: `LOCK TABLE tasks, runs, checkpoints, events, waits, event_locks, drivers, meta`. The case passes, because both arrivals wait for `tasks` holding nothing. That order was measured: 65 errors at callers of the older build where the committed order gave 51, and 18 of the 65 were a worker's checkpoint read where the committed order gave none. The case holds "`meta` last". The order among the store tables was chosen by measurement and is held by nothing but the frozen hash, which fails on this edit (run) and on any other |
 | The racing case's lock table predicate | 3 | Not run: no variant was found in which two migrators of one version deadlock while the second waits for the runner's lock holding nothing. The bootstrap batch takes no such lock and is outside the case, and `conformance/test/postgres-bootstrap-window.test.ts` holds that batch |
 | The index key mutation | 3 | Not run: the mutant is one key of one index. A catalog query narrowed to a set of indexes that still holds `runs_woken` kills the same mutant and reads fewer indexes. The floor on the number of keys is what holds the count, and no mutation holds the floor |
@@ -133,9 +133,34 @@ One message for two states (finding 6). No earlier instance was found.
 
 ## Fix-induced defects
 
-None is known. The fixes were tested again and were not reviewed again, which
-is the maintainer's rule of one review for a pull request. One fix changed
-course before it was committed, and a measurement caught it, not a test: moving
+None among the six that are counted. The fold was then reviewed once more,
+narrowly, because it changes the PostgreSQL executor. That review found nothing
+HIGH or MEDIUM and five LOW. None of the five is product behaviour and none is
+counted, by the rule that counted the first six: a gap in a gate that lets a
+defect pass, or wrong advice to an operator. Three of the five were the fold's
+own, and they are the answer to this section's question.
+
+- The deadlocked read case said that nothing in it was left to a race, and one
+  step was. PostgreSQL checks a lock wait for a deadlock once, when the
+  waiter's timeout has passed, so a stall of a second before the stand-in's
+  request made the stand-in the victim, at a timeout that equalled the test's
+  limit, and the case died with nothing that named the cause. That verdict
+  could fail for the wrong reason. It could not pass for it.
+- The fold's own reorder of version 7's lock list turned "all store traffic
+  queues behind the version" from nearly exact into an upper bound, because
+  `LOCK TABLE` takes its tables one at a time. Nothing reread the sentence.
+- Four statements about the fold's own measurements said more than the logs
+  did: a first attempt claimed for runs whose attempts were not visible, a
+  victim count from one harness beside a table from another, three orders
+  compared without saying that they ran one after another under a rising
+  load, and a rise in errors at callers, from 13 to 51, given as two numbers
+  and never as a rise.
+
+The other two were not the fold's: MySQL's executor kept the comment that the
+fold had refuted on PostgreSQL, and the refusal for a schema newer than the
+build now stands in three stores, which is recorded as an option.
+
+One fix also changed course before it was committed, and a measurement caught it, not a test: moving
 `meta` to the end of the list and leaving the rest committed every migration
 but gave callers of the older build 65 errors where `meta` first gave 13. The
 list was then put in the order the engine's own statements take their locks,
@@ -156,13 +181,15 @@ driver's sweep scan, whose statement names `tasks` before `runs`.
 - Fixes: commit `b30f1db` for finding 4.
 - Red tests: none is committed apart from its fix for finding 5. With `icu` declared, the case passed on a server created with ICU and failed by name on a server of the same image created without the arguments: `Expected: "icu"`, `Received: "libc"`. With nothing declared it passed there.
 - Fixes: commit `55f0fab` for finding 5. The documents' corrections for findings 1, 2 and 6 are commit `62c678c`.
+- The second review's five LOW items are folded without red tests, which is the maintainer's rule for a LOW finding. Commit `2b42117` gives the deadlocked read case's timed step five seconds of room and a message. It was seen each way: green in five seconds on two servers, failing after 66 seconds with "the read was not the victim" when a six second stall was put ahead of the request by hand, and still failing under its own marker with the registered mutant applied by hand. Commit `682ee88` bounds the sentence about what queues and makes the four statements exact. Commit `d3b747c` gives MySQL's comment the real reason and records its option.
 - Finder: the one review, quoted verdict: "The byte collation is correct and well held: the catalog test, the order case, the three mutations and the racing-migrators fix all reproduce. There is nothing HIGH. There are two MEDIUM findings, both about version 7 under live traffic, where DESIGN.md claims more than was measured."
+- Finder of the fold's five: the one narrow review of the fold, quoted verdict: "Nothing HIGH or MEDIUM remains, and both MEDIUM findings of the first review are closed. I found five LOW items. Two are the fold's own, and one doubles a duplication main already had."
 - The reviewer's reproduction of finding 1, quoted: "One open transaction had read `tasks`, head's `migrate()` started, and main's `nextWakeAtEpochMs` started 0.5 s later. The transaction ended 0.3 s after that. The read failed at 1,504 ms with `StoreUnavailableError: batch(next-wake) failed (SQLSTATE 40P01)`, and `migrate()` committed at 1,525 ms." And why the PR's runs missed it: "It sends no read batch and no event batch."
 - The reviewer's reproduction of finding 4, quoted: "With the runner's lock removed, only the version 7 row differs (`23505` becomes `40P01`). `secondWaited` is true either way."
 - The measurements behind finding 2's fix. Four workers and two drivers of the build on main sent write batches, read batches and event batches at an empty schema while the branch's `migrate()` took version 7, 80 migrations for each order and each order on a server of its own. With `meta` first: 69 of 80 committed, a median of 3.0 seconds, 568 deadlocks by the server's counter, 13 errors at callers. With `meta` last and the rest as declared: 80 of 80, 1.0 seconds, 339 deadlocks, 65 errors. In the committed order: 80 of 80, 1.0 seconds, 126 deadlocks, 51 errors, every one a driver's sweep scan. At scale in the committed order the version committed in 12 of 12 runs at a million rows a table and in 6 of 6 at four million, each on its first attempt, and callers of the older build saw 4 errors, each a sweep scan.
 - PR #63's contest "admin migrate of a database nobody has migrated" ran 50 times on PostgreSQL at the head of this branch, in a database nothing else used: 50 of 50 passed, the contest holds each executor's count of victims at zero, and the server counted no deadlock in that database.
 - Not counted, and why. The review's findings 7, 8, 9 and 11 and the rest of 10 are hygiene of a test, a comment, two counts in BUILD.md, a hand-off parked under a finished entry, and sentences of the operator's note. They are folded in commits `b30f1db`, `4f66c65`, `c2b2b15`, `9014e50` and `62c678c`. Findings 5 and 12 are options, listed in the PR body with a sentence each.
-- Claims that did not reproduce. The review wrote "Not reproduced: three migration losses in a row. There were none in my 100 live rounds or the author's 46." With event batches added to the traffic it reproduced at once: 11 of 80 migrations with `meta` first. My own first reading of `meta` first, that the version is the usual victim, was wrong: the server's log classed 345 of 363 victims as a worker's or a driver's write, 14 as a read and 4 as the version. Two claims of the review skill were refuted by the reviewer and are not folded: that a regression which skips empty versions would pass libSQL's schema gate case ("backwards: such a regression would now be caught"), and that the 16 minutes in the verify job's comment has no source ("verify's fastest success in the saved data is 962 s").
+- Claims that did not reproduce. The review wrote "Not reproduced: three migration losses in a row. There were none in my 100 live rounds or the author's 46." With event batches added to the traffic it reproduced at once: 11 of 80 migrations with `meta` first. My own first reading of `meta` first, that the version is the usual victim, was wrong in both harnesses. In the first, which sent no event batch, the server's log classed 345 of 363 victims as a worker's or a driver's write, 14 as a read and 4 as the version. In the second, whose rows are the measurements above, 478 of 564 were such a write, 73 the version and 13 a read, so the version was the victim about one time in eight. Two claims of the review skill were refuted by the reviewer and are not folded: that a regression which skips empty versions would pass libSQL's schema gate case ("backwards: such a regression would now be caught"), and that the 16 minutes in the verify job's comment has no source ("verify's fastest success in the saved data is 962 s").
 
 ## Root cause
 
@@ -231,5 +258,6 @@ Deferred (recorded in BUILD.md):
   green today.
 - A fourth store whose `migrate()` tells an operator to repair a healthy
   database would ship today.
-- A sentence of DESIGN.md that says more than was measured would ship today.
-  Nothing reads DESIGN.md.
+- A sentence of DESIGN.md that says more than was measured would ship today,
+  and so would one that a later commit of the same pull request makes false.
+  The second review found one of each in this fold. Nothing reads DESIGN.md.
