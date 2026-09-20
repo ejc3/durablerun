@@ -1449,8 +1449,8 @@ MUTATION_SPECS = [
     (
         "tree-clock-advice-only-where-spelled",
         "packages/core/src/fenced-batch.ts",
-        "      const advice = spelledClock ? ",
-        "      const advice = true ? ",
+        "      const advice = spelledClock ? `. ${SPAN_ADVICE}` : ''\n",
+        "      const advice = true ? `. ${SPAN_ADVICE}` : ''\n",
         "a follow-on refused for holding the batch clock's token is told about age() and a subtraction, which it never wrote",
     ),
     (
