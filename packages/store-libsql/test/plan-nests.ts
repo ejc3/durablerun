@@ -23,8 +23,8 @@
  * A due range is bounded by the statement's LIMIT, which a plan never prints, and a plan
  * prints a range the same way whichever way it points: the leases that have expired and
  * the leases that have not are both `claim_expires_at_ms>? AND claim_expires_at_ms<?`. So
- * the reading also names each due range that drives another step, for its reader to hold
- * to a list of the statements where one may, each with the limit that bounds it.
+ * the reading also reports each due range that drives another step, and the test holds
+ * those to a list of the statements where one may, each with the limit that bounds it.
  */
 export interface PlanRow {
   readonly id: number
@@ -74,7 +74,9 @@ interface Node {
 }
 
 const STEP = /^(SCAN|SEARCH) (\S+)(?: (.*))?$/
-const SUBQUERY = /^(CORRELATED )?(SCALAR|LIST) SUBQUERY \d+$/
+const SUBQUERY = /^(CORRELATED )?(?:SCALAR|LIST) SUBQUERY \d+$/
+/** The list an `IN` seeks with, when nothing outside it changes what it holds. */
+const UNCORRELATED_LIST = /^LIST SUBQUERY \d+$/
 const BODY = /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/
 const SELECTS =
   /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY|(?:UNION|INTERSECT|EXCEPT)(?: ALL| USING TEMP B-TREE)?)$/
@@ -138,7 +140,7 @@ export function readNests(sql: string, rows: readonly PlanRow[]): NestReading {
     // The rows of an IN list are sought with one at a time, and the plan lists the list
     // after the step that seeks with it, so the lists are read first.
     const lists = children
-      .filter((node) => SUBQUERY.exec(node.detail)?.slice(1).join() === ',LIST')
+      .filter((node) => UNCORRELATED_LIST.test(node.detail))
       .flatMap((node) => loopsOf(node.children, []))
     const loops: Loop[] = []
     for (const node of children) {
@@ -174,6 +176,7 @@ export function readNests(sql: string, rows: readonly PlanRow[]): NestReading {
           }
           loops.push(loop)
         }
+        // What is left is a step over `meta` alone, the clock's one row: no nest's concern.
       } else if (node.detail === 'MULTI-INDEX OR') {
         // One loop over the rows any of its indexes finds. The legs are alternatives, so
         // none drives another, and the loop is as bounded as its widest leg.
@@ -183,9 +186,10 @@ export function readNests(sql: string, rows: readonly PlanRow[]): NestReading {
           return []
         })
         loops.push({ detail: legs.map((leg) => leg.detail).join(' OR '), reach: worst(legs) })
+      } else if (UNCORRELATED_LIST.test(node.detail)) {
+        // Read above, before the steps it drives.
       } else if (subquery) {
-        if (subquery[2] !== 'LIST' || subquery[1])
-          loopsOf(node.children, subquery[1] ? drivers : [])
+        loopsOf(node.children, subquery[1] ? drivers : [])
       } else if (body?.[1]) {
         bodies.set(body[1], worst(loopsOf(node.children, outer)))
       } else if (SELECTS.test(node.detail)) {

@@ -1029,14 +1029,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
-    const read = async (sql: string) =>
-      readNests(
-        sql,
-        await planTree(
-          sql,
-          (sql.match(/\?/g) ?? []).map(() => 0),
-        ),
-      )
+    // No statement here is run, so each bind is a placeholder.
+    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
+    const read = async (sql: string) => readNests(sql, await planTree(sql, placeholders(sql)))
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
     const correlated = await read(
