@@ -3237,7 +3237,8 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   - `$rollback-tries:<step>` holds a rollback's failed attempts,
     `{ tries, errorJson }`. The store names it and counts it: a failed rollback
     hands over the step and the failure of this attempt, and the store writes
-    one attempt past the last one stored.
+    one attempt past the last one it can read. The paragraph on the store's
+    count, below, has the two edges of that.
 
   On terminal failure the run enters the rolling-back phase; the task function
   re-runs, memoized steps skip and re-register their closures, and the SDK
@@ -3519,18 +3520,36 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   stored as the first. Only a record an older build's store wrote can sit at
   that bound. The failure is recorded all the same, never refused, and a
   count at the bound still says the budget is spent. So a caller of the
-  port can store no other name and no other count, and a rollback's spent
-  attempts are never given back, which is the model's TriesOnlyGrow. The last
+  port chooses neither the name nor the count. Over a record the store can
+  read, the count goes up by one or stays at the bound, and a spent attempt
+  is never given back, which is the model's TriesOnlyGrow. Over a record the
+  store cannot read, the count starts again at one. Through the SDK that
+  happens only beside a halt, which ends the task. A direct caller of the
+  port that asks for another pass over such a record gets every spent attempt
+  back, as it could at any time before the store counted, when the count was
+  the caller's to choose. The last
   record is read before the batch, under the read label `rollback-tries`,
   and the count cannot go stale between that read and a batch that wins. That
-  rests on one invariant with three legs, and a test holds each. Only
+  rests on one invariant with four legs. A test holds each of the first
+  three, and the fourth is a premise about executors that no test holds. Only
   `fail-rollback` writes an attempt record: the reserved-names table refuses
   that name at the two batches that take a caller's checkpoint name, in both
   phases. It wins only under its caller's live claim: a saga case hands it a
   token the claim never had, and the same call replayed after it won, and
   each is refused with the count left as it was. A live task has one live
   run: the engine's invariants hold that over every conformance case and
-  every fuzz walk. So between the read and a batch that wins no other batch
+  every fuzz walk. The read is current: it sees every attempt record that has
+  committed. It is a batch of reads, outside the write's transaction, and
+  the executor contract lets a replica serve a batch of reads. An executor
+  that took that at its word could count from a replica that lags, and the
+  store would write N where N + 1 is due. What holds this today is that no
+  executor in the repository sends a batch of reads anywhere but the one
+  target it was opened on, and every fixture's target is a primary. No
+  fixture has a replica, so no test can show it. The exposure is older than
+  this read: a worker's memo read, `get-checkpoints`, is a batch of reads
+  too, and the SDK counted from it before the store counted. The port has no
+  way to ask for a current read, and BUILD.md records that as an option under
+  PR3.4. So between the read and a batch that wins no other batch
   can have written the record, and a copy or a replay of the same call has
   read a count that may be stale and loses the compare-and-set. A future
   label that wrote an attempt record outside the claim of the task's one live

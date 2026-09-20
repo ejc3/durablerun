@@ -232,8 +232,8 @@ a last docs PR gives a live owner to every open bullet that is left.
     and one that declares another collation on an index key, are each caught by
     that test.
 20. PR3.4c: `failRollback` takes the step, and the store names the rollback's
-    attempt record and counts the attempt, one past the last one stored, so a
-    caller of the port can store no other name and no other count. The store
+    attempt record and counts the attempt, one past the last one it can read,
+    so a caller of the port chooses neither the name nor the count. The store
     refuses a child spawn inside the rolling-back phase. Each freeze line of
     the SDK has a case that fails when the line is deleted, and the pass's
     budget guard has a case, over a task that has infrastructure retries,
@@ -2041,6 +2041,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     batch binds its completion payload before it runs, and the outcome is a
     fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
     and what would lift it, which is the saga predicates as tree nodes.
+  - Option, not a deferral of this entry: a way for the port to ask an
+    executor for a current read. The store counts a rollback's failed attempts
+    from a record it reads before its batch (PR3.4c), and a worker replays
+    from its memo read, `get-checkpoints`. Both are batches of reads, which
+    the executor contract lets a replica serve, and both need every record
+    that has committed: over a replica that lags, the count is written one
+    short, and a replay does not see a checkpoint that has committed.
+    `SqlBatchMode` has `read` and `write` and nothing between them. No
+    executor in the repository sends a batch of reads anywhere but its one
+    target, so nothing is exposed today. It is the maintainer's design
+    question. Trigger: the first executor that serves a batch of reads from
+    a replica.
   - Option, not a deferral of this entry: the phase as a required member of
     the claim guards. Every statement that presents a worker's claim goes
     through `whereClaimedRun` or `AwaitingClaim`, and a child spawn was the one
@@ -2275,6 +2287,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     budget, whose rollback now succeeds on a fourth attempt that a budget of
     two never reaches. The case it left holds the store's count through the
     SDK, by a second mutation of that count.
+  - The count stops at the largest safe integer. One past it is no count the
+    decoder reads, so the record would read as none and the attempt after it
+    would be stored as the first. Only a record an older build's store wrote
+    can sit at that bound, and the SDK did the same arithmetic before core
+    owned the count. It is never refused there: a failed rollback that could
+    not record its failure would fail again for ever. A core case was
+    committed failing, and one registered mutation removes the bound.
+    DESIGN.md §3.10 also says what a direct caller of the port gets over a
+    record the store cannot read, and names a fourth leg of the read's
+    soundness, that the read is current, with what holds it today. An option
+    under PR3.4 records the design question that leaves.
   - The registry gains eleven mutations and retires one. The base gate's arm
     retires that entry of the base registry and exempts seven markers.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start

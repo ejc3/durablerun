@@ -150,8 +150,12 @@ export interface SchedulerStore {
   /**
    * A rollback of a task that is rolling back failed (DESIGN.md §3.10, specs/Sagas.tla
    * RollbackRetry and RollbackHalts). `rollback` is the step and the failure of this
-   * attempt. The store names the rollback's attempt record and counts the attempt, one
-   * past the last one stored, so a caller can write no other name and no other count.
+   * attempt. The store names the rollback's attempt record and counts the attempt: one
+   * past the last record it can read, one when it can read none, and never past the
+   * largest safe integer. A caller chooses neither the name nor the count. An argument of
+   * another shape is refused with a TypeError before anything is read or sent. It stays a
+   * TypeError, because a wrong-shaped argument is a caller's programming error and no
+   * value the port refuses, and no hosted route calls this port.
    * The record commits with the failure, so a failed attempt is counted or the run did
    * not fail. With `retry` another pass follows, and the user attempt budget does not
    * cap it. With none the saga halts, and the task ends `failed` with `failureJson`,
