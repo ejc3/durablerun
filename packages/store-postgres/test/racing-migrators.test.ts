@@ -358,8 +358,11 @@ describe('version 9 over a run held under a token too long for its index', () =>
       // Another session takes its snapshot while the run still runs, and keeps it open.
       await other.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
       await other.query('SELECT count(*) FROM runs')
-      // The run ends under its own token. No entry but `claim` holds a token to the width.
-      await store.complete('q', run.runId, token, '{}')
+      // The run ends under its own token, as the older build that holds it would end it.
+      // This build's port refuses a token past the width at every entry, so the entry is
+      // called from the prototype, which is the entry with nothing in front of it, as an
+      // older build's was.
+      await PostgresSchedulerStore.prototype.complete.call(store, 'q', run.runId, token, '{}')
       // A transaction id taken now is newer than the one that ended the run.
       const ended = await client.query('SELECT pg_current_xact_id()::text AS id')
       // The run's old version is dead, that snapshot can still see it, and the build meets it.
