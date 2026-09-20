@@ -107,21 +107,25 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
   for (const row of rows) nodes.get(row.parent)?.children.push(nodes.get(row.id) as Node)
-  const bodies = new Map<string, Reach>()
   const faults: string[] = []
   const dueDrivers = new Set<string>()
 
   /** The loop one SCAN or SEARCH line is, judged against the loops that drive it. */
-  function stepLoop(node: Node, step: RegExpExecArray, drivers: readonly Loop[]): Loop {
-    const [, kind, name = '', access = ''] = step
+  function stepLoop(
+    node: Node,
+    step: RegExpExecArray,
+    drivers: readonly Loop[],
+    made: Reach | undefined,
+  ): Loop {
+    const [, kind, , access = ''] = step
     if (node.children.length > 0) faults.push(`cannot read what is under: ${node.detail}`)
     // A table-valued function over one value of the row that drives it, such as `json_each`:
     // no table is read, and as a driver its rows are bounded by no key.
     if (access.startsWith('VIRTUAL TABLE')) return { detail: node.detail, reach: 'walk' }
-    // The rows a body made, as bounded as the loops that made them.
-    const made = bodies.get(name)
-    if (made !== undefined) return { detail: node.detail, reach: made }
-    const loop: Loop = { detail: node.detail, reach: kind === 'SCAN' ? 'walk' : reachOf(access) }
+    // A read of the rows a body made is as bounded as the loops that made them, and it is
+    // judged against what drives it as any other step is.
+    const reach = made ?? (kind === 'SCAN' ? 'walk' : reachOf(access))
+    const loop: Loop = { detail: node.detail, reach }
     if (drivers.length > 0 && loop.reach !== 'keyed') {
       const each = drivers.map((driver) => driver.detail).join(' and of ')
       faults.push(`${loop.detail} :: is not keyed, and runs once for each row of ${each}`)
@@ -142,6 +146,9 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
     const lists = children
       .filter((node) => UNCORRELATED_LIST.test(node.detail))
       .flatMap((node) => loopsOf(node.children, []))
+    // A body is known by its name to the select that holds its line, and to no other: a
+    // table elsewhere in the plan may carry the same name, and is judged as the table it is.
+    const bodies = new Map<string, Reach>()
     const loops: Loop[] = []
     for (const node of children) {
       const drivers = [...outer, ...lists, ...loops]
@@ -151,7 +158,7 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
       if (node.detail === 'SCAN CONSTANT ROW') {
         loops.push({ detail: node.detail, reach: 'keyed' })
       } else if (step) {
-        loops.push(stepLoop(node, step, drivers))
+        loops.push(stepLoop(node, step, drivers, bodies.get(step[2] ?? '')))
       } else if (node.detail === 'MULTI-INDEX OR') {
         // One loop over the rows any of its indexes finds. The legs are alternatives, so
         // none drives another, and the loop is as bounded as its widest leg.
