@@ -1,10 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { Client } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PostgresStoreAdmin } from '../src/admin.js'
 import { PgExecutor } from '../src/executor.js'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
-import { MIGRATIONS } from '../src/schema.js'
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from '../src/schema.js'
+import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
@@ -264,4 +266,131 @@ describe('racing PostgreSQL migrators', () => {
     },
     LIMIT_MS,
   )
+})
+
+/**
+ * Version 9 builds `runs_held`, an index of the claim token over the running runs, and a
+ * btree row on PostgreSQL may not pass about 2,700 bytes. `claim` holds a token to an
+ * identifier's width since that version, so no row a current build writes is too long for
+ * it. A database that an OLDER build left, with a run still running under a caller's
+ * token of any length, can hold one. There the version fails, loudly and whole, and the
+ * database stays at version 8, which every build runs against. It heals by itself, a
+ * little later than when the run ends: an index build also indexes a row version that is
+ * dead but that an open snapshot can still see, and it judges the index's predicate on
+ * that old version. Two kinds of transaction hold such a snapshot. One has a snapshot in
+ * this database. The other has a transaction id of its own in ANY database of the server,
+ * because the building session's own snapshot reaches back to the oldest transaction id
+ * still running on the server. So the same `migrate()` succeeds once that run has ended,
+ * or the sweep has taken its lease, AND no transaction that was open at that moment still
+ * holds either. Measured with one transaction held open on purpose: a write transaction in
+ * another database refused the version, and a read-only snapshot in another database did
+ * not.
+ *
+ * The test holds the sentence both ways. It runs in a database of its own, which it
+ * creates and drops, so the only snapshot in its database is the one it opens on purpose,
+ * and the version is refused while that one is open. Other tests share the server, and
+ * their write transactions count, so before it asks for the version again it waits for
+ * the exact condition: the server's oldest running transaction id has passed one taken
+ * after the run ended. It then asks once, and the version builds. This needs a server, and
+ * a role that may create a database.
+ */
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+describe('version 9 over a run held under a token too long for its index', () => {
+  it('fails loudly and leaves version 8 while the run runs, and while an open snapshot still sees it, and then succeeds', async () => {
+    const shared = process.env.DURABLERUN_POSTGRES_URL
+    if (!shared) throw new Error('this test requires DURABLERUN_POSTGRES_URL')
+    const own = `durablerun_own_${randomUUID().replaceAll('-', '')}`
+    const ownUrl = new URL(shared)
+    ownUrl.pathname = `/${own}`
+    const control = new Client({ connectionString: shared })
+    await control.connect()
+    // `own` is this file's literal and 32 hex digits, so no other text reaches this DDL.
+    await control.query(`CREATE DATABASE ${own} TEMPLATE template0`)
+    const sessions: Client[] = []
+    let db: Awaited<ReturnType<typeof openPostgresTestDb>> | undefined
+    try {
+      db = await openPostgresTestDb({
+        connectionString: ownUrl.toString(),
+        idNamespace: 'long-token-before-version-9',
+      })
+      const session = async () => {
+        const client = new Client({ connectionString: ownUrl.toString() })
+        await client.connect()
+        sessions.push(client)
+        await client.query(`SET search_path TO "${db?.schemaName}"`)
+        return client
+      }
+      const client = await session()
+      const other = await session()
+      const admin = db.admin
+      const store = new PostgresSchedulerStore(db.raw, db.ids)
+      await store.spawn('q', 'job', '{}')
+      const [run] = await store.claim('q', 'a-short-token', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('the job was not claimed')
+      await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      // What an older build left: no index, version 8, and the run held under 3,000
+      // characters that no compression shortens.
+      let x = 0x2545f491
+      const token = Array.from({ length: 3000 }, () => {
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+        return (x >>> 28).toString(16)
+      }).join('')
+      await client.query('DROP INDEX runs_held')
+      await client.query(`DELETE FROM meta WHERE key = 'applied:v${CURRENT_SCHEMA_VERSION}'`)
+      await client.query(`UPDATE meta SET value = $1 WHERE key = 'schema_version'`, [
+        String(CURRENT_SCHEMA_VERSION - 1),
+      ])
+      await client.query('UPDATE runs SET claimed_by = $1 WHERE run_id = $2', [token, run.runId])
+      expect(CURRENT_SCHEMA_VERSION).toBe(9)
+      const migrated = async () => ({
+        answer: await admin.migrate().then(
+          () => 'migrated',
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        ),
+        version: await admin.schemaVersion(),
+      })
+      const refused = { answer: expect.stringMatching(/54000/), version: 8 }
+
+      // The run still runs under its long token.
+      expect(await migrated()).toEqual(refused)
+
+      // Another session takes its snapshot while the run still runs, and keeps it open.
+      await other.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
+      await other.query('SELECT count(*) FROM runs')
+      // The run ends under its own token. No entry but `claim` holds a token to the width.
+      await store.complete('q', run.runId, token, '{}')
+      // A transaction id taken now is newer than the one that ended the run.
+      const ended = await client.query('SELECT pg_current_xact_id()::text AS id')
+      // The run's old version is dead, that snapshot can still see it, and the build meets it.
+      expect(await migrated()).toEqual(refused)
+
+      // The snapshot is closed, and nothing else in this database holds one. A transaction
+      // of another test, in another database, may still hold a transaction id from before
+      // the run ended. The longest any PostgreSQL test of this repository holds one open is
+      // bounded at 5 s (a racing migrator waiting to be seen), so 60 s is twelve times that.
+      await other.query('COMMIT')
+      for (let tries = 0; ; tries++) {
+        const oldest = await client.query(
+          'SELECT pg_snapshot_xmin(pg_current_snapshot()) > $1::xid8 AS passed',
+          [(ended.rows[0] as { id: string }).id],
+        )
+        if ((oldest.rows[0] as { passed: boolean }).passed) break
+        if (tries >= 1200) throw new Error('a transaction from before the run ended is still open')
+        await pause(50)
+      }
+      // Asked once, not until it works: nothing that was open when the run ended is open.
+      expect(await migrated()).toEqual({ answer: 'migrated', version: 9 })
+      const built = await client.query(
+        `SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'runs_held'`,
+        [db.schemaName],
+      )
+      expect(built.rowCount).toBe(1)
+    } finally {
+      for (const client of sessions) await client.end().catch(() => undefined)
+      if (db !== undefined) await db.close().catch(() => undefined)
+      await control.query(`DROP DATABASE IF EXISTS ${own} WITH (FORCE)`)
+      await control.end()
+    }
+  }, 90_000) // Past the 60 s the wait above may take, so that bound is what reports.
 })

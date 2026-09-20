@@ -40,6 +40,7 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
   1060, // ER_DUP_FIELDNAME
   1061, // ER_DUP_KEYNAME
   ER_NO_SUCH_TABLE,
+  1176, // ER_KEY_DOES_NOT_EXITS, as MySQL spells it: a statement forces an index that is not there
   1305, // ER_SP_DOES_NOT_EXIST
 ])
 /**

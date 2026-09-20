@@ -9,6 +9,7 @@ import {
   DERIVED_INTEGER_BOUNDS,
   EventName,
   type FailOutcome,
+  type FailedRollback,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -67,6 +68,7 @@ import {
   emitEventCas,
   emittedEventRead,
   endingTask,
+  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
@@ -86,6 +88,7 @@ import {
   reopenLostLaunchCas,
   requireDerivedInteger,
   requireDurableString,
+  requireFailedRollback,
   requireIdentifiersFit,
   requireSagaStepFits,
   requireEpochMs,
@@ -119,7 +122,6 @@ import {
   LIVE,
   cancelDue,
   checkpointInItsPhase,
-  checkpointIsAnAttemptRecord,
   checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -598,6 +600,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
                 claimToken: childOf.claimToken,
                 taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
                 liveTask: sqlFragment(`t.state IN ${LIVE}`),
+                // A child is forward progress, and the forward phase is frozen once a saga began.
+                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),
               },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS SIGNED) + CAST(? AS SIGNED)`, [
@@ -684,7 +688,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIdentifiersFit({ queue })
+    requireIdentifiersFit({ queue, claimToken })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum), so ticks
@@ -772,14 +776,23 @@ export class MysqlSchedulerStore implements SchedulerStore {
       }),
       effectiveLimit,
     )
+    // The runs this batch took, as both follow-ons below select them. The stamp is the
+    // fence, and core adds it to every derived source. The token is there for the planner
+    // and narrows nothing: the compare-and-set above wrote the token and the stamp on the
+    // same rows in one statement, and under a token that already holds a run it took
+    // nothing. By queue and state alone the only index is `runs_poll`, so each of these
+    // reads walked every running run of the queue. `runs_held` finds what one token holds.
+    const taken = {
+      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,
+      whereArgs: [queue, claimToken],
+    }
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
       relation: 'runs-to-tasks',
       fence: 'claim',
       queue,
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       set: {
         state: taskStateValue('running'),
         // The eligibility guard makes this exactly one. Keep the expression
@@ -808,8 +821,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.derived('waits-timeout', {
       relation: 'runs-to-waits',
       fence: 'claim',
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       narrow: `status = 'waiting'
             AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms)}
             AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
@@ -1800,6 +1812,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
+    this.runTasks.forget(runId)
   }
 
   /**
@@ -1931,14 +1944,25 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId, 'rollbackTry.key': rollbackTry.key })
-    requireSagaStepFits('rollbackTry.key', rollbackTry.key)
+    const failed = requireFailedRollback(rollback)
+    requireIdentifiersFit({ queue, runId })
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
     const taskId = await this.endingTask('failRollback', queue, runId)
+    // The store names the attempt record and counts the attempt, one past the last one
+    // stored, which core reads here and the claim's fence keeps current (DESIGN.md §3.10).
+    const tried = await failedRollbackRecord(
+      {
+        open: () =>
+          new FencedBatch('rollback-tries', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        run: (batch: FencedBatch) => batch.run(this.db),
+      },
+      taskId,
+      failed,
+    )
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1953,7 +1977,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       successorId: null,
       retryDelayMs: null,
       passId,
-      rollback: { tried: rollbackTry, passDelayMs },
+      rollback: { tried, passDelayMs },
     })
   }
 
@@ -2006,21 +2030,18 @@ export class MysqlSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
-          [
-            ...(retryDelayMs === null ? [] : [retryDelayMs]),
-            // The attempt record is the caller's checkpoint, and it may carry no other name.
-            ...(rollback === undefined ? [] : [rollback.tried.key]),
-          ],
+         )`,
+          retryDelayMs === null ? [] : [retryDelayMs],
         ),
       }),
     )
     // The saga arms (DESIGN.md §3.10, specs/Sagas.tla). Outside the phase, a failure no
     // retry follows is the task's terminal decision. When a registered step started and
     // is not rolled back, this batch enters the phase in place of ending the task. A
-    // retry the user budget refuses is that same decision. Inside the phase the caller
-    // hands over the failed rollback's attempt record, which lands behind the failure
-    // itself, so a failed attempt is counted or the pass did not fail. A retry there is
+    // retry the user budget refuses is that same decision. Inside the phase the entry
+    // hands over the failed rollback's attempt record, which the store named and counted
+    // and which lands behind the failure itself, so a failed attempt is counted or the
+    // pass did not fail. A retry there is
     // a pass the user budget does not cap, and a failure without the record is capped
     // like any other, which halts the saga.
     if (rollback !== undefined) {
@@ -2159,6 +2180,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    this.runTasks.forget(runId)
     return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
@@ -2334,7 +2356,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
     if (stored?.payload_type !== 'text') {
-      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      throw new RangeError(`emitEvent ${queue}/${name.display} found a non-TEXT stored payload`)
     }
   }
 
@@ -2365,7 +2387,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
           awaited.stepName,
           name,
           awaited.timeoutSeconds,
-          awaited.childTaskId,
         ),
       refusal: (operation, runId) => this.refusal(operation, runId),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
@@ -2568,7 +2589,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
       stepName,
       EventName.fromPort('awaitEvent', eventName),
       timeoutSeconds,
-      null,
     )
     if (answer === null) throw await this.refusal('awaitEvent', runId)
     return answer
@@ -2613,7 +2633,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
     stepName: string,
     name: EventName,
     timeoutSeconds: number | null,
-    awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const eventName = name.value
     const timeoutMs =
@@ -2646,7 +2665,6 @@ export class MysqlSchedulerStore implements SchedulerStore {
         claimToken,
         stepName,
         eventName: name,
-        awaitedTaskId,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS SIGNED) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2723,11 +2741,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
         // A child await reaches the task's code, which never sees the engine's event name.
-        const subject =
-          awaitedTaskId === null
-            ? `awaitEvent ${queue}/${eventName}`
-            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
-        throw new RangeError(`${subject} found a non-TEXT stored payload`)
+        const operation = name.taskId === null ? 'awaitEvent' : 'awaitTaskDone'
+        throw new RangeError(
+          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,
+        )
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }

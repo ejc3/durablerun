@@ -351,7 +351,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'af258ef468ece177e4dfd63faa5f4134291d8f6437bcf03b0b9d61dc676f0dd4':
+          if digest == 'fb6db974e87d8de57c7bdbcf015f900220a57acbe30006ca3689ca1d6337cd93':
               # The migration lock travels in the batch control, so three base entries follow
               # their lines. Two bootstrap calls gained the control as a third argument and are
               # laid out one argument to a line: libSQL's label and MySQL's one-statement list

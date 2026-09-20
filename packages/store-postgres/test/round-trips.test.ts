@@ -2,9 +2,7 @@ import {
   FencedBatch,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
   defineStatement,
-  encodeRollbackTry,
   rawSql,
   sqlFragment,
   treeBuilder,
@@ -101,10 +99,7 @@ it('sends a pinned number of queries for each batch a saga touches, and for a he
     type Held = { taskId: string; runId: string; claimToken: string }
     const mark = (run: Held, name: string, state: string) =>
       store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, name, state, 60)
-    const tried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
-    })
+    const tried = { stepKey: 'a', errorJson: '{"name":"R"}' }
 
     await store.spawn(Q, 'plain', '{}')
     const plain = await claimed('w1')
@@ -128,11 +123,11 @@ it('sends a pinned number of queries for each batch a saga touches, and for a he
     const pass = await claimed('w5')
     const rollback = await measure(() => mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null'))
     const rollbackRetrying = await measure(() =>
-      store.failRollback(Q, pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried(1)),
+      store.failRollback(Q, pass.runId, pass.claimToken, E, { delaySeconds: 0 }, tried),
     )
     const next = await claimed('w6')
     const rollbackHalts = await measure(() =>
-      store.failRollback(Q, next.runId, next.claimToken, E, null, tried(2)),
+      store.failRollback(Q, next.runId, next.claimToken, E, null, tried),
     )
     await store.spawn(Q, 'finishes', '{}')
     const forward2 = await claimed('w7')
@@ -172,8 +167,10 @@ it('sends a pinned number of queries for each batch a saga touches, and for a he
       'fail, retrying, nothing to roll back': 9,
       'fail, final, entering the phase': 9,
       'fail, final, finishing the saga': 9,
-      'fail-rollback, retrying': 9,
-      'fail-rollback, final': 9,
+      // One more than `fail`: the store first reads the rollback's last attempt record, a
+      // batch of one read, to count the attempt it is about to record.
+      'fail-rollback, retrying': 10,
+      'fail-rollback, final': 10,
     })
   })
 }, 120_000)

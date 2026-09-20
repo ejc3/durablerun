@@ -240,6 +240,25 @@ export const MIGRATIONS: Migration[] = [
     version: 7,
     statements: [],
   },
+  // Version 8 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. SQLite runs one writer at a time, so a delete's read of its keys waits for
+  // no other transaction.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 8, statements: [] },
+  {
+    // A claim finds what ONE token holds three ways: its held guard asks whether the token
+    // holds a run already, its two follow-ons find the runs the batch just took, and its
+    // receipt read returns them. By queue and state alone the only index was `runs_poll`,
+    // so each of those read every running run of the queue, on every tick, the idle ones
+    // included: one claim measured 200 ms beside 100,000 running runs. This index holds
+    // only running runs, by their token. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 9,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS runs_held ON runs (queue, claimed_by)
+       WHERE state = 'running'`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

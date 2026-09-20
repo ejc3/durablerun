@@ -76,9 +76,12 @@
 \* its class are as that block describes them.  DESIGN.md S3.10 gives the
 \* mapping as a table, for the batches a saga changed.  A saga's state is
 \* checkpoints under reserved names (core sagas.ts), so no action needed a new
-\* kind of statement, and one new label exists: 'fail-rollback'.  The ledger
-\* of Scheduler.tla lists 'fail-rollback' and excludes 'set-checkpoint'.  The
-\* script reads no guard.  Every guard below has an executable twin on every
+\* kind of statement, and one new write label exists: 'fail-rollback'.  The
+\* store counts a rollback's failed attempts itself, from the record it reads
+\* first under 'rollback-tries', a read that maps to no action.  The ledger of
+\* Scheduler.tla lists 'fail-rollback' and excludes 'set-checkpoint' and
+\* 'rollback-tries'.  The script reads no guard.  Every guard below has an
+\* executable twin on every
 \* dialect: the `sagas` conformance surface and the SDK's saga suite.
 \*
 \* Modeled (a label and its condition, its actions, its class):

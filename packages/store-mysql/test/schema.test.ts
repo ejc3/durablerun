@@ -28,8 +28,8 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('MySQL schema', () => {
   it('keeps the logical version numbers of the other dialects', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7])
-    expect(CURRENT_SCHEMA_VERSION).toBe(7)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(CURRENT_SCHEMA_VERSION).toBe(9)
   })
 
   it('writes only statements that are safe to repeat', () => {
@@ -39,10 +39,12 @@ describe('MySQL schema', () => {
     // such a version the comparison below is with that form's own output and cannot fail:
     // it only keeps the version out of the table check. That the form is safe to repeat
     // is carried by the real-server test, which runs it again over an index that exists
-    // and twice over one that was dropped, and by the frozen hash of version 6. Every
-    // other statement creates a table if missing.
+    // and twice over one that was dropped, and by the frozen hashes of versions 6, 8 and 9.
+    // Every other statement creates a table if missing.
     const guardedIndexes = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
+      createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
+      createIndexIfMissing('runs', 'runs_held', '(queue, claimed_by(255), state)'),
     ]
     const statements = [
       META_TABLE_SQL,
@@ -127,6 +129,8 @@ describe('MySQL migrations are append-only', () => {
     5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     6: '282e8754775295bf61972db61c285b7e3ffd92726bd38dbb6c2b60fdf7250ee9',
     7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    8: '25aeccc91eefbfb025656e5df6cb1e4172af72c36c51b747a72e465e2d4a0790',
+    9: 'dcf5d703193f6bf5e8b5ba2f8cf06110f51b238b99b40c193b8f503b728f3275',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

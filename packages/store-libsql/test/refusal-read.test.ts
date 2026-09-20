@@ -66,7 +66,9 @@ describe('refused worker write classification', () => {
       }).toEqual({
         winningLabels: ['complete'],
         winningTopLevelReads: 0,
-        refusedLabels: ['complete', 'refusal-state'],
+        // The store forgot the run when its first write ended it, so the repeat reads the
+        // run's task again before it is refused.
+        refusedLabels: ['run-task', 'complete', 'refusal-state'],
         refused: 'LeaseLostError',
       })
     } finally {

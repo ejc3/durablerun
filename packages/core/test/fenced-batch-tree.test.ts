@@ -832,6 +832,11 @@ describe('FencedBatch tree statements', () => {
     expect(() => rawSql(sqlFragment('(SELECT 1 /* ( */) OR (1=1 /* ) */)'), 'subquery')).toThrow(
       /comment/,
     )
+    // An optimizer hint is a comment too. A dialect's compiler may write one around a
+    // fragment, and no fragment may carry one.
+    expect(() =>
+      rawSql(sqlFragment('(SELECT /*+ QB_NAME(keys) */ r.run_id FROM runs r)'), 'subquery'),
+    ).toThrow(/comment/)
     expect(() => predicate('x = $q$ $NOW$ $q$')).toThrow(/plain single-quoted/)
     expect(() => predicate("x = E'it\\'s $NOW$ here'")).toThrow(/plain single-quoted/)
     expect(() => predicate("json_extract(x, '$.kind') = 'fixed' AND y < $NOW$")).not.toThrow()
@@ -1818,7 +1823,6 @@ describe('FencedBatch tree statements', () => {
       admission: sqlFragment('EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'),
     })
     const register = registerWaitCas({
-      awaitedTaskId: null,
       queue: 'q',
       runId: 'r1',
       taskId: 't1',
