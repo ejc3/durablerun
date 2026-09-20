@@ -336,6 +336,44 @@ async function claimMeasuringTheLegs(db: TestDb, limit: number, explained = fals
   return { ...legs, claimed: claimed.map((run) => run.runId).sort() }
 }
 
+/**
+ * The rows each statement of one labelled batch walked, read from the session's handler
+ * counters inside the batch's own transaction, around every statement. Each gate index
+ * moves by what was put ahead of it.
+ */
+async function walkedByEachStatement(
+  db: TestDb,
+  label: string,
+  act: (store: MysqlSchedulerStore) => Promise<unknown>,
+) {
+  let walked: { statement: string; rows: number }[] = []
+  const measuring: SqlExecutor = {
+    batch: async (sent, statements, control) => {
+      if (sent !== label) return db.raw.batch(sent, statements, control)
+      const counted: SqlStatement[] = [READ_COUNTERS]
+      for (const statement of statements) {
+        const gate = statement.skipUnlessWrote
+        counted.push(
+          gate === undefined ? statement : { ...statement, skipUnlessWrote: 2 * gate + 1 },
+          READ_COUNTERS,
+        )
+      }
+      const all = await db.raw.batch(sent, counted, control)
+      walked = statements.map((statement, i) => ({
+        statement: `[${i}] ${statement.sql.trimStart().slice(0, 6)}`,
+        rows: walkedRows(all[2 * i + 2]) - walkedRows(all[2 * i]),
+      }))
+      return statements.map((_statement, i) => {
+        const result = all[2 * i + 1]
+        if (result === undefined) throw new Error(`${sent}: statement ${i} has no result`)
+        return result
+      })
+    },
+  }
+  await act(new MysqlSchedulerStore(measuring, db.ids))
+  return walked
+}
+
 /** The lock waits of this database, as the server holds them at this instant. */
 const LOCK_WAITS = {
   sql: `SELECT l.OBJECT_NAME AS held_table, l.INDEX_NAME AS held_index, l.LOCK_MODE AS wanted
@@ -688,6 +726,45 @@ describe('a keyed write on MySQL', () => {
       [1, 1],
       [1, 1],
     ])
+  })
+
+  it('orders only its keys ahead of the table it writes, so an emit walks none of the live tasks of its queue', async () => {
+    // The emit's update of `runs` is keyed by the waits of the event, and also asks, of each
+    // run it wakes, whether its task is live and whether the event exists. The server turns
+    // those two questions into joins, and looks each up by the run it has in hand. Made to
+    // read the written table after every other, it had no run in hand when it reached
+    // `tasks`, and walked the live tasks of the queue: 2,009 rows beside 2,000 of them, and
+    // inside a mix of claims, events and reads the statement took 50 ms beside 200,000 runs
+    // and 258 ms beside a million, against 3 ms before any of this. With only the keys
+    // ordered ahead of the written table it walked 9.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-keyed-emit', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const waiter = await store.spawn(Q, 'waiter', '{}')
+      const [run] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('the waiter was not claimed')
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await seedDueRuns(db, 'live', 1000)
+      await store.awaitEvent(Q, waiter.taskId, run.runId, run.claimToken, 'step', 'go', 3600)
+      const walked = await walkedByEachStatement(db, 'emit-event', (measured) =>
+        measured.emitEvent(Q, 'go', '{}'),
+      )
+      expect(walked.length).toBeGreaterThan(3)
+      expect(
+        walked
+          .filter(({ rows }) => rows > 100)
+          .map(({ statement, rows }) => `${statement}: ${rows}`),
+        'mutation-verdict:behavior:mysql-keyed-write-orders-only-its-keys',
+      ).toEqual([])
+      const [woken] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [run.runId] }],
+        'read',
+      )
+      expect(woken?.rows[0]?.state).toBe('pending')
+    } finally {
+      await db.close()
+    }
   })
 
   it("indexes a run's statement stamp by a prefix that holds what tells one call's stamp from another's", async () => {
