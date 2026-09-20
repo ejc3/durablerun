@@ -6,7 +6,12 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
-import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
+import {
+  META_BOOTSTRAP_SQL,
+  META_TABLE_SQL,
+  RUNS_STAMP_INDEX,
+  createIndexIfMissing,
+} from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
@@ -496,7 +501,7 @@ describe('MysqlExecutor against a real server', () => {
     const db = await openMysqlTestDb({ idNamespace: 'no-stamp-index' })
     try {
       await db.raw.batch('fixture:drop-the-stamp-index', [
-        { sql: 'ALTER TABLE runs DROP INDEX runs_stamp', args: [] },
+        { sql: `ALTER TABLE runs DROP INDEX ${RUNS_STAMP_INDEX}`, args: [] },
       ])
       const store = new MysqlSchedulerStore(db.raw, db.ids)
       await store.spawn('q', 'task', '{}')

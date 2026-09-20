@@ -11,6 +11,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
+import { RUNS_STAMP_INDEX, RUNS_TASK_ATTEMPT_INDEX } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
@@ -543,7 +544,7 @@ const KEYED_WRITE =
 /** The index each keyed write should reach its target through, by table and key column. */
 const KEY_OF: Readonly<Record<string, string>> = {
   'runs.run_id': 'PRIMARY',
-  'runs.task_id': 'runs_task_attempt',
+  'runs.task_id': RUNS_TASK_ATTEMPT_INDEX,
   'tasks.task_id': 'PRIMARY',
   'waits.run_id': 'PRIMARY',
 }
@@ -792,7 +793,7 @@ describe('a keyed write on MySQL', () => {
         [
           {
             sql: `SELECT COLUMN_NAME AS indexed, SUB_PART AS prefix FROM information_schema.statistics
-                  WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_stamp'
+                  WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = '${RUNS_STAMP_INDEX}'
                   ORDER BY SEQ_IN_INDEX`,
             args: [],
           },

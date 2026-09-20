@@ -21,6 +21,7 @@ import {
   TableNode,
   type UpdateQueryNode,
 } from 'kysely'
+import { RUNS_STAMP_INDEX, RUNS_TASK_ATTEMPT_INDEX } from './schema.js'
 
 /** The name a conflict arm reads the incoming row by, as PostgreSQL and SQLite spell it. */
 const INCOMING = 'excluded'
@@ -171,7 +172,7 @@ function readersBeforeWriters(
  * table and looks each row up in the materialized keys.
  */
 const KEY_INDEXES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  runs: { run_id: 'primary', task_id: 'runs_task_attempt' },
+  runs: { run_id: 'primary', task_id: RUNS_TASK_ATTEMPT_INDEX },
   tasks: { task_id: 'primary' },
   waits: { run_id: 'primary' },
 }
@@ -275,7 +276,7 @@ function keyIndex(
  * InnoDB skips by index record, and it skipped a row its own transaction had stamped while
  * another transaction held that row's entry in the index the keys were read through.
  */
-const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }
+const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }
 
 /** Whether a condition is `alias.fence_stamp = …`, the stamp of the table read as `alias`. */
 function requiresStampOf(alias: string, condition: OperationNode): boolean {

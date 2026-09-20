@@ -73,6 +73,14 @@ export const META_BOOTSTRAP_SQL = `${META_TABLE_SQL} AS SELECT 'schema_version' 
 const STAMP_INDEX_PREFIX = 768
 
 /**
+ * The indexes this package's statements name. The schema declares them, and the compiler
+ * and the plan tests read their names from here, so a rename moves a frozen schema hash
+ * before it can reach a server.
+ */
+export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
+export const RUNS_STAMP_INDEX = 'runs_stamp'
+
+/**
  * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
  * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
  * index and before the version would fail its rerun on a duplicate key name. The
@@ -153,7 +161,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         CONSTRAINT runs_state CHECK (state IN ${LIVE_OR_TERMINAL}),
         KEY runs_poll (queue, state, available_at_ms),
         KEY runs_lease (queue, state, claim_expires_at_ms),
-        UNIQUE KEY runs_task_attempt (task_id, attempt)
+        UNIQUE KEY ${RUNS_TASK_ATTEMPT_INDEX} (task_id, attempt)
       )`,
 
       `CREATE TABLE IF NOT EXISTS checkpoints (
@@ -233,7 +241,11 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     // prefix, as wide as InnoDB allows. It is an index and nothing else: a build that
     // predates it runs against this schema unchanged.
     version: 8,
-    statements: createIndexIfMissing('runs', 'runs_stamp', `(fence_stamp(${STAMP_INDEX_PREFIX}))`),
+    statements: createIndexIfMissing(
+      'runs',
+      RUNS_STAMP_INDEX,
+      `(fence_stamp(${STAMP_INDEX_PREFIX}))`,
+    ),
   },
 ]
 

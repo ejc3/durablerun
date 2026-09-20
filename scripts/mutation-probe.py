@@ -7530,7 +7530,7 @@ MUTATION_SPECS.extend(
         (
             "mysql-keyed-delete-reads-its-keys-by-their-stamp",
             "packages/store-mysql/src/tree.ts",
-            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_stamp' }\n",
+            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }\n",
             "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_poll' }\n",
             "a delete reads its keys through the queue's poll index, takes shared locks on the runs other claimers hold, and a second claimer waits for the first",
         ),
