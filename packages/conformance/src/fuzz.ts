@@ -214,8 +214,8 @@ async function runWalk(
     }
   }
 
-  // Names past the width come from a stream of their own, so every other op makes the
-  // draws it made before this one existed, and a pinned seed walks as it did.
+  // Names past the width come from a stream of their own, so this op's draws never move
+  // another op's, and the rest of a seed's walk does not depend on it.
   const widthRng = new Rng(`fuzz-width-${seed}`)
   /**
    * Pass the port a name one character past the width (DESIGN.md §3.4 rule 10): an event
@@ -224,7 +224,10 @@ async function runWalk(
    * before it sends anything, so the walk goes on as if this had not run. An accepted
    * name does not fail the walk here. The row it leaves is what the invariant library's
    * width condition reports, on the two dialects whose columns do not bound a name, and
-   * the walk's next check of the invariants is what fails.
+   * the walk's next check of the invariants is what fails. The count is of refusals by their
+   * class. MySQL's executor gives the column's own refusal, error 1406, that same class, so
+   * there the count could not tell an entry's refusal from the column's. Every caller of this
+   * walk runs libSQL.
    */
   const passNamePastTheWidth = async (): Promise<void> => {
     const past = 'w'.repeat(IDENTIFIER_CHARACTERS + 1)

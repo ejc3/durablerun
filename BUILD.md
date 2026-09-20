@@ -2276,9 +2276,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     engine builds from each name, and a room is what that leaves of
     `IDENTIFIER_CHARACTERS`, so no room is typed as a number. The axis is a
     record typed by the generated methods, so a new one does not compile
-    without its members. `identifier-width.test.ts` typed the same rooms by
-    hand. It now takes every length from that one table and states the numbers
-    DESIGN.md gives once, in one expectation. Under and at its room a program
+    without its members. The table case of `identifier-width.test.ts` typed
+    the same rooms by hand. That case now takes every length from that one
+    table and states the numbers DESIGN.md gives once, in one expectation. The
+    file's other cases keep the lengths they had. Under and at its room a program
     ends as its reference run did at every sampled fault point, and the run
     left a name of the length the member claims. Past it, on every schedule,
     the task fails for good with a `FatalTaskError` that names what the task
@@ -2320,8 +2321,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     witness through a new storage corruption variant, injected on libSQL and
     PostgreSQL and structurally rejected by MySQL's column with error 1406, 146
     witnesses and 3,066 cells, one checker case that plants a name at the
-    width and one past it in every column, a second that holds the inventory
-    to the columns MySQL's migrations bound at the width, and three mutations.
+    width and one past it in every column, a second that holds every VARCHAR
+    column of MySQL's schema, by name and width, to the inventory or to a short
+    named list of bounded columns that are not identifiers, with a reader that
+    refuses a migration statement it cannot read, and three mutations.
     `legacy-rows.test.ts` expects exactly the violations for the rows it
     plants.
   - No walk could trip the condition, so the operation fuzz gained one op.
@@ -2337,11 +2340,32 @@ these three things; nothing else in the system does I/O, time, or randomness.
     eight such walks owns `libsql-emitted-name-held-at-the-entry`, which
     removes that one store entry's hold. The case sits in the checker test,
     because the audit leaves the fuzz files out of a mutation's run.
+  - A limit of the mutation audit, met here. Its test command excludes
+    `packages/conformance/test/fuzz-*` and the driver's process chaos test, so
+    a verdict in one of those files never runs and its mutation can never be
+    caught. The registry's self-test now refuses such a verdict where it is
+    declared, with three cases and an injected fault of its own. No verdict
+    sits in one: 0 of 878.
   - The mutation registry goes from 873 to 878.
   - An option, not built: an admin command that lists rows whose names pass
     the width, a stranded queue above all. No database anyone has observed
     holds one. The harness's other stated gaps stay where the sagas entry lists
     them.
+  - An option, not built: hold the inventory to MySQL's catalog, which states
+    each column's width, in the `conformance-mysql` job. The fixtures' catalog
+    statements return a type without a width, so it means a change to three
+    store packages' test exports and to the fixture contract. The pin reads
+    the migrations' text, which sees a VARCHAR column in any statement and not
+    a column bounded by another type.
+  - An option, not built: draw the fuzz op's names from the port-typed
+    `ENTRIES` table of `identifier-bound.ts`. The op lists four entries by
+    hand, and its names are ASCII. PR3.3c generates an axis from that table
+    and may absorb this.
+  - An option, not built: a poison witness for each of the 22 identifier
+    columns. One column has one.
+  - An option, not built: read PostgreSQL's `event_locks`, which holds
+    identifiers outside the six snapshot tables. Each of its rows has a sibling
+    row in `events` or `waits` that the condition reads.
 
 ## Phase 5 — operations + sharding
 

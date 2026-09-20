@@ -1832,8 +1832,8 @@ are load-bearing):
    each room computed from the width and what the engine adds to the name:
    under and at its room a program replays like any other, and past it the
    task fails for good before the body runs, and the SDK then makes no store
-   call but the one that records the failure. That harness and
-   `identifier-width.test.ts` take every length from one table of what the
+   call but the one that records the failure. That harness and the table case
+   of `identifier-width.test.ts` take every length from one table of what the
    engine adds to a name, `packages/sdk/test/name-rooms.ts`. The invariant
    library's `identifier/over-width` condition is this rule's executable twin
    on libSQL and PostgreSQL, whose columns do not bound a name. It reads every
@@ -1842,8 +1842,8 @@ are load-bearing):
    The operation fuzz passes the port names one character past the width,
    drawn from a random stream of its own so that no other op's draws move, and
    leaves an accepted one for the condition to report at the walk's next
-   check. No other walk builds a name that long, so without that op a dropped
-   hold passed every walk. Two registered mutations keep the audit checking
+   check. It is the one op that builds a name that long, so it is what lets
+   the condition fail in a walk. Two registered mutations keep the audit checking
    that these two generated surfaces can fail: one of the SDK's hold names the
    harness as the test that catches it, and one of a store entry's hold names
    a pinned case of eight such walks.
@@ -2021,8 +2021,10 @@ not depend on careful reading:
   `IDENTIFIER_COLUMNS`, names every column of those tables that holds a durable
   identifier (§3.4 rule 10): it selects them into the snapshot, the `identifier/over-width`
   condition reads each, one checker case plants a name past the width in
-  every one, and a test holds the list to the columns MySQL's migrations
-  bound at the width.
+  every one, and a test holds every VARCHAR column of MySQL's schema, by name
+  and width, to that inventory or to a short named list of bounded columns
+  that are not identifiers. The test's reader refuses a migration statement
+  that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 21 classified
   write labels with 146 corrupt-state witnesses covering that exact
