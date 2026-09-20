@@ -478,10 +478,11 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler task names and idempotency keys cross one
-  durable-string validator at each store's spawn ingress: actual NUL and lone
-  UTF-16 surrogates are rejected before IDs are minted or executor I/O can
-  change or alias their identity. Scheduler headers, which dialect SQL later parses as an
+  `FatalTaskError`s. Scheduler task names and idempotency keys cross the one
+  check of the port's strings, with every other string a store's entry takes
+  (§3.4 rule 10): actual NUL and lone UTF-16 surrogates are rejected before IDs
+  are minted or executor I/O can change or alias their identity. Scheduler
+  headers, which dialect SQL later parses as an
   object before issuing worker authority, must enter as a plain object whose
   own enumerable string-keyed values are strings. Their keys and values also
   have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
@@ -701,10 +702,12 @@ One invocation executes one claimed run to its next suspension point:
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
     refuses a name that starts with `$` with `PortRefusalError`, which is a
-    `RangeError`, and a name no store
-    can keep, one with a NUL or a lone surrogate, with
-    `InvalidDurableStringError`, and `EventName.taskDone` is the completion
-    event of a task. An `EventName` carries that task (`taskId`, null for a
+    `RangeError`, and `EventName.taskDone` is the completion
+    event of a task. A name no store can keep, one with a NUL or a lone
+    surrogate, never reaches `fromPort`: the one check of the port's strings
+    refuses it with `InvalidDurableStringError` before a store's entry runs
+    (§3.4 rule 10), and a store's entry is the only caller of `fromPort`. An
+    `EventName` carries that task (`taskId`, null for a
     caller's event) and the form a message shows a person (`display`): a
     caller's event by its name, and a completion event as `task <id>`, because
     the reserved name never reaches task code and the error of an await does.
@@ -1923,9 +1926,10 @@ are load-bearing):
    - A payload, which is JSON text or the headers object, is its serializer's, and this
      check leaves it alone.
    - A value that is not a string where the port takes one is refused as a string outside
-     the domain is, because the domain is of strings. A string the caller left out, an
-     optional argument or an optional member of an options object, is not a refusal, and
-     null is not a way to leave one out.
+     the domain is, because the domain is of strings. A string the caller left out is
+     not a refusal of this check: an optional argument, or any member of an options
+     object. The entry that reads the object owns a member it requires. Null is not a
+     way to leave a string out.
    - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
      happens before an id is minted or anything is sent, and it is a rejected promise and
      never a throw.
