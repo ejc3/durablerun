@@ -264,8 +264,9 @@ interface Named {
 const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
 
 /**
- * What a refused clock leaves a statement to write. Every call of `age` is refused, the form with
- * two arguments too, which reads no clock, so the refusal names what stands in for it.
+ * The last sentence of both clock refusals: what to write in place of `age(a, b)`. Every call of
+ * `age` is refused, the form with two arguments too, which reads no clock, so whoever wrote that
+ * form is told what stands in for it.
  */
 const SPAN_ADVICE =
   'A span between two stored instants is a subtraction of the two columns, which reads no clock, so age() is refused with two arguments as with one'

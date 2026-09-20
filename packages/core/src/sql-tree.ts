@@ -1158,15 +1158,18 @@ const CLOCK_FUNCTIONS = [
  * A database clock spelled out in raw SQL text. This is a spelling list, because raw text
  * is the one place a tree cannot be read, and it is the one definition of the spellings:
  * `scripts/clock-lint.py` reads these two lists from this file and applies them to store
- * sources, all but the last arm. Each line here is one entry or one arm, which is the shape
- * that lint reads and the shape a registered mutation deletes. A date function with no argument is on it, because SQLite reads
- * `datetime()` as the current time, and so is the literal 'now', whatever function takes it.
- * PostgreSQL's `age` is on it whatever it is given: with one argument it measures from the
- * current date, no statement calls it with two, and telling them apart would mean reading SQL.
- * The test clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read
- * the clock by a door no function names. That arm is the tree's alone, because a store's admin
- * statements write the row by name, so the lint refuses a read of it with a pattern of its own. The only clock a tree may hold is the clock token, and
- * a clock called as a function node is outside the grammar, which lists no clock.
+ * sources, all but the one arm named below. Each line here is one entry or one arm, which
+ * is the shape that lint reads and the shape a registered mutation deletes.
+ *
+ * A date function with no argument is on it, because SQLite reads `datetime()` as the
+ * current time, and so is the literal 'now', whatever function takes it. PostgreSQL's `age`
+ * is on it whatever it is given: with one argument it measures from the current date, no
+ * statement calls it with two, and telling them apart would mean reading SQL. The test
+ * clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read the clock
+ * by a door no function names. That arm is the tree's alone, because a store's admin
+ * statements write the row by name, so the lint refuses a read of it with a pattern of its
+ * own. The only clock a tree may hold is the clock token, and a clock called as a function
+ * node is outside the grammar, which lists no clock.
  */
 export const CLOCK_SPELLING = new RegExp(
   [
@@ -1325,10 +1328,10 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
  * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
  * write, so a set operation there is a form nobody considered. A read may not compare a
  * state or status column with a bound value, alone, in parentheses, or in a list under IN,
- * because a partial index is matched by the literal. A transition finds its row by key, so it may. An INSERT takes one row of values or one
- * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
- * what is built from nodes. A store fragment is opaque text, reviewed through the
- * generated corpus.
+ * because a partial index is matched by the literal. A transition finds its row by key, so
+ * it may. An INSERT takes one row of values or one SELECT, with a conflict clause that names
+ * its columns (`insertShapeProblem`). It binds what is built from nodes. A store fragment is
+ * opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode, reading = false): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {

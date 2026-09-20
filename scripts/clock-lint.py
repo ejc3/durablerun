@@ -50,9 +50,12 @@ except ValueError as error:
 # case-insensitive, so the pattern is. Function names must appear AS CALLS: matched as bare
 # words, batch labels like `expire-lease-now` and comments reading "not a second NOW" were
 # violations, which is the failure that trains people to weaken a checker until it is
-# quiet. The bare keywords (CURRENT_TIMESTAMP, LOCALTIME) take no parentheses in some
-# dialect and stay word-matched. SQLite reads a date function with no argument as the
-# current time, and the literal 'now' reads the clock whatever function takes it.
+# quiet. The bare keywords take no parentheses in some dialect and stay word-matched: MySQL
+# accepts LOCALTIME and UTC_TIMESTAMP bare, PostgreSQL accepts LOCALTIMESTAMP, and every
+# dialect accepts CURRENT_TIMESTAMP. `now()` is PostgreSQL's usual spelling and `UNIXEPOCH()`
+# SQLite's, and the first pattern here missed both by their case. SQLite reads a date function
+# with no argument as the current time, and the literal 'now' reads the clock whatever function
+# takes it: SQLite's timediff('now', ...), PostgreSQL's 'now' cast to a timestamp.
 TREE_RULES = "packages/core/src/sql-tree.ts"
 # The one arm this lint cannot apply. The tree refuses the bare word in a fragment, where
 # nothing may name the test clock's row. A store's admin statements write that row by name,
