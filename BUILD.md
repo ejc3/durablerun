@@ -2481,17 +2481,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   nests: a step that runs once for each row of another must be keyed, and every
   step it runs once for each row of must be keyed or a due range. DESIGN.md §3.4
   has the reading, the two declared lists of column names, why a due range may
-  drive, and what the rule cannot see, as five statements that were run. A plan
-  line or a name the reader cannot read is a fault. Two statements of `claim`
-  break the rule and are excused by name, the task update and the delete of
-  expired waits. A plan prints a range the same way whichever way it points and
-  never prints a LIMIT, so every statement in which a due range drives another
-  step is named with the limit that bounds it. Four are: the claim's candidate
-  legs, the two sweep scans, and the claim's read of the runs it took, whose
-  range is every lease of its queue that has not expired, under no LIMIT. That
-  read is the first read any test has planned, and it shows that plan only under
-  its real binds, because SQLite plans from bound values. All four statements of
-  `claim` are PR3.14b's. One claim of one run on libSQL, median of 7, on a file
+  drive, and what the rule cannot see, as five statements that were run. A step
+  is judged by its constraints whatever it is named, and a plan line the reader
+  cannot read is a fault. Two statements of `claim` break the rule, the task
+  update and the delete of expired waits, and are excused by name, for that walk
+  alone. A plan prints a range the same way whichever way it points and never
+  prints a LIMIT, so every statement in which a due range drives another step is
+  named with the limit that bounds it. Four are: the claim's candidate legs, the
+  two sweep scans, and the claim's read of the runs it took, whose range is
+  every lease of its queue that has not expired, under no LIMIT. That read is
+  the first read any test has planned, and it shows that plan only under its
+  real binds, because SQLite plans from bound values. All four statements of
+  `claim` are PR3.14b's. When it removes the claim's walks it also removes the
+  claim's two excuses here and its name in the list of due ranges, which fail as
+  unneeded until it does. One claim of one run on libSQL, median of 7, on a file
   database, beside running runs of its queue that another worker holds, then
   each of its statements alone in a transaction that is rolled back, with
   `activate` as the keyed control:
@@ -2520,6 +2523,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reading of its own plan format, and MySQL's test already measures rows
     walked from inside the batch, which a plan cannot give. Its trigger is a
     statement found to walk on a server that those chosen pins do not hold.
+  - Option, not a deferral of this PR: one history for the corpus generator and
+    this check. `sql-corpus.test.ts` scripts the same operations to record the
+    corpus, in another package, so a new label or variant is scripted twice, and
+    each test fails until it is. One history over the store's two ports, in a
+    testing entry both packages can import, would serve both, and a server's
+    generated check too. Its trigger is that check being built for a server, or
+    the second variant that has to be scripted in both.
   - Recorded, and not planned: a statement inside a trigger is never planned.
     libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
     scans `drivers`, a table of one row for each live driver.
