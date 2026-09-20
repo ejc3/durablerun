@@ -1311,10 +1311,22 @@ function holdsBind(node: OperationNode): boolean {
   return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)
 }
 
-/** Whether a test holds a state column on its left and a bound value on its right. */
+/** Whether one operand of a test holds a bound value and the other names a state column. */
+function bindsState(bound: OperationNode, named: OperationNode): boolean {
+  if (!holdsBind(bound)) return false
+  return STATE_COLUMNS.some((column) => namesColumn(named, column))
+}
+
+/**
+ * Whether a test compares a state column with a bound value, whichever side each stands on.
+ * The builder writes the column first unless it is told otherwise, and `? = state` reads the
+ * same to a partial index as `state = ?`.
+ */
 function comparesStateWithBind(node: BinaryOperationNode): boolean {
-  if (!holdsBind(node.rightOperand)) return false
-  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))
+  return (
+    bindsState(node.rightOperand, node.leftOperand) ||
+    bindsState(node.leftOperand, node.rightOperand)
+  )
 }
 
 /** The one set operation the grammar lists. UNION, INTERSECT and EXCEPT compare whole rows, which no read here needs. */

@@ -559,7 +559,10 @@ describe('the tree rules', () => {
       const mirrored = (eb: Loose) => eb(eb.val('running'), '=', eb.ref('r.state'))
       const underACall = (eb: Loose) =>
         eb(eb.fn('coalesce', [eb.val('running'), eb.val('x')]), '=', eb.ref('r.state'))
-      expect(String(problem(runs().where(mirrored)))).toMatch(BOUND)
+      expect(
+        String(problem(runs().where(mirrored))),
+        'mutation-verdict:construction:tree-read-state-either-side',
+      ).toMatch(BOUND)
       expect(String(problem(runs().where(underACall)))).toMatch(BOUND)
     })
 

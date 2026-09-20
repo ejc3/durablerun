@@ -2455,14 +2455,14 @@ MUTATION_SPECS = [
     (
         "tree-read-state-literal-admitted",
         "packages/core/src/sql-tree.ts",
-        "  if (!holdsBind(node.rightOperand)) return false\n",
+        "  if (!holdsBind(bound)) return false\n",
         "  if (false) return false\n",
         "a read is refused a state written inline, the one form a partial index matches",
     ),
     (
         "tree-read-state-names-the-column",
         "packages/core/src/sql-tree.ts",
-        "  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))\n",
+        "  return STATE_COLUMNS.some((column) => namesColumn(named, column))\n",
         "  return true\n",
         "a read is refused every bound comparison, whatever column it names",
     ),
@@ -2486,6 +2486,13 @@ MUTATION_SPECS = [
         "const STATE_COLUMNS = ['state', 'status']\n",
         "const STATE_COLUMNS = ['state']\n",
         "a read may bind the status it compares, which the checkpoints' partial index cannot match",
+    ),
+    (
+        "tree-read-state-either-side",
+        "packages/core/src/sql-tree.ts",
+        "    bindsState(node.rightOperand, node.leftOperand) ||\n    bindsState(node.leftOperand, node.rightOperand)\n",
+        "    bindsState(node.rightOperand, node.leftOperand)\n",
+        "a read may bind the state it compares by writing the bound value on the left of the test",
     ),
     (
         "tree-read-state-stops-at-a-subquery",
@@ -9031,6 +9038,12 @@ VERDICTS = {
         "packages/core/test/sql-tree-verdicts.test.ts",
         "the tree rules a state a read compares holds a checkpoint status to a literal as well",
         "mutation-verdict:construction:tree-read-status-is-a-state",
+    ),
+    "tree-read-state-either-side": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a state a read compares is refused with the bound value on the left of the test",
+        "mutation-verdict:construction:tree-read-state-either-side",
     ),
     "tree-read-state-stops-at-a-subquery": ExpectedVerdict(
         "construction",
@@ -18479,7 +18492,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 958:
+        if len(MUTATIONS) != 959:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
