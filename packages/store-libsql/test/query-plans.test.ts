@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import {
   INFRA_RETRY_CAP,
   SAGA_ROLLBACK_PREFIX,
@@ -15,6 +16,7 @@ import {
   LibsqlStoreAdmin,
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
+import { type PlanRow, readNests } from './plan-nests.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -660,6 +662,173 @@ describe('cancellation deadlines', () => {
   })
 })
 
+/** One statement a real operation sent: the label of its batch, its place in it, its binds. */
+interface Shipped {
+  readonly label: string
+  readonly index: number
+  readonly sql: string
+  readonly args: unknown[]
+}
+
+/**
+ * Every statement the store sends, recovered from one scripted history of real operations,
+ * so nothing planned below is a hand copy of what ships. The history reaches every batch in
+ * every variant it compiles to, and what holds it to that is the corpus: a statement of
+ * `corpus/libsql.json` that this history never sent fails the last block of this file. It
+ * runs once for the file, because a plan needs a statement and not the rows it touched.
+ */
+let shipped: Promise<Shipped[]> | undefined
+function shippedStatements(): Promise<Shipped[]> {
+  shipped ??= sendEveryStatement()
+  return shipped
+}
+
+async function sendEveryStatement(): Promise<Shipped[]> {
+  const seen: Shipped[] = []
+  const recorder: SqlExecutor = {
+    batch: (label, statements, mode) => {
+      for (const [index, st] of statements.entries()) {
+        seen.push({ label, index, sql: st.sql, args: [...st.args] })
+      }
+      return db.batch(label, statements, mode)
+    },
+  }
+  const admin = new LibsqlStoreAdmin(db)
+  await admin.setFakeNowEpochMs(1_000_000)
+  const store = new LibsqlSchedulerStore(recorder, testIdSource('shipped-statements'))
+  // A claim token is fresh for every claim, as a tick's is, and the run carries it.
+  let claims = 0
+  const claimOf = async (taskId: string) => {
+    claims += 1
+    const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+    if (!run || run.taskId !== taskId) throw new Error(`expected to claim task ${taskId}`)
+    return run
+  }
+  const startedOf = async (taskId: string) => {
+    const run = await claimOf(taskId)
+    await store.activate('q', run.runId, run.claimToken, run.claimGen)
+    return run
+  }
+  const claimed = async (name: string) => claimOf((await store.spawn('q', name, '{}')).taskId)
+  const started = async (name: string, options: { maxAttempts?: number } = {}) =>
+    startedOf((await store.spawn('q', name, '{}', options)).taskId)
+  const deferred = await claimed('deferred')
+  await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
+  const rescheduled = await started('rescheduled')
+  await store.reschedule('q', rescheduled.runId, rescheduled.claimToken, { inSeconds: 3600 })
+  const suspended = await started('suspended')
+  await store.suspendRun(
+    'q',
+    suspended.runId,
+    suspended.claimToken,
+    { inSeconds: 3600 },
+    { key: 'step', stateJson: '{}' },
+  )
+  // A heartbeat and the reads, beside a live run. A read changes nothing, so where it
+  // stands is free. The driver's heartbeat is no run's, and rides here.
+  const live = await started('live')
+  await store.heartbeat('q', live.runId, live.claimToken, 60)
+  await store.claimedTaskName('q', live.runId, live.claimToken, live.claimGen)
+  await store.getCheckpoints('q', live.taskId, 1)
+  await store.getTaskResult('q', live.taskId)
+  await store.nextWakeAtEpochMs('q')
+  await store.driverHeartbeat('q', 'driver', 60)
+  // A run this store never heard of: the terminal batch reads its task, finds none, and
+  // reads its state to say why it refuses.
+  const refused = await store.complete('q', 'no-such-run', 'no-token', '{}').then(
+    () => false,
+    () => true,
+  )
+  if (!refused) throw new Error('expected a run nobody made to be refused')
+  await store.complete('q', live.runId, live.claimToken, '{}')
+  const waiting = await started('waiting')
+  await store.awaitEvent(
+    'q',
+    waiting.taskId,
+    waiting.runId,
+    waiting.claimToken,
+    'step',
+    'event',
+    null,
+  )
+  await store.emitEvent('q', 'event', '{}')
+  const woken = await startedOf(waiting.taskId)
+  await store.complete('q', woken.runId, woken.claimToken, '{}')
+  // A parent awaits a live child, and the child ends and wakes it. Then an older build's
+  // ending is staged, one that wrote no event, so the parent's next await records it.
+  const parent = await started('parent')
+  const child = await store.spawn('q', 'child', '{}', {
+    childOf: {
+      parentQueue: 'q',
+      parentTaskId: parent.taskId,
+      runId: parent.runId,
+      claimToken: parent.claimToken,
+      replayKey: 'site',
+    },
+  })
+  const awaitChild = (run: typeof parent) =>
+    store.awaitTaskDone('q', run.taskId, run.runId, run.claimToken, 'step', child.taskId, null)
+  await awaitChild(parent)
+  const childRun = await startedOf(child.taskId)
+  await store.complete('q', childRun.runId, childRun.claimToken, '{}')
+  const wokenParent = await startedOf(parent.taskId)
+  await db.batch('an-older-build-wrote-no-event', [
+    {
+      sql: 'DELETE FROM events WHERE queue = ? AND event_name LIKE ?',
+      args: ['q', '$task-done:%'],
+    },
+  ])
+  await awaitChild(wokenParent)
+  await store.complete('q', wokenParent.runId, wokenParent.claimToken, '{}')
+  const retried = await started('fails-and-retries', { maxAttempts: 2 })
+  await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
+  const failed = await started('fails', { maxAttempts: 1 })
+  await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+  // A saga (DESIGN.md §3.10). A registered step starts, and the failure that ends the
+  // forward phase places the rollback pass, which `fail` ships. A rollback's failed
+  // attempt places the next pass, and the one after it halts the saga, which
+  // `fail-rollback` ships both ways.
+  const saga = await started('rolls-back', { maxAttempts: 1 })
+  await store.setCheckpoint(
+    'q',
+    saga.taskId,
+    saga.runId,
+    saga.claimToken,
+    `${SAGA_STARTED_PREFIX}a`,
+    '1',
+    60,
+  )
+  const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
+  if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
+  const sagaTried = (tries: number) => ({
+    key: `${SAGA_TRIES_PREFIX}a`,
+    stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
+  })
+  const firstPass = await startedOf(saga.taskId)
+  const again = await store.failRollback(
+    'q',
+    firstPass.runId,
+    firstPass.claimToken,
+    '{}',
+    { delaySeconds: 0 },
+    sagaTried(1),
+  )
+  if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
+  const lastPass = await startedOf(saga.taskId)
+  await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
+  await store.retryTask('q', failed.taskId)
+  await store.cancelTask('q', failed.taskId)
+  // Last, because it moves the clock: a launch that is lost, a worker that dies and whose
+  // lease an advisory signal shortens first, and a task never started by its deadline.
+  await claimed('launch-is-lost')
+  const dies = await started('worker-dies')
+  await store.expireLeaseNow('q', dies.runId, dies.claimToken)
+  await store.spawn('q', 'never-starts', '{}', { cancellation: { maxDelaySeconds: 30 } })
+  await admin.setFakeNowEpochMs(1_000_000 + 120_000)
+  await store.sweep('q', 10)
+  return seen
+}
+
 describe('every write a store ships, by the table it writes', () => {
   /**
    * A generated follow-on writes the rows that belong to the rows its batch stamped: the
@@ -671,130 +840,8 @@ describe('every write a store ships, by the table it writes', () => {
    * recovered from the real operations, as the other pins of this file are, and every
    * UPDATE and DELETE of every label is planned, so a new follow-on is read too.
    */
-  const REACHED = [
-    'claim',
-    'activate',
-    'defer-launch',
-    'reschedule',
-    'suspend',
-    'await-event',
-    'emit-event',
-    'complete',
-    'fail',
-    'fail-rollback',
-    'retry-task',
-    'cancel-task',
-    'sweep:lost-launch',
-    'sweep:claim-timeout',
-  ]
-
-  async function shippedWrites(): Promise<{ label: string; sql: string; args: unknown[] }[]> {
-    const seen: { label: string; sql: string; args: unknown[] }[] = []
-    const recorder: SqlExecutor = {
-      batch: (label, statements, mode) => {
-        for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
-        return db.batch(label, statements, mode)
-      },
-    }
-    const admin = new LibsqlStoreAdmin(db)
-    await admin.setFakeNowEpochMs(1_000_000)
-    const store = new LibsqlSchedulerStore(recorder, testIdSource('shipped-writes'))
-    // A claim token is fresh for every claim, as a tick's is, and the run carries it.
-    let claims = 0
-    const claimed = async (name: string, options: { maxAttempts?: number } = {}) => {
-      const spawned = await store.spawn('q', name, '{}', options)
-      claims += 1
-      const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-      if (!run || run.taskId !== spawned.taskId) throw new Error(`expected to claim ${name}`)
-      return run
-    }
-    const started = async (name: string, options: { maxAttempts?: number } = {}) => {
-      const run = await claimed(name, options)
-      await store.activate('q', run.runId, run.claimToken, run.claimGen)
-      return run
-    }
-    const deferred = await claimed('deferred')
-    await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
-    const rescheduled = await started('rescheduled')
-    await store.reschedule('q', rescheduled.runId, rescheduled.claimToken, { inSeconds: 3600 })
-    const suspended = await started('suspended')
-    await store.suspendRun(
-      'q',
-      suspended.runId,
-      suspended.claimToken,
-      { inSeconds: 3600 },
-      { key: 'step', stateJson: '{}' },
-    )
-    const waiting = await started('waiting')
-    await store.awaitEvent(
-      'q',
-      waiting.taskId,
-      waiting.runId,
-      waiting.claimToken,
-      'step',
-      'event',
-      null,
-    )
-    await store.emitEvent('q', 'event', '{}')
-    const [woken] = await store.claim('q', 'worker-woken', { leaseSeconds: 60, limit: 1 })
-    if (woken?.taskId !== waiting.taskId) throw new Error('expected to claim the woken run')
-    await store.activate('q', woken.runId, woken.claimToken, woken.claimGen)
-    await store.complete('q', woken.runId, woken.claimToken, '{}')
-    const retried = await started('fails-and-retries', { maxAttempts: 2 })
-    await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
-    const failed = await started('fails', { maxAttempts: 1 })
-    await store.fail('q', failed.runId, failed.claimToken, '{}', null)
-    // A saga (DESIGN.md §3.10). A registered step starts, and the failure that ends the
-    // forward phase places the rollback pass, which `fail` ships. A rollback's failed
-    // attempt places the next pass, and the one after it halts the saga, which
-    // `fail-rollback` ships both ways.
-    const saga = await started('rolls-back', { maxAttempts: 1 })
-    await store.setCheckpoint(
-      'q',
-      saga.taskId,
-      saga.runId,
-      saga.claimToken,
-      `${SAGA_STARTED_PREFIX}a`,
-      '1',
-      60,
-    )
-    const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
-    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
-    const sagaTried = (tries: number) => ({
-      key: `${SAGA_TRIES_PREFIX}a`,
-      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
-    })
-    const passOf = async () => {
-      claims += 1
-      const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-      if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
-      await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
-      return pass
-    }
-    const firstPass = await passOf()
-    const again = await store.failRollback(
-      'q',
-      firstPass.runId,
-      firstPass.claimToken,
-      '{}',
-      { delaySeconds: 0 },
-      sagaTried(1),
-    )
-    if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
-    const lastPass = await passOf()
-    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
-    await store.retryTask('q', failed.taskId)
-    await store.cancelTask('q', failed.taskId)
-    // One run whose launch is lost and one whose worker dies, then the clock passes both leases.
-    await claimed('launch-is-lost')
-    await started('worker-dies')
-    await admin.setFakeNowEpochMs(1_000_000 + 120_000)
-    await store.sweep('q', 10)
-    const writes = seen.filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
-    const labels = new Set(writes.map((st) => st.label))
-    expect(REACHED.filter((label) => !labels.has(label))).toEqual([])
-    return writes
-  }
+  const shippedWrites = async () =>
+    (await shippedStatements()).filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
 
   /** The access a write is allowed to reach each table by: a seek by the key it was handed. */
   const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
@@ -860,5 +907,202 @@ describe('every write a store ships, by the table it writes', () => {
     expect(found.filter((name) => !(name in EXCUSED_SOURCE_WALKS))).toEqual([])
     // An excuse that nothing needs any more is removed, not kept.
     expect(Object.keys(EXCUSED_SOURCE_WALKS).filter((name) => !found.includes(name))).toEqual([])
+  })
+})
+
+describe('every statement a store ships, by the nests of its plan', () => {
+  /**
+   * The pins above hold the statements someone chose, and the block before this one holds
+   * the table each write writes. Neither plans a read or the SELECT of an INSERT, and
+   * neither sees a step that runs once for each row of a backlog unless it spells the one
+   * failure it was written against. Here every statement of every batch is planned and its
+   * loop nests are judged by `nestFaults`, whose header says what a nest is and what the
+   * rule is. "Every" is held by the two checked inventories of what a store sends: the
+   * generated corpus of statement trees, and the list of the statements that stay text.
+   */
+  const CORPUS: Record<string, Record<string, { sql: string }[]>> = JSON.parse(
+    readFileSync(new URL('../../conformance/corpus/libsql.json', import.meta.url), 'utf8'),
+  )
+  const TEXT_STATEMENTS: string[] = Object.keys(
+    JSON.parse(
+      readFileSync(new URL('../../../scripts/text-statements.json', import.meta.url), 'utf8'),
+    ).statements,
+  )
+
+  /** A text statement no operation of the store sends, with why it has no nest to judge. */
+  const NOT_THE_STORES: Readonly<Record<string, string>> = {
+    'migrate:bootstrap': 'the migration runner sends it, and it is DDL, which has no plan',
+    'migrate:v*': 'the migration runner sends it, and it is DDL, which has no plan',
+    'migrate:version': 'the migration runner sends it, and it reads meta alone',
+    'admin:set-fake-now': 'the test clock sends it, and it writes meta alone',
+    'admin:clear-fake-now': 'the test clock sends it, and it writes meta alone',
+    'admin:now': 'the test clock sends it, and it reads meta alone',
+  }
+
+  /**
+   * Statements this block excuses, by name, each with where the open question is recorded.
+   * A claim finds the runs it took by queue and state, so whatever it then reads by key it
+   * reads once for each running run of its queue, as far as a plan can show.
+   */
+  const EXCUSED_NESTS: Readonly<Record<string, string>> = {
+    'claim/claimed#1': 'BUILD.md PR3.14b, the claim finds the runs it took by queue and state',
+    'claim/claimed#2': 'BUILD.md PR3.14b, the claim finds the runs it took by queue and state',
+  }
+
+  /**
+   * A due range is what is due only if it points that way, and it is bounded only by a
+   * LIMIT, and a plan shows neither. So every statement in which a due range drives another
+   * step is named here, with the limit that bounds what it takes or with where the open
+   * question is recorded. The reason is the part no plan can check.
+   */
+  const DRIVEN_BY_A_DUE_RANGE: Readonly<Record<string, string>> = {
+    'claim/claimed#0': 'each candidate leg takes the runs that are due, under its own LIMIT',
+    'claim/claimed#3':
+      'BUILD.md PR3.14b, the range is every lease of the queue that has NOT expired, with no LIMIT',
+    'sweep:scan/read#0': 'it takes the tasks past their start deadline, under the LIMIT of a sweep',
+    'sweep:scan/read#1': 'it takes the leases that have expired, under the LIMIT of a sweep',
+  }
+
+  /** The plan as the tree it is: each row's id and its parent's, which the flat text drops. */
+  async function planTree(sql: string, args: unknown[]): Promise<PlanRow[]> {
+    const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
+    return r.rows.map((row) => ({
+      id: Number(row.id),
+      parent: Number(row.parent),
+      detail: String(row.detail),
+    }))
+  }
+
+  /** A statement's name: where the corpus holds it, or for text its place in its batch. */
+  const placeInCorpus = new Map<string, string>()
+  for (const [label, variants] of Object.entries(CORPUS)) {
+    for (const [variant, signature] of Object.entries(variants)) {
+      for (const [i, st] of signature.entries()) {
+        const key = `${label}\n${st.sql}`
+        if (!placeInCorpus.has(key)) placeInCorpus.set(key, `${label}/${variant}#${i}`)
+      }
+    }
+  }
+  const nameOf = (st: Shipped) =>
+    placeInCorpus.get(`${st.label}\n${st.sql}`) ?? `${st.label}#${st.index}`
+
+  it("sends every statement of the corpus, and every text statement that is the store's", async () => {
+    const sent = await shippedStatements()
+    const sentAs = new Set(sent.map((st) => `${st.label}\n${st.sql}`))
+    // Every statement of every variant, by its text: a label reached through one of its
+    // variants would leave the statements of the other unplanned.
+    expect(
+      [...placeInCorpus].filter(([key]) => !sentAs.has(key)).map(([, place]) => place),
+    ).toEqual([])
+    const labels = new Set(sent.map((st) => st.label))
+    expect(
+      TEXT_STATEMENTS.filter((label) => !labels.has(label) && !(label in NOT_THE_STORES)),
+    ).toEqual([])
+    // A reason that names nothing, or names a statement the store does send, is removed.
+    expect(
+      Object.keys(NOT_THE_STORES).filter(
+        (label) => labels.has(label) || !TEXT_STATEMENTS.includes(label),
+      ),
+    ).toEqual([])
+  })
+
+  it('reads no table once for each row of a backlog, but for the claim it names', async () => {
+    const sent = await shippedStatements()
+    const distinct = [...new Map(sent.map((st) => [`${st.label}\n${st.sql}`, st])).values()]
+    const faults: string[] = []
+    const excused = new Set<string>()
+    const drivenByADueRange = new Set<string>()
+    for (const st of distinct) {
+      const reading = readNests(st.sql, await planTree(st.sql, st.args))
+      if (reading.dueDrivers.length > 0) drivenByADueRange.add(nameOf(st))
+      if (reading.faults.length === 0) continue
+      if (nameOf(st) in EXCUSED_NESTS) excused.add(nameOf(st))
+      else faults.push(...reading.faults.map((fault) => `[${nameOf(st)}] ${fault}`))
+    }
+    // Compared as text, so a failure prints every fault and not a count of them.
+    expect(faults.join('\n'), 'mutation-verdict:behavior:plan-nests').toBe('')
+    // An excuse that nothing needs any more is removed, not kept.
+    expect(Object.keys(EXCUSED_NESTS).filter((name) => !excused.has(name))).toEqual([])
+    // Named in both directions: a due range that drives in a statement nobody named, and a
+    // name whose statement no due range drives any more.
+    expect([...drivenByADueRange].sort()).toEqual(Object.keys(DRIVEN_BY_A_DUE_RANGE).sort())
+  })
+
+  it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
+    const read = async (sql: string) =>
+      readNests(
+        sql,
+        await planTree(
+          sql,
+          (sql.match(/\?/g) ?? []).map(() => 0),
+        ),
+      )
+    // A task update correlated to its source on the queue: the table is scanned, and the
+    // source is probed once for each task.
+    const correlated = await read(
+      `update "tasks" set "max_attempts" = 2
+       WHERE task_id IN (SELECT f.task_id FROM runs f
+                         WHERE f.run_id = ? AND f.queue = tasks.queue)`,
+    )
+    // A read whose IN list walks the runs of a queue by state. No pin of writes sees a read.
+    const listed = await read(
+      `select t.task_name from tasks t
+       where t.task_id in (select f.task_id from runs f where f.queue = ? and f.state = ?)`,
+    )
+    // An insert whose source scans tasks once for each run it selects.
+    const scanned = await read(
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       select f.queue, f.run_id, t.task_name, 0
+       from runs f join tasks t on t.task_name = f.run_id where f.run_id = ?`,
+    )
+    expect([correlated, listed, scanned].map((reading) => reading.faults)).toEqual([
+      [expect.stringMatching(/ :: runs once for each row of a walk: SCAN tasks$/)],
+      [
+        expect.stringMatching(
+          /^SEARCH t .* :: runs once for each row of a walk: SEARCH f .*runs_poll \(queue=\? AND state=\?\)$/,
+        ),
+      ],
+      [expect.stringMatching(/^SCAN t :: is not keyed, and runs once for each row of SEARCH f /)],
+    ])
+    // What a plan cannot show, each with the defect present and no fault. Both steps are
+    // keyed, and one task's rows are many: every checkpoint of a task, once for each run of it.
+    const ownRows = await read(
+      `update runs set claim_gen = (select count(*) from checkpoints c
+                                    where c.task_id = runs.task_id) where task_id = ?`,
+    )
+    // A lone walk drives nothing and nothing drives it. In an UPDATE or a DELETE the block
+    // above refuses it, and in an insert or a read nothing does.
+    const lone = await read(
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       select queue, run_id, null, 0 from runs where queue = ? and state = ?`,
+    )
+    expect([ownRows, lone]).toEqual([
+      { faults: [], dueDrivers: [] },
+      { faults: [], dueDrivers: [] },
+    ])
+    // What is due under no limit, and what is not due at all, read alike: a due range that
+    // drives. The list of names above is what holds them, by a reason a person wrote.
+    const unlimited = await read(
+      `select r.run_id, t.task_name from runs r join tasks t on t.task_id = r.task_id
+       where r.queue = ? and r.state = 'pending' and r.available_at_ms <= ?`,
+    )
+    const notDue = await read(
+      `select r.run_id, t.task_name from runs r join tasks t on t.task_id = r.task_id
+       where r.queue = ? and r.state = 'running' and r.claim_expires_at_ms > ?`,
+    )
+    expect(
+      [unlimited, notDue].map((reading) => [reading.faults, reading.dueDrivers.length]),
+    ).toEqual([
+      [[], 1],
+      [[], 1],
+    ])
+    // A statement inside a trigger is never planned. The driver's heartbeat inserts into a
+    // view whose trigger deletes the expired rows of `drivers`, by a scan, and its plan does
+    // not name the table.
+    const beat = (await shippedStatements()).find((st) => st.label === 'driver-heartbeat')
+    if (!beat) throw new Error('the history sent no driver heartbeat')
+    const beatPlan = await planTree(beat.sql, beat.args)
+    expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
+    expect(readNests(beat.sql, beatPlan)).toEqual({ faults: [], dueDrivers: [] })
   })
 })
