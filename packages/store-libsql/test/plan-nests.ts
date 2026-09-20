@@ -56,9 +56,9 @@ const DUE_COLUMNS = ['available_at_ms', 'claim_expires_at_ms', 'cancel_at_ms']
 /** `keyed` reads one entity's rows, `due` reads what is due in index order, `walk` a backlog. */
 const REACHES = ['keyed', 'due', 'walk'] as const
 type Reach = (typeof REACHES)[number]
-/** The widest reach among loops. No loop at all returns no more than one row. */
+/** The widest reach among loops. Of no loops at all it is a walk: nothing read bounds them. */
 const worst = (loops: readonly Loop[]): Reach =>
-  REACHES.findLast((reach) => loops.some((loop) => loop.reach === reach)) ?? 'keyed'
+  REACHES.findLast((reach) => loops.some((loop) => loop.reach === reach)) ?? 'walk'
 
 /** One loop of a nest: a plan step, with how it bounds its rows. */
 interface Loop {
@@ -85,7 +85,8 @@ const RANGE = /^([a-z_]+)[<>]\?$/
 /** How a SEARCH's constraint list bounds it: `(queue=? AND state=? AND available_at_ms<?)`. */
 function reachOf(access: string): Reach {
   if (access.includes('AUTOMATIC')) return 'walk'
-  const constraints = /\(([^()]*)\)$/.exec(access)?.[1]?.split(' AND ') ?? []
+  // The list is not always the end of its line: a left join's step ends in `LEFT-JOIN`.
+  const constraints = /\(([^()]*)\)/.exec(access)?.[1]?.split(' AND ') ?? []
   const columns = (shape: RegExp) => constraints.map((c) => shape.exec(c)?.[1] ?? '')
   if (columns(EQUALITY).some((column) => ENTITY_COLUMNS.includes(column))) return 'keyed'
   if (columns(RANGE).some((column) => DUE_COLUMNS.includes(column))) return 'due'
@@ -106,8 +107,12 @@ export interface NestReading {
 export function readNests(rows: readonly PlanRow[]): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
-  for (const row of rows) nodes.get(row.parent)?.children.push(nodes.get(row.id) as Node)
   const faults: string[] = []
+  for (const row of rows) {
+    const parent = nodes.get(row.parent)
+    if (parent) parent.children.push(nodes.get(row.id) as Node)
+    else faults.push(`cannot place the plan line: ${row.detail}`)
+  }
   const dueDrivers = new Set<string>()
 
   /** The loop one SCAN or SEARCH line is, judged against the loops that drive it. */
@@ -163,20 +168,29 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
         // One loop over the rows any of its indexes finds. The legs are alternatives, so
         // none drives another, and the loop is as bounded as its widest leg.
         const legs = node.children.flatMap((index) => {
-          if (/^INDEX \d+$/.test(index.detail)) return loopsOf(index.children, drivers)
-          faults.push(`cannot read the plan line: ${index.detail}`)
-          return []
+          if (!/^INDEX \d+$/.test(index.detail)) {
+            faults.push(`cannot read the plan line: ${index.detail}`)
+            return []
+          }
+          const leg = loopsOf(index.children, drivers)
+          if (leg.length === 0) faults.push(`cannot read the rows of: ${index.detail}`)
+          return leg
         })
+        if (node.children.length === 0) faults.push(`cannot read the rows of: ${node.detail}`)
         loops.push({ detail: legs.map((leg) => leg.detail).join(' OR '), reach: worst(legs) })
       } else if (UNCORRELATED_LIST.test(node.detail)) {
         // Read above, before the steps it drives.
       } else if (subquery) {
         loopsOf(node.children, subquery[1] ? drivers : [])
       } else if (body?.[1]) {
-        bodies.set(body[1], worst(loopsOf(node.children, outer)))
+        const made = loopsOf(node.children, outer)
+        if (made.length === 0) faults.push(`cannot read the rows of: ${node.detail}`)
+        bodies.set(body[1], worst(made))
       } else if (SELECTS.test(node.detail)) {
         loops.push(...loopsOf(node.children, outer))
-      } else if (!SORTS.test(node.detail)) {
+      } else if (SORTS.test(node.detail)) {
+        if (node.children.length > 0) faults.push(`cannot read what is under: ${node.detail}`)
+      } else {
         faults.push(`cannot read the plan line: ${node.detail}`)
       }
     }

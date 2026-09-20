@@ -1162,4 +1162,41 @@ describe('every statement a store ships, by the nests of its plan', () => {
       expect(await faultsUnder(body, 'r'), body).toEqual(underAnotherAlias)
     }
   })
+  it('fails closed on a plan line it cannot place or read', () => {
+    const faultsOf = (...details: [number, number, string][]) =>
+      readNests(details.map(([id, parent, detail]) => ({ id, parent, detail }))).faults
+    const keyed = 'SEARCH tasks USING PRIMARY KEY (task_id=?)'
+    expect({
+      aLineItHasNeverSeen: faultsOf([1, 0, 'BLOOM FILTER ON r (task_id=?)']),
+      aLineUnderNoLineOfThePlan: faultsOf([1, 0, keyed], [2, 99, 'SCAN runs']),
+      aLineUnderASort: faultsOf([1, 0, 'USE TEMP B-TREE FOR ORDER BY'], [2, 1, 'SCAN runs']),
+      anIndexLegWithNoStep: faultsOf(
+        [1, 0, 'MULTI-INDEX OR'],
+        [2, 1, 'INDEX 1'],
+        [3, 1, 'INDEX 2'],
+        [4, 3, keyed],
+      ),
+    }).toEqual({
+      aLineItHasNeverSeen: ['cannot read the plan line: BLOOM FILTER ON r (task_id=?)'],
+      aLineUnderNoLineOfThePlan: ['cannot place the plan line: SCAN runs'],
+      aLineUnderASort: ['cannot read what is under: USE TEMP B-TREE FOR ORDER BY'],
+      anIndexLegWithNoStep: ['cannot read the rows of: INDEX 1'],
+    })
+    // A body with no step under it made rows nothing bounds, so a read of it is a walk.
+    expect(faultsOf([1, 0, 'CO-ROUTINE x'], [2, 0, keyed], [3, 0, 'SCAN x'])).toEqual([
+      'cannot read the rows of: CO-ROUTINE x',
+      `SCAN x :: is not keyed, and runs once for each row of ${keyed}`,
+    ])
+  })
+
+  it('reads a constraint list wherever it stands in its line', async () => {
+    // A left join by the primary key: the plan ends that line in LEFT-JOIN, after the list.
+    const sql = `select r.run_id, t.task_name from runs r
+                 left join tasks t on t.task_id = r.task_id where r.run_id = ?`
+    const plan = await planTree(sql, [0])
+    expect(plan.map((row) => row.detail)).toContain(
+      'SEARCH t USING PRIMARY KEY (task_id=?) LEFT-JOIN',
+    )
+    expect(readNests(plan)).toEqual({ faults: [], dueDrivers: [] })
+  })
 })
