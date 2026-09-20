@@ -72,6 +72,17 @@ describe('PostgresStoreAdmin', () => {
     }
   })
 
+  it('tells a build older than the schema to run a newer build, and never to repair', async () => {
+    const db = new MigrationExecutor()
+    db.version = CURRENT_SCHEMA_VERSION + 1
+    const refusal = await new PostgresStoreAdmin(db).migrate().catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(SchemaMismatchError)
+    expect((refusal as Error).message).toMatch(/a newer build migrated this database/)
+    expect((refusal as Error).message).not.toMatch(/repaired by hand/)
+    // It wrote nothing on the way to saying so.
+    expect(db.calls.filter(({ mode }) => mode !== 'read')).toEqual([])
+  })
+
   it('rejects malformed schema result shapes and noncanonical values', async () => {
     const cases: readonly SqlResult[][] = [
       [],

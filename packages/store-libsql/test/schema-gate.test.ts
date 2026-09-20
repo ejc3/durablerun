@@ -350,7 +350,12 @@ describe('migrate reports success only when the schema is current', () => {
       },
     ])
 
-    await expect(admin.migrate()).rejects.toBeInstanceOf(SchemaMismatchError)
+    // A newer build migrated this database and nothing in it is broken, so the refusal
+    // says which build to run, and never to repair the database by hand.
+    const refusal = await admin.migrate().catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(SchemaMismatchError)
+    expect((refusal as Error).message).toMatch(/a newer build migrated this database/)
+    expect((refusal as Error).message).not.toMatch(/repaired by hand/)
   })
 
   it('is unaffected on a healthy database', async () => {
