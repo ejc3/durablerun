@@ -2337,7 +2337,12 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   `{eventName, payload?}`. Inspection returns the state plus the canonically
   decoded result/failure when present, and for a task whose saga began, how it
   ended: `rollback.outcome`, with `rollback.error` decoded the same way when a
-  rollback's failure ended the task (§3.10). Every response is stable JSON with
+  rollback's failure ended the task (§3.10). The SDK stores JSON, and the
+  store's port takes any text, so a stored value that is not JSON is answered
+  as its text under a key of its own, `resultText`, `failureText` or
+  `rollback.errorText`, in place of the decoded key. No value of a task that
+  ended ever changes, so a route that threw on one would answer 500 for that
+  task for good. Every response is stable JSON with
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.

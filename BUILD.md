@@ -1767,6 +1767,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     every dialect, an empty one on libSQL and MySQL. The trigger is a real
     task with thousands of checkpoints, or result reads showing up in a
     profile.
+  - Option, not a deferral of this entry: hold a stored value to JSON on the
+    way in, at the port entries that take one: `fail` for a failure reason,
+    `failRollback` for the error in its attempt record, and `complete` for a
+    result. The port takes any text today, and the SDK is the only caller that
+    always hands it JSON. The hosted inspect route answers such a value as
+    its text since PR3.4b, where it answered 500, so nothing is lost today.
+    Refusing the text at the entry would make the state unwritable. It also
+    changes what `fail` accepts from a caller that is not the SDK, so it is a
+    change of the port's contract and a PR of its own. The trigger is a second
+    reader of these values, which would have to repeat the route's care.
 
 - **PR3.4b saga reads and results**: DONE. Three findings of the saga review
   that PR3.4 recorded and did not fix (`postmortems/pr3.4-sagas-review.md`,

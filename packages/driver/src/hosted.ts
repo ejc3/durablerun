@@ -83,6 +83,21 @@ class HostedRequestError extends Error {
 
 class BodyTooLargeError extends Error {}
 
+/**
+ * A stored value as an answer shows it: decoded under `key` when it is JSON, and as the
+ * text itself under `${key}Text` when it is not. The SDK stores JSON, and the store's port
+ * takes any text, so a caller that is not the SDK can store text that is no JSON. No value
+ * of a task that ended ever changes, so a parse that threw here would answer 500 for that
+ * task for good, and the text would be lost to whoever asked.
+ */
+function storedValue(key: 'result' | 'failure' | 'error', json: string): Record<string, unknown> {
+  try {
+    return { [key]: parseTaskValueJson(json) }
+  } catch {
+    return { [`${key}Text`]: json }
+  }
+}
+
 function jsonResponse(
   value: unknown,
   status = 200,
@@ -303,19 +318,19 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         if (result === null) return errorResponse(404, 'task_not_found')
         const response: Record<string, unknown> = { taskId, state: result.state }
         if (result.state === 'completed' && result.completedPayloadJson !== undefined) {
-          response.result = parseTaskValueJson(result.completedPayloadJson)
+          Object.assign(response, storedValue('result', result.completedPayloadJson))
         }
         if (result.failureReasonJson !== undefined) {
-          response.failure = parseTaskValueJson(result.failureReasonJson)
+          Object.assign(response, storedValue('failure', result.failureReasonJson))
         }
         // How the task's saga ended, when one began (DESIGN.md §3.10): the error is the
-        // failure of the rollback that ended the task, decoded as the failure above is.
+        // failure of the rollback that ended the task.
         if (result.rollback !== undefined) {
           const { outcome, errorJson } = result.rollback
-          response.rollback =
-            errorJson === undefined
-              ? { outcome }
-              : { outcome, error: parseTaskValueJson(errorJson) }
+          response.rollback = {
+            outcome,
+            ...(errorJson === undefined ? {} : storedValue('error', errorJson)),
+          }
         }
         return jsonResponse(response)
       },
