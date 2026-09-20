@@ -1959,7 +1959,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   its workload ends through a simulated older build that writes no completion
   event (ChildTasks.tla's LegacyTerminal), until an await of that child has
   answered, and two cases hold the excusal to that task. Of the test helpers
-  that are copies, the SDK tests' `expectCleanRows` exists once. Not built
+  that are copies, the SDK tests' `expectCleanRows` exists once. The review of
+  this pull request then changed four things. The matrix excuses that child
+  only while its row is cancelled, because a crash can stop the older build's
+  cancel and the child is then an ordinary task. Three more sites call the
+  helper, the saga surface's race case, the suite's seeded races, and the
+  identifier surface, and a case lists the files that may call the invariant
+  library directly with the reason of each. The name of a completion event is
+  a type, `TaskDoneEventName`, which the recording statement takes. Five
+  registered mutations hold the five guards this entry added. Not built
   here, each with its reason:
   - A number, a retry strategy, or a saga step name that a port refuses stays
     a bare `RangeError`. It is not a member of the refusal family, so the
@@ -1972,6 +1980,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `RecordingExecutor` in the libSQL store's tests, and `recordingLabels` in
     the child-task surface. They stay with PR4.4d, which hoists the
     conformance helpers.
+  - The matrix's judge tells the older build's ending from the state of the
+    row. A cancel of that same child by the current build that lost its
+    completion event would be excused too. No batch of the workload does
+    that, and closing it needs the rows to say which build ended a task,
+    which they do not.
+  - Nothing holds a pull request's body to the tree. An option: the
+    attestation refuses a body whose stated registry count or arm key is not
+    the head's.
+  - A file that is listed as calling the invariant library directly can gain
+    a seeded race that calls it alone, and the list does not see it. The
+    suite's scenario cases are the listed sites of that kind today.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
