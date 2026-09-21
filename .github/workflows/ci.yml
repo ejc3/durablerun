@@ -354,11 +354,13 @@ jobs:
           if digest == '375588de1cb5e1fbd9fa5f8b9d412be97d633625439213b167439abef2d505f6':
               # On a libSQL database file a failed batch no longer fails the calls after it on
               # its executor: the executor asks a suspect connection before it trusts it, and
-              # runs a file's batches one at a time. Each of the two registers a mutation the
-              # base predates, so their verdict markers are exempted. No base entry is re-aimed.
+              # runs a file's batches one at a time, and a reconnect keeps to the file it opened.
+              # Each registers a mutation the base predates, so their verdict markers are
+              # exempted. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:libsql-suspect-connection-is-asked",
                   "mutation-verdict:behavior:libsql-file-batches-run-one-at-a-time",
+                  "mutation-verdict:behavior:libsql-reconnect-refuses-another-file",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

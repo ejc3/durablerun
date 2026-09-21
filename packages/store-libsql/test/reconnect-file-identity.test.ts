@@ -130,7 +130,10 @@ describe('a connection replaced after a failed batch', () => {
       for (const leftover of [file, `${file}-wal`, `${file}-shm`]) rmSync(leftover, { force: true })
       expect(await ids(victim)).toEqual({ name: 'StoreUnavailableError' })
       expect(await ids(victim)).toEqual({ name: 'StoreUnavailableError' })
-      expect(existsSync(file)).toBe(false)
+      expect(
+        existsSync(file),
+        'mutation-verdict:behavior:libsql-reconnect-refuses-another-file',
+      ).toBe(false)
     } finally {
       victim?.close()
       rmSync(dir, { recursive: true, force: true })

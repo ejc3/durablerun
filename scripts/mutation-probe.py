@@ -16232,8 +16232,15 @@ MUTATION_SPECS.extend(
             "libsql-file-batches-run-one-at-a-time",
             "packages/store-libsql/src/executor.ts",
             "    const answer = this.fileBacked ? this.turn.then(send) : send()\n",
-            "    const answer = this.fileBacked ? send() : send() // MUTATION: a file's batches overlap\n",
+            "    const answer = this.fileBacked ? send().then((result) => this.turn.then(() => result)) : send() // MUTATION: a file's batches overlap\n",
             "a batch already waiting when another fails runs on the broken connection before the failure marks it, and one outage is reported twice",
+        ),
+        (
+            "libsql-reconnect-refuses-another-file",
+            "packages/store-libsql/src/executor.ts",
+            "    if (!sameFile(had, fileAt(had.path))) {\n",
+            "    if (!sameFile(had, had)) { // MUTATION: a reconnect opens whatever file is at the path\n",
+            "a new connection is opened at the path whatever file is there now, and a database file that was removed is created again, empty",
         ),
     )
 )
@@ -16250,6 +16257,12 @@ VERDICTS.update(
             "packages/store-libsql/test/failed-batch-recovery.test.ts",
             "a write batch that fails busy on a file database is an outage for that call alone: a read made in the same tick, queued behind it, is answered",
             "mutation-verdict:behavior:libsql-file-batches-run-one-at-a-time",
+        ),
+        "libsql-reconnect-refuses-another-file": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/reconnect-file-identity.test.ts",
+            "a connection replaced after a failed batch refuses to create a file in place of its own that was removed, as an outage on every call",
+            "mutation-verdict:behavior:libsql-reconnect-refuses-another-file",
         ),
     }
 )
@@ -20247,7 +20260,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1071:
+        if len(MUTATIONS) != 1072:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
