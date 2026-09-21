@@ -51,8 +51,8 @@ also takes its own bullets out from under the merged entry that holds them, and
 a last docs PR gives a live owner to every open bullet that is left. Three
 lines are left when the last docs PR merges. Line 18 is held for the
 maintainer's choice. Line 16 is PR3.5d's and arrives with its pull request,
-#71, and line 27 is PR3.15's and arrives with its own, which is in review.
-Both merge after the last docs PR.
+#71, and line 27 is PR3.15's, whose branch is in review. Both arrive after
+the last docs PR.
 
 **Exit test:**
 
@@ -221,8 +221,10 @@ Both merge after the last docs PR.
    failed attempt that had budget left, held by a case on three dialects that
    was committed failing. Saga reads on libSQL and MySQL are ranges the
    checkpoint key serves, and their plan pins refuse the walk. PostgreSQL
-   keeps the walk, which is keyed by task, because a range over a name is not
-   sound under a linguistic collation. The hosted inspect route shows the
+   keeps the walk, which is keyed by task, because a range over a name was not
+   sound under a linguistic collation. From schema version 7 on it is, and
+   reading it as a range there is an option not built. The hosted inspect
+   route shows the
    rollback outcome. This is met. PR3.4b reads the attempt record that the
    task's last run wrote: a `sagas` case committed failing holds it on three
    dialects, and the fuzz walk holds it over every task it spawns. What an
@@ -536,7 +538,8 @@ question the same choice settles. Three flow programs that turn #75 red by
 design are written and not pushed, and pushing them is the maintainer's call
 (the PR3.4d entry). Five pull requests of this milestone each decided, without
 the maintainer, a change that a caller of a published package can see, and each
-blocks nothing. PR3.3d changed `error.name` at the port's bare refusals from
+blocks nothing. Each entry named below records the change, and the other way is
+written only here. PR3.3d changed `error.name` at the port's bare refusals from
 `RangeError` to `PortRefusalError`, and the other way is to leave the name as
 it was (the PR3.3d entry). PR3.4c changed the signature of `failRollback` in
 one step, and the other way is to accept both shapes for one release (the
@@ -552,18 +555,19 @@ way for a batch of reads to say it needs a current answer (under PR3.4), and
 what ends a run whose store call fails permanently (under PR2.5a). The
 generated surface for the plan reader, whose trigger has been met, waits for
 the maintainer's decision (an option under PR3.14c, met by the reviews of
-PR3.14d). A comment for the client library's open issue upstream, with
-reproductions, is prepared and not posted, and posting it is the maintainer's
-(the PR3.15 entry names the bug). A stated oldest supported build, which
-dropping the row lock of a caller's event waits for, is under PR3.3 and in the
-non-goals below. One base class for the whole refusal family is under PR3.3d.
-The PlanetScale smoke job is in the non-goals below and in the PR4.3 entry. The
-five cleanups of the published API that the simplification sweep turned down,
-the unimplemented `WakeSignals` port among them, are the bullets marked
-Rejected under PR3.5 that would change a published export. Review configuration
-owned outside the repository is PR0.2. A drive of the real flow on a preview
-deployment is what the standing verification discipline at the end of this plan
-asks of every phase.
+PR3.14d). A comment for the client library's open issue upstream,
+tursodatabase/libsql-client-ts#352, which points at
+tursodatabase/libsql-js#228, is prepared with reproductions and not posted, and
+posting it is the maintainer's (the PR3.15 entry names the bug). A stated
+oldest supported build, which dropping the row lock of a caller's event waits
+for, is under PR3.3 and in the non-goals below. One base class for the whole
+refusal family is under PR3.3d. The PlanetScale smoke job is in the non-goals
+below and in the PR4.3 entry. The five cleanups of the published API that the
+simplification sweep turned down, the unimplemented `WakeSignals` port among
+them, are the bullets marked Rejected under PR3.5 that would change a published
+export. Review configuration owned outside the repository is PR0.2. A drive of
+the real flow on a preview deployment is what the standing verification
+discipline at the end of this plan asks of every phase.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -952,8 +956,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   clock and hands a timeout to the reconciler as a failed launch
   (`withLaunchTimeout` in `packages/driver/src/loop.ts`), held by the case `a
   hanging launcher is abandoned by the watchdog and the run recovers` in
-  `packages/driver/test/loop.test.ts`. A launcher that runs the worker inline
-  turns the watchdog off with `launchTimeoutSeconds: null`.
+  `packages/driver/test/loop.test.ts`. The loop's option
+  `launchTimeoutSeconds: null` turns the watchdog off for a launcher that runs
+  the worker inline.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
@@ -2257,7 +2262,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     written and goes stale when a later change moves the code, and nothing
     compares the two. The review of PR3.1d found DESIGN.md's counts of the
     poison matrix behind what the code pins, and the review of PR3.3c found
-    five stale counts. The test would find each count by a marker beside it
+    five stale counts, in DESIGN.md, BUILD.md, two comments and the pull
+    request's body. The test would find each count by a marker beside it
     and compare it with the value a test already asserts. A count in BUILD.md
     or in a pull request's body stays outside it. Trigger: the next review
     that finds a count DESIGN.md states contradicted by a constant the code
@@ -2659,9 +2665,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A number or a retry strategy that a port refuses stays a bare
     `RangeError`. It is not a member of the refusal family, so the hosted
     mapping leaves it at 500, and it can take the class when a caller's value
-    of one reaches a route. A saga step name left this list with PR3.3c: it
-    is a string the port takes, and the one check refuses it inside the
-    family before the entry runs.
+    of one reaches a route. A saga step name was never such a refusal: its
+    width check, `requireSagaStepFits`, throws `InvalidDurableStringError`,
+    which is in the family, and PR3.3c's one check holds the step that
+    `failRollback` takes as an identifier.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.
@@ -2761,8 +2768,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - `requireSagaStepFits` is still called by the two entries that carry a
     checkpoint name, `suspendRun` and `setCheckpoint`. It is a rule about a
     derived name. A third entry, `failRollback`, carried one until PR3.4c,
-    which merged first, made it take the step. Trigger: a store entry found
-    to take a checkpoint name with no call of it.
+    which merged first, made it take the step. Trigger: a pull request that
+    adds a store entry that takes a checkpoint name, seen in its diff.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -3106,7 +3113,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     PostgreSQL keeps the test of each name. When this was built a name there
     ordered under the database's collation and the range was not sound.
     DESIGN.md §3.4 records the measured miss, which neither the local server
-    nor CI's could show then, because both sorted by byte. Schema version 7
+    nor CI's could show then, because both sorted by byte. Only CI's server
+    has changed since: it is created with ICU's `en-US` (PR4.6), and the local
+    one still sorts by byte. Schema version 7
     (PR4.6) has since declared the column to compare by byte, so the range is
     sound there too, and the option under PR3.4 above is the one record of
     reading it that way. On PostgreSQL the
@@ -3582,7 +3591,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   PostgreSQL's index of the token cannot hold a row past about 2,700 bytes, so a
   claim under 3,000 characters that do not compress answered as an outage there
   and took its run on the other two, where before the index every dialect took
-  it. `claim` now holds its token with the check it already made for its queue,
+  it. `claim` held its token with the check it already made for its queue
+  (PR3.3c's one check now holds a token at every entry that takes one),
   one shared conformance case shows all three dialects refusing such a token
   alike, the identifier surface sends an identifier past the width in the
   token's place too, and a `store-postgres` test holds the one edge that leaves:
@@ -4671,8 +4681,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that case over every call of the store's two ports, generated as the
     self-concurrency surface's contests are. The other blocks a worker read's
     second table and sees the read hold its first, for each read that names
-    two store tables. Their trigger is the next version that locks tables:
-    version 7's text is frozen once it is on main.
+    two store tables. Their trigger is the next version that locks more than
+    one store table: version 7's text is frozen once it is on main.
   - An option, not built: run a deadlocked read batch again on MySQL. Its
     executor runs only a write batch again, which is safe today: a consistent
     read takes no InnoDB lock, and MySQL commits each DDL statement on its own,
