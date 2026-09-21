@@ -1044,8 +1044,9 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
 
     // A failed rollback is no door for a caller's checkpoint name. Its port takes the step,
     // and the store builds the attempt record's name, so no caller's name reaches that batch.
-    // A caller of an older build hands over `{ key, stateJson }`, and the entry refuses it
-    // before anything is read or sent, saying what the port takes.
+    // A caller of an older build hands over `{ key, stateJson }`. The port's one check
+    // refuses it before the entry runs, as it refuses any string the port requires that was
+    // left out, and the refusal names the step.
     it("names a failed rollback's attempt record itself, and refuses the record an older caller hands over", async () => {
       const { taskId, pass } = await rollingBack(f, ['a'])
       const asAnOlderCaller = {
@@ -1057,8 +1058,8 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         .then(
           () => 'accepted',
           (error: unknown) =>
-            error instanceof TypeError && error.message.includes('{ stepKey, errorJson }')
-              ? 'a TypeError that names the shape'
+            error instanceof TypeError && error.message.includes('rollback.stepKey was left out')
+              ? 'a TypeError that names the step it lacks'
               : String(error),
         )
       const untouched = {
@@ -1074,7 +1075,7 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         { refused, untouched, halts, halted: await checkpointNames(f, taskId) },
         'mutation-verdict:behavior:saga-store-names-the-attempt-record',
       ).toEqual({
-        refused: 'a TypeError that names the shape',
+        refused: 'a TypeError that names the step it lacks',
         untouched: {
           task: 'running',
           checkpoints: [SAGA_PHASE_CHECKPOINT, startMarker('a'), 'a'].sort(),

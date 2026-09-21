@@ -153,9 +153,12 @@ export interface SchedulerStore {
    * attempt. The store names the rollback's attempt record and counts the attempt: one
    * past the last record it can read, one when it can read none, and never past the
    * largest safe integer. A caller chooses neither the name nor the count. An argument of
-   * another shape is refused with a TypeError before anything is read or sent. It stays a
-   * TypeError, because a wrong-shaped argument is a caller's programming error and no
-   * value the port refuses, and no hosted route calls this port.
+   * another shape is refused before anything is read or sent. The port's one check answers
+   * it first, as it answers any string the port requires that was left out: a caller of an
+   * older build, which hands over the attempt record as `{ key, stateJson }`, is told that
+   * `rollback.stepKey` was left out. That refusal is a TypeError by its class, and the
+   * entry's own reader refuses the same shapes with a TypeError for a caller that reaches
+   * the entry some other way. No hosted route calls this port.
    * The record commits with the failure, so a failed attempt is counted or the run did
    * not fail. With `retry` another pass follows, and the user attempt budget does not
    * cap it. With none the saga halts, and the task ends `failed` with `failureJson`,

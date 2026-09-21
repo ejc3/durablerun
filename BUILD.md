@@ -407,6 +407,43 @@ a last docs PR gives a live owner to every open bullet that is left.
     are each caught by a generated cell of that profile. Six generated cases
     hold the ten run inserts of the corpus, and a successor that drops the
     parked wake step and a revival that carries nothing each fail one by name.
+22. PR3.3c: every string a caller passes the store port is checked in one
+    place, before any statement is sent. An identifier is inside the durable
+    string domain and within the width, a claim token is held as an identifier
+    is, a task name is inside the domain, a payload that is passed is a string
+    whose content is its serializer's, one check of every string place refuses
+    a value that is not a string, one left out among them, and a value that is
+    not an object is refused where an options object belongs.
+    Core names every
+    string once in a table whose type is computed from the port's, so a method
+    the port gains, a string argument a method gains, and a string inside an
+    options object each stop the build, and every store extends one class whose
+    constructor puts the one check in front of every entry. The identifier
+    surface generates every place a string enters the port from that table and
+    asks each held place, on every dialect, for names that are not only ASCII,
+    and the fuzz walk draws its places and names from the same source. This is
+    met. One shared case was committed failing on libSQL, PostgreSQL and MySQL,
+    where 49 of the 56 places an identifier entered sent their statements for a
+    name with a NUL or a lone surrogate. All 25 per-entry checks are gone from
+    each of the three stores. Nineteen type controls each fail to compile for
+    the reason written beside it. Twenty-two registered mutations are each caught
+    by one case by name: eight that named deleted or renamed lines and moved,
+    main's mutation of the claim token's width among them, and fourteen that are
+    new, which bend the check, the table, one for each kind of string, a queue, a
+    step key, an event name and a claim token, the rule of a claim token, the four
+    things the one review found at the mechanism, and three more at the same
+    mechanism: an accessor whose descriptor inherits from `Object.prototype`, a
+    table frozen only at its outer object, and an options value that is not an
+    object. The mutation of a string left out holds a payload that is not a string
+    as well, because one check of a string place refuses both.
+    Two of the table's four survived their first probes, because a place renamed
+    to a payload name its method already had folded into that place and the
+    surface did not see it, and the fix was committed after them. The one review
+    found that a method patched onto a store class after a store exists was not
+    reached, that a class field could replace the check, and that a string the
+    port requires was not refused when it was left out. Each was committed
+    failing before its fix, the last as a case that asks every place left out. One hosted answer moved: the inspect route
+    answers 400 where it answered 404 for a task id with a NUL in it.
 23. PR3.14c: a check generated from the corpus plans every statement of every
     label the libSQL store ships, and fails on a statement in which a step that
     runs once for each row of another is not keyed, or runs once for each row of
@@ -2406,10 +2443,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
     more are the completion event, the wake, and the lock. Folding statements
     needs a grammar the tree path does not have.
-  - Every other string a store port takes. This round holds the spawn queue
-    and a port's event name to the durable string domain, each where it enters.
-    A queue or a step name at the other ports is not checked at the port. One
-    check for the whole port is its own change.
+  - DONE in PR3.3c: every string a store port takes is checked in one place,
+    core's table of the port's strings and the class every store extends.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -2523,6 +2558,77 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A file that is listed as calling the invariant library directly can gain
     a seeded race that calls it alone, and the list does not see it. The
     suite's scenario cases are the listed sites of that kind today.
+- **PR3.3c one check of every string the port takes**: DONE. Measured at the
+  port on all three dialects, a name outside the durable string domain was kept
+  by no store as it was passed. Every driver replaces a lone surrogate with
+  U+FFFD, so two checkpoint names that differ only in one were one row, and a
+  run claimed under one token was held under another that differs only in one.
+  Where libSQL stores a name it ends the name at a NUL, and where it reads with
+  one it matches nothing. MySQL stores a NUL whole, and PostgreSQL refuses it,
+  which its executor reported as an outage that a driver retries for ever. 49
+  of the 56 places an identifier entered the port met no check of the domain,
+  and a claim token met none of any kind. A direct caller of the port reaches
+  this, and a queue or a driver id from configuration. Task code does not,
+  because `UserName.parse` already refuses such a name for every name the SDK
+  takes, before any store call.
+  Core names every string once (`PORT_STRING_RULES`, `PORT_STRINGS`), in a
+  table whose type is computed from the port's. One check is built from it, and
+  every store extends `HeldPort`, whose constructor puts that check in front of
+  every entry, so the 25 per-entry checks are gone from each store and a fourth
+  dialect inherits the check by extending the same class. The conformance
+  fixture types its store as one that does. The identifier surface generates
+  all 82 places from the table and asks each held place for names that are not
+  only ASCII, and the fuzz walk draws from the same source. The driver loop
+  asks the port's check of its queue and its id when it is constructed. The
+  same check refuses a string the port requires when it is left out, a payload
+  that is not a string, and a value that is not an object where an options
+  object belongs: left to the entries, a payload of null was reported as an
+  outage and a number was stored, and a spawn whose options were a number went
+  on as if empty options had been passed. The accessor that holds the check is
+  built from a descriptor that inherits nothing, and the table is frozen
+  throughout. One
+  hosted answer moved: the inspect route answers 400 where it answered 404 for
+  a task id with a NUL in it. Open, each with its reason:
+  - Any name fits any string position of the table, so a place written as a
+    payload compiles. The surface writes down every place that is not an
+    identifier and how many places there are, so that edit is visible. It is
+    not a proof, and two names of one rule that change places move neither.
+  - An entry called from a store class's prototype is reached with nothing in
+    front of it. Two libSQL cases do that on purpose. A test that lists every
+    such call in the repository would keep it to them, and is not built. A
+    patch of the prototype is reached through the check.
+  - An option, not built: the wrapper hands the entry a copy of each options
+    object it read. Today the check reads a member once and the entry reads it
+    again, so an object whose getter answers a clean string and then another
+    hands the entry what was never checked. A caller that can pass such an
+    object already holds the store. Its trigger is a store handed to code its
+    owner does not trust.
+  - An option, not built: a surface generated from the port's type and not from
+    the table of strings, which gives every argument of every method each kind
+    of value its type forbids and holds the answer to a refusal of the family
+    before anything is sent. The table is of strings, so an argument that
+    carries none is outside it: `claim` with null for its options is a
+    TypeError from inside the entry. Most such arguments are numbers and
+    durations with checks and refusal types of their own, so it is its own
+    change. Its trigger is the first report of a wrong-kind argument that reads
+    as a bug in the engine.
+  - An option, not built: deleting the refusal inside core's reader of a
+    failed rollback's argument. It is dead behind the one check for every call
+    through a store: a caller of the older shape is refused first, as a step
+    that was left out. It stays because the reader turns an unknown value into
+    two strings and the refusal is how it narrows them, because its message
+    names the whole shape for a caller that reaches an entry from the
+    prototype, and because core exports the reader. Its mutation answers to
+    core's own case of the reader, which calls it directly. Its trigger is the
+    reader losing its last direct caller.
+  - An option, not built: the hosted router holds its configured queue only to
+    non-empty, so a deployment configured with a queue the port refuses
+    answers every request 400, as it did for a queue past the width before
+    this. Its trigger is a hosted deployment whose queue comes from outside
+    its own configuration.
+  - `requireSagaStepFits` is still called by the three entries that carry a
+    checkpoint name. It is a rule about a derived name, and PR3.4c rewrites the
+    entry that carries one of them.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -4121,10 +4227,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     store packages' test exports and to the fixture contract. The pin reads
     the migrations' text, which sees a VARCHAR column in any statement and not
     a column bounded by another type.
-  - An option, not built: draw the fuzz op's names from the port-typed
-    `ENTRIES` table of `identifier-bound.ts`. The op lists four entries by
-    hand, and its names are ASCII. PR3.3c generates an axis from that table
-    and may absorb this.
+  - DONE in PR3.3c: the fuzz op draws its places and its names from the places
+    the identifier surface generates from core's table. The hand-written
+    `ENTRIES` table is gone, and the names are not only ASCII.
   - An option, not built: a poison witness for each of the 22 identifier
     columns. One column has one.
   - An option, not built: read PostgreSQL's `event_locks`, which holds

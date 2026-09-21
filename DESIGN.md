@@ -478,10 +478,11 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler task names and idempotency keys cross one
-  durable-string validator at each store's spawn ingress: actual NUL and lone
-  UTF-16 surrogates are rejected before IDs are minted or executor I/O can
-  change or alias their identity. Scheduler headers, which dialect SQL later parses as an
+  `FatalTaskError`s. Scheduler task names and idempotency keys cross the one
+  check of the port's strings, with every other string a store's entry takes
+  (§3.4 rule 10): actual NUL and lone UTF-16 surrogates are rejected before IDs
+  are minted or executor I/O can change or alias their identity. Scheduler
+  headers, which dialect SQL later parses as an
   object before issuing worker authority, must enter as a plain object whose
   own enumerable string-keyed values are strings. Their keys and values also
   have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
@@ -765,10 +766,12 @@ One invocation executes one claimed run to its next suspension point:
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
     refuses a name that starts with `$` with `PortRefusalError`, which is a
-    `RangeError`, and a name no store
-    can keep, one with a NUL or a lone surrogate, with
-    `InvalidDurableStringError`, and `EventName.taskDone` is the completion
-    event of a task. An `EventName` carries that task (`taskId`, null for a
+    `RangeError`, and `EventName.taskDone` is the completion
+    event of a task. A name no store can keep, one with a NUL or a lone
+    surrogate, never reaches `fromPort`: the one check of the port's strings
+    refuses it with `InvalidDurableStringError` before a store's entry runs
+    (§3.4 rule 10), and a store's entry is the only caller of `fromPort`. An
+    `EventName` carries that task (`taskId`, null for a
     caller's event) and the form a message shows a person (`display`): a
     caller's event by its name, and a completion event as `task <id>`, because
     the reserved name never reaches task code and the error of an await does.
@@ -805,8 +808,10 @@ One invocation executes one claimed run to its next suspension point:
   - A port's refusal of what its caller passed has a type a host maps once.
     `PortRefusalError` extends `RangeError`, and core throws it where it threw
     a bare `RangeError` for a caller's name, key, or options: an event name
-    that is not a string or is reserved (`refuseReservedEventName`, behind
-    `emitEvent` and `awaitEvent`), a reserved idempotency key
+    that is reserved (`refuseReservedEventName`, behind `emitEvent` and
+    `awaitEvent`; one that is not a string is refused before it, by the one
+    check of the port's strings, with `InvalidDurableStringError`, which is
+    of the same family, §3.4 rule 10), a reserved idempotency key
     (`refuseReservedIdempotencyKey`, behind `spawn`), and `idempotencyKey`
     together with `childOf` (`spawnIdempotencyKey`). `instanceof RangeError`
     still holds for them. `error.name` reads `PortRefusalError` where it read
@@ -2276,14 +2281,138 @@ are load-bearing):
    `InvalidDurableStringError`, whatever the excess is, trailing spaces
    included. A driver holds its queue and its id the same way when it is
    constructed, because a refused tick reads as an outage and a refused
-   registry beat is swallowed. A claim token is held where it enters the
-   port, at `claim`, since `runs_held` indexes it (§3.2). No other entry that
-   takes a token holds it to the width, and none needs to: each only compares
-   it with what `claim` stored, no row can hold a token that `claim` refused,
-   and so a longer one matches no run. A task name and a payload are not
-   identifiers: nothing indexes them, and the port does not bound their
-   length. A child's task name is still bounded through `ctx.spawn`, which
+   registry beat is swallowed. A claim token is held to the width as an
+   identifier is, at every entry that takes one: `runs_held` indexes it (§3.2),
+   and on one dialect an index row has a size limit, so a claim under a token of
+   a few thousand characters failed on that dialect alone. `claim` refuses one past the width,
+   so no row holds one, and a longer token at another entry could match nothing.
+   Refusing it there changes nothing that is stored, and it does change what such
+   a call is answered: `heartbeat` answered a lost lease, `activate` and
+   `claimedTaskName` answered null, `expireLeaseNow` answered false and `claim`
+   answered no rows, and each now answers the refusal. A worker handed such a
+   token rejects where it answered superseded, measured at both commits. The HTTP
+   worker has acknowledged the launch by then, with 202 before and after, and
+   drops the rejected pass as it drops any pass that crashed. No claim the engine
+   makes carries such a token: its own tokens are 32 characters. A task name and
+   a payload are not identifiers:
+   nothing indexes them, and the port does not bound their length. A child's
+   task name is still bounded through `ctx.spawn`, which
    stores the spawn under a key built from the name (below).
+
+   **Every string a caller passes the port is checked in one place, before any statement
+   is sent.** The rule, in words a port in any language implements:
+   - An identifier that enters the port is inside the durable string domain and within
+     the width. The domain is the strings every store keeps exactly as they were passed:
+     no NUL, and no UTF-16 surrogate that is not half of a pair.
+   - A claim token is held as an identifier is, to the domain and the width.
+   - The one other durable string, a task name, is inside the domain. Nothing indexes
+     it, so its length is not bounded.
+   - A payload is JSON text. One that is passed is a string, and what is in the string is
+     its serializer's: this check leaves that alone. A value that is not a string where a
+     payload belongs, null and a number too, is refused as one is where an identifier
+     belongs, and a payload that is left out is refused as any string the port requires
+     is. Left to the entries, null was reported as an outage by two of them and as a
+     RangeError by a third, and a number was stored.
+   - A spawn's headers are a map of strings. The whole map is its serializer's, the
+     strings in it too, and this check leaves it alone.
+   - A string place holds a string, whatever its rule, and that is asked first. A value
+     that is not a string where the port takes one, null and a number among them, is
+     refused with the refusal of a string outside the domain, and the refusal says that it
+     must be a string. Null is not a way to leave a string out.
+   - A string the port's type lets a caller leave out is not a refusal: an optional
+     argument, or an optional member of an options object, which today are a spawn's
+     options, its idempotency key, its parent and its headers. Every other string the port
+     requires, and one that is left out is refused by that same first question, a payload
+     too: a value that is not there is not a string, and whether a string is there is the
+     port's shape and not the payload's domain. The refusal says that it was left out. An
+     options object the port requires that is left out has every string in it left out.
+     Left to the entries, a string that was left out became a TypeError from a bind, or,
+     for a child spawn's replay key, a stored key that ends in the word undefined.
+   - An options object that is passed is an object. Null, an array and every other value
+     are refused at every place the table names one: a spawn's options and the parent
+     inside them, a suspension's checkpoint, and a failed rollback. Read as an object such
+     a value has no member, so a spawn went on as if empty options had been passed, and
+     null was a TypeError from inside the entry.
+   - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
+     happens before an id is minted or anything is sent, and it is a rejected promise and
+     never a throw.
+
+   Outside the domain no dialect keeps a name, and they do not agree on what they do with
+   one. Measured at the port: a lone surrogate is replaced with U+FFFD by every driver,
+   so two checkpoint names that differ only in one are one row, and a run claimed under
+   one token is held under another that differs only in one. Where libSQL stores a name
+   it ends the name at a NUL, and where it reads with one it matches nothing. MySQL
+   stores a NUL whole. PostgreSQL refuses it, and its executor reports that as an outage.
+   A direct caller of the port reaches this, and so does a queue or a driver id from
+   configuration. Task code does not: `UserName.parse` refuses such a name for every
+   name the SDK takes, before any store call, as a permanent failure of the task.
+
+   The rule is data. Core names every string once (`PORT_STRING_RULES`: each name a
+   caller knows a string by, and whether it is an identifier, a durable string, a
+   payload or a map of strings) and says where each enters (`PORT_STRINGS`: every method,
+   argument by argument). The table's type is computed from the port's, so a method the
+   port gains, a string argument a method gains, and a string inside an options object
+   each stop the build until the table names them. One check is built from the table
+   (`requirePortStrings`), and every store extends `HeldPort`, whose constructor puts
+   that check in front of every method the table names, as an accessor that cannot be
+   defined again: a class field that would replace an entry, an assignment and a
+   redefinition each throw, and a proxy over a store may still answer a method with its
+   own function. The accessor's descriptor is built on an object with no prototype, and
+   the table is frozen throughout, its inner arrays and its marks too: a store constructed
+   while a library has assigned `configurable` on `Object.prototype` holds the same
+   accessor, and no code in the process can write null over a name in the table. The
+   check looks the entry up when it is called, so a method patched
+   onto a store class after a store exists, as a test double is, is reached with the
+   check in front of it. A dialect's entry holds nothing
+   and is reached only through the check. A fourth dialect inherits it by extending the
+   same class, and the conformance fixture types its store as one that does, so a class
+   that implements the port on its own does not reach the suite. The released port type
+   carries no brand: a wrapper or a test double of a store needs nothing.
+
+   The executable twin is the identifier surface, which every dialect runs. It generates
+   every place a string enters the port from the same table, 82 of them, and asks each
+   held place for a NUL, each kind of lone surrogate, an emoji cut in half, a pair the
+   wrong way round, a number and null, each identifier's place for three names past the
+   width, and each payload's place for null and a number, over an executor that only
+   records that it was reached. It asks every place, and every options object, left out
+   as well. The fuzz walk draws its places and its names from the same source.
+
+   What the mechanism does not see, stated so that nobody takes it for more:
+   - Any name of a string fits any string position. `claim`'s queue written as a payload
+     compiles, and the refusal cases, which draw their places from the table, then ask
+     there only that it is a string. (The name of a map of strings does not fit: nothing
+     holds a map, and that stops the build.) So the surface also writes down every place
+     that is NOT an identifier, ten of
+     them, and how many places there are of each kind, and a place named a payload in
+     core's table fails that list by its name. It is a second, visible edit, and not a
+     proof. Two names of one rule that change places, a run id and a claim token, move
+     neither the list nor the counts: only the name inside the refusal is wrong.
+   - An entry called from the class's prototype is reached with nothing in front of it.
+     Two libSQL cases do that on purpose, to reach a prepared read's own refusal of a
+     malformed bind. A patch of the prototype is another thing: it is reached through the
+     check, whenever it was made, and one dogfood case injects an outage that way.
+   - The check reads a member of an options object once and the entry reads it again, so
+     an object whose getter answers a clean string and then another hands the entry what
+     was never checked. A caller that can hand a store such an object holds the store, and
+     can reach the prototype route as well.
+   - The table's type demands a name for a plain string, a branded string and a template
+     literal string. It does not for an optional method of the port, for an argument typed
+     `unknown`, or for a rest parameter of strings. The port has none of the three.
+
+   **One hosted answer follows from it.** The inspect route answers 400 `invalid_request`
+   for a task id with a NUL in it, through the same refusal line a task id past the width
+   takes. It answered 404, always: with a real task present, its id followed by a NUL and
+   more text matched nothing.
+
+   **A rolling deploy.** Nothing is migrated. A row written before this rule keeps the
+   name a driver gave it: U+FFFD is inside the domain, and a name libSQL ended at a NUL
+   is the shorter name. Only a direct caller of the port could have written one, because
+   the SDK refused such a name already. A run that a direct caller claimed under a token
+   past the width keeps its row: its holder's next write is refused, its lease runs out, and
+   the sweep hands the run to a claim under another token, which is how the engine recovers
+   any run whose holder went away. A caller that passes one now is refused where it
+   was stored under another name, or reported as an outage. A caller whose own claim
+   tokens are wider than 255 characters is refused at every claim from now on.
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,
@@ -4599,10 +4728,19 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     for a caller that ignores the types: a caller of the newer shape against
     the older store is refused by the statement builder before anything is
     sent, on all three dialects, and a caller of the older shape against the
-    newer store is refused at the entry, which says what the port takes, on
-    all three. Measured with the older SDK over a store that refuses that
-    way: the worker books the refusal as a user failure, and the `fail` that
-    follows inside the phase halts the saga. The task ends `failed` with the
+    newer store is refused on all three before anything is read or sent. The
+    port's one check (§3.4 rule 10) answers it first, as it answers any
+    string the port requires that was left out: `InvalidDurableStringError`,
+    which is a TypeError by its class and inside the port's refusal family,
+    saying that `rollback.stepKey` was left out. The entry's own reader
+    refuses the same shapes with a TypeError that says what the port takes,
+    for a caller that reaches the entry with no check in front of it.
+    Measured with the older SDK over a store that refused with the reader's
+    TypeError: the worker books the refusal as a user failure, and the `fail`
+    that follows inside the phase halts the saga. Read, and not run again:
+    the worker sorts a store call's rejection into infrastructure or not, by
+    its origin, and neither refusal is infrastructure, so the booking does
+    not depend on which of the two answered. The task ends `failed` with the
     refusal as its reason, the rollback outcome is `failed`, no attempt
     record is written, and the rollback's own budget is not honoured.
     Nothing foreign is written, and a rollback that succeeds is untouched,

@@ -55,6 +55,7 @@ const weakSetDelete = WeakSet.prototype.delete.call.bind(WeakSet.prototype.delet
   set: WeakSet<T>,
   value: T,
 ) => boolean
+const promiseReject = Promise.reject.bind(Promise) as (reason: unknown) => Promise<never>
 const weakSetHas = WeakSet.prototype.has.call.bind(WeakSet.prototype.has) as <T extends object>(
   set: WeakSet<T>,
   value: T,
@@ -81,7 +82,9 @@ export const TASK_INTRINSICS = freeze({
   ObjectHasOwn: objectHasOwn,
   ObjectKeys: Object.keys,
   ObjectPrototype: Object.prototype,
+  PromiseReject: promiseReject,
   RangeError,
+  ReflectApply: Reflect.apply,
   ReflectGet: Reflect.get,
   RegExpExec: regexpExec,
   Set,
