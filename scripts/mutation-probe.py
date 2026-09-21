@@ -16232,7 +16232,7 @@ MUTATION_SPECS.extend(
             "libsql-file-batches-run-one-at-a-time",
             "packages/store-libsql/src/executor.ts",
             "    const answer = this.fileBacked ? this.turn.then(send) : send()\n",
-            "    const answer = this.fileBacked ? send().then((result) => this.turn.then(() => result)) : send() // MUTATION: a file's batches overlap\n",
+            "    const answer = this.fileBacked && this.turn instanceof Promise ? send() : send() // MUTATION: a file's batches overlap\n",
             "a batch already waiting when another fails runs on the broken connection before the failure marks it, and one outage is reported twice",
         ),
         (
