@@ -16207,6 +16207,14 @@ MUTATION_SPECS.extend(
         ),
     )
 )
+for _verdict, _names in (
+    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
+    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
+    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 # A failed batch is reported once, and its executor serves the next call. On a database
 # file the libSQL executor asks a suspect connection before it trusts it, and runs the
 # file's batches one at a time, so a batch already waiting behind a failed one runs after
@@ -16223,8 +16231,8 @@ MUTATION_SPECS.extend(
         (
             "libsql-file-batches-run-one-at-a-time",
             "packages/store-libsql/src/executor.ts",
-            "    if (!this.fileBacked) return send()\n",
-            "    if (true) return send() // MUTATION: a file's batches overlap\n",
+            "    const answer = this.fileBacked ? this.turn.then(send) : send()\n",
+            "    const answer = this.fileBacked ? send() : send() // MUTATION: a file's batches overlap\n",
             "a batch already waiting when another fails runs on the broken connection before the failure marks it, and one outage is reported twice",
         ),
     )
@@ -16245,14 +16253,6 @@ VERDICTS.update(
         ),
     }
 )
-for _verdict, _names in (
-    (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
-    (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
-    (VERDICTS["mysql-permanent-sqlstate-class-is-typed"], ("mysql-sqlstate-class-22-is-permanent", "mysql-sqlstate-class-23-is-permanent", "mysql-sqlstate-class-42-is-permanent",)),
-):
-    for _name in _names:
-        VERDICTS[_name] = _verdict
-
 # A limit that a retry cures is read before the class MySQL files it under, two more numbers
 # are typed permanent outside the classes, and one real-server case holds both lists to the
 # server's own list of error numbers.

@@ -41,6 +41,9 @@ function primaryResultCode(error: LibsqlError): string {
   return error.code.split('_').slice(0, 2).join('_')
 }
 
+/** What a settled turn keeps of the batch before it: nothing, so the queue holds no rows. */
+const settled = (): void => {}
+
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
  * BEGIN IMMEDIATE, full rollback on any failure — which is the entire
@@ -68,16 +71,14 @@ export class LibsqlExecutor implements SqlExecutor {
    */
   private suspect = false
 
-  /**
-   * A new connection was asked for and has not been opened. Until it is, the client holds
-   * the connection it closed, and that one is never used again, not even to be asked how it
-   * is: the client's batch reads its transaction state when it fails, and the native binding
-   * aborts the whole process on that read of a closed connection.
-   */
-  private unopened = false
+  /** Set by close(). A closed executor is never given a new connection. */
+  private closed = false
 
-  /** Settles when the last batch sent to a database file has been answered, failed or not. */
-  private turn: Promise<unknown> = Promise.resolve()
+  /**
+   * Settles when the last batch sent to a database file has been answered, failed or not,
+   * and holds none of its rows.
+   */
+  private turn: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly client: Client,
@@ -91,39 +92,32 @@ export class LibsqlExecutor implements SqlExecutor {
 
   /**
    * Multi-PROCESS operation on one database file needs write-ahead logging
-   * (readers stop blocking the writer) and a busy timeout (a locked write
-   * waits instead of failing) — per connection. PRAGMAs cannot run inside
-   * a transaction, so this happens outside batch(), lazily before the first
-   * batch of every connection.
+   * (readers stop blocking the writer), which the file keeps once it is set,
+   * and a busy timeout (a locked write waits instead of failing), which each
+   * connection needs. PRAGMAs cannot run inside a transaction, so this happens
+   * outside batch(), lazily before the first batch of every connection.
    *
-   * After a failed batch the connection is first asked whether it is whole, and replaced
-   * when it is not. SQLite leaves a statement whose step fails with SQLITE_BUSY in progress,
-   * so that it can be stepped again, and refuses every COMMIT on a connection while a writing
-   * statement is in progress. The client library prepares a new statement for every call
-   * and can neither reset nor finalize one, and its native binding resets a statement only
-   * before it runs it again. So the BEGIN IMMEDIATE of a write batch that found the database
-   * locked fails every later batch on its connection, read or write, until the garbage
-   * collector finalizes it. Nothing a caller holds can finish that statement, so the
-   * executor takes a new connection. The abandoned one holds no lock, and it closes once it
-   * has been collected.
-   *
-   * `reconnect()` would reopen a client that was closed, so a closed client is left as it
-   * is, and its own refusal is what the caller is told.
+   * After a failed batch the connection is first asked whether it is whole, and
+   * replaced when it is not: a statement the client library cannot finish can be
+   * left in progress on it, and it then fails every later batch at its COMMIT
+   * (DESIGN.md §3.2). The client is closed before it reconnects. Its `reconnect()`
+   * closes the old connection and then opens the new one, so an open that failed
+   * would leave it holding a closed connection, and the native binding ends the
+   * process when it reads such a connection's transaction state, which a failed
+   * batch makes it do. Closed first, a client whose open failed refuses every call
+   * itself, and the next call tries again. A closed executor is never reconnected,
+   * which is checked after the question, because the caller may close the executor
+   * while the question runs.
    */
   private async prepareConnection(): Promise<void> {
-    if (
-      this.suspect &&
-      (this.unopened || !(await this.connectionIsWhole())) &&
-      !this.client.closed
-    ) {
-      this.unopened = true
+    if (!this.suspect && this.pragmasApplied) return
+    if (this.suspect && !(await this.connectionIsWhole()) && !this.closed) {
       this.pragmasApplied = false
+      this.client.close()
       await this.client.reconnect()
-      this.unopened = false
     }
     if (!this.pragmasApplied) {
-      await this.client.execute('PRAGMA journal_mode=WAL')
-      await this.client.execute('PRAGMA busy_timeout=5000')
+      await this.client.executeMultiple('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000')
       this.pragmasApplied = true
     }
     this.suspect = false
@@ -174,92 +168,94 @@ export class LibsqlExecutor implements SqlExecutor {
         }
       }
     }
-    // The one call that reaches the driver. It is written here, inside batch(), and runs
-    // when this batch's turn comes.
-    const send = async (): Promise<SqlResult[]> => {
-      let results: Awaited<ReturnType<Client['batch']>>
+    // The one call that reaches the driver, written here inside batch(). On a database
+    // file it runs in this batch's turn, and a failure marks the connection before the
+    // next turn begins. Every error is typed below, in one place, whichever way it came.
+    const send = async () => {
       try {
-        if (this.fileBacked && (this.suspect || !this.pragmasApplied))
-          await this.prepareConnection()
-        results = await this.client.batch(
+        if (this.fileBacked) await this.prepareConnection()
+        return await this.client.batch(
           statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
           mode,
         )
       } catch (error) {
-        // Marked before anything is thrown, and it cannot fail. Whatever failed, a failed
-        // preparation included, the next batch asks its connection before it runs.
         if (this.fileBacked) this.suspect = true
-        const schemaVersionRead =
-          _label === 'migrate:version' &&
-          mode === 'read' &&
-          statements.length === 1 &&
-          statements[0]?.sql === SCHEMA_VERSION_READ_SQL &&
-          statements[0].args.length === 0
-        if (
-          schemaVersionRead &&
-          error instanceof LibsqlError &&
-          MISSING_META_TABLE.test(error.message)
-        ) {
-          throw new SchemaNotInitializedError('schema metadata has not been initialized', {
-            cause: error,
-          })
-        }
-        // A schema mismatch is PERMANENT, so it gets its own type: consumers
-        // treat StoreUnavailableError as transient and recover through the
-        // lease, which for a missing column means retrying a deterministic
-        // failure until the run's infrastructure budget is gone. Splitting it
-        // out here covers every statement of every batch, including paths no
-        // startup check would run.
-        if (error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {
-          throw new SchemaMismatchError(
-            `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
-            { cause: error },
-          )
-        }
-        // The store answered and no retry changes the answer. Typed apart from an outage,
-        // by the driver's code, so a consumer can stop retrying a failure that is
-        // deterministic.
-        if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {
-          throw new PermanentStoreError(`batch(${_label}) failed permanently: ${String(error)}`, {
-            cause: error,
-          })
-        }
-        // Typed so consumers can classify INFRASTRUCTURE failure by type —
-        // a store outage must never be mistaken for a user failure.
-        throw new StoreUnavailableError(`batch(${_label}) failed: ${String(error)}`, {
-          cause: error,
-        })
+        throw error
       }
-      return results.map((r) => ({
-        rows: r.rows.map((row) => {
-          const out: Record<string, string | number | bigint | Uint8Array | null> = {}
-          for (const col of r.columns) {
-            const v = row[col]
-            out[col] =
-              v instanceof ArrayBuffer
-                ? new Uint8Array(v)
-                : v === undefined
-                  ? null
-                  : (v as string | number | bigint | Uint8Array | null)
-          }
-          return out
-        }),
-        rowsAffected: r.columns.length > 0 ? r.rows.length : r.rowsAffected,
-      }))
     }
-    if (!this.fileBacked) return send()
     // A database file's batches run one at a time, each after the one before it has been
     // answered and has marked its connection if it failed. The local client runs a batch
     // without yielding, so two batches never overlapped and the queue loses nothing. Without
     // it, a batch already waiting when another fails would run on the connection that
     // failure broke, before the failed call's own error handling has run, and one outage
     // would be reported as two. A hosted client keeps its concurrent requests.
-    const answer = this.turn.then(send)
-    this.turn = answer.catch(() => undefined)
-    return answer
+    const answer = this.fileBacked ? this.turn.then(send) : send()
+    if (this.fileBacked) this.turn = answer.then(settled, settled)
+    let results: Awaited<ReturnType<Client['batch']>>
+    try {
+      results = await answer
+    } catch (error) {
+      const schemaVersionRead =
+        _label === 'migrate:version' &&
+        mode === 'read' &&
+        statements.length === 1 &&
+        statements[0]?.sql === SCHEMA_VERSION_READ_SQL &&
+        statements[0].args.length === 0
+      if (
+        schemaVersionRead &&
+        error instanceof LibsqlError &&
+        MISSING_META_TABLE.test(error.message)
+      ) {
+        throw new SchemaNotInitializedError('schema metadata has not been initialized', {
+          cause: error,
+        })
+      }
+      // A schema mismatch is PERMANENT, so it gets its own type: consumers
+      // treat StoreUnavailableError as transient and recover through the
+      // lease, which for a missing column means retrying a deterministic
+      // failure until the run's infrastructure budget is gone. Splitting it
+      // out here covers every statement of every batch, including paths no
+      // startup check would run.
+      if (error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {
+        throw new SchemaMismatchError(
+          `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
+          { cause: error },
+        )
+      }
+      // The store answered and no retry changes the answer. Typed apart from an outage,
+      // by the driver's code, so a consumer can stop retrying a failure that is
+      // deterministic.
+      if (error instanceof LibsqlError && PERMANENT_RESULT_CODES.has(primaryResultCode(error))) {
+        throw new PermanentStoreError(`batch(${_label}) failed permanently: ${String(error)}`, {
+          cause: error,
+        })
+      }
+      // Typed so consumers can classify INFRASTRUCTURE failure by type —
+      // a store outage must never be mistaken for a user failure.
+      throw new StoreUnavailableError(`batch(${_label}) failed: ${String(error)}`, {
+        cause: error,
+      })
+    }
+    return results.map((r) => ({
+      rows: r.rows.map((row) => {
+        const out: Record<string, string | number | bigint | Uint8Array | null> = {}
+        for (const col of r.columns) {
+          const v = row[col]
+          out[col] =
+            v instanceof ArrayBuffer
+              ? new Uint8Array(v)
+              : v === undefined
+                ? null
+                : (v as string | number | bigint | Uint8Array | null)
+        }
+        return out
+      }),
+      rowsAffected: r.columns.length > 0 ? r.rows.length : r.rowsAffected,
+    }))
   }
 
   close(): void {
+    this.closed = true
     this.client.close()
   }
 }

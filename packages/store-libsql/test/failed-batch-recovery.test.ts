@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { systemClock } from '@durablerun/core'
 import { type Client, type Transaction, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor } from '../src/index.js'
@@ -31,15 +32,30 @@ function outcome(call: Promise<unknown>): Promise<Outcome> {
   )
 }
 
+/** How long a case lets a write wait for the lock before SQLite refuses it. */
+const LOWERED_WAIT_MS = 10
 const insert = (id: number) => ({ sql: 'INSERT INTO t (id) VALUES (?)', args: [id] })
 const count = { sql: 'SELECT count(*) AS n FROM t', args: [] }
-const shorten = { sql: 'PRAGMA busy_timeout=100', args: [] }
+const shorten = { sql: `PRAGMA busy_timeout=${LOWERED_WAIT_MS}`, args: [] }
 const BUSY = { name: 'StoreUnavailableError', code: 'SQLITE_BUSY' }
 const CLOSED = { name: 'StoreUnavailableError', code: 'CLIENT_CLOSED' }
 
 async function readBack(db: LibsqlExecutor, pragma: 'busy_timeout' | 'journal_mode') {
   const [result] = await db.batch('pragma', [{ sql: `PRAGMA ${pragma}`, args: [] }], 'read')
   return Object.values(result?.rows[0] ?? {})[0]
+}
+
+/**
+ * The two settings the executor applies to each connection it opens. The file keeps
+ * write-ahead logging once it is set, so the journal mode says only that the file is still in
+ * WAL mode. The busy timeout is what tells a new connection, which has the executor's five
+ * seconds, from the one a case lowered.
+ */
+async function connectionPragmas(db: LibsqlExecutor) {
+  return {
+    busyTimeout: await readBack(db, 'busy_timeout'),
+    journalMode: await readBack(db, 'journal_mode'),
+  }
 }
 
 async function ids(db: LibsqlExecutor) {
@@ -83,18 +99,28 @@ beforeEach(async () => {
   victim = LibsqlExecutor.open(url)
   await victim.batch('setup', [{ sql: 'CREATE TABLE t (id INTEGER PRIMARY KEY)', args: [] }])
   await victim.batch('shorten', [shorten], 'read')
-  holderClient = createClient({ url })
-  holder = await holderClient.transaction('write')
 })
 
 afterEach(() => {
-  holder.close()
-  holderClient.close()
   victim.close()
   rmSync(dir, { recursive: true, force: true })
 })
 
+/** Another connection takes the write lock for each case and holds it until the case frees it. */
+function holdTheWriteLock(): void {
+  beforeEach(async () => {
+    holderClient = createClient({ url })
+    holder = await holderClient.transaction('write')
+  })
+  afterEach(() => {
+    holder.close()
+    holderClient.close()
+  })
+}
+
 describe('a write batch that fails busy on a file database', () => {
+  holdTheWriteLock()
+
   it('is an outage, and the next read on its executor is answered while the lock is still held', async () => {
     expect(await outcome(victim.batch('write', [insert(1)]))).toMatchObject(BUSY)
     expect(await outcome(victim.batch('read', [count], 'read'))).toBe('answered')
@@ -134,12 +160,9 @@ describe('a write batch that fails busy on a file database', () => {
   })
 
   it('gets a new connection with the five second wait and write-ahead logging on it', async () => {
-    expect(await readBack(victim, 'busy_timeout')).toBe(100)
+    expect(await readBack(victim, 'busy_timeout')).toBe(LOWERED_WAIT_MS)
     expect(await outcome(victim.batch('write', [insert(1)]))).toMatchObject(BUSY)
-    expect({
-      busyTimeout: await readBack(victim, 'busy_timeout'),
-      journalMode: await readBack(victim, 'journal_mode'),
-    }).toEqual({ busyTimeout: 5000, journalMode: 'wal' })
+    expect(await connectionPragmas(victim)).toEqual({ busyTimeout: 5000, journalMode: 'wal' })
   })
 
   it('abandons a connection that holds no lock: another executor writes and a TRUNCATE checkpoint is not blocked', async () => {
@@ -178,9 +201,10 @@ describe('a write batch that fails busy on a file database', () => {
       // The new connection cannot be opened while the directory is gone.
       renameSync(dir, `${dir}-gone`)
       try {
-        // Two calls, because the second meets a client that holds a closed connection, and
-        // using that one would abort the process inside the native binding. The binding
-        // gives the error no code, so its type is all that is held here.
+        // Two calls. The first finds the connection broken and cannot open another, and the
+        // second meets the client that the failed open left closed, which must refuse the call
+        // itself and not end the process, as a closed connection used through the native
+        // binding would. The binding gives the error no code, so its type is all that is held.
         for (const attempt of ['first', 'second']) {
           const unopened = await outcome(victim.batch('read', [count], 'read'))
           expect(unopened, attempt).toMatchObject({ name: 'StoreUnavailableError' })
@@ -190,11 +214,11 @@ describe('a write batch that fails busy on a file database', () => {
         renameSync(`${dir}-gone`, dir)
       }
       expect(await outcome(victim.batch('read', [count], 'read'))).toBe('answered')
-      expect({
-        busyTimeout: await readBack(victim, 'busy_timeout'),
-        journalMode: await readBack(victim, 'journal_mode'),
-        ids: await ids(victim),
-      }).toEqual({ busyTimeout: 5000, journalMode: 'wal', ids: [2] })
+      expect({ ...(await connectionPragmas(victim)), ids: await ids(victim) }).toEqual({
+        busyTimeout: 5000,
+        journalMode: 'wal',
+        ids: [2],
+      })
     } finally {
       again.close()
     }
@@ -215,7 +239,7 @@ describe('a write batch that fails busy on a file database', () => {
         outcome(victim.batch('read', [count], 'read')),
       ])
       expect(outcomes).toMatchObject([BUSY, 'answered', 'answered', BUSY, 'answered'])
-      await new Promise((resolve) => setImmediate(resolve))
+      await systemClock().yieldTurn()
       expect(unhandled).toEqual([])
     } finally {
       process.off('unhandledRejection', listener)
@@ -232,7 +256,6 @@ describe('a write batch that fails busy on a file database', () => {
 
 describe('a file database executor', () => {
   it('keeps the connection of a batch that failed and left nothing in progress', async () => {
-    await holder.rollback()
     expect(await outcome(victim.batch('write', [insert(1)]))).toBe('answered')
     expect(await outcome(victim.batch('write', [insert(2), insert(1)]))).toMatchObject({
       name: 'PermanentStoreError',
@@ -241,7 +264,7 @@ describe('a file database executor', () => {
     // The lowered wait is still there, so this is the connection the batch failed on.
     expect({ busyTimeout: await readBack(victim, 'busy_timeout'), ids: await ids(victim) }).toEqual(
       {
-        busyTimeout: 100,
+        busyTimeout: LOWERED_WAIT_MS,
         ids: [1],
       },
     )
@@ -281,22 +304,20 @@ describe('an in-memory database', () => {
 })
 
 describe('canary on the client library', () => {
+  holdTheWriteLock()
+
   it('still leaves a statement whose step failed busy in progress on its connection', async () => {
     const raw = createClient({ url })
-    const settled = (call: Promise<unknown>) =>
-      call.then(
-        () => 'answered',
-        (error: unknown) => (error as { code?: unknown }).code,
-      )
     try {
-      await raw.execute('PRAGMA busy_timeout=100')
-      expect(await settled(raw.batch(['INSERT INTO t (id) VALUES (1)'], 'write'))).toBe(
-        'SQLITE_BUSY',
-      )
+      await raw.execute(shorten)
+      expect(await outcome(raw.batch([insert(1)], 'write'))).toMatchObject({ code: 'SQLITE_BUSY' })
       expect(
-        await settled(raw.batch(['SELECT count(*) FROM t'], 'read')),
-        'The client library now finishes a statement whose step failed busy, so a read behind a failed write is answered. LibsqlExecutor no longer needs to ask its connection and replace it: delete connectionIsWhole, the reconnect and this canary. BUILD.md names the condition under PR3.15.',
-      ).toBe('SQLITE_BUSY')
+        await outcome(raw.batch([count], 'read')),
+        'The client library now finishes a statement whose step failed busy, so a read behind a failed write is answered on the same client. BUILD.md, under PR3.15, says what to delete from LibsqlExecutor, this canary included.',
+      ).toMatchObject({
+        code: 'SQLITE_BUSY',
+        message: expect.stringContaining('SQL statements in progress'),
+      })
     } finally {
       raw.close()
     }
