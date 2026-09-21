@@ -464,6 +464,25 @@ describe('a file database executor', () => {
     expect([...(read?.rows[0]?.v as Uint8Array)]).toEqual([1, 2, 3])
   })
 
+  it('sends the bytes of a Buffer a batch was called with, whatever the caller does to them after the call', async () => {
+    await victim.batch('blobs', [
+      { sql: 'CREATE TABLE c (id INTEGER PRIMARY KEY, v BLOB NOT NULL)', args: [] },
+    ])
+    // A Buffer is a Uint8Array whose own slice shares its memory.
+    const bytes = Buffer.from([1, 2, 3])
+    const write = victim.batch('write', [
+      { sql: 'INSERT INTO c (id, v) VALUES (?, ?)', args: [1, bytes] },
+    ])
+    bytes[0] = 99
+    expect(await outcome(write)).toBe('answered')
+    const [read] = await victim.batch(
+      'read',
+      [{ sql: 'SELECT v FROM c WHERE id = 1', args: [] }],
+      'read',
+    )
+    expect([...(read?.rows[0]?.v as Uint8Array)]).toEqual([1, 2, 3])
+  })
+
   it('never reopens a client its owner closed, handed to the constructor', async () => {
     const client = createClient({ url })
     const owned = new LibsqlExecutor(client, true, url)
