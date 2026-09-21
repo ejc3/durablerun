@@ -137,6 +137,36 @@ describe('a connection replaced after a failed batch', () => {
     }
   })
 
+  it('refuses a new connection that opened another file, when the client handed to it names its file by a relative path', async () => {
+    const home = process.cwd()
+    const opened = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-handed-'))
+    const elsewhere = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-handed-elsewhere-'))
+    let victim: LibsqlExecutor | undefined
+    try {
+      process.chdir(opened)
+      const handed = new LibsqlExecutor(createClient({ url: 'file:rel.db' }), true)
+      victim = handed
+      await handed.batch('setup', [createTable, insert(1)])
+      await handed.batch('shorten', [shorten], 'read')
+      const release = await holdTheWriteLock(join(opened, 'rel.db'))
+      process.chdir(elsewhere)
+      try {
+        expect(await outcome(handed.batch('write', [insert(2)]))).toMatchObject(BUSY)
+      } finally {
+        await release()
+      }
+      // The client reopens its relative path in the directory the process is in now. That
+      // file is not the one the executor had, so the new connection is closed and refused.
+      expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
+      expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
+    } finally {
+      process.chdir(home)
+      victim?.close()
+      rmSync(opened, { recursive: true, force: true })
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('never gives an empty-path database, which SQLite keeps private to its one connection, a connection of its own', async () => {
     const temp = LibsqlExecutor.open('file:')
     try {

@@ -128,6 +128,12 @@ export class LibsqlExecutor implements SqlExecutor {
   private closed = false
 
   /**
+   * The recovery has closed the client and not yet opened it again, so the client's closed
+   * state is the recovery's and not its owner's. A client its owner closed is never reopened.
+   */
+  private reopening = false
+
+  /**
    * The database file the first connection opened, as SQLite names it and the file system
    * knows it, or null for a database with no file of its own, which is never reconnected.
    * It is read before the first batch runs and checked around every reconnect, because a new
@@ -170,18 +176,20 @@ export class LibsqlExecutor implements SqlExecutor {
    * would leave it holding a closed connection, and the native binding ends the
    * process when it reads such a connection's transaction state, which a failed
    * batch makes it do. Closed first, a client whose open failed refuses every call
-   * itself, and the next call tries again. A closed executor is never reconnected,
-   * which is checked after the question, because the caller may close the executor
-   * while the question runs. A new connection must reach the file the executor had: the
+   * itself, and the next call tries again. A closed executor is never reconnected, and
+   * neither is a client its owner closed, which is checked after the question, because
+   * either can be closed while the question runs. A new connection must reach the file the executor had: the
    * path is checked before the reconnect and the new connection's file after it.
    */
   private async prepareConnection(): Promise<void> {
     if (!this.suspect && this.pragmasApplied) return
-    if (this.suspect && !(await this.connectionIsWhole()) && !this.closed) {
+    if (this.suspect && !(await this.connectionIsWhole()) && !this.closedByItsOwner()) {
       this.refuseToReopenAnotherFile()
       this.pragmasApplied = false
+      this.reopening = true
       this.client.close()
       await this.client.reconnect()
+      this.reopening = false
     }
     if (!this.pragmasApplied) {
       await this.holdToTheFile()
@@ -189,6 +197,14 @@ export class LibsqlExecutor implements SqlExecutor {
       this.pragmasApplied = true
     }
     this.suspect = false
+  }
+
+  /**
+   * Closed by close(), or by the owner of a client handed to the constructor. A client the
+   * recovery closed while it reconnects is not closed by its owner.
+   */
+  private closedByItsOwner(): boolean {
+    return this.closed || (this.client.closed && !this.reopening)
   }
 
   /**
@@ -227,6 +243,7 @@ export class LibsqlExecutor implements SqlExecutor {
       return
     }
     if (this.file === null || !sameFile(this.file, opened ?? undefined)) {
+      this.reopening = true
       this.client.close()
       throw new Error(
         `a new connection opened ${path === '' ? 'a database with no file' : path}, which is not the database file this executor opened, so it is closed before it serves a batch`,
@@ -282,13 +299,13 @@ export class LibsqlExecutor implements SqlExecutor {
     // The one call that reaches the driver, written here inside batch(). On a database
     // file it runs in this batch's turn, and a failure marks the connection before the
     // next turn begins. Every error is typed below, in one place, whichever way it came.
+    // The statements as they are at the call. A database file's batch waits for its turn, and
+    // an argument array its caller changes after the call must change nothing that is sent.
+    const sent = statements.map((s) => ({ sql: s.sql, args: [...s.args] }))
     const send = async () => {
       try {
         if (this.fileBacked) await this.prepareConnection()
-        return await this.client.batch(
-          statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
-          mode,
-        )
+        return await this.client.batch(sent, mode)
       } catch (error) {
         if (this.fileBacked) this.suspect = true
         throw error
@@ -309,9 +326,9 @@ export class LibsqlExecutor implements SqlExecutor {
       const schemaVersionRead =
         _label === 'migrate:version' &&
         mode === 'read' &&
-        statements.length === 1 &&
-        statements[0]?.sql === SCHEMA_VERSION_READ_SQL &&
-        statements[0].args.length === 0
+        sent.length === 1 &&
+        sent[0]?.sql === SCHEMA_VERSION_READ_SQL &&
+        sent[0].args.length === 0
       if (
         schemaVersionRead &&
         error instanceof LibsqlError &&

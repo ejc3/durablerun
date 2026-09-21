@@ -5,12 +5,13 @@ import {
   mkdtempSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { systemClock } from '@durablerun/core'
-import { type Client, type Transaction, createClient } from '@libsql/client'
+import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor } from '../src/index.js'
 
@@ -77,13 +78,21 @@ async function ids(db: LibsqlExecutor) {
 
 /**
  * The descriptors this process holds on the database file, its log and its index. Null where
- * there is no /proc to read, and a case then goes without the premise this gives it.
+ * there is no /proc to read, and a case then goes without the premise this gives it. A
+ * descriptor's link names the file's real path, and a temporary directory can be reached
+ * through a symbolic link, so the path is resolved first.
  */
 function descriptorsOn(file: string): number | null {
+  let real: string
+  try {
+    real = realpathSync(file)
+  } catch {
+    real = file
+  }
   try {
     return readdirSync('/proc/self/fd').filter((fd) => {
       try {
-        return readlinkSync(`/proc/self/fd/${fd}`).startsWith(file)
+        return readlinkSync(`/proc/self/fd/${fd}`).startsWith(real)
       } catch {
         return false
       }
@@ -93,12 +102,51 @@ function descriptorsOn(file: string): number | null {
   }
 }
 
+/**
+ * The client, with a hook run right after each executeMultiple the executor sends through it:
+ * the two PRAGMAs of a new connection, and the question after a failed batch.
+ */
+function hooked(client: Client, after: (sql: string) => void): Client {
+  return new Proxy(client, {
+    get(target, key) {
+      if (key === 'executeMultiple') {
+        return async (sql: string) => {
+          try {
+            return await target.executeMultiple(sql)
+          } finally {
+            after(sql)
+          }
+        }
+      }
+      const value: unknown = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+/** A second connection's hold on the database's write lock, given back once. */
+interface LockHolder {
+  rollback(): Promise<void>
+}
+
+async function takeTheWriteLock(client: Client): Promise<LockHolder> {
+  await client.execute('BEGIN IMMEDIATE')
+  let held = true
+  return {
+    async rollback() {
+      if (!held) return
+      held = false
+      await client.execute('ROLLBACK')
+    },
+  }
+}
+
 let dir: string
 let file: string
 let url: string
 let victim: LibsqlExecutor
 let holderClient: Client
-let holder: Transaction
+let holder: LockHolder
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'durablerun-failed-batch-'))
@@ -114,14 +162,18 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-/** Another connection takes the write lock for each case and holds it until the case frees it. */
+/**
+ * Another connection takes the write lock for each case and holds it until the case frees it.
+ * It takes the lock on its own connection, which close() then closes, and not through a
+ * transaction, whose connection the client never closes.
+ */
 function holdTheWriteLock(): void {
   beforeEach(async () => {
     holderClient = createClient({ url })
-    holder = await holderClient.transaction('write')
+    holder = await takeTheWriteLock(holderClient)
   })
-  afterEach(() => {
-    holder.close()
+  afterEach(async () => {
+    await holder.rollback()
     holderClient.close()
   })
 }
@@ -203,7 +255,7 @@ describe('a write batch that fails busy on a file database', () => {
     await holder.rollback()
     expect(await outcome(victim.batch('write', [insert(2)]))).toBe('answered')
     expect(await outcome(victim.batch('shorten', [shorten], 'read'))).toBe('answered')
-    const again = await holderClient.transaction('write')
+    const again = await takeTheWriteLock(holderClient)
     try {
       expect(await outcome(victim.batch('write', [insert(3)]))).toMatchObject(BUSY)
       // The file is still the one the executor opened, so a new connection is asked for,
@@ -233,7 +285,7 @@ describe('a write batch that fails busy on a file database', () => {
         ids: [2],
       })
     } finally {
-      again.close()
+      await again.rollback()
     }
   })
 
@@ -256,6 +308,51 @@ describe('a write batch that fails busy on a file database', () => {
       expect(unhandled).toEqual([])
     } finally {
       process.off('unhandledRejection', listener)
+    }
+  })
+
+  it('is not reconnected when it is closed while its question after a failed batch runs', async () => {
+    let asked: LibsqlExecutor | undefined
+    let closeOnTheNextQuestion = false
+    const client = createClient({ url })
+    try {
+      asked = new LibsqlExecutor(
+        hooked(client, () => {
+          if (!closeOnTheNextQuestion) return
+          closeOnTheNextQuestion = false
+          asked?.close()
+        }),
+        true,
+      )
+      await asked.batch('shorten', [shorten], 'read')
+      expect(await outcome(asked.batch('write', [insert(1)]))).toMatchObject(BUSY)
+      closeOnTheNextQuestion = true
+      expect(await outcome(asked.batch('read', [count], 'read'))).toMatchObject(CLOSED)
+      expect(client.closed).toBe(true)
+    } finally {
+      client.close()
+    }
+  })
+
+  it('asks its connection once after a failed batch, and not before every batch after it', async () => {
+    let questions = 0
+    const client = createClient({ url })
+    const counted = new LibsqlExecutor(
+      hooked(client, (sql) => {
+        if (sql.startsWith('BEGIN')) questions++
+      }),
+      true,
+    )
+    try {
+      await counted.batch('shorten', [shorten], 'read')
+      expect(await outcome(counted.batch('write', [insert(1)]))).toMatchObject(BUSY)
+      await holder.rollback()
+      for (let i = 0; i < 5; i++) {
+        expect(await outcome(counted.batch('read', [count], 'read'))).toBe('answered')
+      }
+      expect(questions).toBe(1)
+    } finally {
+      counted.close()
     }
   })
 
@@ -282,6 +379,52 @@ describe('a file database executor', () => {
       },
     )
     expect(await outcome(victim.batch('write', [insert(2)]))).toBe('answered')
+  })
+
+  it('applies its PRAGMAs again on the next call after they failed, so its connection has both', async () => {
+    const fresh = join(dir, 'fresh.sqlite')
+    const reader = createClient({ url: `file:${fresh}` })
+    await reader.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)')
+    // A read transaction of another connection keeps a new database from turning on
+    // write-ahead logging, so the new executor's PRAGMAs fail.
+    await reader.execute('BEGIN')
+    await reader.execute('SELECT count(*) FROM t')
+    const late = LibsqlExecutor.open(`file:${fresh}`)
+    try {
+      expect(await outcome(late.batch('read', [count], 'read'))).toMatchObject(BUSY)
+      await reader.execute('COMMIT')
+      expect(await connectionPragmas(late)).toEqual({ busyTimeout: 5000, journalMode: 'wal' })
+    } finally {
+      late.close()
+      reader.close()
+    }
+  })
+
+  it('sends the arguments a batch was called with, whatever the caller does to them after the call', async () => {
+    const args = [1]
+    const write = victim.batch('write', [{ sql: 'INSERT INTO t (id) VALUES (?)', args }])
+    args[0] = 99
+    expect(await outcome(write)).toBe('answered')
+    expect(await ids(victim)).toEqual([1])
+  })
+
+  it('never reopens a client its owner closed, handed to the constructor', async () => {
+    const client = createClient({ url })
+    const owned = new LibsqlExecutor(client, true)
+    expect(await outcome(owned.batch('read', [count], 'read'))).toBe('answered')
+    client.close()
+    expect(await outcome(owned.batch('read', [count], 'read'))).toMatchObject(CLOSED)
+    expect(await outcome(owned.batch('read', [count], 'read'))).toMatchObject(CLOSED)
+    expect(client.closed).toBe(true)
+  })
+
+  it('reads an upper-case FILE: scheme as a database file, with its busy timeout and write-ahead logging', async () => {
+    const upper = LibsqlExecutor.open(`FILE:${join(dir, 'upper.sqlite')}`)
+    try {
+      expect(await connectionPragmas(upper)).toEqual({ busyTimeout: 5000, journalMode: 'wal' })
+    } finally {
+      upper.close()
+    }
   })
 
   it('answers every call that is queued when it is closed, and hangs none', async () => {
