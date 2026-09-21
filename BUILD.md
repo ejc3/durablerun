@@ -3673,6 +3673,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     lines over a write refused with wrong words came from reading the text, as
     did the write a comment hid from them: a conflict clause, a schema, a
     comment and a WITH. Its trigger is the next write the text misreads.
+  - Option, not a deferral of this PR: before a check is deleted for one that
+    replaces it, run the deleted check's own code and its replacement over the
+    same statements, and list every statement the old refused and the new
+    passes. The two pins over writes were deleted on an argument from what they
+    were written against, and the writes they refused that pass now were found
+    by the reviews, which ran the pins' own code by hand. Its trigger is the
+    next check deleted for a replacement.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It
