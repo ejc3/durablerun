@@ -48,7 +48,11 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left.
+a last docs PR gives a live owner to every open bullet that is left. Three
+lines are left when the last docs PR merges. Line 18 is held for the
+maintainer's choice. Line 16 is PR3.5d's and arrives with its pull request,
+#71, and line 27 is PR3.15's, whose branch is in review. Both arrive after
+the last docs PR.
 
 **Exit test:**
 
@@ -217,8 +221,10 @@ a last docs PR gives a live owner to every open bullet that is left.
    failed attempt that had budget left, held by a case on three dialects that
    was committed failing. Saga reads on libSQL and MySQL are ranges the
    checkpoint key serves, and their plan pins refuse the walk. PostgreSQL
-   keeps the walk, which is keyed by task, because a range over a name is not
-   sound under a linguistic collation. The hosted inspect route shows the
+   keeps the walk, which is keyed by task, because a range over a name was not
+   sound under a linguistic collation. From schema version 7 on it is, and
+   reading it as a range there is an option not built. The hosted inspect
+   route shows the
    rollback outcome. This is met. PR3.4b reads the attempt record that the
    task's last run wrote: a `sagas` case committed failing holds it on three
    dialects, and the fuzz walk holds it over every task it spawns. What an
@@ -354,7 +360,19 @@ a last docs PR gives a live owner to every open bullet that is left.
     records every completion event under another task's name, committed
     failing, is now rejected, and the matrix with every checker is green on
     three dialects. Of the copies, the SDK tests' `expectCleanRows` exists
-    once, and the label recorders stay with PR4.4d.
+    once, and the label recorders are an option under the PR3.3d entry.
+18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
+    together and a step named after the attempt, in its plain and its saga
+    generator, and each shape runs at every fault point in a program of its
+    own. It also draws flows that run side by side, each with an await before
+    its step, and every program it draws ends the same way at every fault
+    point. This is NOT MET, and pull request #75 is held for the maintainer. It
+    built the harness and a fix for what the harness found, and its one review
+    showed that the fix fails an ordinary fan-out written as concurrent flows,
+    on a run with no fault. Five options for the guard were measured side by
+    side. Each sound one changes what the SDK promises a task's author, so the
+    maintainer chooses. The PR3.4d entry names the two defects main has until
+    then.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -518,6 +536,46 @@ a last docs PR gives a live owner to every open bullet that is left.
     and the SELECT of an INSERT that each find a run by a comparison no index
     serves, fail it by name, and before the clause every test of the plan file
     that reads a plan passed with either in place.
+
+**Held for the maintainer:** each of these needs a decision, an account or an
+administrator's right that only the maintainer has, and this plan schedules
+none of them. What the SDK does about durable calls made at the same time: pull
+request #75 is held on it, it blocks exit test line 18, and the PR3.4d entry
+has the measured options, the two defects main has until then, and an open
+question the same choice settles. Three flow programs that turn #75 red by
+design are written and not pushed, and pushing them is the maintainer's call
+(the PR3.4d entry). Five pull requests of this milestone each decided, without
+the maintainer, a change that a caller of a published package can see, and each
+blocks nothing. Each entry named below records the change, and the other way is
+written only here. PR3.3d changed `error.name` at the port's bare refusals from
+`RangeError` to `PortRefusalError`, and the other way is to leave the name as
+it was (the PR3.3d entry). PR3.4c changed the signature of `failRollback` in
+one step, and the other way is to accept both shapes for one release (the
+PR3.4c entry). PR3.14b held a claim token to an identifier's width, which
+PR3.3c's one check now does at every entry that takes a token, and the other
+way is to bound the index and not the token (the PR3.14b entry). PR2.5a answers
+a permanent store error 500 at the hosted routes, where the same failure
+answered 503, and the other way is to keep 503 (the PR2.5a entry). PR3.3c
+answers 400 at the inspect route for a task id with a NUL in it, where it
+answered 404, and the other way is to keep 404 (the PR3.3c entry). Two design
+questions are recorded as the maintainer's, each an option with its trigger: a
+way for a batch of reads to say it needs a current answer (under PR3.4), and
+what ends a run whose store call fails permanently (under PR2.5a). The
+generated surface for the plan reader, whose trigger has been met, waits for
+the maintainer's decision (an option under PR3.14c, met by the reviews of
+PR3.14d). A comment for the client library's open issue upstream,
+tursodatabase/libsql-client-ts#352, which points at
+tursodatabase/libsql-js#228, is prepared with reproductions and not posted, and
+posting it is the maintainer's (the PR3.15 entry names the bug). A stated
+oldest supported build, which dropping the row lock of a caller's event waits
+for, is under PR3.3 and in the non-goals below. One base class for the whole
+refusal family is under PR3.3d. The PlanetScale smoke job is in the non-goals
+below and in the PR4.3 entry. The five cleanups of the published API that the
+simplification sweep turned down, the unimplemented `WakeSignals` port among
+them, are the bullets marked Rejected under PR3.5 that would change a published
+export. Review configuration owned outside the repository is PR0.2. A drive of
+the real flow on a preview deployment is what the standing verification
+discipline at the end of this plan asks of every phase.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -899,17 +957,25 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.2 resident driver**: loop + adaptive sleep-until-next-wake + `/wake` +
   graceful shutdown (asyncio-style lifecycle discipline, TS edition);
   single-shard registry heartbeat row. Runs locally against `turso dev`.
-  Carries a deliberate deferral from the PR2.1 review: a launch watchdog —
-  a hanging launcher call currently stalls its tick, and the timeout seam
-  (an injected clock, since engine code bans ambient timers) belongs to
-  the loop, not to tick().
+  Carried a deliberate deferral from the PR2.1 review, and built it: a launch
+  watchdog. A hanging launcher call stalled its tick then, and the timeout
+  seam (an injected clock, since engine code bans ambient timers) belongs to
+  the loop, not to tick(). By default the loop races every launch against its
+  clock and hands a timeout to the reconciler as a failed launch
+  (`withLaunchTimeout` in `packages/driver/src/loop.ts`), held by the case `a
+  hanging launcher is abandoned by the watchdog and the run recovers` in
+  `packages/driver/test/loop.test.ts`. The loop's option
+  `launchTimeoutSeconds: null` turns the watchdog off for a launcher that runs
+  the worker inline.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
-  enqueue → done; kill-worker chaos → sweep recovers. Carries one deferral
-  from the loop review: the `/wake` HTTP endpoint (producers currently
-  cannot reach the in-process wake(); it rides the worker server's process
-  entry). The other one it carried, an abort signal through the Launcher
+  enqueue → done; kill-worker chaos → sweep recovers. Carried one deferral
+  from the loop review, and built it: the `/wake` HTTP endpoint (producers
+  could not reach the in-process wake() then). The driver's HTTP face serves
+  `POST /wake` (`packages/driver/src/http.ts`), and a case of
+  `packages/driver/test/http-lifecycle.test.ts` posts to it on a real local
+  server. The other one it carried, an abort signal through the Launcher
   port, is PR2.5b.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
@@ -1093,13 +1159,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   of its batch or carries an explicit waiver), and structural
   wake-consumption binding (a wake bound to its awaiting step instead of
   consumed by a flag — DONE: the wake_step column, codex final review).
+  The lint is an option, not built. PR3.1c's column holds the claim token and
+  the generation for the calls that take them, and nothing holds a caller's
+  other identities as a class. Trigger: a write label found whose fence leaves
+  out an identity its caller supplied.
   A second review round against the final head found six more bugs (see
   postmortems/pr11-codex-final-review.md), leaving two deferrals of its own.
   One is DONE as PR3.1d below: a schema guarantee that an event payload is
-  never SQL NULL. The other stays:
+  never SQL NULL. The other is built too:
   canonicalize-and-classify a handler result at the source so a
   non-serializable result is a permanent user failure, not a silent completion
-  with NULL. Attestation-artifact freshness is DONE: the Codex log and
+  with NULL. The worker serializes a handler's result
+  inside its user-failure classifier (`serializeTaskValue`, called in
+  `packages/sdk/src/run-worker.ts`), and a value with no JSON form is a
+  `FatalTaskError`, which fails the task for good. The case `owns task
+  serialization and permanent-failure boundaries in one aggregate` in
+  `packages/sdk/test/run-worker.test.ts` holds it for a function, a symbol, a
+  bigint and a cyclic object: one execution and one attempt of five.
+  Attestation-artifact freshness is DONE: the Codex log and
   multi-lens journal each carry one exact review-head binding checked against
   the PR head before the status can post.
 - **PR3.1c stale-token column**: DONE. Narrowed from the stale-fence fault
@@ -1135,12 +1212,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statement can lose its generation comparison alone with every case green,
     which was written and run. The cap's write takes what it needs from the
     stored row and reports no scanned value, so nothing durable rests on it
-    today.
+    today. Trigger: the cap's write comes to report a scanned value, or
+    something durable comes to rest on its generation comparison.
   - An option, not built: a second argument form of `fail` in the column, the
     one that asks for a retry. The column calls `fail` and `failRollback` with
     none, and the scheduler suite's case of a stale `fail` with budget left
     holds the retry form by hand. It would move the pinned thirteen calls to
-    fourteen and add a mutation.
+    fourteen and add a mutation. Trigger: a change to the retry arm of `fail`,
+    or to that hand-written case.
   - PR3.1c's one review found no HIGH, one MEDIUM and five LOW, recorded in
     `postmortems/pr3.1c-stale-token-column-review.md`. Five are counted there:
     three holds of the column that could not fail, and two sentences that said
@@ -1674,13 +1753,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
 
-- **PR3.9 compile the SQL instead of scanning it** (in progress, five PRs).
+- **PR3.9 compile the SQL instead of scanning it** (every part is delivered,
+  PR3.9a to PR3.9g, and the options below are what the entry still holds).
   Thirteen operations across two dialects, plus about 170 registered mutations
-  whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
+  whose finds quote store SQL, did not fit one reviewable PR. It was planned as
+  five PRs and landed as seven lettered parts, some of them in halves or parts.
   Since PR3.9e part 3b a batch holds tree statements only, and `FencedBatch`
   has no text path. PR3.9e part 3c made a batch read each statement's tree
   once, asked the two text lints' rules of the tree, and enrolled the corpus
-  from a descriptor. PR3.9f is what remains.
+  from a descriptor. PR3.9f built a store's reads and `heartbeat` as trees, and
+  PR3.9g closed three residuals of the tree rules, so nothing of the plan
+  remains.
   - PR3.9a: the tree layer in core. Engine tokens are value nodes carrying
     sentinel objects, and `FencedBatch` checks a tree statement by node identity
     and position inside a closed statement grammar. Statements are defined once
@@ -1996,18 +2079,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tiebreak rides in each assignment as `IF(condition, value, column)`, with
     the incoming row named `excluded` through a derived table, and the
     checkpoint conformance cases pass.
-  - Delivered in PR3.9e part 3c as far as a tree reaches, and deferred to
-    PR3.9f for the rest. The rules have their tree-level form:
+  - Delivered in PR3.9e part 3c as far as a tree reaches, and settled by
+    PR3.9f part 2 for the rest. The rules have their tree-level form:
     `eligibilityDefinitionProblem` holds a list compared with a state column
     to the defined sets and allows only IS NULL tests of `cancel_at_ms` built
     from nodes, and the clock rule was already asked of the tree. The two
     lints are not deleted, because
     their subjects are not gone: a store still sends
-    `expire-lease-now`, `driver-heartbeat`, `heartbeat` on libSQL and
-    PostgreSQL, and its admin's statements as text
+    `expire-lease-now`, `driver-heartbeat` and its admin's statements as text
     that no tree holds, and a raw clock call or a second eligibility
-    comparison written there is visible to those scans alone. PR3.9f builds
-    that text as trees and then deletes them. The record this entry replaced:
+    comparison written there is visible to those scans alone. When part 3c
+    merged, `heartbeat` on libSQL and PostgreSQL was such text too, and this
+    bullet foresaw that PR3.9f would build all of that text as trees and then
+    delete the lints. PR3.9f part 2 did otherwise. It built `heartbeat` as
+    trees on every dialect, the maintainer chose to keep the two lints, and the
+    eight statements that stay text are one checked list,
+    `scripts/text-statements.json`, which
+    `packages/conformance/test/text-statements.test.ts` holds every store to.
+    The record this entry replaced:
     `fragment-lint` and `clock-lint` scan store SQL text, and
     a condition built from nodes in `packages/core/src/statements/` is outside
     what a text lint can see. PR #41's review asked for the wider scope. Run
@@ -2173,6 +2262,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that no role is read out of a sentence. It would close both ways above
     and the honest phrasings that are still refused. Trigger: a third class
     of misread.
+  - An option, not built: a test that holds each count DESIGN.md states to the
+    constant the code pins for it. A count in prose is true when it is
+    written and goes stale when a later change moves the code, and nothing
+    compares the two. The review of PR3.1d found DESIGN.md's counts of the
+    poison matrix behind what the code pins, and the review of PR3.3c found
+    five stale counts, in DESIGN.md, BUILD.md, two comments and the pull
+    request's body. The test would find each count by a marker beside it
+    and compare it with the value a test already asserts. A count in BUILD.md
+    or in a pull request's body stays outside it. Trigger: the next review
+    that finds a count DESIGN.md states contradicted by a constant the code
+    pins.
 
 - **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
   postmortem cites its red tests and its fixes by commit id, and an id does
@@ -2364,7 +2464,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An option, not built: a retrying form of `fail-rollback` in the matrix's
     `invoke`, which would reach the pass that follows a failed rollback from
     the matrix itself. The generated successor-carry case reaches that pass
-    today.
+    today. Trigger: the generated successor-carry case stops reaching that
+    pass.
   - An option, not built: seed the ambient cells of the labels that `activate`,
     `deferLaunch` and `retryTask` send over the state in which the label acts.
     On this head the call changes the poison's rows in none of those 438 cells,
@@ -2449,16 +2550,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   with its reason:
   - The `/api/runs/:id` route, because `/api/inspect` already answers with a
     task's result, and a route by run id is left to the PR that needs it.
+    Trigger: the first caller that holds a run id and no task id.
   - A repair for the one case the deploy rule covers: an older build that ends
     a child while a parent is parked on it strands the parent until its timeout
     or its cancellation deadline. An await that records the outcome wakes
     nobody, so a second parent's await does not free the first. A sweep that records the event of a terminal
     task that has a registered waiter would close it. It is deferred because it
-    is a protocol step, so it is modeled first.
+    is a protocol step, so it is modeled first. Trigger: a deployment that
+    cannot hold the deploy rule ChildTasks.tla assumes, or a parent seen
+    stranded by an older build's ending.
   - Detection of an await cycle, which the model leaves to the cancellation
-    deadline.
+    deadline. Trigger: an await cycle seen in use.
   - Event cleanup, which does not exist yet. It must not remove a completion
-    event whose task can still be awaited.
+    event whose task can still be awaited. PR5.2, retention, owns it, and its
+    entry carries this constraint.
   - The completed payload of an awaited child is stored five times: in the task
     row, in the run's result, inside the completion event, in each waiter's
     `event_payload`, and in the parent's checkpoint memo, where it is escaped
@@ -2466,11 +2571,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     revival overwrites that row. It waits until result sizes are observed.
   - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
     more are the completion event, the wake, and the lock. Folding statements
-    needs a grammar the tree path does not have.
+    needs a grammar the tree path does not have. Trigger: a measurement on a
+    real deployment shows the round trips of a task's ending matter.
   - DONE in PR3.3c: every string a store port takes is checked in one place,
     core's table of the port's strings and the class every store extends.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
+    Stating an oldest supported build is the maintainer's.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
     cases, so that a new lock-order inversion fails a test and is not hidden by
     the victim's retry. Each executor counts the victims it meets and a fixture
@@ -2560,28 +2667,39 @@ these three things; nothing else in the system does I/O, time, or randomness.
   a type, `TaskDoneEventName`, which the recording statement takes. Five
   registered mutations hold the five guards this entry added. Not built
   here, each with its reason:
-  - A number, a retry strategy, or a saga step name that a port refuses stays
-    a bare `RangeError`. It is not a member of the refusal family, so the
-    hosted mapping leaves it at 500, and it can take the class when a
-    caller's value of one reaches a route.
+  - A number or a retry strategy that a port refuses stays a bare
+    `RangeError`. It is not a member of the refusal family, so the hosted
+    mapping leaves it at 500, and it can take the class when a caller's value
+    of one reaches a route. A saga step name was never such a refusal: its
+    width check, `requireSagaStepFits`, throws `InvalidDurableStringError`,
+    which is in the family, and PR3.3c's one check holds the step that
+    `failRollback` takes as an identifier.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.
-  - The label recorders that are copies: `LabelRecorder` and
-    `RecordingExecutor` in the libSQL store's tests, and `recordingLabels` in
-    the child-task surface. They stay with PR4.4d, which hoists the
-    conformance helpers.
+  - An option, not built: one recorder of batch labels. The copies are
+    `LabelRecorder` in the libSQL store's `run-task-read.test.ts`,
+    `RecordingExecutor` in its `refusal-read.test.ts`, and `recordingLabels` in
+    the child-task surface, and the poison matrix has a fourth recorder,
+    another `RecordingExecutor`, which also records whether a call changed
+    state. This bullet left them with PR4.4d, which merged without them: its
+    exit test names four kinds of copy, and a recorder of labels is none of
+    them. Trigger: the next test that needs a recorder of labels, which would
+    be a fifth.
   - The matrix's judge tells the older build's ending from the state of the
     row. A cancel of that same child by the current build that lost its
     completion event would be excused too. No batch of the workload does
     that, and closing it needs the rows to say which build ended a task,
-    which they do not.
+    which they do not. Trigger: a batch of the workload that cancels that
+    child under the current build.
   - Nothing holds a pull request's body to the tree. An option: the
     attestation refuses a body whose stated registry count or arm key is not
-    the head's.
+    the head's. Trigger: a merged body found stating a count or an arm key
+    that was not its head's.
   - A file that is listed as calling the invariant library directly can gain
     a seeded race that calls it alone, and the list does not see it. The
-    suite's scenario cases are the listed sites of that kind today.
+    suite's scenario cases are the listed sites of that kind today. Trigger: a
+    pull request that adds a seeded race to a listed file, seen in its diff.
 - **PR3.3c one check of every string the port takes**: DONE. Measured at the
   port on all three dialects, a name outside the durable string domain was kept
   by no store as it was passed. Every driver replaces a lone surrogate with
@@ -2620,7 +2738,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An entry called from a store class's prototype is reached with nothing in
     front of it. Two libSQL cases do that on purpose. A test that lists every
     such call in the repository would keep it to them, and is not built. A
-    patch of the prototype is reached through the check.
+    patch of the prototype is reached through the check. Trigger: a pull
+    request that adds a call of an entry from a store class's prototype, seen
+    in its diff.
   - An option, not built: the wrapper hands the entry a copy of each options
     object it read. Today the check reads a member once and the entry reads it
     again, so an object whose getter answers a clean string and then another
@@ -2650,9 +2770,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     answers every request 400, as it did for a queue past the width before
     this. Its trigger is a hosted deployment whose queue comes from outside
     its own configuration.
-  - `requireSagaStepFits` is still called by the three entries that carry a
-    checkpoint name. It is a rule about a derived name, and PR3.4c rewrites the
-    entry that carries one of them.
+  - `requireSagaStepFits` is still called by the two entries that carry a
+    checkpoint name, `suspendRun` and `setCheckpoint`. It is a rule about a
+    derived name. A third entry, `failRollback`, carried one until PR3.4c,
+    which merged first, made it take the step. Trigger: a pull request that
+    adds a store entry that takes a checkpoint name, seen in its diff.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -2799,17 +2921,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   spaces, and now compares byte for byte. The halt names where the replay
   stopped whether or not the step there registered a rollback. The review
   round is `postmortems/pr3.4-sagas-review.md`.
-  Open, and owned by this entry until it merges:
+  Open or recorded here, since this entry merged as PR #56:
   - The store counts a rollback's failed attempts since PR3.4c, and it does
     not know a rollback's budget: it is told whether another pass follows,
     so the one cap it holds itself is the run ordinal's bound on a pass.
     Rollback budgets are the SDK's to keep.
   - A saga with nothing to roll back records nothing, where the model calls
     it complete at entry.
-  - The registry bridge arm in `ci.yml` is keyed on main's registry as of
-    the merge of PR3.9e part 3c, whose own arm it replaces as the bridge's
-    one live arm. It must be keyed again if main's registry changes before
-    this entry merges.
   - The MySQL store runs sagas, ported on this entry by the store's author.
     The port is the PostgreSQL store's change applied to it: all 325 lines
     added to that store verbatim, and 64 of the 67 lines of saga fragments.
@@ -2824,8 +2942,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     or skipped. A task spawned with a budget of 1,000,000 attempts rolls back
     there as any other does.
   - The replay-equivalence harness generates sequential programs only. It has
-    no concurrent durable calls, no emit, and no step named after the
-    attempt, which is where three of the review's findings were.
+    no concurrent durable calls and no step named after the attempt, which is
+    where two of the review's findings were. The third was an emit, and both
+    generators emit on main. PR3.4d below owns the other two, and it is held
+    for the maintainer.
   - An option, not built: executable-twin markers for the side models.
     `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
     that shows a refusal, for every action a `[cas-fenced]` line of the main
@@ -2869,6 +2989,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     batch binds its completion payload before it runs, and the outcome is a
     fact only that batch's SQL knows. DESIGN.md §3.10 has the whole reason,
     and what would lift it, which is the saga predicates as tree nodes.
+    Trigger: a parent that must branch on its child's rollback outcome.
   - Option, not a deferral of this entry: a way for the port to ask an
     executor for a current read. The store counts a rollback's failed attempts
     from a record it reads before its batch (PR3.4c), and a worker replays
@@ -2908,9 +3029,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Trigger: the first invariant that needs both a phase and a child.
   - Option, not a deferral of this entry: on PostgreSQL a saga's start markers
     and attempt records are found by a test of each name among the task's own
-    checkpoints, because a range of names is not sound under the database's
-    collation (DESIGN.md §3.4). Two partial indexes would make each read one
-    seek: `checkpoints (task_id, checkpoint_name) WHERE
+    checkpoints, because a range of names was not sound under the database's
+    collation when they were built (DESIGN.md §3.4). Two partial indexes would
+    make each read one seek: `checkpoints (task_id, checkpoint_name) WHERE
     substr(checkpoint_name, 1, 9) = '$started:'`, and the same for
     `$rollback-tries:`. Each predicate is the text the fragments already
     spell, so no statement changes and the planner proves it. Measured on
@@ -2921,11 +3042,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     0.50 ms. Beside 10 checkpoints nothing moves. It costs a schema version on
     every dialect, an empty one on libSQL and MySQL. The trigger is a real
     task with thousands of checkpoints, or result reads showing up in a
-    profile. The other way out is the column's collation: once
-    `checkpoint_name` is declared to compare by byte on PostgreSQL, the range
-    is sound there, PostgreSQL can read it as the other two stores do, and the
-    PostgreSQL pin's text check, which reads spellings, is deleted with the
-    walk it guards.
+    profile. The other way out is the column's collation: `checkpoint_name`
+    is declared to compare by byte on PostgreSQL from schema version 7 on, so
+    the range is sound there, PostgreSQL can read it as the other two stores
+    do, and the PostgreSQL pin's text check, which reads spellings, is deleted
+    with the walk it guards.
   - Option, not a deferral of this entry: hold a stored value to JSON on the
     way in, at the port entries that take one: `fail` for a failure reason,
     `failRollback` for the error in its attempt record, and `complete` for a
@@ -2994,10 +3115,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (`firstNamePast`). MySQL keeps its byte comparison: a column compares in
     its own collation, which is binary, so the literals are plain, and a
     binary cast was measured to stop the key from serving the range.
-    PostgreSQL keeps the test of each name, because a name there orders under
-    the database's collation and the range is not sound. DESIGN.md §3.4
-    records that difference with the measured miss, which neither the local
-    server nor CI's can show, because both sort by byte. On PostgreSQL the
+    PostgreSQL keeps the test of each name. When this was built a name there
+    ordered under the database's collation and the range was not sound.
+    DESIGN.md §3.4 records the measured miss, which neither the local server
+    nor CI's could show then, because both sorted by byte. Only CI's server
+    has changed since: it is created with ICU's `en-US` (PR4.6), and the local
+    one still sorts by byte. Schema version 7
+    (PR4.6) has since declared the column to compare by byte, so the range is
+    sound there too, and the option under PR3.4 above is the one record of
+    reading it that way. On PostgreSQL the
     attempt record is read only for a failed task whose saga began, which
     spares every other result read the walk. libSQL and MySQL read a range of
     the key and carry no such guard, because there it would change no result
@@ -3044,9 +3170,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     is answered as `null`, which is left as it is. The parent's view stays
     open under PR3.4 above, with the reason.
   - Eight mutations hold the new lines and checks, and the registry holds 939.
-    The base gate's one live arm is this entry's, keyed on main's registry,
-    and it exempts five verdict markers the base predates. It must be keyed
-    again if main's registry changes before this entry merges.
+    The base gate's one live arm was this entry's when it merged, keyed on
+    main's registry, and it exempted five verdict markers the base predated.
 
 - **PR3.4c the saga port takes the step, and the phase's last two doors**:
   DONE. Four bullets that the saga review left open under PR3.4
@@ -3133,6 +3258,55 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that leaves.
   - The registry gains eleven mutations and retires one. The base gate's arm
     retires that entry of the base registry and exempts seven markers.
+- **PR3.4d the replay-equivalence harness draws concurrent durable calls and a
+  step named after the attempt**: HELD for the maintainer's choice. Pull
+  request #75 built it and is not merged. It owns the two open halves of the
+  harness bullet under PR3.4: durable calls started together, and a step named
+  after the attempt, in the plain and the saga generator, each shape in a
+  program of its own that runs at every fault point.
+  - What it found, before any review: the SDK refuses a durable call made
+    while a step RUNS and raises nothing while a step REPLAYS from its memo, so
+    a group of calls that one pass refuses is admitted by a pass that replays
+    the group's first step. With an outage on the refusing pass's own `fail`
+    call, a task that fails for good on a run with no fault completes.
+  - Why it is held: the fix it built makes a replayed step hold the same guard,
+    and its one review showed that this fails an ordinary fan-out written as
+    concurrent flows (spawn two children, then in a flow for each await the
+    child and record it in a step under its own name) on a run with no fault.
+    The harness could not see that, because it called every member of a group
+    before its first await. Five options for the guard were then measured side
+    by side over one set of programs: main as it is, the fix as built, a latch
+    that stops a pass from storing anything after a refused call, that latch
+    narrowed to the one step, and telling a nested call from a sibling flow's
+    by the async context. Each sound one changes what the SDK promises a
+    task's author, either what a swallowed refusal does or which concurrency
+    the SDK admits, so the choice is the maintainer's.
+  - Two defects are on main until then, whatever is chosen. (i) The same-name
+    swap: two flows that each await something and then call a step under one
+    name complete with their two values swapped at 3 of 30 fault points,
+    because a repeated name's index goes to the flow that arrives first, and
+    that order can differ on a replay. No measured option fixes it, and the
+    fix as built only hides it, by refusing the program. A measurement shows
+    it, and no committed program does. (ii) A sibling flow is refused as if its
+    call were nested in a step, because one flag cannot tell the two apart.
+    Three flow programs show it. They are written for the SDK's
+    replay-equivalence test (`packages/sdk/test/replay-equivalence.test.ts`),
+    in commits on top of pull request #75 that are not pushed yet: they turn
+    the held pull request red by design, so they go up with the maintainer's
+    choice. By title: `flows that each await a child and then record it in a
+    step under its own name, and then a sleep`, which fails for good at 3 of 30
+    fault points on main, `flows that each await an event the program has
+    emitted and then record it in a step, and then a sleep`, which fails with
+    no fault on main, and `flows that each wait on a timer of its own length
+    and then run a step whose body takes time`, which fails at 4 of 5 fault
+    points on main.
+  - Open question, which the same choice settles: a handler that swallows
+    every rejection, with an empty `catch` or with `Promise.allSettled`, can
+    observe an injected store outage and complete with it in its result.
+    DESIGN.md says task code cannot forge a control, and says nothing of a
+    handler that swallows a real one. Trigger: a handler in use that catches
+    every error around a durable call, or a decision that a swallowed control
+    ends the pass anyway.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
@@ -3224,7 +3398,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `openTestDb` and not through the fixture factory, four of them in the
   conformance package, and get no yield. They are small today. The yield
   cannot move into `openTestDb`, which lives in `packages/store-libsql/src`,
-  where the determinism lint bans timers. The review rounds are
+  where the determinism lint bans timers. Trigger: one of them grows into a
+  stretch the fixture's yield would have split, or the error returns on a file
+  that opens its database that way. The review rounds are
   `postmortems/verify-event-loop-yield-review.md` and
   `postmortems/verify-fixture-yield-review.md`.
   Time limits, measured on 2026-09-18 from seven CI `verify` logs, four of main
@@ -3420,7 +3596,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   PostgreSQL's index of the token cannot hold a row past about 2,700 bytes, so a
   claim under 3,000 characters that do not compress answered as an outage there
   and took its run on the other two, where before the index every dialect took
-  it. `claim` now holds its token with the check it already made for its queue,
+  it. `claim` held its token with the check it already made for its queue
+  (PR3.3c's one check now holds a token at every entry that takes one),
   one shared conformance case shows all three dialects refusing such a token
   alike, the identifier surface sends an identifier past the width in the
   token's place too, and a `store-postgres` test holds the one edge that leaves:
@@ -3574,8 +3751,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     VALUES, and a select-list alias read as a table's name. Building it waits
     for the maintainer's decision.
   - Recorded, and not planned: a statement inside a trigger is never planned.
-    libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
-    scans `drivers`, a table of one row for each live driver.
+    libSQL has three triggers. The DELETE inside the driver heartbeat's scans
+    `drivers`, a table of one row for each live driver, and the two that hold
+    an event's payload from schema version 10 on read no table.
 - **PR3.14d the plan check refuses a walk in any statement**: the nest rule
   judges a step against the steps that drive it and the steps it drives, so a
   step that walks a table alone was no fault. A read, or the SELECT of an
@@ -3665,8 +3843,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     session took 1.619 s at a load near 20. About a quarter of a second of it is
     CPU time, and the rest is time it spends waiting, so if only its CPU time
     doubled it would take about 1.35 s. In this branch's gate list it tripped,
-    at a load average of 36 to 47 while three other builders' lists ran, and the
-    self-test passed when it was run again alone. The child can also fail on its
+    at a load average of 36 to 47 while three other gate runs shared the
+    machine, and the self-test passed when it was run again alone. The child
+    can also fail on its
     verifiers' 0.1 s deadline: the SIGTERM sent at that deadline can land before
     the descendant's first act, which is to ignore SIGTERM, and so before it
     writes the process id record the child checks. CI's verify job runs it on
@@ -3974,6 +4153,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
       conformance case, so a port in another language can pass the suite
       without it. libSQL ignores every lock by design, so a shared case needs
       the fixture contract to say whether a dialect implements locks.
+      The trigger is a fourth dialect, or a port in another language that
+      proves itself against the scenarios.
     - Option, not a deferral of this PR: `versionBatch(migration)` keeps the
       text the batch lint names, so a list is called `migration`. The base
       gate runs the base's copy of the lint, so an honest rename cannot land
@@ -4026,7 +4207,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
       PostgreSQL. As two batches of one statement it would be two. Nothing a
       sweep does needs the two reads to share a snapshot, because every
       transition it then makes checks its own row again, but it changes a
-      batch's shape on all three stores.
+      batch's shape on all three stores. Trigger: a measurement on a real
+      deployment shows a sweep's round trips matter.
     - Option, not a deferral of this PR: the read brand shows where a statement
       came from, and not what a store's own fragment holds. Core reads a
       fragment for clocks and comments only. The review of the fold ran a
@@ -4047,15 +4229,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
       statements switched on is outside what was checked.
     - Option, not a deferral of this PR: a shared conformance case that a write
       sent as a read is refused on every dialect. Server cases hold it on MySQL
-      and on PostgreSQL, where the exit test asks for it.
+      and on PostgreSQL, where the exit test asks for it. Trigger: a fourth
+      dialect, or a port in another language that proves itself against the
+      scenarios.
     - Option, not a deferral of this PR: the PostgreSQL executor could check a
       pool's default isolation level once for each client. DESIGN.md states
       what a read sent alone asks of it, and nothing refuses a pool set to
-      SERIALIZABLE.
-  - Deferred from PR4.3: `migrate()` reads the version before each of the five
-    empty versions (2, 3, 4, 5 and 7) and takes the lock for each. One read and
-    one locked batch would do, which matters most to the conformance suite,
-    which migrates a database for every case.
+      SERIALIZABLE. Trigger: a deployment whose pool is set that way.
+  - Done in PR4.4b (pull request #83, exit test 5 above): `migrate()` read the
+    version before each of the five empty versions (2, 3, 4, 5 and 7) and took
+    the lock for each. One read and one locked batch would do, which mattered
+    most to the conformance suite, which migrates a database for every case.
+    On MySQL it now crosses everything pending with one version read and one
+    locked batch, and the counts are pinned.
   - Done in PR4.4a: the claim's candidate legs have a measured plan test in
     `store-mysql/test/query-plans.test.ts`, with rows in the table. Beside 800
     due runs, and as many that are not due or belong to another queue, the
@@ -4190,7 +4376,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `cancelTask` made to answer true every time, "cancelTask of a task with a
     running run" stays green, where the contract has one true and three false.
     It would give each of the 37 entries an expectation written by hand, which
-    the scheduler suite's own cases hold today one call at a time.
+    the scheduler suite's own cases hold today one call at a time. Trigger: a
+    defect found whose answer is wrong in both orders.
   - Done in PR4.4e, found by PR4.4c's surface before any review, and then found
     to be two defects: concurrent claims deadlocked on MySQL. First, while
     `runs` held five rows or fewer, or the limit was half the table, the
@@ -4419,22 +4606,25 @@ these three things; nothing else in the system does I/O, time, or randomness.
     when this merged after PR4.4c.
   - An option, not built: an admin command that lists rows whose names pass
     the width, a stranded queue above all. No database anyone has observed
-    holds one. The harness's other stated gaps stay where the sagas entry lists
-    them.
+    holds one. Trigger: a database observed to hold one. The harness's other
+    stated gaps stay where the sagas entry lists them.
   - An option, not built: hold the inventory to MySQL's catalog, which states
     each column's width, in the `conformance-mysql` job. The fixtures' catalog
     statements return a type without a width, so it means a change to three
     store packages' test exports and to the fixture contract. The pin reads
     the migrations' text, which sees a VARCHAR column in any statement and not
-    a column bounded by another type.
+    a column bounded by another type. Trigger: an identifier column bounded by
+    a type other than VARCHAR.
   - DONE in PR3.3c: the fuzz op draws its places and its names from the places
     the identifier surface generates from core's table. The hand-written
     `ENTRIES` table is gone, and the names are not only ASCII.
   - An option, not built: a poison witness for each of the 22 identifier
-    columns. One column has one.
+    columns. One column has one. Trigger: a column added to
+    `IDENTIFIER_COLUMNS`.
   - An option, not built: read PostgreSQL's `event_locks`, which holds
     identifiers outside the six snapshot tables. Each of its rows has a sibling
-    row in `events` or `waits` that the condition reads.
+    row in `events` or `waits` that the condition reads. Trigger: a row of
+    `event_locks` found with no sibling in `events` or `waits`.
 
 - **PR4.6 PostgreSQL compares and orders names by bytes**: DONE. `getCheckpoints`
   returned a caller's names in byte order on libSQL, on MySQL, and on a
@@ -4561,8 +4751,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that case over every call of the store's two ports, generated as the
     self-concurrency surface's contests are. The other blocks a worker read's
     second table and sees the read hold its first, for each read that names
-    two store tables. Their trigger is the next version that locks tables:
-    version 7's text is frozen once it is on main.
+    two store tables. Their trigger is the next version that locks more than
+    one store table: version 7's text is frozen once it is on main.
   - An option, not built: run a deadlocked read batch again on MySQL. Its
     executor runs only a write batch again, which is safe today: a consistent
     read takes no InnoDB lock, and MySQL commits each DDL statement on its own,
@@ -4590,7 +4780,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is
-    sound on PostgreSQL too. It is another PR's to build.
+    sound on PostgreSQL too, so what this waited for is on main. Its one record
+    is the option under PR3.4 on PostgreSQL's saga reads, which names this way
+    out beside two partial indexes, and the trigger is that option's.
   - An option, not built: a test that fails when the server under test sorts
     by bytes. After version 7 nothing fails if CI's service loses its ICU
     arguments, and the suite then no longer sees a statement that orders by
@@ -4599,7 +4791,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     PostgreSQL leg must pass on both kinds of server.
   - An option, not built: a check of the database's encoding. Byte order is
     code point order for UTF-8 text, which is the encoding of every server
-    this was run against, and nothing reads `server_encoding`.
+    this was run against, and nothing reads `server_encoding`. Trigger: a
+    server met whose encoding is not UTF-8.
 
 ## Phase 5 — operations + sharding
 
@@ -4607,7 +4800,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   routing with versioned cache, multi-shard tick fan-out, driver adoption caps.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics
   (queue depth, claim latency, lease expiries); usage-API quota alerting +
-  BLOCKED runbook; fleet migration sweep.
+  BLOCKED runbook; fleet migration sweep. From PR3.3: event cleanup must not
+  remove a completion event whose task can still be awaited.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)

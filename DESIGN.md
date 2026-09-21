@@ -3591,26 +3591,30 @@ Dialect implementations:
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
-| names | TEXT is BINARY: a name compares and orders by its bytes | `utf8mb4_0900_bin`: a name compares and orders by its code points, which is the order of its bytes | TEXT under the database's collation: equal names are the same bytes, and their order is the collation's |
+| names | TEXT is BINARY: a name compares and orders by its bytes | `utf8mb4_0900_bin`: a name compares and orders by its code points, which is the order of its bytes | TEXT declared `COLLATE "C"` from schema version 7 on: a name compares and orders by its bytes, where before it ordered under the database's collation |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |
 | scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
 
-**A name's equality is portable, and its order is not.** A durable name, which
-is a checkpoint name, an id or a queue, is equal on all three dialects exactly
-when its bytes are: libSQL's TEXT is BINARY, MySQL's indexed strings are
-`utf8mb4_0900_bin`, and a PostgreSQL database's collation is deterministic,
-under which equal strings are the same bytes. Order differs. libSQL and MySQL
-order a name by its bytes. PostgreSQL compares and orders it under the
-database's collation, which the engine does not choose. So a range over a
-name, or an ORDER BY on one, does not mean on PostgreSQL what it means on the
-other two. Measured on PostgreSQL 17: under `COLLATE "und-x-icu"` neither
-`$started:` nor `$started:a` lies in the range from `$started:` up to
-`$started;`, because that collation sorts `;` before `:` and the range is
-empty, and under `COLLATE "C"` both do. A server whose C library sorts by
-bytes whatever the locale is named, as the musl build that the local and CI
-servers run does, cannot show the difference. That is why a saga's reads find
-the names under a prefix as a range of the key on libSQL and MySQL, and by a
-test of each name on PostgreSQL (§3.10).
+**A name's equality is portable, and from schema version 7 on so is its
+order.** A durable name, which is a checkpoint name, an id or a queue, is
+equal on all three dialects exactly when its bytes are: libSQL's TEXT is
+BINARY, MySQL's indexed strings are `utf8mb4_0900_bin`, and a PostgreSQL
+database's collation is deterministic, under which equal strings are the same
+bytes. Order differed. libSQL and MySQL order a name by its bytes. Before
+version 7, PostgreSQL compared and ordered it under the database's collation,
+which the engine does not choose, so a range over a name, or an ORDER BY on
+one, did not mean there what it means on the other two. Measured on PostgreSQL
+17: under `COLLATE "und-x-icu"` neither `$started:` nor `$started:a` lies in
+the range from `$started:` up to `$started;`, because that collation sorts `;`
+before `:` and the range is empty, and under `COLLATE "C"` both do. A server
+whose C library sorts by bytes whatever the locale is named, as the musl build
+of the local server does, cannot show the difference, and CI's server is
+created with ICU's `en-US` so that it can. From version 7 on every text column
+of the PostgreSQL schema is declared `COLLATE "C"` (rule 11), and a range over
+a name is sound there too. A saga's reads find the names under a prefix as a
+range of the key on libSQL and MySQL, and still by a test of each name on
+PostgreSQL, where reading them as a range is an option that BUILD.md records
+and that is not built (§3.10).
 
 **What MySQL 8 makes a store do (measured against 8.4 by `store-mysql`).** Every
 shared statement tree and every labeled batch runs on MySQL from the same tree.
@@ -4886,10 +4890,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   and the attempt records, are one range of it on libSQL and MySQL, where a
   name compares by its bytes, so the failure of a task and a read of its
   result cost the same whatever the task has checkpointed. On PostgreSQL a
-  name orders under the database's collation and that range is not sound
-  (§3.4), so there the names are tested one by one among the task's own
-  checkpoints: a walk keyed by the task, which grows with what the task has
-  checkpointed. There the attempt record is read only for a failed task whose
+  name ordered under the database's collation when these reads were built,
+  and that range was not sound (§3.4), so there the names are tested one by
+  one among the task's own checkpoints: a walk keyed by the task, which grows
+  with what the task has checkpointed. From schema version 7 on the range is
+  sound there too (§3.4), and the reads still walk: BUILD.md records reading
+  them as ranges as an option under PR3.4. There the attempt record is read
+  only for a failed task whose
   saga began, which spares every other result read that walk, and the plan pin
   holds the guard. libSQL and MySQL carry no such guard: their read is one
   seek into a range of the key, empty for a task with no attempt record, so a
