@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Client, createClient } from '@libsql/client'
@@ -56,6 +56,28 @@ async function anotherDatabase(file: string, id: number): Promise<void> {
   const other = createClient({ url: `file:${file}` })
   await other.batch([createTable, insert(id)], 'write')
   other.close()
+}
+
+/** A database file in write-ahead logging mode with one row, checkpointed and closed. */
+async function walDatabase(file: string, id: number): Promise<void> {
+  const seed = createClient({ url: `file:${file}` })
+  try {
+    await seed.execute('PRAGMA journal_mode=WAL')
+    await seed.batch([createTable, insert(id)], 'write')
+    await seed.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+  } finally {
+    seed.close()
+  }
+}
+
+/** The rows of the case's table as a new connection to the path reads them. */
+async function idsOnTheFile(file: string): Promise<unknown> {
+  const reader = createClient({ url: `file:${file}` })
+  try {
+    return (await reader.execute('SELECT id FROM t ORDER BY id')).rows.map((row) => row.id)
+  } finally {
+    reader.close()
+  }
 }
 
 /** An executor on a file of the case's table with one row, whose next write fails busy. */
@@ -162,11 +184,67 @@ describe('a connection replaced after a failed batch', () => {
       // file is not the one the executor had, so the new connection is closed and refused.
       expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
       expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
+      expect(
+        existsSync(join(elsewhere, 'rel.db')),
+        'no file is created where the relative path now leads',
+      ).toBe(false)
     } finally {
       process.chdir(home)
       victim?.close()
       rmSync(opened, { recursive: true, force: true })
       rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it('never serves a file put in place of its own between its making and its first batch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-early-'))
+    const file = join(dir, 'db.sqlite')
+    let victim: LibsqlExecutor | undefined
+    try {
+      await walDatabase(file, 1)
+      await walDatabase(join(dir, 'other.sqlite'), 7)
+      victim = LibsqlExecutor.open(`file:${file}`)
+      // Replaced after the executor opened its file and before its first batch.
+      renameSync(join(dir, 'other.sqlite'), file)
+      expect(await ids(victim)).toEqual([1])
+      // An EXPLAIN of a writing statement stays in progress, so the connection is broken.
+      expect(
+        await outcome(
+          victim.batch('explain', [{ sql: 'EXPLAIN UPDATE t SET id = id', args: [] }], 'read'),
+        ),
+      ).toMatchObject(BUSY)
+      for (const attempt of ['first', 'second']) {
+        expect(await ids(victim), attempt).not.toEqual([7])
+      }
+      expect(await outcome(victim.batch('write', [insert(8)]))).not.toBe('answered')
+      expect(await idsOnTheFile(file), 'the file put in its place is untouched').toEqual([7])
+    } finally {
+      victim?.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('opens nothing where a directory its path passes through now points', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-link-'))
+    const first = join(root, 'first')
+    const second = join(root, 'second')
+    const link = join(root, 'link')
+    let victim: LibsqlExecutor | undefined
+    try {
+      mkdirSync(first)
+      mkdirSync(second)
+      symlinkSync(first, link)
+      victim = await brokenByALockWait(join(first, 'db.sqlite'), `file:${join(link, 'db.sqlite')}`)
+      rmSync(link)
+      symlinkSync(second, link)
+      expect(await ids(victim)).toEqual({ name: 'StoreUnavailableError' })
+      expect(
+        existsSync(join(second, 'db.sqlite')),
+        'no file is created where the link now points',
+      ).toBe(false)
+    } finally {
+      victim?.close()
+      rmSync(root, { recursive: true, force: true })
     }
   })
 
