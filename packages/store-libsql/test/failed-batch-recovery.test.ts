@@ -323,6 +323,7 @@ describe('a write batch that fails busy on a file database', () => {
           asked?.close()
         }),
         true,
+        url,
       )
       await asked.batch('shorten', [shorten], 'read')
       expect(await outcome(asked.batch('write', [insert(1)]))).toMatchObject(BUSY)
@@ -342,6 +343,7 @@ describe('a write batch that fails busy on a file database', () => {
         if (sql.startsWith('BEGIN')) questions++
       }),
       true,
+      url,
     )
     try {
       await counted.batch('shorten', [shorten], 'read')
@@ -446,7 +448,7 @@ describe('a file database executor', () => {
 
   it('never reopens a client its owner closed, handed to the constructor', async () => {
     const client = createClient({ url })
-    const owned = new LibsqlExecutor(client, true)
+    const owned = new LibsqlExecutor(client, true, url)
     expect(await outcome(owned.batch('read', [count], 'read'))).toBe('answered')
     client.close()
     expect(await outcome(owned.batch('read', [count], 'read'))).toMatchObject(CLOSED)

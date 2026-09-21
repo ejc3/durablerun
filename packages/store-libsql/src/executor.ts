@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -48,14 +48,12 @@ function primaryResultCode(error: LibsqlError): string {
 const settled = (): void => {}
 
 /**
- * The URL of a database FILE with its path made absolute, or undefined for every other
- * database: a hosted one, `:memory:`, and an empty path, which SQLite makes a private
- * database of its one connection. A new connection opens the client's path again, possibly
- * after the process has changed directory, so a relative path is resolved here, against the
- * directory the process is in when the executor opens. The scheme is read case-insensitively
- * and the path percent-decoded, as the client reads them.
+ * A file URL's path as the client stores it: percent-decoded as the client decodes it, and
+ * relative when the URL's is. Undefined for every URL that names no database file: a hosted
+ * one, `:memory:`, and an empty path, which SQLite makes a private database of its one
+ * connection. The scheme is read case-insensitively, as the client reads it.
  */
-function databaseFileUrl(url: string): string | undefined {
+function fileUrlPath(url: string): { path: string; absolute: boolean; rest: string } | undefined {
   const parts = /^file:(?<authority>\/\/[^/?#]*)?(?<path>[^?#]*)(?<rest>[?#].*)?$/is.exec(
     url,
   )?.groups
@@ -64,37 +62,77 @@ function databaseFileUrl(url: string): string | undefined {
   try {
     path = decodeURIComponent(parts.path ?? '')
   } catch {
-    return url
+    return undefined
   }
   if (path === '' || path.includes(':memory:')) return undefined
-  if (parts.authority !== undefined || isAbsolute(path)) return url
-  return `${pathToFileURL(resolve(path)).href}${parts.rest ?? ''}`
+  return {
+    path,
+    absolute: parts.authority !== undefined || isAbsolute(path),
+    rest: parts.rest ?? '',
+  }
 }
 
-/** A database file as the file system knows it: the file itself, not the path that names it. */
-interface FileIdentity {
+/**
+ * The URL an executor opens a database FILE with, and the path its client stores and
+ * reopens. A relative path is made absolute against the directory the process is in when the
+ * executor opens, so a later change of directory does not move it.
+ */
+function databaseFile(url: string): { url: string; path: string } | undefined {
+  const file = fileUrlPath(url)
+  if (file === undefined) return undefined
+  if (file.absolute) return { url, path: file.path }
+  const path = resolve(file.path)
+  return { url: `${pathToFileURL(path).href}${file.rest}`, path }
+}
+
+/**
+ * A database file as the executor fixes it: the path the client reopens, the file that path
+ * names with every symbolic link resolved, and that file's device and inode.
+ */
+export interface DatabaseFile {
   readonly path: string
+  readonly real: string
   readonly device: bigint
   readonly inode: bigint
 }
 
-/** The file at a path now, or undefined when nothing there can be read. */
-function fileAt(path: string): FileIdentity | undefined {
+/**
+ * The file a path names now, resolved against the directory the process is in now, as the
+ * client's open resolves it, or undefined when nothing there can be read.
+ */
+export function fileAt(path: string): DatabaseFile | undefined {
   try {
-    const found = statSync(path, { bigint: true })
-    return { path, device: found.dev, inode: found.ino }
+    const real = realpathSync(resolve(path))
+    const found = statSync(real, { bigint: true })
+    return { path, real, device: found.dev, inode: found.ino }
   } catch {
     return undefined
   }
 }
 
-function sameFile(had: FileIdentity, now: FileIdentity | undefined): boolean {
+/** The same file, named by the same path. */
+export function sameFile(had: DatabaseFile, now: DatabaseFile | undefined): boolean {
   return (
     now !== undefined &&
     now.path === had.path &&
+    now.real === had.real &&
     now.device === had.device &&
     now.inode === had.inode
   )
+}
+
+/**
+ * The file an executor fixes as its own, from the file its path named just before its client
+ * opened it and just after. A path that named one file before the open and another after it
+ * leaves no file the executor can be sure the client opened, so it fixes none.
+ */
+export function fixedFile(
+  before: DatabaseFile | undefined,
+  after: DatabaseFile | undefined,
+): DatabaseFile | null {
+  if (after === undefined) return null
+  if (before !== undefined && !sameFile(before, after)) return null
+  return after
 }
 
 /**
@@ -134,12 +172,11 @@ export class LibsqlExecutor implements SqlExecutor {
   private reopening = false
 
   /**
-   * The database file the first connection opened, as SQLite names it and the file system
-   * knows it, or null for a database with no file of its own, which is never reconnected.
-   * It is read before the first batch runs and checked around every reconnect, because a new
-   * connection opens a path, and the file the executor had must still be the file there.
+   * The database file this executor fixed when it was made, or null when it has none it can be
+   * sure of, and then it never reconnects. A new connection opens a path, and that path must
+   * still name this file before the reopen and after it.
    */
-  private file: FileIdentity | null | undefined = undefined
+  private file: DatabaseFile | null = null
 
   /**
    * Settles when the last batch sent to a database file has been answered, failed or not,
@@ -147,18 +184,30 @@ export class LibsqlExecutor implements SqlExecutor {
    */
   private turn: Promise<void> = Promise.resolve()
 
+  /**
+   * `databaseUrl` is the URL a file-backed client handed here was created with. From it the
+   * executor fixes, now, the file that client opened. A file-backed executor made without it has
+   * no file it can be sure of, and never reconnects.
+   */
   constructor(
     private readonly client: Client,
     private readonly fileBacked = false,
-  ) {}
+    databaseUrl?: string,
+  ) {
+    const path = databaseUrl === undefined ? undefined : fileUrlPath(databaseUrl)?.path
+    if (fileBacked && path !== undefined) this.file = fileAt(path) ?? null
+  }
 
   static open(url: string, authToken?: string): LibsqlExecutor {
-    const fileUrl = databaseFileUrl(url)
-    const opened = fileUrl ?? url
-    return new LibsqlExecutor(
+    const file = databaseFile(url)
+    const opened = file?.url ?? url
+    const before = file === undefined ? undefined : fileAt(file.path)
+    const executor = new LibsqlExecutor(
       createClient(authToken ? { url: opened, authToken } : { url: opened }),
-      fileUrl !== undefined,
+      file !== undefined,
     )
+    if (file !== undefined) executor.file = fixedFile(before, fileAt(file.path))
+    return executor
   }
 
   /**
@@ -184,15 +233,15 @@ export class LibsqlExecutor implements SqlExecutor {
   private async prepareConnection(): Promise<void> {
     if (!this.suspect && this.pragmasApplied) return
     if (this.suspect && !(await this.connectionIsWhole()) && !this.closedByItsOwner()) {
-      this.refuseToReopenAnotherFile()
+      const had = this.refuseToReopenAnotherFile()
       this.pragmasApplied = false
       this.reopening = true
       this.client.close()
       await this.client.reconnect()
       this.reopening = false
+      await this.refuseAnotherFileOpened(had)
     }
     if (!this.pragmasApplied) {
-      await this.holdToTheFile()
       await this.client.executeMultiple('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000')
       this.pragmasApplied = true
     }
@@ -208,45 +257,47 @@ export class LibsqlExecutor implements SqlExecutor {
   }
 
   /**
-   * Refuses a reconnect that cannot reach the file this executor had. The client reopens a
-   * path, whatever file is there now, and creates one where none is. It offers no way to
-   * open without creating, so the path is checked first, and a file that is gone or was
-   * replaced is refused before anything is opened: an outage on every call, never a switch.
+   * Refuses a reconnect that cannot reach the file this executor fixed. The client reopens its
+   * path, whatever file that path names now, and creates one where none is: it offers no way to
+   * open without creating. So the path is checked first, and a file that is gone or was
+   * replaced, or a path that now leads elsewhere, is refused before anything is opened.
    */
-  private refuseToReopenAnotherFile(): void {
+  private refuseToReopenAnotherFile(): DatabaseFile {
     const had = this.file
-    if (had === undefined || had === null) {
+    if (had === null) {
       throw new Error(
-        'this database has no file of its own that a new connection could reach, so none is opened',
+        'this executor fixed no database file when it was made, so it opens no new connection',
       )
     }
     if (!sameFile(had, fileAt(had.path))) {
       throw new Error(
-        `the database file ${had.path} this executor opened is no longer at its path, so no new connection is opened`,
+        `the path ${had.path} no longer names the database file ${had.real} this executor opened, so no new connection is opened`,
       )
     }
+    return had
   }
 
   /**
-   * Reads which file the connection has open, from SQLite. The first connection's file is
-   * recorded. A new connection must have that same file, or it is closed and refused before
-   * it serves a batch, because between the check above and the open the path can come to
-   * name another file.
+   * Refuses a new connection that did not open the file the executor fixed, before it serves a
+   * batch: between the check above and the reopen, the path can come to name another file.
+   * SQLite names the file the connection opened, with every symbolic link resolved, and the
+   * path must still name that same file. A refused connection is closed, and the next call
+   * tries again.
    */
-  private async holdToTheFile(): Promise<void> {
-    const listed = await this.client.execute('PRAGMA database_list')
-    const main = listed.rows.find((row) => row.name === 'main')
-    const path = typeof main?.file === 'string' ? main.file : ''
-    const opened = path === '' ? null : (fileAt(path) ?? null)
-    if (this.file === undefined) {
-      this.file = opened
-      return
+  private async refuseAnotherFileOpened(had: DatabaseFile): Promise<void> {
+    let opened = ''
+    try {
+      const listed = await this.client.execute('PRAGMA database_list')
+      const main = listed.rows.find((row) => row.name === 'main')
+      opened = typeof main?.file === 'string' ? main.file : ''
+    } catch {
+      opened = ''
     }
-    if (this.file === null || !sameFile(this.file, opened ?? undefined)) {
+    if (opened !== had.real || !sameFile(had, fileAt(had.path))) {
       this.reopening = true
       this.client.close()
       throw new Error(
-        `a new connection opened ${path === '' ? 'a database with no file' : path}, which is not the database file this executor opened, so it is closed before it serves a batch`,
+        `a new connection opened ${opened === '' ? 'no database file it could name' : opened}, which is not the database file ${had.real} this executor opened, so it is closed before it serves a batch`,
       )
     }
   }

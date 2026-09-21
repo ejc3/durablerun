@@ -162,26 +162,29 @@ describe('a connection replaced after a failed batch', () => {
     }
   })
 
-  it('refuses a new connection that opened another file, when the client handed to it names its file by a relative path', async () => {
+  it('keeps a client handed to it with a relative path to the file that path named when it was made', async () => {
     const home = process.cwd()
     const opened = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-handed-'))
     const elsewhere = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-handed-elsewhere-'))
     let victim: LibsqlExecutor | undefined
     try {
       process.chdir(opened)
-      const handed = new LibsqlExecutor(createClient({ url: 'file:rel.db' }), true)
+      const handed = new LibsqlExecutor(createClient({ url: 'file:rel.db' }), true, 'file:rel.db')
       victim = handed
       await handed.batch('setup', [createTable, insert(1)])
-      await handed.batch('shorten', [shorten], 'read')
-      const release = await holdTheWriteLock(join(opened, 'rel.db'))
-      process.chdir(elsewhere)
-      try {
-        expect(await outcome(handed.batch('write', [insert(2)]))).toMatchObject(BUSY)
-      } finally {
-        await release()
+      for (const where of ['where it was made', 'after a change of directory']) {
+        await handed.batch('shorten', [shorten], 'read')
+        const release = await holdTheWriteLock(join(opened, 'rel.db'))
+        if (where !== 'where it was made') process.chdir(elsewhere)
+        try {
+          expect(await outcome(handed.batch('write', [insert(2)])), where).toMatchObject(BUSY)
+        } finally {
+          await release()
+        }
+        if (where === 'where it was made') expect(await ids(handed), where).toEqual([1])
       }
-      // The client reopens its relative path in the directory the process is in now. That
-      // file is not the one the executor had, so the new connection is closed and refused.
+      // The client reopens its relative path in the directory the process is in now, which
+      // no longer names the file the executor fixed, so nothing is opened.
       expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
       expect(await ids(handed)).toEqual({ name: 'StoreUnavailableError' })
       expect(
