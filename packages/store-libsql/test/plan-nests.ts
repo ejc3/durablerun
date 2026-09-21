@@ -109,8 +109,12 @@ const SORTS = /^USE TEMP B-TREE FOR /
 const CONSTANT_ROWS = /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS)$/
 /** A statement's first word, which says what kind it is. */
 const KIND = /^\s*(select|insert|replace|update|delete|with)\b/i
-/** An UPDATE or a DELETE, by its first words: the table it writes, and its alias there. */
-const WRITE = /^\s*(?:update|delete\s+from)\s+(?:"?\w+"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
+/**
+ * An UPDATE, under any conflict clause, or a DELETE, by its first words: the schema its text
+ * names the table under, the table it writes, and its alias there.
+ */
+const WRITE =
+  /^\s*(?:update(?:\s+or\s+(?:rollback|abort|replace|fail|ignore))?|delete\s+from)\s+(?:"?(\w+)"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
 const EQUALITY = /^([a-z_]+)=\?$/
 const RANGE = /^([a-z_]+)[<>]\?$/
 
@@ -178,15 +182,18 @@ function writeFaults(own: readonly Node[], sql: string): string[] {
   if (kind !== 'update' && kind !== 'delete') return []
   const write = WRITE.exec(sql)
   if (!write) return ['cannot name the table this write writes']
-  const [, table = '', alias = table] = write
-  const names = [table.toLowerCase(), alias.toLowerCase()]
+  const [, schema, table = '', alias = table] = write
+  // A plan names the step over a table its text names under a schema with that schema.
+  const names = [table, alias, ...(schema === undefined ? [] : [`${schema}.${table}`])].map(
+    (name) => name.toLowerCase(),
+  )
   const over = ownSteps(own).filter((step) => names.includes((step[2] ?? '').toLowerCase()))
   if (over.length === 0) {
     return [`no step of the plan is over ${table}, the table the statement writes`]
   }
   const written = 'the table the statement writes, and a write carries no LIMIT'
   return over
-    .filter(([, kind, , access = '']) => kind === 'SEARCH' && reachOf(access) === 'due')
+    .filter(([, stepKind, , access = '']) => stepKind === 'SEARCH' && reachOf(access) === 'due')
     .map(([line]) => `${line} :: is a due range over ${table}, ${written}`)
 }
 
