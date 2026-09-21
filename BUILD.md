@@ -48,11 +48,9 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left. Three
-lines are left when the last docs PR merges. Line 18 is held for the
-maintainer's choice. Line 16 is PR3.5d's and arrives with its pull request,
-#71, and line 27 is PR3.15's, whose branch is in review. Both arrive after
-the last docs PR.
+a last docs PR gives a live owner to every open bullet that is left. Two lines
+are left. Line 18 is held for the maintainer's choice, and line 27 is PR3.15's,
+whose branch is in review.
 
 **Exit test:**
 
@@ -327,6 +325,14 @@ the last docs PR.
     body was expected to leave its kept-alive connection unusable and does not,
     because the platform discards what is left of such a body, so two cases pin
     that and no code changed.
+16. PR3.5d: a released name whose declaration changed fails the package check
+    unless the snapshot lists the change with a reason. This is met.
+    `scripts/package-surface.mjs` compares the printed declarations of every
+    name v0.1.0-alpha.1 exported with the packed ones. With their entries
+    taken out of a copy of the snapshot, the two historical breaks are refused
+    by name: `TaskResult` without `completedPayloadJson`, the case PR3.5a's
+    postmortem wrote down, and `FencedBatch` without its text methods and with
+    a required `tree`. Main's check exits 0 on both.
 17. PR3.3d: the five smaller items of the child-task review. The run-to-task
     memo forgets a run once its terminal batch has ended it, and DESIGN.md says
     what a stale entry could and could not do. An `EventName` carries the task
@@ -1866,10 +1872,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     option because it is the dialect's compiler and not a flag. The alpha
     release exported `FENCE_SET`, `FENCE_COLS`, `FENCE_VALS`, and `fenceSetAt`,
     so the published-surface check now takes a withdrawal with a reason, and
-    refuses one of a name that is still exported. That check reads export
-    names, so it does not see the rest of the break to an alpha consumer:
-    `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
-    `openTail`, and its constructor requires `tree`.
+    refuses one of a name that is still exported.
     Fourteen registered mutations are retired, each with a successor. Twelve
     owned text that is gone: `followon-provenance-check`,
     `positive-fence-required`, `positive-fence-is-not`, `top-level-or-reach`,
@@ -2625,11 +2628,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   otherwise, and the released types did: `FencedBatch.lockEvent` is gone,
   `DefinedStatement` gains a required `eventLock`, `DerivedSet` takes no text
   for a task's state, and a libSQL batch whose statements name two events now
-  throws where it was sent. The published-surface check compares exported
-  names, and no name left, so it sees none of that. A build-time refusal also
-  got narrower: a declared event lock had to be followed at once by a
-  compare-and-set, and an event lock that arrives with its statement is held
-  to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
+  throws where it was sent. The published-surface check compared exported
+  names, and no name left, so it saw none of that until PR3.5d, whose check
+  compares declarations and lists each of these changes. A build-time refusal
+  also got narrower: a declared event lock had to be followed at once by a
+  compare-and-set, and an event lock that arrives with its statement is held to
+  nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
 - **PR3.3d the child-task review's smaller list**: five small items from the
   second review of PR3.3, on three stores. The run-to-task memo forgets a run
   once the store's own `complete`, `fail`, or `failRollback` has ended it. A
@@ -3942,6 +3946,71 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `setCheckpoint` in place of three identifiers. That changes published port
     signatures, which belongs in a deliberate API change, and the owner-bound
     helpers already remove the repeated arguments from the tests.
+- **PR3.5d the published-surface check reads declarations**: DONE. PR3.5a's
+  check, `scripts/package-surface.mjs`, compared the names each published entry
+  point exports with the v0.1.0-alpha.1 release, and its postmortem recorded
+  what that misses: with `completedPayloadJson` deleted from `TaskResult` the
+  check exited 0. PR3.9e part 3b then made that kind of break for real.
+  `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
+  `openTail`, its constructor requires `tree`, and the check saw the four
+  withdrawn names and nothing else. The snapshot now holds every released
+  name's declarations as the compiler API prints them from the release
+  tarballs, whose sha256 it records: the lines of the name's own declarations
+  without their comments, then those of every name they reach inside the packed
+  packages that the release did not export, because a consumer's compiler reads
+  through such a name. A class's private members are left out, and one line
+  says that the class has some. A private constructor stays, because it says
+  that a consumer cannot construct the class. A value that is exported as a
+  type only says so in one line: a consumer's compiler is asked, through a
+  module for each entry point that exists only in the check and uses every
+  exported name as a value. A whole module exported as a namespace has no shape
+  and is refused by name. The check does not judge whether a difference breaks
+  a consumer. Any difference in a released name's lines is refused unless the
+  snapshot's `changed` table lists the name. An entry has a `reason` and a
+  `declarationSha256`, the sha256 of the declaration as it is now. The check
+  requires that the reason is not blank, that the name was released, is not
+  also withdrawn, and differs from the release, and that the recorded sha256 is
+  the packed declaration's, so a second change to a listed name is refused
+  until its entry is edited. What the reason says is a convention that review
+  holds: why the declaration changed, with the pull request, and what a
+  consumer does about it. A refusal names the snapshot file and where in it the
+  entry goes. Twenty-one released names differ on main, each traced to the pull
+  request that changed it, and the table lists them.
+  `--write <release> <tarball-dir> <snapshot>` writes the snapshot of the next
+  release, laid out by the repository's formatter from whatever directory the
+  command is given in. Over a snapshot of the same release it keeps both tables
+  and refuses a tarball whose sha256 differs, a tarball the snapshot does not
+  record, and a directory that lacks a recorded one. `--packed` prints the
+  packed shapes as the check reads them. `package-smoke.sh` holds twenty-one
+  controls. Fifteen are of the check. Six are of `--write`: its five refusals,
+  and a snapshot written from the packed tarballs by a command given in another
+  directory, which must be the formatter's layout and must pass the check with
+  nothing withdrawn and nothing changed. A control that needs an entry that
+  holds builds it, and the eight that borrow `Checkpoint`, `UserName` or
+  `systemClock` start from a copy of the snapshot in which those names are
+  declared as they are packed now. So the controls pass on the empty tables of
+  a new release, and after a real, listed change to a name they borrow. Each of
+  the check's twelve refusals and of the five of `--write`, the line that marks
+  a value exported as a type only, and the formatter's directory was deleted in
+  a copy of the script, and the control that owns it went red. Two controls are
+  the historical false negative from both sides: a copy of the packed packages
+  in which `Checkpoint` lost a member, and a snapshot in which that member was
+  declared another way. What the check does not see: a declaration that refers
+  to a dependency's type changes with the dependency, whose declarations are
+  not packed; a private member's name, which a consumer's subclass can collide
+  with; and a `declare global` block added to an entry point, which belongs to
+  no exported name. Two things are refused until they are listed although a
+  consumer sees no difference, because the comparison is of printed lines: a
+  rewrite that means the same, an interface turned into an equal type alias for
+  one, and a withdrawn name that another released name still reaches, whose
+  declaration then joins that name's shape.
+  - An option, not built: show what changed since an entry was written. For a
+    name that is already listed, the refusal prints the whole difference
+    against the release, 70 lines for `FencedBatch` today, so an author who
+    changes it again cannot see the new part. An entry that also recorded the
+    listed lines would let the refusal print the difference against them.
+    Trigger: a second change to a listed name whose author or reviewer has to
+    work out by hand what the new part is.
 
 ## Phase 4 — dialect matrix
 
