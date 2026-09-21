@@ -171,6 +171,133 @@ describe('a version that failed', () => {
   })
 })
 
+describe('an event payload is never SQL NULL', () => {
+  // SQLite cannot add NOT NULL to a column that exists, so version 10 holds the payload with
+  // two triggers. A declared NOT NULL covers every statement that can write the column by
+  // construction. Two triggers cover it only if no statement gets past both, so every form
+  // SQLite has for writing a column is tried here.
+  const DOORS: Record<string, string> = {
+    'an insert that names NULL': `INSERT INTO events (queue, event_name, payload) VALUES ('q', 'new', NULL)`,
+    'an insert that leaves the column out': `INSERT INTO events (queue, event_name) VALUES ('q', 'new')`,
+    'an insert from a select': `INSERT INTO events (queue, event_name, payload) SELECT 'q', 'new', NULL`,
+    'INSERT OR REPLACE': `INSERT OR REPLACE INTO events (queue, event_name, payload) VALUES ('q', 'held', NULL)`,
+    'INSERT OR IGNORE': `INSERT OR IGNORE INTO events (queue, event_name, payload) VALUES ('q', 'new', NULL)`,
+    'REPLACE INTO': `REPLACE INTO events (queue, event_name, payload) VALUES ('q', 'held', NULL)`,
+    'an update': `UPDATE events SET payload = NULL WHERE queue = 'q' AND event_name = 'held'`,
+    'UPDATE OR IGNORE': `UPDATE OR IGNORE events SET payload = NULL WHERE queue = 'q' AND event_name = 'held'`,
+    'UPDATE OR REPLACE': `UPDATE OR REPLACE events SET payload = NULL WHERE queue = 'q' AND event_name = 'held'`,
+    "an upsert's update arm": `INSERT INTO events (queue, event_name, payload) VALUES ('q', 'held', '{}')
+      ON CONFLICT (queue, event_name) DO UPDATE SET payload = NULL`,
+    "an upsert's insert arm": `INSERT INTO events (queue, event_name, payload) VALUES ('q', 'new', NULL)
+      ON CONFLICT (queue, event_name) DO UPDATE SET payload = '{}'`,
+  }
+  const events = async (raw: LibsqlExecutor) =>
+    (
+      await raw.batch(
+        'fixture:read',
+        [{ sql: 'SELECT event_name, payload FROM events ORDER BY event_name', args: [] }],
+        'read',
+      )
+    )[0]?.rows
+
+  it('refuses SQL NULL through every statement that can write the column', async () => {
+    await admin.migrate()
+    await db.batch('fixture:seed', [
+      {
+        sql: `INSERT INTO events (queue, event_name, payload) VALUES ('q', 'held', '{"kept":1}')`,
+        args: [],
+      },
+    ])
+    const answers: Record<string, unknown> = {}
+    for (const [door, sql] of Object.entries(DOORS)) {
+      const refusal = await db.batch('fixture:door', [{ sql, args: [] }]).then(
+        () => 'accepted',
+        (error: unknown) => /SQLITE_[A-Z_]+/.exec(String(error))?.[0] ?? String(error),
+      )
+      answers[door] = { refusal, events: await events(db) }
+    }
+    expect(answers).toEqual(
+      Object.fromEntries(
+        Object.keys(DOORS).map((door) => [
+          door,
+          {
+            refusal: 'SQLITE_CONSTRAINT_TRIGGER',
+            events: [{ event_name: 'held', payload: '{"kept":1}' }],
+          },
+        ]),
+      ),
+    )
+  })
+
+  it('stops at the version before over a row that holds NULL, and leaves the row as it was', async () => {
+    // The port cannot write this row, so it is a foreign writer's or tampering. The version
+    // is the constraint checking its own past: the update trigger it installs refuses the
+    // row, the batch fails, and the batch is one transaction, so nothing of it is left.
+    class StoppedBeforeTheVersion extends Error {}
+    const stopping: SqlExecutor = {
+      batch: async (label, statements, control) => {
+        if (label === 'migrate:v10') throw new StoppedBeforeTheVersion()
+        return db.batch(label, statements, control)
+      },
+    }
+    await expect(new LibsqlStoreAdmin(stopping).migrate()).rejects.toBeInstanceOf(
+      StoppedBeforeTheVersion,
+    )
+    await db.batch('fixture:foreign-writer', [
+      {
+        sql: `INSERT INTO events (queue, event_name, payload) VALUES ('q', 'held-null', NULL)`,
+        args: [],
+      },
+    ])
+    const observed = async () => ({
+      version: await admin.schemaVersion(),
+      events: await events(db),
+      triggers: (
+        await db.batch(
+          'fixture:read',
+          [
+            {
+              sql: `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'events' ORDER BY name`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+      )[0]?.rows.map(({ name }) => name),
+    })
+
+    // The type is asserted on purpose: no retry changes this answer until the row is repaired.
+    const refusal = await admin.migrate().then(
+      () => 'resolved',
+      (error: unknown) => ({
+        name: error instanceof Error ? error.name : typeof error,
+        by: /SQLITE_[A-Z_]+: [^:]+: [a-z.]+/.exec(String(error))?.[0] ?? String(error),
+      }),
+    )
+    const stopped = await observed()
+    await db.batch('fixture:repair', [
+      {
+        sql: `UPDATE events SET payload = '{"repaired":1}' WHERE payload IS NULL`,
+        args: [],
+      },
+    ])
+    await admin.migrate()
+
+    expect({ refusal, stopped, repaired: await observed() }).toEqual({
+      refusal: {
+        name: 'PermanentStoreError',
+        by: 'SQLITE_CONSTRAINT_TRIGGER: NOT NULL constraint failed: events.payload',
+      },
+      stopped: { version: 9, events: [{ event_name: 'held-null', payload: null }], triggers: [] },
+      repaired: {
+        version: CURRENT_SCHEMA_VERSION,
+        events: [{ event_name: 'held-null', payload: '{"repaired":1}' }],
+        triggers: ['events_payload_not_null_insert', 'events_payload_not_null_update'],
+      },
+    })
+  })
+})
+
 describe('engine time', () => {
   beforeEach(async () => {
     await admin.migrate()
@@ -213,6 +340,7 @@ describe('migrations are append-only', () => {
     7: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     8: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     9: '1447b70b6f5f0015e91290fe37f1e7359b3eced0923d380dafe207ec2aec62f4',
+    10: '39ac3ed88c6b7dda5d09a0fc714ae38ca9f5395476ef40848a9b70bb739a284c',
   }
 
   it('every migration hash matches its frozen value', () => {

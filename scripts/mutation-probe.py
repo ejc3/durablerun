@@ -4299,6 +4299,57 @@ MUTATION_SPECS = [
         "emit launders a stored SQL NULL payload into an emitted timeout wake",
     ),
     (
+        "postgres-payload-is-not-null",
+        "packages/store-postgres/src/schema.ts",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],\n",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload DROP NOT NULL'],\n",
+        "PostgreSQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        "mysql-payload-is-not-null",
+        "packages/store-mysql/src/schema.ts",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        "MySQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        # MODIFY restates the whole column, and a migrator that planned from a stale read replays
+        # every version that was pending when it read. The mutant alters whatever the catalog says.
+        "mysql-column-form-acts-only-while-nullable",
+        "packages/store-mysql/src/schema.ts",
+        "AND column_name = '${column}') = 'NO',\n",
+        "AND column_name = '${column}') = 'never',\n",
+        "a replayed version 10 restates the payload column over what a later version made of it",
+    ),
+    (
+        # The refusal of a NULL has to travel in the version's text, which a port in another
+        # language replays, and not in the executor's session setup. Without the clause a
+        # session with no strict mode makes the change and stores an empty string.
+        "mysql-column-change-refuses-outside-a-strict-mode",
+        "packages/store-mysql/src/schema.ts",
+        " NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        " NOT NULL')`,\n",
+        "a MySQL session with no strict mode makes the payload NOT NULL over a NULL and stores an empty string there",
+    ),
+    (
+        "event-payload-null-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "    if (event.payload === null) {\n",
+        "    if (event.payload === undefined) {\n",
+        "no sim, scenario or fuzz walk reports an event row that holds SQL NULL",
+    ),
+    (
+        # The older condition of a stored NULL: a woken run carries a payload, and its event's
+        # stored payload is NULL. Every dialect's schema now refuses that state, so the poison
+        # matrix credits its witness as refused and no cell sees the arm fire. The mutant makes
+        # it unreachable, and the next arm then reports a different condition under the same name.
+        "stored-null-payload-under-a-wake-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "      else if (stored.payload === null) add('payload/stored-payload-null', runId)\n",
+        "      else if (stored.payload === undefined) add('payload/stored-payload-null', runId)\n",
+        "no checker reports a woken run that carries the payload of an event whose stored payload is SQL NULL",
+    ),
+    (
         "sdk-owned-retry-attempt",
         "packages/sdk/src/run-worker.ts",
         "    const taskControls = createTaskControlScope()\n"
@@ -10748,6 +10799,44 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance a stored SQL NULL event payload is never delivered as a timeout",
         "mutation-verdict:behavior:null-event-payload-never-becomes-timeout",
+    ),
+    "postgres-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [postgres] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [mysql] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-column-form-acts-only-while-nullable": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/real-server.test.ts",
+        "MysqlExecutor against a real server makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone",
+        "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
+    ),
+    "mysql-column-change-refuses-outside-a-strict-mode": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/migration.test.ts",
+        "a MySQL database where an event already holds SQL NULL is refused by the version itself in a session with no strict mode, with the row as it was",
+        "mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode",
+    ),
+    "event-payload-null-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
+    ),
+    "stored-null-payload-under-a-wake-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
     ),
     "sdk-owned-retry-attempt": ExpectedVerdict(
         "behavior",
@@ -20495,7 +20584,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1083:
+        if len(MUTATIONS) != 1089:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

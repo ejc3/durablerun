@@ -1881,6 +1881,8 @@ are load-bearing):
    protocol branch state, not an event fact: an emitted `events.payload` must be
    stored as TEXT. A SQL NULL or other non-TEXT event payload is corruption and
    fails closed; it may never be decoded as the legitimate timeout sentinel.
+   From schema version 10 no dialect's schema stores that NULL at all (rule
+   12).
    A timer suspension replaces an event registration: `reschedule` and
    `suspendRun` delete every wait belonging to the run their suspension CAS
    stamped, in the same batch. Cancellation likewise deletes waits through
@@ -2747,6 +2749,212 @@ are load-bearing):
    read and one more locked batch, 4 ms where it took 39 (medians of 75
    fixtures or more on each side, interleaved, on one machine).
 
+12. **An event's payload is never SQL NULL, and every dialect's schema holds
+   it.** An await that timed out answers with no payload and an emitted event
+   answers with its payload, so an event row that held SQL NULL would read as
+   a timeout. The port refuses to write one, both reads of an event fail closed
+   on one, and the invariant library reports one. Those are this
+   implementation's. From schema version 10 the schema refuses the write
+   itself, for every writer there is, a port in another language included. One
+   case of the shared schema and admin surface sends both kinds of write that
+   can store one, an UPDATE of a stored event and an INSERT of a fresh one,
+   past the port through the fixture's raw executor, and requires each
+   dialect's own schema to refuse both and the stored payload to stand. A
+   declared NOT NULL refuses every write form by construction, and a schema
+   that holds the column with a trigger for each kind of write holds it only
+   if no form gets past, so one refused write is not credited. No engine
+   statement changed, so the SQL corpus did not move.
+
+   PostgreSQL declares it: `ALTER TABLE events ALTER COLUMN payload SET NOT
+   NULL`. The statement takes an ACCESS EXCLUSIVE lock on `events` as its first
+   act, reads every row once, and rewrites nothing, so a read batch's older
+   snapshot sees the table as it was. It is one statement on one table, which
+   is rule 11's "locks first" in its smallest form: beside the runner's lock on
+   `meta` the version never asks for a second store table, and a statement that
+   holds `events` needs only a read of `meta`, which that lock does not block,
+   so no cycle can close. Its first statement is not a `LOCK TABLE`, so
+   `version-lock-order.test.ts` does not enroll it, and should not: that test's
+   arrivals, a sweep and a spawn, do not touch `events`. The test enrolls a
+   version by the spelling of its first statement, which is right for this
+   version and would miss a later one that takes two tables by `ALTER`.
+   Measured on a million events, data directory in memory, under four workers
+   and two readers of a build whose last version is 9, each worker spawning,
+   claiming, activating, awaiting an event, emitting it, claiming again and
+   completing: 85, 90 and 129 ms with 64 B payloads (a 303 MB table) and 387 and
+   391 ms with 1 KB (1.4 GB), against 87 ms with nothing else running. The
+   longest call that overlapped the statement waited as long as it ran, no call
+   failed, and the server counted no deadlock. A disk will be slower.
+   That wait holds only when no older transaction holds `events`. The
+   statement queues behind every transaction that has touched the table and
+   stays open, and everything that touches `events` queues behind the
+   statement. Measured in review behind a foreign transaction that had read
+   `events` and stayed open for 6 s: the statement waited 5.3 s, and an INSERT
+   that arrived behind it 4.3 s. Rule 11 weighs the same queue for version 7,
+   and nothing bounds the wait: the short lock timeout BUILD.md records as an
+   option would.
+
+   MySQL declares it through a form that the catalog guards, the first version
+   there that alters a table: the `ALTER TABLE … MODIFY … NOT NULL` is skipped
+   only when `information_schema` calls the column NOT NULL, and is otherwise
+   prepared and run, as an index is, so a column the catalog does not hold
+   fails loudly. `MODIFY` restates the whole column, and a migrator
+   that planned from a stale read replays every version that was pending when
+   it read, so the bare statement replayed after a later version would put
+   this declaration back over whatever that version made of the column. The
+   guarded form acts on the one fact it is about, and a server case holds
+   that: it leaves a later declaration alone and acts again only on a column
+   made nullable. A rerun after a crash is the same replay, and the runner's
+   generated crash cuts take the version in by themselves. InnoDB makes the
+   change in place while other sessions read and write. Measured on a million
+   events under the same traffic, with the server's default 128 MB buffer
+   pool, for the statement as it ships: 1.05, 1.09 and 1.10 s with 64 B
+   payloads (340 MB), against 1.18 s with nothing else running, and 2.50 and
+   2.58 s with 1 KB (2 GB). Between 660 and 1,740 calls overlapped it, the
+   longest took 17 and 114 ms, none failed, and a metadata lock was pending in
+   at most 3 of 59 samples taken 40 ms apart.
+   In place does not mean that nothing is rewritten: InnoDB rebuilds the whole
+   table, where PostgreSQL's statement rewrites nothing. In review the table's
+   id and its tablespace changed across the version in four runs of four. So the
+   change costs by the byte, as libSQL's refused rebuild does, and needs free
+   disk of about the table's size. While it rebuilds, InnoDB keeps other
+   sessions' changes in an online log, 128 MB by default
+   (`innodb_online_alter_log_max_size`), and past that limit the change fails
+   with error 1799 and leaves the column nullable and the version at 9.
+   Reproduced in review with this text and with the bare change alike: at the
+   log's 64 KB minimum, and at the default under a synthetic flood of 1 KB
+   inserts from several sessions. The traffic of the older build came nowhere
+   near the limit.
+   This is the first MySQL version that takes a table's metadata lock, so the
+   queue PostgreSQL's paragraph describes exists here too, and reads join it.
+   Measured in review behind an older transaction that had read `events`: a
+   plain SELECT that arrived behind the pending change waited 2.9 s and an
+   INSERT 4.2 s, and the server's `lock_wait_timeout` is a year by default.
+   The named migration lock is held through the rebuild, and a migrator that
+   cannot take it gives up after the executor's 30 seconds. Measured twice with
+   that wait lowered to one second in a scratch copy, two migrators racing on a
+   million events of 1 KB: the second gave up after 1.0 s with a store error
+   that says it could not take the migration lock, the first finished its 2.5 to
+   2.6 s rebuild, and a process that started afterwards migrated in 3 ms. So in
+   a rolling deploy over a table whose rebuild outlasts 30 seconds, a process
+   that starts more than those 30 seconds before the rebuild ends fails in
+   `migrate()`, and starts cleanly once the first migrator is done. One that
+   starts later waits for the lock and migrates. The index builds of versions 6,
+   8 and 9 already had this shape.
+   The statement asks for the change in place and with no lock
+   (`ALGORITHM=INPLACE, LOCK=NONE`), and that clause carries the refusal of a
+   NULL. Without it MySQL refuses the change over a row that holds NULL only
+   under a strict `sql_mode`: outside one the bare change succeeds, stores an
+   empty string where the NULL was and raises warning 1265, and a waiter would
+   then read a delivered event whose payload is not JSON. The executor sets a
+   strict mode on every connection it takes, but that is session state kept in
+   another file, and a port in another language replays the version's text and
+   not that setup. With the clause the text refuses by itself. Under a strict
+   mode nothing changes: error 1138 over a row that holds NULL, success without
+   one, through PREPARE as before. In a session with no strict mode the
+   statement is refused with error 1846 whatever the rows hold, because MySQL
+   cannot convert a NULL in place, and the row and the column stay as they
+   were. The server can also no longer fall back in silence to a copying change
+   that blocks writes. `store-mysql/test/migration.test.ts` holds both
+   sessions: `migrate()` through the executor is refused with 1138, and the
+   version's own statements over a session with no strict mode are refused with
+   1846.
+
+   libSQL cannot declare it. SQLite cannot add NOT NULL to a column that
+   exists, and the rebuild that would declare it (a new table, a copy of every
+   row, a drop and a rename in the version's one transaction) costs by the
+   byte: measured on a million events on a disk, beside one worker of the older
+   build on a connection of its own, 1.3 to 1.4 s with 64 B payloads, and 48
+   and 56 s with 1 KB, where a row past about 1 KB spills to an overflow page
+   and costs 4.7 KB. That rebuild doubled a 4.5 GB file, wrote 4.5 GB of
+   write-ahead log, and a fifth to a third of the worker's calls failed. Few of
+   them waited out the executor's five second busy timeout: the worker is one
+   loop, and the 216 writes that failed in the first run do not fit inside its
+   48.5 s at five seconds each. Measured in review beside a held lock, with the
+   worker in a process of its own: the first write waited out the five seconds
+   and failed with `database is locked`, the next got the lock when it was
+   released and failed at its commit with `cannot commit transaction - SQL
+   statements in progress`, and calls that began after the lock was free kept
+   failing with that message within milliseconds, writes among them, until the
+   first success 72 ms after the release. That defect is older than this version
+   and is BUILD.md's PR3.15. A reader on a connection of its own was not
+   measured. So version 10 is two triggers, `BEFORE INSERT` and `BEFORE UPDATE
+   OF payload`, each `WHEN NEW.payload IS NULL` raising ABORT with SQLite's own
+   words for a NOT NULL failure, and then `UPDATE events SET payload = payload
+   WHERE payload IS NULL`, which is the constraint checking its own past: it
+   touches only rows that hold NULL, and the update trigger installed two
+   statements before it refuses each one. Measured on the same million events
+   through the real `migrate()`: 90 ms with 64 B payloads and 428 ms with 1 KB
+   with nothing else running, and 86 to 98 ms and 301 to 725 ms beside that
+   worker, the 725 under a load average of 70. The worker's longest call that
+   overlapped the version waited as long as it ran, and none of its calls
+   failed. It is a scan and not a rewrite: its plan is one scan of `events`, the
+   write-ahead log grew by 12 KB, which is the two triggers and the version's
+   rows in `meta`, and the file did not grow.
+   Those are warm figures: the table had just been written, so it was in the
+   page cache. Rows of `events` are written once and rarely read again, so a
+   real table is mostly cold, and the check is a full scan inside the version's
+   write transaction, which holds SQLite's one writer lock for as long as the
+   scan reads from disk. Measured on the same million events of 1 KB, a 4.47 GB
+   file dropped from the page cache before each run with `posix_fadvise` and
+   read back with `fincore` as 0 MB cached right before the timed call, under a
+   load average of 20 to 22. The control is one run: `migrate()` took 14.9 s,
+   and of the worker's calls that overlapped it 8 of 9 emits, 8 of 8 spawns and
+   8 of 8 clock reads failed. At most three of those 24 can have waited out the
+   five second busy timeout inside 14.9 s, and the rest are the defect above.
+   The first review's own cold run took 12.2 s, and 3 of 685 writes failed. This
+   is the failure the rebuild was refused for, far milder here, transient and
+   loud, and it has a remedy that takes no write lock: run the finding query
+   below first. It reads the same pages. Measured twice on the same cold file,
+   the query took 14.8 s both times while 983 and 976 rounds of the worker's
+   three calls ran beside it, the longest took 5 ms and none failed. `migrate()`
+   then took 442 and 277 ms, the one emit that overlapped it waited 534 and 333
+   ms, and no call failed. The scan reads the table's tree and not the overflow
+   pages that hold most of a 1 KB payload, so it left 1.06 GB of the file
+   cached.
+   Nothing here was measured against a hosted libSQL server: not the code a
+   trigger's refusal carries over the remote protocol, and not the scan under
+   a hosted server's statement limits.
+   A store case tries every form SQLite has for writing a column, eleven of
+   them, the conflict clauses and both arms of an upsert among them, and each
+   is refused with SQLITE_CONSTRAINT_TRIGGER, where a declared NOT NULL skips
+   the two `OR IGNORE` forms in silence. What the triggers do not give: the
+   catalog still calls the column nullable, so on this dialect nothing can hold
+   the rule by a catalog read, which is why the shared case is behavioural, and
+   a refusal carries the trigger's constraint code and not a declared NOT
+   NULL's. The triggers read no table, so there is no statement inside them for
+   a plan check to miss. What they cost a write: nothing that could
+   be measured. 4,000 fresh emits a round through the real store, 8 rounds an
+   arm, interleaved, in memory so that no commit hides it, took 1.73 to 1.91 ms
+   an emit without them and 1.74 to 1.86 ms with them, medians 1.79 and 1.79.
+   On a disk an emit takes 2.7 ms and rounds differ by more than a millisecond
+   either way.
+
+   A row that already holds NULL is a foreign writer's or tampering, because
+   the port cannot write one. On every dialect it makes version 10 fail by that
+   dialect's own refusal (SQLITE_CONSTRAINT_TRIGGER, SQLSTATE 23502, MySQL
+   error 1138), which is the cause of the `PermanentStoreError` that `migrate()`
+   rejects with: the store answered, and no retry changes the answer until the
+   row is repaired. It leaves version 9, the column as it was and the row as it
+   was. One case a dialect holds that through the real executor, and asserts
+   the type. The rows are found with
+   `SELECT queue, event_name FROM events WHERE payload IS NULL`. Give each the
+   payload it should have held, or delete it, and migrate again. On libSQL run
+   that query before every migration to version 10, whether or not a row is
+   expected: it warms the pages the version's check reads, under no write lock
+   (above). On MySQL, error 1846 from version 10 is not such a row. It has two
+   causes, and its message tells them apart: a session with no strict
+   `sql_mode`, which no session of the executor is (`cannot silently convert
+   NULL values`), and a FULLTEXT index on `events`, which this schema does not
+   ship and under which the bare change completed by a copy (`InnoDB presently
+   supports one FULLTEXT index creation at a time`). Both leave the column and
+   the rows as they were.
+
+   A process of an older build runs against version 10 unchanged, because no
+   statement of the engine writes that NULL, and a newer build on a database
+   still at version 9 behaves as every build did before it. An older build that
+   starts afterwards fails in `migrate()` with `SchemaMismatchError`, as after
+   every migration.
+
 **Refused-write contract (AB001 and AB002):** a refused worker write
 (`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
 `awaitTaskDone`, `deferLaunch`) reads its run's state only after the refusal
@@ -2898,7 +3106,7 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 115 typed condition IDs for every semantic arm. The eight durable
+  one of 116 typed condition IDs for every semantic arm. The eight durable
   counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
@@ -2928,8 +3136,8 @@ not depend on careful reading:
   that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 21 classified
-  write labels with 146 corrupt-state witnesses covering that exact
-  condition inventory: 3,066 generated cells,
+  write labels with 147 corrupt-state witnesses covering that exact
+  condition inventory: 3,087 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state
@@ -3577,7 +3785,9 @@ realized in the store's compiler, executor, fragments, or schema:
 - **DDL commits on its own**, so a migration batch is not atomic and a
   sentinel row cannot roll one back. The bootstrap is one statement, so the
   version table never exists without its row (rule 9). Every migration
-  statement is safe to repeat, so a migrator that died halfway leaves work a
+  statement is safe to repeat: an index and a column that becomes NOT NULL
+  have no `IF` form, so each goes through a form the catalog guards (rule 12
+  has the column's). So a migrator that died halfway leaves work a
   rerun finishes, and migrators take turns under one named lock, which every
   migration write names in its control (rule 9). A batch is the unit of
   nothing here, so `migrate()` reads the version once and sends every pending

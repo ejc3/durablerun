@@ -449,3 +449,103 @@ describe('a MySQL migrator beside one of the released build', () => {
     }
   }, 60_000)
 })
+
+describe('a MySQL database where an event already holds SQL NULL', () => {
+  // The port cannot write this row, so it is a foreign writer's or tampering. Version 10
+  // makes the payload NOT NULL.
+  const FOREIGN_WRITE = text(
+    "INSERT INTO events (queue, event_name, payload, emitted_at_ms) VALUES ('q', 'held-null', NULL, 1)",
+  )
+  const observed = async (db: TestDb) => {
+    const session = await sessionOn(db)
+    try {
+      return {
+        version: (await one(session, RELEASED_VERSION_READ)).value,
+        column: (
+          await one(
+            session,
+            `SELECT is_nullable AS nullable FROM information_schema.columns
+              WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
+          )
+        ).nullable,
+        held: (await one(session, "SELECT payload FROM events WHERE event_name = 'held-null'"))
+          .payload,
+      }
+    } finally {
+      await session.end()
+    }
+  }
+
+  it('stops at the version before, and leaves the column nullable and the row as it was', async () => {
+    // Under the strict mode the executor sets on every connection it takes, the server
+    // refuses the change with error 1138. The next case is the same change in a session
+    // with no strict mode, where the version's own text has to refuse.
+    const db = await databaseAt(9, 'null-payload-refused')
+    try {
+      await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
+      // The type is asserted on purpose: no retry changes this answer until the row is repaired.
+      const refusal = await new MysqlStoreAdmin(db.raw).migrate().then(
+        () => 'resolved',
+        (error: unknown) => ({
+          name: error instanceof Error ? error.name : typeof error,
+          by: /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+        }),
+      )
+      const stopped = await observed(db)
+      await db.raw.batch('fixture:repair', [
+        text(`UPDATE events SET payload = '{"repaired":1}' WHERE payload IS NULL`),
+      ])
+      await new MysqlStoreAdmin(db.raw).migrate()
+
+      expect({ refusal, stopped, repaired: await observed(db) }).toEqual({
+        refusal: { name: 'PermanentStoreError', by: 'MySQL error 1138' },
+        stopped: { version: '9', column: 'YES', held: null },
+        repaired: {
+          version: String(CURRENT_SCHEMA_VERSION),
+          column: 'NO',
+          held: '{"repaired":1}',
+        },
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('is refused by the version itself in a session with no strict mode, with the row as it was', async () => {
+    // Outside a strict mode MySQL does not refuse to make a column NOT NULL over a row that
+    // holds NULL. It stores the column type's default where the NULL was, with a warning,
+    // and a waiter would then read a delivered event whose payload is not JSON. The executor
+    // sets a strict mode on every connection it takes, but that is session state kept in
+    // another file, and a port in another language replays the version's text and not that
+    // setup. So the text itself has to refuse. Version 10's statements are sent here as they
+    // are, over a session that the executor did not set up. What is caught is therefore the
+    // driver's own error, and no store type is asserted: through the executor error 1846
+    // would stay an outage, and the executor's strict mode keeps a migration from meeting it.
+    const db = await databaseAt(9, 'null-payload-no-strict-mode')
+    try {
+      await db.raw.batch('fixture:foreign-writer', [FOREIGN_WRITE])
+      const session = await sessionOn(db)
+      let refusal = 'accepted'
+      try {
+        await session.query("SET SESSION sql_mode = ''")
+        const version10 = MIGRATIONS.find(({ version }) => version === 10)
+        for (const statement of version10?.statements ?? []) await session.query(statement)
+      } catch (error) {
+        refusal = `MySQL error ${String((error as { errno?: unknown }).errno)}`
+      } finally {
+        await session.end()
+      }
+      expect(
+        { refusal, ...(await observed(db)) },
+        'mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode',
+      ).toEqual({
+        refusal: 'MySQL error 1846',
+        version: '9',
+        column: 'YES',
+        held: null,
+      })
+    } finally {
+      await db.close()
+    }
+  })
+})

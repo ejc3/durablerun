@@ -470,6 +470,28 @@ a last docs PR gives a live owner to every open bullet that is left.
     self-concurrency surface books a permanent store error with the outages, so
     a port call that breaks a constraint fails its contest.
 
+25. PR3.1d: an event's payload is never SQL NULL by the schema. One case of
+    the shared schema and admin surface writes SQL NULL over a stored event's
+    payload past the port, through the fixture's raw executor, and the schema
+    of libSQL, PostgreSQL and MySQL each refuses it, with no dialect fork in
+    the case. A database where an event already holds NULL fails `migrate()`
+    by the dialect's own refusal, stays at version 9 and keeps the row as it
+    was, on each dialect through the real executor. The invariant library
+    reports an event row that holds NULL.
+    This is met. The shared case was committed failing on all three dialects,
+    each of which stored the NULL. Schema version 10 declares the column NOT
+    NULL on PostgreSQL, declares it on MySQL through a form the catalog guards,
+    which is the repeatable column change PR4.3's open item (4) asked for, and
+    holds it on libSQL with two triggers, because SQLite cannot add NOT NULL to
+    a column that exists and the rebuild that would declare it was measured and
+    refused. The poison matrix's witnesses of a stored NULL
+    go through the fixture's storage-corruption door, where every dialect now
+    refuses them, by an UPDATE and by an INSERT. Six registered mutations hold
+    the servers' lines and the invariant library's two conditions, and libSQL's
+    frozen statements are held by its cases and by their hash. The entry under
+    PR3.1d has the measurements on a million events under the older build's
+    traffic.
+
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
 work this plan records as an option that is not scheduled or not planned, or as
@@ -1045,10 +1067,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   wake-consumption binding (a wake bound to its awaiting step instead of
   consumed by a flag — DONE: the wake_step column, codex final review).
   A second review round against the final head found six more bugs (see
-  postmortems/pr11-codex-final-review.md), leaving two deferrals of its own:
-  a schema/emit-boundary guarantee that an event payload is never SQL NULL
-  (lifting the timeout sentinel from a type-only to a structural guarantee);
-  and canonicalize-and-classify a handler result at the source so a
+  postmortems/pr11-codex-final-review.md), leaving two deferrals of its own.
+  One is DONE as PR3.1d below: a schema guarantee that an event payload is
+  never SQL NULL. The other stays:
+  canonicalize-and-classify a handler result at the source so a
   non-serializable result is a permanent user failure, not a silent completion
   with NULL. Attestation-artifact freshness is DONE: the Codex log and
   multi-lens journal each carry one exact review-head binding checked against
@@ -1097,6 +1119,111 @@ these three things; nothing else in the system does I/O, time, or randomness.
     three holds of the column that could not fail, and two sentences that said
     more than was held. All six are folded. The fold's own unfiltered audit
     caught one defect that a fix had introduced, before anything was pushed.
+- **PR3.1d an event's payload is never SQL NULL, by the schema**: DONE. The
+  deferral PR3.1's entry carried from `postmortems/pr11-codex-final-review.md`.
+  An await that timed out answers with no payload and an emitted event answers
+  with its payload, so an event row that held SQL NULL would read as a
+  timeout, and only the port, a TypeScript type and the two reads of an event
+  stood in the way. Schema version 10 makes the state unwritable on all three
+  dialects (DESIGN.md §3.4 rule 12).
+  - Red first: one case of the shared schema and admin surface writes SQL NULL
+    over a stored event's payload through the fixture's raw executor, by a new
+    kind at the fixture's storage-corruption door, and requires the schema to
+    refuse it. It failed on libSQL, PostgreSQL and MySQL, each of which stored
+    the NULL.
+  - PostgreSQL declares the column NOT NULL with one `ALTER TABLE`. MySQL
+    declares it through a form the catalog guards, which closes PR4.3's open
+    item (4): it does nothing once `information_schema` calls the column NOT
+    NULL, so a rerun after a crash or a replay from a stale plan leaves a later
+    declaration alone, a column the catalog does not hold fails loudly, and the
+    runner's generated crash cuts took the version in with no edit. It asks
+    for the change in place and with no lock, so its own text refuses a NULL in
+    a session with no strict `sql_mode`, where the bare change stored an empty
+    string. libSQL cannot declare it, because SQLite cannot
+    add NOT NULL to a column that exists. The rebuild that would declare it was
+    measured and refused: on a million events of 1 KB it took 48 and 56 s,
+    doubled a 4.5 GB file, and a fifth to a third of the calls of a worker of
+    the older build failed, few of them by waiting out its busy timeout and most
+    by the defect that PR3.15 names. Two triggers hold the payload there, and
+    the version's third statement makes the update trigger check the rows
+    already there.
+  - Measured on a million events under the traffic of a build whose last
+    version is 9 (DESIGN.md has the traffic and every run): PostgreSQL 85 to
+    129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 s and 2.5 to 2.6
+    s, libSQL 90 and 430 ms with nothing else running. No call of the older
+    build failed on any dialect. Those are warm figures. On a libSQL file that
+    is not in the page cache the version's check is a scan under the writer
+    lock: on a cold 4.5 GB file `migrate()` took 14.9 s and 24 of another
+    connection's calls failed, at most three of them by waiting out its busy
+    timeout and the rest by PR3.15's defect. The finding query run first, under
+    no write lock, took it to 0.3 to 0.4 s with no call failing, and DESIGN.md's
+    operator note says to run it. Each server's statement queues behind an older
+    transaction that holds `events`, and MySQL's rebuilds the whole table in
+    place, holding the named migration lock throughout.
+  - A row that already holds NULL is a foreign writer's or tampering. On each
+    dialect a case through the real executor holds that `migrate()` fails by
+    the dialect's own refusal, leaves version 9 and leaves the row as it was.
+    The bare MySQL change refuses only under a strict `sql_mode`: without one
+    it succeeds and stores an empty string where the NULL was. The version's
+    text therefore asks for the change in place and with no lock, which MySQL
+    refuses outside a strict mode with error 1846, and a case sends the
+    version's own statements over such a session and requires that refusal.
+  - The statement builder's table declarations say NOT NULL, so assigning a
+    value that may be NULL to the payload is a type error in every statement
+    the stores build. The shared comparison of those declarations with each
+    catalog gained one rule for every dialect: NOT NULL in the catalog, or a
+    raw write of NULL seen refused through the storage-corruption door, by
+    both kinds of write that can store one, an UPDATE and an INSERT.
+  - The invariant library reports an event row that holds NULL, so every sim,
+    scenario and fuzz walk checks it. Its witness and the older witness of a
+    run whose stored event holds NULL go through the same door, and every
+    dialect refuses them. Its positive control is a libSQL case that drops a
+    trigger as tampering would.
+  - Six registered mutations: the column change on each server, MySQL's guarded
+    form, its clause, and the invariant library's two conditions on a stored
+    NULL.
+    libSQL's three statements have none, by the registry's own rule: its
+    self-test refuses a live mutation of libSQL's migration file, which a hash
+    freezes. Three entries were written first, each caught by a filtered run,
+    which is the evidence that libSQL's two cases can fail, and the self-test
+    then refused them. No engine statement changed, so no corpus file moved,
+    and nothing here is a new protocol, so no TLA model changed.
+  - Options, not built. (1) libSQL's catalog could declare the column through a
+    table rebuild for databases small enough. Trigger: a reader that needs the
+    rule from a catalog read of libSQL. (2) The port's own refusals of a stored
+    NULL (the emit gate and the two reads' type checks) are now behind the
+    schema on every dialect. They stay: libSQL's also refuses a payload that is
+    not text, a build can meet a database below version 10, and removing them
+    would move the corpus on three dialects. Trigger: a stated oldest schema
+    version. (3) The poison matrix runs a witness that every dialect's schema
+    refuses once for each of its 21 write labels, and each run opens a fixture,
+    sees the write refused and closes. One cell for such a witness would do,
+    for these two and for the numeric witnesses PostgreSQL and MySQL refuse.
+    It changes the matrix's machinery and its pinned counts. Trigger: the
+    matrix's share of a conformance leg's time becoming a finding. (4) A read
+    that the runner sends outside the write transaction before a version whose
+    check scans a table, so that libSQL's scan under the writer lock always
+    finds its pages warm, where today DESIGN.md's operator note asks for it by
+    hand. It changes the runner's shape on three dialects. Trigger: a
+    deployment whose `events` table does not fit the page cache. (5)
+    PostgreSQL's three-transaction form: `ADD CONSTRAINT ... CHECK (payload IS
+    NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and a drop of
+    the constraint. Measured in review on a million rows of 1 KB (1.2 GB): 0.3
+    ms, 263 ms under SHARE UPDATE EXCLUSIVE, which blocks neither reads nor
+    writes, 0.3 ms and 0.6 ms, against the shipped form's 176 ms scan under
+    ACCESS EXCLUSIVE. A lock is held to its transaction's end, so it costs
+    three versions under the present runner, and it does not remove the queue
+    behind an older transaction. Trigger: a deployment where the scan under
+    ACCESS EXCLUSIVE is measured to matter.
+- **PR3.15 a libSQL write that fails busy fails the calls that follow it on its
+  connection**: IN PROGRESS as its own pull request, which rewrites this entry
+  when it merges. Older than any version here, and met while PR3.1d was measured
+  and reviewed. After a write batch on a file database fails with SQLITE_BUSY,
+  calls that follow it on the same `LibsqlExecutor`, writes among them, fail
+  with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`,
+  and they keep failing for about 70 ms after the lock is free. The cause is a
+  statement the client library leaves in progress after a busy failure, which is
+  an open bug upstream. Not built in PR3.1d, which changes no executor.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -3564,13 +3691,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   key on MySQL. The guard and the decoder read the same member, so nothing is
   decoded that was not checked. (3) A claim leg can lock up to the limit in
   runs the merged order leaves out, which other claimers skip until that claim
-  commits. (4) Version 1 holds the whole schema because MySQL DDL cannot roll
-  back. The first migration that alters a table needs a repeatable form, which
-  MySQL has no `ADD COLUMN IF NOT EXISTS` for. Version 6, the `runs_woken`
+  commits. (4) Closed by PR3.1d for a column that changes. Version 1 holds the
+  whole schema because MySQL DDL cannot roll back. Version 6, the `runs_woken`
   index that child tasks read through, is the first statement after version 1:
-  it is chosen from the catalog and prepared, which is safe to repeat, and a
-  column will need the same form. (5) The optional PlanetScale
-  smoke job is not built. (6) Child tasks and sagas are both ported, each in the
+  it is chosen from the catalog and prepared, which is safe to repeat. Version
+  10 is the first that alters a table, and makes a column NOT NULL through the
+  same form, guarded by what the catalog says of the column. A column that is
+  ADDED still has no form here, because no version adds one. (5) The optional
+  PlanetScale smoke job is not built. (6) Child tasks and sagas are both
+  ported, each in the
   entry that brought it, PR3.3 and PR3.4: the MySQL leg of the identical suite
   runs their surfaces and the fault and poison matrix cells of their labels,
   and nothing is owed.
@@ -4254,7 +4383,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     at most (the statement takes its tables one at a time, so what queues
     meanwhile is whatever touches a table it has already taken), and it tries
     again. Its trigger is a deployment that must migrate under sustained
-    traffic, or beside transactions that stay open for long.
+    traffic, or beside transactions that stay open for long. Version 10 is the
+    first MySQL version that takes a table's metadata lock, and reads queue
+    behind it too, so the same option exists there as a short
+    `lock_wait_timeout` for the migrating session, which is a year by default.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is

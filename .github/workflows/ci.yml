@@ -351,7 +351,7 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '375588de1cb5e1fbd9fa5f8b9d412be97d633625439213b167439abef2d505f6':
+          if digest == '542dda82478873b84428dc4e889e932f51859b95b6c253e6e141deb3b27b9054':
               # Four base entries name lines this tree deleted. Each store checked its own
               # entries, and the driver loop held its two names to the width alone. One check
               # in core now stands in front of every entry, built from one table of the port's
