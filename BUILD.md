@@ -1393,7 +1393,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     A client its owner closed is not reopened, a batch's arguments are copied at
     the call, a `FILE:` scheme is a file, an in-memory database keeps its one
     connection, a closed executor stays closed, and a hosted client is
-    untouched. Nineteen cases on a real file hold the recovery, one holds an
+    untouched. Twenty cases on a real file hold the recovery, one holds an
     in-memory database through a failed batch, eight hold a reconnect to the
     file the executor fixed, two hold the databases it never reconnects, an
     empty path and a `file::memory:` path, and two unit cases hold the
@@ -1416,8 +1416,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the `file::memory:` path, the percent decoding and the case of the scheme
     each fail their own case; the comparator's four comparisons and the file
     fixed despite a change during the open fail the two unit cases; and the
-    arguments and the bytes copied at the call fail their two cases. Removing
-    the close before a reconnect ends the test process, as the next bullet says.
+    arguments copied at the call fail their case, and the bytes copied at the
+    call their two, a Uint8Array's and a Buffer's. Removing the close before a
+    reconnect ends the test process, as the next bullet says.
   - A second defect of the binding was met on the way. It is avoided and not
     fixed: reading the transaction state of a closed connection ends the process
     with a panic, and the client reads it whenever a batch fails after a

@@ -48,11 +48,12 @@ function primaryResultCode(error: LibsqlError): string {
 const settled = (): void => {}
 
 /**
- * An argument as it is at the call. A byte array is copied, because a caller can change one
- * after the call; every other argument is a string, a number, a bigint or null.
+ * An argument as it is at the call. A byte array is copied into a new Uint8Array, because a
+ * caller can change one after the call, and a Buffer's own slice shares its memory; every
+ * other argument is a string, a number, a bigint or null.
  */
 const copied = (arg: SqlStatement['args'][number]) =>
-  arg instanceof Uint8Array ? arg.slice() : arg
+  arg instanceof Uint8Array ? new Uint8Array(arg) : arg
 
 /**
  * A file URL's path as the client stores it: percent-decoded as the client decodes it, and
