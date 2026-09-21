@@ -3796,7 +3796,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   until its entry is edited. What the reason says is a convention that review
   holds: why the declaration changed, with the pull request, and what a
   consumer does about it. A refusal names the snapshot file and where in it the
-  entry goes. Nineteen released names differ on main, each traced to the pull
+  entry goes. Twenty-one released names differ on main, each traced to the pull
   request that changed it, and the table lists them.
   `--write <release> <tarball-dir> <snapshot>` writes the snapshot of the next
   release, laid out by the repository's formatter from whatever directory the

@@ -40,16 +40,16 @@
           "declarationSha256": "2e474af2c619896655affe78b5e0f98184016a63ed880d1b5d5f35772472d9d8"
         },
         "FencedBatch": {
-          "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent takes an event name minted in core in place of a string, a generated follow-on may bind its queue (both PR #49), and a generated set value may be an expression as well as text (PR #43).",
-          "declarationSha256": "407ddd7ca88ecec286b7233a13360c13c5baf2c50b593b673f69a33feca6cc26"
+          "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent is gone: a statement's definition names the event it is serialized on, which DefinedStatement carries as eventLock, and the batch takes that lock (PR #68). A consumer that called lockEvent names the event as defineStatement's third argument. A generated follow-on may bind its queue (PR #49), a generated set value may be an expression as well as text (PR #43), and one that writes a task's state gives it as an expression (PR #68).",
+          "declarationSha256": "611ce5ee61e07a8c29c42b111839742ad5957cd85c3b32fa64178442bfb0af4d"
         },
         "LeaseState": {
           "reason": "A refused heartbeat names why (PR #32): the interface became a union, and a lease that is not held carries reason, cancelled or lease-lost. A consumer that reads held and remainingMs changes nothing; a store that answers a heartbeat returns the reason with a refusal.",
           "declarationSha256": "5fa9839ef7ae07c1759aa4c8607282574bb0013a7b8f0acc153a795cbd842a2d"
         },
         "SchedulerStore": {
-          "reason": "The port grew with the engine. PR #28 added claimedTaskName and deferLaunch and removed reschedule's wakeDisposition; PR #29 added retryTask; PR #49 added awaitTaskDone; PR #56 added failRollback and made fail answer FailOutcome; PR #25 named the wake and checkpoint shapes WakeSpec and CheckpointWrite, with the same members, and renamed heartbeat's last parameter. A consumer that calls a published store stops passing wakeDisposition and otherwise changes nothing. A consumer that implements the port adds the five methods and answers FailOutcome from fail.",
-          "declarationSha256": "1491ff4ae5630bdb46cfabfdbaf40c12e22f11e963e55b747fba04edadedc165"
+          "reason": "The port grew with the engine. PR #28 added claimedTaskName and deferLaunch and removed reschedule's wakeDisposition; PR #29 added retryTask; PR #49 added awaitTaskDone; PR #56 added failRollback and made fail answer FailOutcome; PR #79 made failRollback take the step and the failure of the rollback, FailedRollback, in place of the attempt record, which the store now names and counts; PR #25 named the wake and checkpoint shapes WakeSpec and CheckpointWrite, with the same members, and renamed heartbeat's last parameter. A consumer that calls a published store stops passing wakeDisposition and otherwise changes nothing. A consumer that implements the port adds the five methods, answers FailOutcome from fail, and takes a FailedRollback in failRollback.",
+          "declarationSha256": "f234ab0a8f9dd5db539073b8ffb0a3585a4aa3cdc96d358dcd9d60cb9b5b06e7"
         },
         "SpawnOptions": {
           "reason": "The optional childOf was added (PR #49): the parent and call site from which the store builds a child task's idempotency key. A consumer changes nothing; ctx.spawn sets it, and it is refused together with idempotencyKey.",
@@ -70,6 +70,14 @@
         "TaskResult": {
           "reason": "The optional rollback was added (PR #56): how a saga's rollback ended. A consumer changes nothing.",
           "declarationSha256": "73da8a5f97a046e7af06911f4a46c7f04d40197c68125f053985ad7679f2e7fb"
+        },
+        "Launcher": {
+          "reason": "launch takes an optional second argument, LaunchOptions, whose one field is an abort signal: the resident driver fires it when the launch deadline passes, and the HTTP launcher ends its request with it (PR #73). A consumer that calls launch changes nothing, and one that implements Launcher still compiles; it reads the signal to end a launch the driver has stopped waiting for.",
+          "declarationSha256": "7b504c669ac70752abf0664737efb967c89beb510625316a9483a6df90c99350"
+        },
+        "SqlTransactionLock": {
+          "reason": "It gained the arm { kind: 'migration' }: a migration write carries the migration lock in the batch control as a lock coordinate, where the MySQL executor chose it from the batch label, and that executor refuses a migration write that names none (PR #83). A consumer that builds a transaction lock changes nothing, and one that switches over kind exhaustively adds the arm.",
+          "declarationSha256": "9fa0ca234533585187cd20fa55f1f97de04fa4345eea7605d0f435ed74ff81ad"
         }
       }
     },
@@ -88,8 +96,8 @@
     "@durablerun/sdk": {
       ".": {
         "ReplayContext": {
-          "reason": "The worker's context class. Its constructor takes the decoded WorkerClaimedRun (PR #36) and a lease-end latch in place of the lease-lost AbortSignal, and the issuer's leaseLost became leaseEnded, which carries the reason (PR #32). spawn and awaitTask were added (PR #49). Step rollback added StepOptions, rollingBack, nextRollback, runRollback, rollbackFailure and the issuer's rollbackPhase (PR #56). A task function receives the context as TaskContext and changes nothing. A consumer that constructs a ReplayContext passes a latch object, and one that supplies its own issuer implements leaseEnded and rollbackPhase.",
-          "declarationSha256": "ed76e599c0d279774a7b1fe9ee33bd856bbc5657f88fe89abf78f96b87375c12"
+          "reason": "The worker's context class. Its constructor takes the decoded WorkerClaimedRun (PR #36) and a lease-end latch in place of the lease-lost AbortSignal, and the issuer's leaseLost became leaseEnded, which carries the reason (PR #32). spawn and awaitTask were added (PR #49). Step rollback added StepOptions, rollingBack, nextRollback, runRollback, rollbackFailure and the issuer's rollbackPhase (PR #56), and rollbackFailure and a halting nextRollback answer the failed rollback, FailedRollback, where they answered its attempt record (PR #79). A task function receives the context as TaskContext and changes nothing. A consumer that constructs a ReplayContext passes a latch object, and one that supplies its own issuer implements leaseEnded and rollbackPhase.",
+          "declarationSha256": "43ea4f284c0f626af1d58ee42e3f2fd3a8818586e74f00f1a71bda75343d8195"
         },
         "RunInvocation": {
           "reason": "The interface became a pick of LaunchInvocation's four claim ids in place of a hand copy of them (PR #28). The members are the same, so a consumer changes nothing.",
@@ -108,8 +116,8 @@
     "@durablerun/store-libsql": {
       ".": {
         "LibsqlSchedulerStore": {
-          "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, and reschedule lost wakeDisposition. A consumer stops passing wakeDisposition and otherwise changes nothing.",
-          "declarationSha256": "f6b357077b5466a5d86304b9dd131d6fc3889e6a60a84cd837d1c211350a6279"
+          "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, failRollback takes a FailedRollback (PR #79), and reschedule lost wakeDisposition. It extends HeldPort, the class in core that checks every string the port takes, where each store checked its own (PR #86). A consumer stops passing wakeDisposition and otherwise changes nothing.",
+          "declarationSha256": "eb05d12fcd35f8fac7cea07c862093e8aacbfdb0096951b80db9c879f0224bf0"
         }
       },
       "./testing": {
