@@ -1113,19 +1113,46 @@ these three things; nothing else in the system does I/O, time, or randomness.
     recovery that fails is an outage once and is owed by the next call. A file's
     batches run one at a time, so a batch that was waiting behind a failed one
     runs after the mark and not before it. A new connection must reach the file
-    the executor opened: `open()` resolves a relative path, an empty path is
-    treated as `:memory:` is and never reconnected, and the file's device and
-    inode, recorded from the first connection, are checked at the path before a
-    reconnect and on the new connection after it, so a file that is gone or was
-    replaced is an outage on every call and never a switch. A client its owner
-    closed is not reopened, a batch's arguments are copied at the call, a
-    `FILE:` scheme is a file, an in-memory database keeps its one connection, a
-    closed executor stays closed, and a hosted client is untouched. Seventeen
-    cases on a real file hold the recovery, one holds an in-memory database
-    through a failed batch, and five hold a reconnect to the file it opened.
-    Every guard of the executor, removed by hand alone, fails named cases, and
-    removing the close before a reconnect ends the test process, as the next
-    bullet says.
+    the executor fixed when it was made: `open()` resolves a relative path and,
+    right after its client opens the file, fixes the path the client reopens,
+    the file that path names with symbolic links resolved, and that file's
+    device and inode; a client handed to the constructor is fixed at
+    construction from the URL it was made with, and without that URL is never
+    reconnected; an empty path and a `file::memory:` path are treated as
+    `:memory:` is. The path the client will reopen is checked before a
+    reconnect, and SQLite's name for the new connection's file and the path
+    after it, so a file that is gone or was replaced, or a path that now leads
+    elsewhere, is refused and never switched to. After a refused reconnect the
+    executor keeps the connection it had, and once its failed statement is
+    collected that connection serves the file it opened again, as the base does.
+    A client its owner closed is not reopened, a batch's arguments are copied at
+    the call, a `FILE:` scheme is a file, an in-memory database keeps its one
+    connection, a closed executor stays closed, and a hosted client is
+    untouched. Nineteen cases on a real file hold the recovery, one holds an
+    in-memory database through a failed batch, eight hold a reconnect to the
+    file the executor fixed, two hold the databases it never reconnects, an
+    empty path and a `file::memory:` path, and two unit cases hold the
+    comparator of two files and the file fixed at open. Each guard of the
+    executor, removed by hand alone, fails the cases named here: the question,
+    the mark of a failure and the file fixed at open fail the cases of the next
+    read and the next write among many; the question that answers broken fails
+    the connection kept after a broken constraint; the queue fails the queued
+    read and the queue of five; the closed check after the question fails the
+    close during the question; the PRAGMAs marked only after they run fail the
+    PRAGMAs applied again; the mark cleared after a recovery fails the question
+    asked once; an owner's close fails the two owner's-close cases, and the mark
+    cleared after a reconnect that threw fails the one after a reconnect that
+    threw; the executor's own client and the PRAGMAs owed by a new connection
+    fail the recovery that can fail; the check at the path before a reconnect
+    fails the removed file, the relative handed client and the symlink; the
+    check after the reconnect, its mark and its close fail the new connection
+    that opened another file; the handed client's URL fails the handed cases;
+    the relative path resolved fails the change of directory; the empty path,
+    the `file::memory:` path, the percent decoding and the case of the scheme
+    each fail their own case; the comparator's four comparisons and the file
+    fixed despite a change during the open fail the two unit cases; and the
+    arguments and the bytes copied at the call fail their two cases. Removing
+    the close before a reconnect ends the test process, as the next bullet says.
   - A second defect of the binding was met on the way. It is avoided and not
     fixed: reading the transaction state of a closed connection ends the process
     with a panic, and the client reads it whenever a batch fails after a
@@ -1179,13 +1206,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     question, the close and the reconnect, the recorded file and its two checks,
     and the canary with them, and the queue unless something else has come to
     rely on it, with the registered mutations of the question and of the check
-    at the path. Delete with them the cases that test the replacement itself:
-    "gets a new connection with the five second wait and write-ahead logging on
-    it", "abandons a connection that holds no write lock", "is followed by a
-    recovery that can fail too", "is not reconnected when it is closed while its
-    question after a failed batch runs", "asks its connection once after a
-    failed batch", and the whole of `reconnect-file-identity.test.ts`. Keep the
-    other cases, which must stay green without them.
+    at the path, and the queue's registered mutation if the queue goes. Delete
+    with them the cases that test the replacement itself: "gets a new connection
+    with the five second wait and write-ahead logging on it", "abandons a
+    connection that holds no write lock", "is followed by a recovery that can
+    fail too", "is not reconnected when it is closed while its question after a
+    failed batch runs", "asks its connection once after a failed batch",
+    "honours an owner closing its client after a reconnect that threw", and the
+    reconnect cases of `reconnect-file-identity.test.ts`. Keep the cases of
+    which URLs name a file, the empty path, `file::memory:` and the upper-case
+    `FILE:` scheme, and the other cases, which must stay green without them.
   - An option, not built: the rest of the shared conformance suite on a libSQL
     database FILE. It would not have caught this defect by itself: a broken
     constraint halts its statement on a file as in memory, and what breaks a

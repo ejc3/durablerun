@@ -16261,7 +16261,7 @@ VERDICTS.update(
         "libsql-reconnect-refuses-another-file": ExpectedVerdict(
             "behavior",
             "packages/store-libsql/test/reconnect-file-identity.test.ts",
-            "a connection replaced after a failed batch refuses to create a file in place of its own that was removed, as an outage on every call",
+            "a connection replaced after a failed batch refuses to create a file in place of its own that was removed",
             "mutation-verdict:behavior:libsql-reconnect-refuses-another-file",
         ),
     }

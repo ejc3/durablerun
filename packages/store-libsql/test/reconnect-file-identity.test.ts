@@ -143,7 +143,7 @@ describe('a connection replaced after a failed batch', () => {
     }
   })
 
-  it('refuses another file put in place of its own, as an outage on every call, and never serves from it', async () => {
+  it('refuses another file put in place of its own, and never serves from it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-replaced-'))
     const file = join(dir, 'db.sqlite')
     let victim: LibsqlExecutor | undefined
@@ -161,7 +161,7 @@ describe('a connection replaced after a failed batch', () => {
     }
   })
 
-  it('refuses to create a file in place of its own that was removed, as an outage on every call', async () => {
+  it('refuses to create a file in place of its own that was removed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'durablerun-reconnect-removed-'))
     const file = join(dir, 'db.sqlite')
     let victim: LibsqlExecutor | undefined

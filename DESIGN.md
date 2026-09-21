@@ -679,10 +679,13 @@ One invocation executes one claimed run to its next suspension point:
   inside a batch, and the plan tests send a write's `EXPLAIN` through the raw
   client, outside any batch. The question cannot see a READING statement left in
   progress, because a reading statement does not stop a `COMMIT`: an `EXPLAIN`
-  of a read inside a batch leaves one, and its connection is kept. Measured, a
-  read on that connection after another connection's write still saw the new
-  row. That is the recovery's one known false negative, and it predates the
-  recovery.
+  of a read inside a batch leaves one, and its connection is kept. Measured,
+  only the first read on that connection after another connection's write sees
+  the new row: later reads are stale, rows 1 and 2 where another connection had
+  made them 1, 2 and 3, and the executor's next write on that connection fails
+  with SQLITE_BUSY_SNAPSHOT, as an outage. That is the recovery's one known
+  false negative. It predates the recovery, and no statement a store sends is an
+  `EXPLAIN`.
 
   A recovery can fail too, because opening a connection and applying its
   PRAGMAs are calls on a file that another connection may hold or that may be
@@ -698,24 +701,39 @@ One invocation executes one claimed run to its next suspension point:
   every call, the question included, before anything reaches the binding.
 
   A new connection must reach the database the executor had, because the
-  client's `reconnect()` opens a path. `open()` resolves a relative path against
-  the directory the process is in when the executor opens, so a later change of
-  directory does not move it, and it reads the scheme case-insensitively, as the
-  client does. An empty path, which SQLite makes a private database of its one
-  connection, is treated as `:memory:` is, and never reconnected. The first
-  connection's file is read from SQLite's `database_list` and recorded with its
-  device and inode. Before a reconnect the file at the path must still be that
-  file: one that was removed or replaced while the executor had it open is
-  refused before anything is opened, because the client offers no way to open
-  without creating a file. After a reconnect the new connection's file must be
-  the recorded one, or the new connection is closed before it serves a batch,
-  which covers a path that came to name another file in between, and a client
-  handed to the constructor that names its file by a relative path. Either
-  refusal is an outage that the next call retries, and never a switch to another
-  database. So a database whose file is replaced under a running executor is
-  served from the file it opened while its connection is whole, and after a
-  failure that breaks the connection every call is an outage until the process
-  opens a new executor.
+  client's `reconnect()` opens a path. The executor fixes its database file when
+  it is made. `open()` resolves a relative path against the directory the
+  process is in, so a later change of directory does not move it, and right
+  after its client opens the file it records the path the client stores and
+  reopens, the file that path names with every symbolic link resolved, and that
+  file's device and inode, from the path just before the open and just after, so
+  a path that named another file in between leaves it no file it can be sure of.
+  A client handed to the constructor is fixed the same way, at construction,
+  from the URL it was created with, the constructor's optional third argument,
+  and a file-backed executor made without that URL never reconnects. The scheme
+  is read case-insensitively, as the client reads it, and an empty path, which
+  SQLite makes a private database of its one connection, and a `file::memory:`
+  path are treated as `:memory:` is: never reconnected. Before a reconnect the
+  path the client will reopen must still name the fixed file, so a file that was
+  removed or replaced, and a path that now leads elsewhere, through a re-pointed
+  directory symlink or a relative path after a change of directory, are refused
+  before anything is opened, because the client offers no way to open without
+  creating a file. After the reconnect SQLite must name the fixed file and the
+  path must still name it, or the new connection is closed before it serves a
+  batch. Either refusal is an outage that the next call retries, never a switch
+  to another database. Two windows are left. A file put at the path between the
+  client's open and the stat that follows it inside `open()` is taken for the
+  executor's own when the path named nothing before the open, which is when the
+  client created the file. Between the check before a reconnect and the reopen,
+  the path can come to name another file, or none, in which case the client
+  creates an empty one; the check after the reopen then refuses that connection,
+  so this window ends in a refusal, and at worst an empty file, never in a
+  switch, and only a file swapped away and back between the two checks could
+  pass both. After a refused reconnect the executor keeps the connection it had:
+  while its failed statement is in progress every call is an outage, and once
+  the garbage collector finalizes that statement the connection serves the file
+  it opened again, as the base does, whether that file is still at its path or
+  was unlinked.
 
   A database file's batches run ONE AT A TIME, each after the one before it has
   been answered and has marked its connection if it failed. The local client
@@ -725,30 +743,34 @@ One invocation executes one claimed run to its next suspension point:
   microseconds against 49 on main and a write batch's 420 to 424 against 417 to
   425, while a write's 95th percentile was 620 to 634 against 595 to 598 in both
   runs, which may be those hops or the load of a shared machine: the measurement
-  cannot tell them apart. A batch's statements and arguments are copied when
-  `batch()` is called, so an argument array its caller changes while the batch
-  waits for its turn changes nothing that is sent. When a caller resumes does
-  change. Each batch settles in its turn, so a caller that closes the executor
-  after its own batch closes it before a batch sent in the same tick has run,
-  and that batch is refused, where before the queue both committed. Without it,
-  a batch that was already waiting when another failed ran on the broken
-  connection BEFORE the failed call's own error handling had run, and the outage
-  was reported twice again. Two store calls made in one tick is an ordinary
-  shape, a task that starts two steps together. A hosted client keeps its
-  concurrent requests, and an in-memory database is not queued. Three things a
-  queue can do wrong are each held or ruled out. No batch can wait for itself:
-  the only code that runs inside a turn is the executor's own send, which calls
-  nothing of the port, and the store, the admin and core's fenced batch all
-  await `batch` from outside a turn. A rejected batch neither stops the batches
-  behind it nor leaves a rejection unhandled, which a case holds with five
-  batches sent in one tick, two of which fail. `close()` with batches queued
-  answers each of them with the client's own refusal and hangs none, and a
-  closed executor stays closed: it keeps a flag of its own and is never
-  reconnected, because `reconnect()` reopens a closed client and the recovery
-  closes the client itself before it reconnects. A client handed to the
-  constructor that its owner closed is not reopened either: the executor tells
-  its own close before a reconnect from the owner's, and checks both after the
-  question.
+  cannot tell them apart. A batch's statements are copied when `batch()` is
+  called, each argument array and each byte array argument with them, so what a
+  caller changes after the call, while the batch waits for its turn, changes
+  nothing that is sent. Every other argument is a string, a number, a bigint or
+  null. When a caller resumes does change. Each batch settles in its turn, so a
+  caller that closes the executor after its own batch closes it before a batch
+  sent in the same tick has run, and that batch is refused, where before the
+  queue both committed. Without it, a batch that was already waiting when
+  another failed ran on the broken connection BEFORE the failed call's own error
+  handling had run, and the outage was reported twice again. Two store calls
+  made in one tick is an ordinary shape, a task that starts two steps together.
+  A hosted client keeps its concurrent requests, and an in-memory database is
+  not queued. Three things a queue can do wrong are each held or ruled out. No
+  batch can wait for itself: the only code that runs inside a turn is the
+  executor's own send, which calls nothing of the port, and the store, the admin
+  and core's fenced batch all await `batch` from outside a turn. A rejected
+  batch neither stops the batches behind it nor leaves a rejection unhandled,
+  which a case holds with five batches sent in one tick, two of which fail.
+  `close()` with batches queued answers each of them with the client's own
+  refusal and hangs none, and a closed executor stays closed: it keeps a flag of
+  its own and is never reconnected, because `reconnect()` reopens a closed
+  client and the recovery closes the client itself before it reconnects. A
+  client handed to the constructor that its owner closed is not reopened either:
+  the executor tells its own close before a reconnect from the owner's, and
+  checks both after the question. After a reconnect that threw, a handed
+  client's owner's close can no longer be told from the recovery's, so that
+  client is taken for closed by its owner and never reopened, while an executor
+  that made its own client, in `open()`, tries again.
 
   An in-memory database lives in its one connection, so it is never replaced,
   and a case holds that it keeps its rows through a failed batch. It cannot
