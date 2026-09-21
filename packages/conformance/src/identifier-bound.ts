@@ -1,24 +1,33 @@
 import {
+  LIVE_STATES,
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SqlExecutor,
+  TERMINAL_STATES,
   childSpawnKey,
-  encodeRollbackTry,
+  isPortRefusal,
 } from '@durablerun/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
+import { engineHistoryViolations } from './engine-history.js'
+import {
+  HELD_PLACES,
+  IDENTIFIER_PLACES,
+  NOT_A_STRING,
+  OUTSIDE_THE_DOMAIN,
+  PAST_THE_WIDTH,
+  PAYLOAD_PLACES,
+  PORT_OBJECT_PLACES,
+  PORT_STRING_PLACES,
+  PORT_STRING_PROBLEMS,
+  type PortStringPlace,
+  WIDTH,
+} from './port-strings.js'
 import { checkpointOwned, claimActivated, refusalName, withFixture } from './scenario.js'
 
-/**
- * A durable identifier holds 255 characters, counted in Unicode code points, on every
- * dialect (DESIGN.md §3.4). The number is written here and not imported, so the suite
- * holds the contract and not whatever the constant happens to say.
- */
-const WIDTH = 255
 const REFUSED = 'InvalidDurableStringError'
 const CAUSE = '{"name":"Error","message":"boom"}'
 const wake = { inSeconds: 1 }
@@ -35,89 +44,20 @@ function storeOverRecorder(f: StoreFixture) {
   return { store: f.storeOver(db), reached }
 }
 
-type Entry = (s: SchedulerStore, id: string) => Promise<unknown>[]
-
-/** A parent as a child spawn names it. Each identifier in it enters the port too. */
-const PARENT = { parentQueue: 'q', parentTaskId: 'p', runId: 'r', claimToken: 'c', replayKey: 'k' }
-
-/**
- * For every method of the port, one call for each place an identifier enters it. The
- * type makes a port method with no entry here a compile error, so a new method cannot
- * arrive unchecked.
- */
-const ENTRIES: { readonly [Method in keyof SchedulerStore]: Entry } = {
-  spawn: (s, id) => [
-    s.spawn(id, 't', '{}'),
-    s.spawn('q', 't', '{}', { idempotencyKey: id }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentQueue: id } }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, parentTaskId: id } }),
-    s.spawn('q', 't', '{}', { childOf: { ...PARENT, runId: id } }),
-  ],
-  claim: (s, id) => [s.claim(id, 'w', { leaseSeconds: 30, limit: 1 })],
-  activate: (s, id) => [s.activate(id, 'r', 'c', 1), s.activate('q', id, 'c', 1)],
-  claimedTaskName: (s, id) => [
-    s.claimedTaskName(id, 'r', 'c', 1),
-    s.claimedTaskName('q', id, 'c', 1),
-  ],
-  deferLaunch: (s, id) => [s.deferLaunch(id, 'r', 'c', 1, 5), s.deferLaunch('q', id, 'c', 1, 5)],
-  heartbeat: (s, id) => [s.heartbeat(id, 'r', 'c', 30), s.heartbeat('q', id, 'c', 30)],
-  reschedule: (s, id) => [s.reschedule(id, 'r', 'c', wake), s.reschedule('q', id, 'c', wake)],
-  complete: (s, id) => [s.complete(id, 'r', 'c', '{}'), s.complete('q', id, 'c', '{}')],
-  suspendRun: (s, id) => [
-    s.suspendRun(id, 'r', 'c', wake, { key: 'k', stateJson: '{}' }),
-    s.suspendRun('q', id, 'c', wake, { key: 'k', stateJson: '{}' }),
-    s.suspendRun('q', 'r', 'c', wake, { key: id, stateJson: '{}' }),
-  ],
-  fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
-  failRollback: (s, id) => [
-    s.failRollback(id, 'r', 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', id, 'c', '{}', null, { key: 'k', stateJson: '{}' }),
-    s.failRollback('q', 'r', 'c', '{}', null, { key: id, stateJson: '{}' }),
-  ],
-  sweep: (s, id) => [s.sweep(id, 10)],
-  expireLeaseNow: (s, id) => [s.expireLeaseNow(id, 'r', 'c'), s.expireLeaseNow('q', id, 'c')],
-  getCheckpoints: (s, id) => [s.getCheckpoints(id, 't', 1), s.getCheckpoints('q', id, 1)],
-  setCheckpoint: (s, id) => [
-    s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', id, 'r', 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', 't', id, 'c', 'k', '{}', 30),
-    s.setCheckpoint('q', 't', 'r', 'c', id, '{}', 30),
-  ],
-  emitEvent: (s, id) => [s.emitEvent(id, 'e', '{}'), s.emitEvent('q', id, '{}')],
-  awaitEvent: (s, id) => [
-    s.awaitEvent(id, 't', 'r', 'c', 's', 'e', null),
-    s.awaitEvent('q', id, 'r', 'c', 's', 'e', null),
-    s.awaitEvent('q', 't', id, 'c', 's', 'e', null),
-    s.awaitEvent('q', 't', 'r', 'c', id, 'e', null),
-    s.awaitEvent('q', 't', 'r', 'c', 's', id, null),
-  ],
-  awaitTaskDone: (s, id) => [
-    s.awaitTaskDone(id, 't', 'r', 'c', 's', 'child', null),
-    s.awaitTaskDone('q', id, 'r', 'c', 's', 'child', null),
-    s.awaitTaskDone('q', 't', id, 'c', 's', 'child', null),
-    s.awaitTaskDone('q', 't', 'r', 'c', id, 'child', null),
-    s.awaitTaskDone('q', 't', 'r', 'c', 's', id, null),
-  ],
-  getTaskResult: (s, id) => [s.getTaskResult(id, 't'), s.getTaskResult('q', id)],
-  nextWakeAtEpochMs: (s, id) => [s.nextWakeAtEpochMs(id)],
-  driverHeartbeat: (s, id) => [s.driverHeartbeat(id, 'd', 30), s.driverHeartbeat('q', id, 30)],
-  cancelTask: (s, id) => [s.cancelTask(id, 't'), s.cancelTask('q', id)],
-  retryTask: (s, id) => [s.retryTask(id, 't'), s.retryTask('q', id)],
-}
-
-/** The refusal of every entry, keyed by the method and the position the identifier took. */
-async function refusalsAtEveryEntry(
+/** What every place in `places` answers for `value`, keyed by the place. */
+async function refusalsAt(
+  places: readonly PortStringPlace[],
   store: SchedulerStore,
-  id: string,
+  value: unknown,
 ): Promise<Record<string, string>> {
   const refusals: Record<string, string> = {}
-  for (const [method, entry] of Object.entries(ENTRIES)) {
-    for (const [position, call] of entry(store, id).entries()) {
-      refusals[`${method}#${position}`] = await refusalName(call)
-    }
-  }
+  for (const { place, call } of places) refusals[place] = await refusalName(call(store, value))
   return refusals
 }
+
+/** Every place refused, as the expectation of a case that asks all of them. */
+const allRefused = (refusals: Record<string, string>) =>
+  Object.fromEntries(Object.keys(refusals).map((place) => [place, REFUSED]))
 
 /** What one call answered over the recorder: its error, or 'accepted', and whether anything was sent. */
 async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<unknown>) {
@@ -131,6 +71,20 @@ async function outcomeOf(f: StoreFixture, call: (s: SchedulerStore) => Promise<u
     message: String(outcome),
     sent: reached.length > 0,
   }
+}
+
+/** Every place the port does not hold as an identifier, written here by hand. */
+const NOT_AN_IDENTIFIER: Readonly<Record<string, string>> = {
+  'spawn[1](taskName)': 'durable',
+  'spawn[2](paramsJson)': 'payload',
+  'spawn[3].headers(headers)': 'map',
+  'complete[3](resultJson)': 'payload',
+  'suspendRun[4].stateJson(checkpoint.stateJson)': 'payload',
+  'fail[3](failureJson)': 'payload',
+  'failRollback[3](failureJson)': 'payload',
+  'failRollback[5].errorJson(rollback.errorJson)': 'payload',
+  'setCheckpoint[5](stateJson)': 'payload',
+  'emitEvent[2](payloadJson)': 'payload',
 }
 
 export function identifierBoundConformance(
@@ -149,21 +103,13 @@ export function identifierBoundConformance(
     })
 
     it('refuses an identifier past 255 characters at every entry of the port, before anything is sent', async () => {
-      for (const tooLong of [
-        'x'.repeat(WIDTH + 1),
-        // Excess that is only trailing spaces is the excess one dialect would cut silently.
-        `${'x'.repeat(WIDTH)} `,
-        '\u{1F600}'.repeat(WIDTH + 1),
-      ]) {
+      for (const tooLong of Object.values(PAST_THE_WIDTH)) {
         const { store, reached } = storeOverRecorder(f)
-        const refusals = await refusalsAtEveryEntry(store, tooLong)
+        const refusals = await refusalsAt(IDENTIFIER_PLACES, store, tooLong)
         expect(
           { refusals, sent: reached },
           'mutation-verdict:behavior:identifier-past-the-width-refused-at-every-entry',
-        ).toEqual({
-          refusals: Object.fromEntries(Object.keys(refusals).map((entry) => [entry, REFUSED])),
-          sent: [],
-        })
+        ).toEqual({ refusals: allRefused(refusals), sent: [] })
       }
     })
 
@@ -173,12 +119,130 @@ export function identifierBoundConformance(
       const fits = '\u{1F600}'.repeat(200)
       expect(fits.length).toBe(400)
       const { store, reached } = storeOverRecorder(f)
-      const refusals = await refusalsAtEveryEntry(store, fits)
+      const refusals = await refusalsAt(IDENTIFIER_PLACES, store, fits)
       expect(
         Object.entries(refusals).filter(([, refusal]) => refusal === REFUSED),
         'mutation-verdict:behavior:identifier-width-counts-code-points',
       ).toEqual([])
       expect(reached.length).toBeGreaterThan(0)
+    })
+
+    it('refuses a name outside the durable string domain at every entry of the port, before anything is sent', async () => {
+      // No dialect keeps such a name as it was passed. A NUL ends the name where one
+      // dialect stores it, is stored whole by another, and is refused by the third as an
+      // outage. A lone surrogate is replaced by every driver, so two names that differ
+      // only in one are stored as one name, and a claim token that differs only in one
+      // holds the claim. A task name and a claim token are held as an identifier is.
+      for (const [what, undurable] of Object.entries(OUTSIDE_THE_DOMAIN)) {
+        const { store, reached } = storeOverRecorder(f)
+        const refusals = await refusalsAt(HELD_PLACES, store, undurable)
+        expect(
+          { what, refusals, sent: reached },
+          'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+        ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
+      }
+    })
+
+    it('refuses a payload that is not a string at every place of one, before anything is sent', async () => {
+      // What is in a payload is its serializer's, and the case of the written list below
+      // holds that. That it is a string is the port's shape. Left to the entries, null was
+      // reported as an outage by two of them and as a RangeError by a third, and a number
+      // was stored. One check of every string place refuses these and a string left out, so
+      // its mutation is owned by the case of the strings left out, below.
+      for (const [what, notAString] of Object.entries(NOT_A_STRING)) {
+        const { store, reached } = storeOverRecorder(f)
+        const refusals = await refusalsAt(PAYLOAD_PLACES, store, notAString)
+        expect({ what, refusals, sent: reached }).toEqual({
+          what,
+          refusals: allRefused(refusals),
+          sent: [],
+        })
+      }
+    })
+
+    it('refuses a string the port requires when it is left out, at every place, and passes one the caller may leave out', async () => {
+      // A place is asked with a value in the cases above. Here it is asked with nothing: a
+      // member is omitted, an argument is undefined, and an options object is left out
+      // whole. What the port's type requires is refused as the caller's mistake before
+      // anything is sent, and never as a TypeError from inside an entry or as a stored
+      // name built from `undefined`. What the type lets a caller leave out is not refused.
+      const answers: Record<string, { refusedAsTheCallersMistake: boolean; sent: boolean }> = {}
+      const expected: typeof answers = {}
+      const asked = [
+        ...PORT_STRING_PLACES.map((place) => ({ ...place, required: !place.mayBeLeftOut })),
+        ...PORT_OBJECT_PLACES.map((place) => ({
+          ...place,
+          required: !place.mayBeLeftOut && place.holdsARequiredString,
+        })),
+      ]
+      for (const { place, required, callWithout } of asked) {
+        const { store, reached } = storeOverRecorder(f)
+        const answer = await callWithout(store).then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+        answers[place] = {
+          refusedAsTheCallersMistake: isPortRefusal(answer),
+          sent: reached.length > 0,
+        }
+        expected[place] = { refusedAsTheCallersMistake: required, sent: !required }
+      }
+      expect(
+        answers,
+        'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
+      ).toEqual(expected)
+      expect(asked.filter(({ required }) => !required).map(({ place }) => place)).toEqual([
+        'spawn[3].idempotencyKey(idempotencyKey)',
+        'spawn[3].headers(headers)',
+        'spawn[3]',
+        'spawn[3].childOf',
+      ])
+    })
+
+    it('leaves a payload to its serializer, at exactly the places that are written here', async () => {
+      // The places the port does not hold as an identifier. The cases above draw their
+      // places from core's table, so a place named there as a payload, or as a durable
+      // string with no width, is asked nothing by them. It has to be written here too,
+      // which makes that choice a second, visible edit.
+      const notAnIdentifier = Object.fromEntries(
+        PORT_STRING_PLACES.filter(({ rule }) => rule !== 'identifier').map(({ place, rule }) => [
+          place,
+          rule,
+        ]),
+      )
+      // First, that the places could be generated at all: a table that names one string at
+      // two arguments folds two places into one, and the written list would not see it.
+      expect(
+        { problems: PORT_STRING_PROBLEMS, notAnIdentifier },
+        'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
+      ).toEqual({ problems: [], notAnIdentifier: NOT_AN_IDENTIFIER })
+      // The counts are written here too. The list above is of what is NOT an identifier,
+      // so a held place that vanished would leave it as it is: these move when one does.
+      expect({
+        places: PORT_STRING_PLACES.length,
+        identifiers: IDENTIFIER_PLACES.length,
+        held: HELD_PLACES.length,
+        payloads: PAYLOAD_PLACES.length,
+        distinct: new Set(PORT_STRING_PLACES.map(({ place }) => place)).size,
+        // The options objects, which the case above asks left out whole. One that vanished
+        // from the generated places would leave that case as green as it was.
+        objects: PORT_OBJECT_PLACES.map(({ place }) => place),
+        objectsThePortRequires: PORT_OBJECT_PLACES.filter(
+          ({ mayBeLeftOut, holdsARequiredString }) => !mayBeLeftOut && holdsARequiredString,
+        ).map(({ place }) => place),
+      }).toEqual({
+        places: 82,
+        identifiers: 72,
+        held: 73,
+        payloads: 8,
+        distinct: 82,
+        objects: ['spawn[3]', 'spawn[3].childOf', 'suspendRun[4]', 'failRollback[5]'],
+        objectsThePortRequires: ['suspendRun[4]', 'failRollback[5]'],
+      })
+      // A payload with a NUL in it is not this check's to refuse: nothing here answers it.
+      const { store } = storeOverRecorder(f)
+      const answers = await refusalsAt(PAYLOAD_PLACES, store, '{"a":"\u0000"}')
+      expect(Object.entries(answers).filter(([, answer]) => answer === REFUSED)).toEqual([])
     })
 
     it('holds the names the engine derives from an identifier to the same width, and names what the caller passed', async () => {
@@ -207,11 +271,10 @@ export function identifierBoundConformance(
             key: `${SAGA_STARTED_PREFIX}${key}`,
             stateJson: '0',
           }),
-        'rollbackTry.key': (s, key) =>
-          s.failRollback('q', 'r', 'c', '{}', null, {
-            key: `${SAGA_TRIES_PREFIX}${key}`,
-            stateJson: '{}',
-          }),
+        // The store builds the attempt record's name from the step, so the step is held to
+        // the room that name leaves, and the refusal names the step the caller passed.
+        'rollback.stepKey': (s, key) =>
+          s.failRollback('q', 'r', 'c', '{}', null, { stepKey: key, errorJson: '{}' }),
       }
       const saga = async (key: string) => {
         const outcomes: Record<string, { refused: boolean; namesIt: boolean; sent: boolean }> = {}
@@ -276,11 +339,32 @@ export function identifierBoundConformance(
           'checkpointName, as a rollback record': { ...fits, namesIt: false },
           'checkpoint.key': refusedNamingIt,
           // `$rollback-tries:` and 240 characters are 256, which the plain width refuses.
-          'rollbackTry.key': refusedNamingIt,
+          'rollback.stepKey': refusedNamingIt,
         },
         plainCheckpoint: fits,
       })
     })
+
+    it('answers an identifier that spells a task state as it answers any other, at every entry of the port', () =>
+      // A state's name is a word a caller may pass as an identifier. The engine reads its
+      // own statements to know what they do, and a caller's string bound into one must
+      // never read as part of it: every entry answers such a word as it answers a word
+      // that spells nothing. It reads and writes, so it has a migrated fixture of its own.
+      withFixture(makeFixture, 'identifier-bound-state-words', async (live) => {
+        // Each place's call is made when it is asked for and awaited before the next, so
+        // over a database they run one at a time, in the table's order.
+        const store = live.store
+        const ordinary = await refusalsAt(IDENTIFIER_PLACES, store, 'spells-nothing')
+        const answers: Record<string, Record<string, string>> = {}
+        for (const word of [...LIVE_STATES, ...TERMINAL_STATES]) {
+          answers[word] = await refusalsAt(IDENTIFIER_PLACES, store, word)
+        }
+        expect(answers).toEqual(
+          Object.fromEntries(Object.keys(answers).map((word) => [word, ordinary])),
+        )
+        expect(Object.keys(answers)).toHaveLength(6)
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
+      }))
 
     it('keeps the longest names that fit, and the names derived from them, exactly as they were passed', () =>
       // The one case that reads and writes, so it has a migrated fixture of its own.
@@ -336,8 +420,8 @@ export function identifierBoundConformance(
         await live.store.fail(queue, run.runId, run.claimToken, CAUSE, null)
         const pass = await claimActivated(live.store, queue, 'w-pass')
         await live.store.failRollback(queue, pass.runId, pass.claimToken, CAUSE, null, {
-          key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-          stateJson: encodeRollbackTry({ tries: 1, errorJson: CAUSE }),
+          stepKey,
+          errorJson: CAUSE,
         })
 
         const [tasks, events, checkpoints] = await live.raw.batch(
@@ -393,7 +477,7 @@ export function identifierBoundConformance(
           readThroughThePort: storedNames,
         })
         expect([...childSpawnKey(spawned.taskId, 'r'.repeat(room))]).toHaveLength(WIDTH)
-        expect(await engineInvariantViolations(live.raw)).toEqual([])
+        expect(await engineHistoryViolations(live.raw)).toEqual([])
       }))
   })
 }

@@ -9,6 +9,7 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
+  firstNamePast,
 } from '@durablerun/core'
 
 /**
@@ -174,8 +175,8 @@ export const cancelNotDue = (task: string, at: string): string => {
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
-const storedBoundedInteger = (col: string, min: number, max: number): string =>
-  `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
+const storedBoundedInteger = (col: string, min: number, max: number, compared = col): string =>
+  `(${storedInteger(col)} AND ${compared} BETWEEN ${min} AND ${max})`
 
 const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
   const separator = bounds.field.indexOf('.')
@@ -199,6 +200,26 @@ export const storedIntegerWithin = (
 ): string => {
   const column = persistedColumn(bounds, alias)
   return storedBoundedInteger(column, bounds.min, bounds.max)
+}
+
+/**
+ * `storedIntegerWithin` for a statement that must not reach its rows through this column.
+ * SQLite reads a bare column's BETWEEN as a range over an index of that column, and with no
+ * statistics it rates a two-sided range above two equalities. So the claim's receipt read
+ * walked every unexpired lease of its queue through `runs_lease` to find the few runs its
+ * token holds. A unary plus keeps a term out of index selection, which is SQLite's
+ * documented use of it. It also takes the column's affinity out of the comparison, and
+ * that changes nothing here: the other two operands are this fragment's own integer
+ * literals, which carry no affinity to apply, and the first conjunct has already required
+ * the stored value to be an integer, so an integer is compared with integers under either
+ * spelling and a value of any other storage class is refused before the comparison counts.
+ */
+export const storedIntegerWithinOffIndex = (
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+  alias?: string,
+): string => {
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max, `+${column}`)
 }
 
 /**
@@ -407,6 +428,17 @@ const namedUnder = (name: string, prefix: string): string =>
   `substr(${name}, 1, ${prefix.length}) = '${prefix}'`
 
 /**
+ * The checkpoints named under `prefix`, as a range of the key: from the prefix itself up
+ * to the first name past it. `alias` names a checkpoints row, and the range is over its
+ * name column, which compares by its bytes here. So the range holds exactly the names
+ * `namedUnder` admits, and the key's second column serves it. A test of each name walks
+ * every checkpoint the task has.
+ */
+const rangeUnder = (alias: string, prefix: `${string}:`): string =>
+  `${alias}.checkpoint_name >= '${prefix}'
+   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`
+
+/**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
  * a rollback's checkpoint is written only once the saga began, and any other only before.
  */
@@ -423,14 +455,6 @@ export const checkpointIsTheEngines = (name: string): string =>
   `(${name} = '${SAGA_PHASE_CHECKPOINT}'
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
 
-/**
- * `name` is a rollback's attempt record, the one name the batch that fails a pass may
- * commit for its caller. Under another name that write would replace the saga's cause,
- * commit a forward step inside the frozen phase, or record a rollback that never ran.
- */
-export const checkpointIsAnAttemptRecord = (name: string): string =>
-  namedUnder(name, SAGA_TRIES_PREFIX)
-
 /** The rollback of the step a saga checkpoint `marker` names has run. */
 const rollbackRan = (marker: string, prefix: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints sr
@@ -442,7 +466,7 @@ const rollbackRan = (marker: string, prefix: string): string =>
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
-             AND ${namedUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND ${rangeUnder('ss', SAGA_STARTED_PREFIX)}
              AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
 
 /**
@@ -459,12 +483,20 @@ export const rollbackOutcome = (task: string): string =>
 
 /**
  * The attempt record of the rollback that halted a saga, the second value
- * `decodeRollbackOutcome` reads. The task-result statement names both values, so neither
- * carries an alias here.
+ * `decodeRollbackOutcome` reads: the one the task's last run wrote. An attempt record is
+ * written only by the batch that fails its run. When that failure had budget left, a pass
+ * followed it and became the task's last run, so the record of an attempt that ended
+ * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
+ * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
+ * read carries no guard. It is one seek into a range of the key, which is empty for a
+ * task with no attempt record, so a guard would change no result of a history the store
+ * can reach and spare no walk, and nothing could hold it. PostgreSQL keeps its guard, so
+ * on rows no history builds the dialects can differ (DESIGN.md §3.10). The task-result
+ * statement names both values, so neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
   `SELECT st.state FROM checkpoints st
      WHERE st.task_id = ${task}.task_id
-       AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
-       AND NOT ${rollbackRan('st', SAGA_TRIES_PREFIX)}
-     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1`
+       AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
+       AND st.owner_run_id = ${task}.last_attempt_run
+     LIMIT 1`

@@ -232,12 +232,44 @@ export class StoreUnavailableError extends Error {
 }
 
 /**
+ * The store answered, and its answer is permanent: the statement broke a constraint,
+ * carried a value its column cannot hold, or is one the server will never accept. The
+ * same statement with the same values fails the same way on every retry, so this is
+ * DELIBERATELY NOT a StoreUnavailableError, whose whole meaning is that waiting helps.
+ *
+ * An executor decides this from the driver's error CODE and never from message text,
+ * and a code it does not know stays a StoreUnavailableError. A deadlock victim is
+ * neither: the executor runs it again. A schema this build does not expect keeps its own
+ * type, SchemaMismatchError, because a migration repairs it.
+ *
+ * The message carries the driver's code and `cause` carries the driver's error. A worker
+ * pass treats this type exactly as it treats an outage (DESIGN.md §3.2), because naming
+ * an error more precisely must not change who pays for it. Task construction alone
+ * carries no runtime authority.
+ */
+export class PermanentStoreError extends Error {
+  override readonly name = 'PermanentStoreError'
+}
+
+/**
  * A durable identity cannot be represented unchanged by every supported
  * store. Callers may classify this as invalid input without conflating it
  * with infrastructure or programmer failures.
  */
 export class InvalidDurableStringError extends TypeError {
   override readonly name = 'InvalidDurableStringError'
+}
+
+/**
+ * A port refused a call for what its caller passed: a name or a key in the engine's
+ * namespace, or options that contradict each other. Nothing was written, and the same
+ * call is refused again. These refusals were bare RangeErrors, and this is one, so a
+ * caller that catches RangeError still catches it. What the class adds is that a host
+ * can tell a caller's mistake from a RangeError of the engine's own, such as a stored
+ * row it cannot read. `isPortRefusal` names the whole family of a port's refusals.
+ */
+export class PortRefusalError extends RangeError {
+  override readonly name = 'PortRefusalError'
 }
 
 /**

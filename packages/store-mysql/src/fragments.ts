@@ -9,6 +9,7 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
+  firstNamePast,
 } from '@durablerun/core'
 
 /**
@@ -447,6 +448,20 @@ const namedUnder = (name: string, prefix: string): string =>
   `substr(${name}, 1, ${prefix.length}) = ${exactly(prefix)}`
 
 /**
+ * The checkpoints named under `prefix`, as a range of the key: from the prefix itself up
+ * to the first name past it. `alias` names a checkpoints row, and the range is always
+ * over its name column and never over a bind. A column compares in its own collation,
+ * which is binary, so the plain literals make the range byte for byte, and it holds
+ * exactly the names `namedUnder` admits. Over a bind they would compare under the
+ * connection's collation. A binary operand, which is what `exactly` gives a bind, would
+ * stop the key from serving the range: measured on 8.4, the cast reads the same rows by
+ * an index lookup on the task alone, which walks every checkpoint the task has.
+ */
+const rangeUnder = (alias: string, prefix: `${string}:`): string =>
+  `${alias}.checkpoint_name >= '${prefix}'
+   AND ${alias}.checkpoint_name < '${firstNamePast(prefix)}'`
+
+/**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
  * a rollback's checkpoint is written only once the saga began, and any other only before.
  */
@@ -464,14 +479,6 @@ export const checkpointIsTheEngines = (name: string): string =>
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
 
 /**
- * `name` is a rollback's attempt record, the one name the batch that fails a pass may
- * commit for its caller. Under another name that write would replace the saga's cause,
- * commit a forward step inside the frozen phase, or record a rollback that never ran.
- */
-export const checkpointIsAnAttemptRecord = (name: string): string =>
-  namedUnder(name, SAGA_TRIES_PREFIX)
-
-/**
  * The rollback of the step a saga checkpoint `marker` names has run. The name is built
  * with CONCAT, because the two-bar operator is OR under this store's fixed sql_mode.
  */
@@ -485,7 +492,7 @@ const rollbackRan = (marker: string, prefix: string): string =>
 export const rollbackPending = (task: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints ss
            WHERE ss.task_id = ${task}.task_id
-             AND ${namedUnder('ss.checkpoint_name', SAGA_STARTED_PREFIX)}
+             AND ${rangeUnder('ss', SAGA_STARTED_PREFIX)}
              AND NOT ${rollbackRan('ss', SAGA_STARTED_PREFIX)})`
 
 /**
@@ -502,12 +509,20 @@ export const rollbackOutcome = (task: string): string =>
 
 /**
  * The attempt record of the rollback that halted a saga, the second value
- * `decodeRollbackOutcome` reads. The task-result statement names both values, so neither
- * carries an alias here.
+ * `decodeRollbackOutcome` reads: the one the task's last run wrote. An attempt record is
+ * written only by the batch that fails its run. When that failure had budget left, a pass
+ * followed it and became the task's last run, so the record of an attempt that ended
+ * nothing is never read as the halt, whatever ended the task afterwards. A run writes at
+ * most one record, and the limit keeps the subquery scalar whatever the rows hold. The
+ * read carries no guard. It is one seek into a range of the key, which is empty for a
+ * task with no attempt record, so a guard would change no result of a history the store
+ * can reach and spare no walk, and nothing could hold it. PostgreSQL keeps its guard, so
+ * on rows no history builds the dialects can differ (DESIGN.md §3.10). The task-result
+ * statement names both values, so neither carries an alias here.
  */
 export const rollbackError = (task: string): string =>
   `SELECT st.state FROM checkpoints st
      WHERE st.task_id = ${task}.task_id
-       AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
-       AND NOT ${rollbackRan('st', SAGA_TRIES_PREFIX)}
-     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1`
+       AND ${rangeUnder('st', SAGA_TRIES_PREFIX)}
+       AND st.owner_run_id = ${task}.last_attempt_run
+     LIMIT 1`

@@ -1,4 +1,5 @@
 import { isFencedBatchBindError } from './fenced-batch.js'
+import type { IdSource } from './primitives.js'
 
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
 export interface ReplacedFailureExpectation {
@@ -85,4 +86,44 @@ export async function attributeReplacedFailure(
     throw error
   }
   throw new Error('expected operation to reject')
+}
+
+const nextMonotoneSerial = (previous: number): number => previous + 1
+
+/**
+ * A deterministic source for routine database tests.
+ *
+ * IDs and tokens have independent monotone counters: an operation that mints
+ * no UUID still receives a fresh provenance token. Zero padding preserves the
+ * ordering contract of UUIDv7 stand-ins once a fixture reaches two digits.
+ */
+export function testIdSource(
+  namespace = 'test',
+  options: { readonly nextTokenSerial?: (previous: number) => number } = {},
+): IdSource {
+  if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
+    throw new Error(
+      `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
+    )
+  }
+  let ids = 0
+  let tokens = 0
+  const proposeTokenSerial = options.nextTokenSerial ?? nextMonotoneSerial
+  const serial = (value: number) => String(value).padStart(6, '0')
+  return {
+    uuidv7: () => `${namespace}-id-${serial(++ids)}`,
+    token: () => {
+      const proposed = proposeTokenSerial(tokens)
+      if (!Number.isSafeInteger(proposed)) {
+        throw new RangeError(`test token serial must be a safe integer: ${proposed}`)
+      }
+      if (proposed <= tokens) {
+        throw new RangeError(
+          `test token serial must strictly increase: proposed ${proposed} after ${tokens}`,
+        )
+      }
+      tokens = proposed
+      return `${namespace}-token-${serial(tokens)}`
+    },
+  }
 }

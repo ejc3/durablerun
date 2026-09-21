@@ -9,8 +9,11 @@ import {
   type StorageCorruptionAttempt,
   type StoreFixture,
   type StoreFixtureOptions,
+  corruptionTarget,
+  nullPayloadAttempt,
   overWidthWrite,
 } from '../src/index.js'
+import { firstInCauseChain, isNumber } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 /** MySQL errors that mean a column's type refused the value, under the strict mode every session sets. */
@@ -21,16 +24,7 @@ const STRUCTURAL_VALUE_ERRNOS = new Set([
   1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
 ])
 
-function mysqlErrno(error: unknown): number | undefined {
-  let current = error
-  for (let depth = 0; depth < 6; depth++) {
-    if (typeof current !== 'object' || current === null) return undefined
-    const candidate = current as { readonly errno?: unknown; readonly cause?: unknown }
-    if (typeof candidate.errno === 'number') return candidate.errno
-    current = candidate.cause
-  }
-  return undefined
-}
+const mysqlErrno = (error: unknown) => firstInCauseChain(error, 'errno', isNumber)
 
 /** A scalar subquery that returns two rows: MySQL refuses it only when it is evaluated. */
 const ER_SUBQUERY_NO_1_ROW = 1242
@@ -38,7 +32,13 @@ const ER_SUBQUERY_NO_1_ROW = 1242
 /** A string longer than its column holds, which strict mode refuses and does not cut. */
 const ER_DATA_TOO_LONG = 1406
 
+/** `Column cannot be null`, which is an error under the strict mode every session sets. */
+const ER_BAD_NULL_ERROR = 1048
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'null') {
+    return nullPayloadAttempt(corruption, (error) => mysqlErrno(error) === ER_BAD_NULL_ERROR)
+  }
   if (corruption.invalidRepresentation === 'over-width') {
     return {
       statements: [overWidthWrite(corruption)],
@@ -48,41 +48,7 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
       },
     }
   }
-  let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
-  let where: string
-  let identityArgs: string[]
-  switch (corruption.table) {
-    case 'tasks':
-      table = 'tasks'
-      where = 'task_id = ?'
-      identityArgs = [corruption.taskId]
-      break
-    case 'runs':
-      table = 'runs'
-      where = 'run_id = ?'
-      identityArgs = [corruption.runId]
-      break
-    case 'checkpoints':
-      table = 'checkpoints'
-      where = 'task_id = ? AND checkpoint_name = ?'
-      identityArgs = [corruption.taskId, corruption.checkpointName]
-      break
-    case 'events':
-      table = 'events'
-      where = 'queue = ? AND event_name = ?'
-      identityArgs = [corruption.queue, corruption.eventName]
-      break
-    case 'waits':
-      table = 'waits'
-      where = 'run_id = ? AND step_name = ?'
-      identityArgs = [corruption.runId, corruption.stepName]
-      break
-    case 'drivers':
-      table = 'drivers'
-      where = 'queue = ? AND driver_id = ?'
-      identityArgs = [corruption.queue, corruption.driverId]
-      break
-  }
+  const { table, where, identityArgs } = corruptionTarget(corruption)
   const accepted = (): never => {
     throw new Error(
       `MySQL accepted invalid ${corruption.invalidRepresentation} storage for ${table}.${corruption.column}`,
@@ -161,24 +127,6 @@ export async function makeMysqlFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
     deadlocks: () => raw.deadlocks,
-    selfRaceDeadlocksExcused: {
-      // Measured on MySQL 8.4. While `runs` holds five rows or fewer, the optimizer runs
-      // the claim's UPDATE as a scan of `runs`, and that one statement holds a lock on every
-      // row of the table, where from six rows up it reaches the claimed rows through the
-      // primary key and locks only those. A claimer already holds the run its locking
-      // read chose, so two claimers each wait for the other's row and InnoDB rolls one
-      // back. With four claimers over four due runs, 17 of 20 runs met victims: one run met
-      // one, two met two, and fourteen met three. In 300 more rounds, run by a review, 61
-      // met none, 36 one, 30 two and 173 three, none met more, and none met an outage. The
-      // executor ran every victim again. No run is claimed twice or lost. A table that
-      // small is a database's first five runs, and every table of this suite. If this
-      // contest ever fails with `outages` that is not empty, a claimer was the victim on
-      // every one of its attempts, and that is this same defect. BUILD.md defers the fix to
-      // PR4.4e, which deletes this entry, the fixture member that holds it, and the special
-      // case that reads it in the surface's final expectation.
-      'claim by distinct claimers, and one more for what they left':
-        'a claim locks every row of a runs table of five rows or fewer',
-    },
     close: opened.close,
   }
 }

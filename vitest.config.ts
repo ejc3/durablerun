@@ -8,11 +8,21 @@ import { parseDialectSelection } from './packages/conformance/test/dialect-selec
 const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
   postgres: [
     'packages/conformance/test/postgres-bootstrap-window.test.ts',
+    'packages/store-postgres/test/deadlocked-read.test.ts',
+    'packages/store-postgres/test/error-typing.test.ts',
+    'packages/store-postgres/test/failed-version.test.ts',
     'packages/store-postgres/test/query-plans.test.ts',
+    'packages/store-postgres/test/racing-migrators.test.ts',
+    'packages/store-postgres/test/round-trips.test.ts',
+    'packages/store-postgres/test/text-collation.test.ts',
+    'packages/store-postgres/test/version-lock-order.test.ts',
   ],
   mysql: [
+    'packages/store-mysql/test/error-typing.test.ts',
+    'packages/store-mysql/test/migration.test.ts',
     'packages/store-mysql/test/real-server.test.ts',
     'packages/store-mysql/test/query-plans.test.ts',
+    'packages/store-mysql/test/round-trips.test.ts',
   ],
 }
 // The selection has one parser, which refuses a misspelled, repeated, or empty list. A

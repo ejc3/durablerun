@@ -68,26 +68,44 @@
 \*  - A saga with nothing to roll back is complete at entry.  The SQL may skip
 \*    the phase for it.
 \*
-\* Ledger.  The quoted labels are the stores' batches, and DESIGN.md S3.10 gives
-\* the same mapping as a table.  A saga's state is checkpoints under reserved
-\* names (core sagas.ts), so no action needed a new kind of statement, and one
-\* new label exists: 'fail-rollback'.  scripts/spec-ledger.py reads Scheduler.tla
-\* only, where 'fail-rollback' is listed and 'set-checkpoint' is excluded, so
-\* nothing checks this block.  Every guard below has an executable twin on every
+\* ---------------------------------------------------------------------------
+\* BATCH-LABEL LEDGER -- machine-checked by scripts/spec-ledger.py, as
+\* ChildTasks.tla's is: every quoted label is a batch some store sends, every
+\* action named is an action of Next below, and every action of Next is mapped
+\* here or listed as having no batch, with the reason.  An entry's layout and
+\* its class are as that block describes them.  DESIGN.md S3.10 gives the
+\* mapping as a table, for the batches a saga changed.  A saga's state is
+\* checkpoints under reserved names (core sagas.ts), so no action needed a new
+\* kind of statement, and one new write label exists: 'fail-rollback'.  The
+\* store counts a rollback's failed attempts itself, from the record it reads
+\* first under 'rollback-tries', a read that maps to no action.  The ledger of
+\* Scheduler.tla lists 'fail-rollback' and excludes 'set-checkpoint' and
+\* 'rollback-tries'.  The script reads no guard.  Every guard below has an
+\* executable twin on every
 \* dialect: the `sagas` conformance surface and the SDK's saga suite.
-\*   'set-checkpoint' of $started:<step> -> StartStep;  of a step -> FinishStep
-\*   'fail' with no retry, or with a retry the budget refuses, in the forward
-\*     phase -> UserTerminal  [cas-fenced]
-\*   'sweep:lost-launch' cap, 'sweep:claim-timeout' at the infra cap -> InfraCap,
-\*     in either phase: it enters the phase from the forward one, and ends the
-\*     task inside it
+\*
+\* Modeled (a label and its condition, its actions, its class):
+\*   'set-checkpoint' of $started:<step> -> StartStep
+\*   'set-checkpoint' of a step -> FinishStep
+\*   'complete' -> Complete  (refused once the task is rolling back)
+\*   'fail' in the forward phase -> UserTerminal  [cas-fenced]  (with no retry,
+\*     or with a retry the budget refuses)
+\*   'sweep:lost-launch' at its cap -> InfraCap
+\*   'sweep:claim-timeout' at the infra cap -> InfraCap  (either sweep, in
+\*     either phase: it enters the phase from the forward one, and ends the
+\*     task inside it)
 \*   'set-checkpoint' of $rollback:<step> -> RunRollback
-\*   'fail-rollback' with a retry -> RollbackRetry;  with none -> RollbackHalts
+\*   'fail-rollback' with a retry -> RollbackRetry
+\*   'fail-rollback' with none -> RollbackHalts
 \*   'fail' with no retry, in the rolling-back phase -> FinishSaga
-\*   'cancel-task', 'sweep:cancel' -> Cancel;  'retry-task' -> Revive
-\* LateMarker and LateEnter exist only for the vacuity probes and map to nothing.
+\*   'cancel-task', 'sweep:cancel' -> Cancel
+\*   'retry-task' -> Revive
+\* No batch (action -- reason):
+\*   LateMarker / LateEnter -- exist only for the vacuity probes
 \* The model's CancelMidRollback, ReviveAfterSaga, and InfraCapRollsBack are
 \* decided: "halts", "refused", and TRUE.
+\* ---------------------------------------------------------------------------
+
 EXTENDS Naturals
 
 CONSTANTS

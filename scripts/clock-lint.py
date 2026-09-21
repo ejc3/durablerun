@@ -38,39 +38,79 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# SQL is case-insensitive, so this pattern must be. The first version was not,
-# and its alternatives were inconsistently cased on top of that — SQLite
-# builtins lowercase-only, NOW()/CURRENT_TIMESTAMP uppercase-only — so each
-# alternative caught exactly one of the two spellings a developer writes.
-# `UNIXEPOCH()` and `now()` both sailed through, and `now()` is the canonical
-# Postgres spelling, so the lint was blind to the most common clock call in a
-# dialect this engine has promised to support.
+# The spellings have ONE definition: `CLOCK_FUNCTIONS` and `CLOCK_SPELLING` in the tree
+# rules, where a registered mutation deletes each entry, six function names aside, which the
+# keyword arm refuses as well and the registry lists with that reason. This lint kept a
+# second list by hand, and a name added to one and not the other shipped in whichever scan
+# lacked it. It reads the list of the tree it audits, so the two scans cannot differ, and it
+# refuses to run on a list it cannot read in full, because a pattern built from nothing, or
+# from an arm it cannot write out, matches nothing.
 #
-# Function names must appear AS CALLS. Matching them as bare words instead
-# turned prose and identifiers into violations — batch labels like
-# `expire-lease-now` and comments reading "not a second NOW" all matched,
-# which is the failure that trains people to weaken a checker until it is
-# quiet. The bare-keyword forms (CURRENT_TIMESTAMP, CURRENT_TIME) take no
-# parentheses in any dialect and so stay word-matched.
-CALLS = (
-    "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
-    "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
-    "|localtime|localtimestamp|current_timestamp|curdate|curtime|unix_timestamp"
-)
-CLOCKS = re.compile(
-    rf"\b(?:{CALLS})\s*\("
-    # Bare keyword forms: legal with no parentheses in at least one dialect,
-    # so the call-shaped pattern above would miss them. MySQL accepts
-    # LOCALTIME and UTC_TIMESTAMP bare; Postgres accepts LOCALTIMESTAMP.
-    r"|\b(?:current_timestamp|current_time|current_date"
-    r"|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b"
-    # SQLite reads a date function with no argument as the current time.
-    r"|\b(?:datetime|date|time)\s*\(\s*\)"
-    # The literal 'now' reads the clock whatever function takes it: SQLite's
-    # timediff('now', …), PostgreSQL's 'now' cast to a timestamp.
-    r"|'\s*now\s*'",
-    re.IGNORECASE,
-)
+# What the list's shape holds, each learned from a lint that was blind without it. SQL is
+# case-insensitive, so the pattern is. Function names must appear AS CALLS: matched as bare
+# words, batch labels like `expire-lease-now` and comments reading "not a second NOW" were
+# violations, which is the failure that trains people to weaken a checker until it is
+# quiet. The bare keywords take no parentheses in some dialect and stay word-matched: MySQL
+# accepts LOCALTIME and UTC_TIMESTAMP bare, PostgreSQL accepts LOCALTIMESTAMP, and every
+# dialect accepts CURRENT_TIMESTAMP. `now()` is PostgreSQL's usual spelling and `UNIXEPOCH()`
+# SQLite's, and the first pattern here missed both by their case. SQLite reads a date function
+# with no argument as the current time, and the literal 'now' reads the clock whatever function
+# takes it: SQLite's timediff('now', ...), PostgreSQL's 'now' cast to a timestamp.
+TREE_RULES = "packages/core/src/sql-tree.ts"
+# The one arm this lint cannot apply. The tree refuses the bare word in a fragment, where
+# nothing may name the test clock's row. A store's admin statements write that row by name,
+# so here FAKE_NOW_READ below refuses a read of it and admits the write.
+TREE_ONLY_ARM = r"\bfake_now_ms\b"
+
+
+def list_lines(text: str, *, opening: str, closing: str, shape: str, what: str) -> list[str]:
+    """What each line of one list holds.
+
+    A list that is missing, empty, or has a line of another shape is refused. Four strings
+    in a row are easy to swap, so they are passed by name.
+    """
+    found = re.search(rf"^{opening}\n(.*?)^{closing}\n", text, re.S | re.M)
+    lines = [] if found is None else found.group(1).splitlines()
+    held = [re.fullmatch(shape, line) for line in lines]
+    if not held or None in held:
+        raise ValueError(f"{TREE_RULES}: {what}")
+    return [line.group(1) for line in held]
+
+
+def tree_clock_spellings(text: str) -> str:
+    """The tree rule's clock spellings as one pattern, read from the source that defines them."""
+    functions = list_lines(
+        text,
+        opening=r"const CLOCK_FUNCTIONS = \[",
+        closing=r"\]",
+        shape=r"  '([a-z_]+)',",
+        what="CLOCK_FUNCTIONS is not a list of one quoted name to a line",
+    )
+    arms = [
+        arm.replace("${CLOCK_FUNCTIONS.join('|')}", "|".join(functions))
+        for arm in list_lines(
+            text,
+            opening=r"export const CLOCK_SPELLING = new RegExp\(\n  \[",
+            closing=r"  \]\.join\('\|'\),",
+            shape=r"    String\.raw`(.*)`,",
+            what="CLOCK_SPELLING is not a list of one String.raw arm to a line",
+        )
+    ]
+    # Whatever else an arm interpolates is text this lint cannot write out. Left in, Python
+    # reads it as a dollar sign and literal braces, the arm matches nothing, and every
+    # spelling it holds passes.
+    unread = [arm for arm in arms if "${" in arm]
+    if unread:
+        raise ValueError(f"{TREE_RULES}: an arm of CLOCK_SPELLING interpolates what this lint cannot read: {unread[0]}")
+    if arms.count(TREE_ONLY_ARM) != 1:
+        raise ValueError(f"{TREE_RULES}: CLOCK_SPELLING no longer holds the arm {TREE_ONLY_ARM}")
+    return "|".join(arm for arm in arms if arm != TREE_ONLY_ARM)
+
+
+try:
+    CLOCKS = re.compile(tree_clock_spellings((root / TREE_RULES).read_text()), re.IGNORECASE)
+except (OSError, ValueError, re.error) as error:
+    sys.exit(f"clock-lint.py: cannot read the clock spellings: {error}")
 META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"
 FAKE_NOW = r"'fake_now_ms'"
 FAKE_NOW_PREDICATE = (

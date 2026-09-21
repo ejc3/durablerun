@@ -258,11 +258,13 @@
 \*     legal fresh heartbeat; after fence loss it is zero-row)
 \*   'complete' -> CompleteRun  [cas-fenced]  (replay finds state #
 \*     'running': zero-row)
-\*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
+\*   'fail' -> FailRunWithRetry / FailRunTerminal  [cas-fenced]  (two arms of
+\*     one batch, Terminal at the budget; replay zero-row; the successor
 \*     insert keys on the CAS stamp, so no double successor)
-\*   'fail-rollback' -> FailRun  [cas-fenced]  (the same transition of the run,
-\*     taken by a failed rollback of a task that is rolling back; what it means
-\*     for the saga is Sagas.tla's RollbackRetry and RollbackHalts)
+\*   'fail-rollback' -> FailRunWithRetry / FailRunTerminal  [cas-fenced]  (the
+\*     same transition of the run, either arm, taken by a failed rollback of a
+\*     task that is rolling back; what it means for the saga is Sagas.tla's
+\*     RollbackRetry and RollbackHalts)
 \*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
 \*   'defer-launch' -> DeferLaunch  [cas-fenced]  (fenced on the claim receipt:
 \*     a replay finds the run parked, or activated, and matches nothing)
@@ -304,6 +306,10 @@
 \*   'run-task' [read] -- the task of the run a terminal batch is about to end,
 \*     read only when this store did not activate the run; a run's task never
 \*     changes, and the batch names that task's completion event (ChildTasks.tla)
+\*   'rollback-tries' [read] -- the last attempt record of the rollback that a
+\*     'fail-rollback' batch is about to count, one row of the checkpoints key;
+\*     no transition, and that batch's claim fence keeps the count current
+\*     (Sagas.tla's RollbackRetry and RollbackHalts)
 \*   'task-done-state' [read] -- a task as a child await sees it: its queue,
 \*     its outcome, and the stamp its row carries. Read only by
 \*     a child await that neither registered nor hit, to say why (ChildTasks.tla's

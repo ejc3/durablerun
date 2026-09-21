@@ -1,11 +1,13 @@
 import {
   AggregateFunctionNode,
-  AliasNode,
   type AliasedExpression,
+  AliasNode,
   AndNode,
   BinaryOperationNode,
+  CaseNode,
   ColumnNode,
   ColumnUpdateNode,
+  createQueryId,
   type DatabaseConnection,
   DeleteQueryNode,
   DummyDriver,
@@ -19,8 +21,8 @@ import {
   type OperationNode,
   OperationNodeTransformer,
   OperatorNode,
-  OrNode,
   OrderByItemNode,
+  OrNode,
   ParensNode,
   PrimitiveValueListNode,
   type QueryCompiler,
@@ -43,12 +45,12 @@ import {
   ValuesNode,
   WhenNode,
   WhereNode,
-  createQueryId,
 } from 'kysely'
+import type { EventName } from './child-tasks.js'
 import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { SqlStatement } from './primitives.js'
+import type { SqlEventLockCoordinates, SqlStatement } from './primitives.js'
 import { children, someNode } from './tree-walk.js'
 import {
   LIVE_STATES,
@@ -196,7 +198,18 @@ export function requireDefinedBinds(statement: string, binds: unknown, path = 'b
 export interface DefinedStatement {
   readonly name: string
   readonly tree: StatementTree
+  /**
+   * The event this statement is serialized on, or null (DESIGN.md §3.4 rule 2). A
+   * statement that records an event or registers a wait names the event here, from its
+   * own binds, and the batch that admits the statement holds that event's lock. So the
+   * lock is declared where the statement is defined, once for every dialect, and a store
+   * has no line that takes it and none to leave out.
+   */
+  readonly eventLock: SqlEventLockCoordinates | null
 }
+
+/** The event a statement definition names as its lock. The name is one core minted. */
+type EventLockDeclaration = { readonly queue: string; readonly eventName: EventName }
 
 const definedStatements = new TrustedWeakSet<object>()
 
@@ -207,6 +220,7 @@ const definedStatements = new TrustedWeakSet<object>()
 export function defineStatement<Binds extends Readonly<Record<string, unknown>>>(
   name: string,
   build: (binds: Binds) => { toOperationNode(): StatementTree },
+  eventLock: ((binds: Binds) => EventLockDeclaration) | null = null,
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
     requireDefinedBinds(name, binds)
@@ -220,7 +234,14 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
       placements = outer
     }
     requirePlacedFragments(name, binds, placed)
-    const statement = Object.freeze({ name, tree })
+    // An untyped caller's name that is no `EventName` reaches the batch as a coordinate
+    // that is not a string, which the batch refuses.
+    const named = eventLock?.(binds) ?? null
+    const lock =
+      named === null
+        ? null
+        : Object.freeze({ queue: named.queue, eventName: named.eventName?.value })
+    const statement = Object.freeze({ name, tree, eventLock: lock })
     weakSetAdd(definedStatements, statement)
     return statement
   }
@@ -362,7 +383,9 @@ export function fragmentBinds(sql: string): number {
  * Validate a fragment's text for its role and split it at its binds and clock tokens.
  * The text is split without reading SQL beyond plain single-quoted literals, so anything
  * that would hide a token from that reading is refused: a comment, a dollar-quoted or
- * prefixed string, and a token inside a literal.
+ * prefixed string, and a token inside a literal. A semicolon is not refused, so a fragment
+ * can hold a second statement. Inside a transaction the batch's mode still governs it, and
+ * an executor that sends a read core built alone sees that the server takes one statement.
  */
 function parseFragment(sql: string, role: RawRole): ParsedFragment {
   if (sql.includes(STAMP)) {
@@ -1128,16 +1151,25 @@ const CLOCK_FUNCTIONS = [
   'curdate',
   'curtime',
   'unix_timestamp',
+  'age',
 ]
 
 /**
- * A database clock spelled out in raw SQL text. This is a spelling list, the one
- * `scripts/clock-lint.py` applies to store sources and one spelling more, because raw text
- * is the one place a tree cannot be read. A date function with no argument is on it, because SQLite reads
- * `datetime()` as the current time, and so is the literal 'now', whatever function takes it.
- * The test clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read
- * the clock by a door no function names. The only clock a tree may hold is the clock token, and
- * a clock called as a function node is outside the grammar, which lists no clock.
+ * A database clock spelled out in raw SQL text. This is a spelling list, because raw text
+ * is the one place a tree cannot be read, and it is the one definition of the spellings:
+ * `scripts/clock-lint.py` reads these two lists from this file and applies them to store
+ * sources, all but the one arm named below. Each line here is one entry or one arm, which
+ * is the shape that lint reads and the shape a registered mutation deletes.
+ *
+ * A date function with no argument is on it, because SQLite reads `datetime()` as the
+ * current time, and so is the literal 'now', whatever function takes it. PostgreSQL's `age`
+ * is on it whatever it is given: with one argument it measures from the current date, no
+ * statement calls it with two, and telling them apart would mean reading SQL. The test
+ * clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read the clock
+ * by a door no function names. That arm is the tree's alone, because a store's admin
+ * statements write the row by name, so the lint refuses a read of it with a pattern of its
+ * own. The only clock a tree may hold is the clock token, and a clock called as a function
+ * node is outside the grammar, which lists no clock.
  */
 export const CLOCK_SPELLING = new RegExp(
   [
@@ -1269,10 +1301,34 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
 const STATE_COLUMNS = ['state', 'status']
 const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true
 
-/** Whether a comparison holds a state column on its left and a bound value on its right, the way the builder writes one. */
+/**
+ * Whether an operand holds a bound value: the value itself, or parentheses, a list, a cast, a
+ * call, a CASE or a fragment around it, found the way `namesColumn` finds a column. The
+ * builder binds every member of a list of plain values. A subquery is its own statement, so a
+ * bind in its WHERE stands beside no state and is not read. What it selects is the value the
+ * state is compared with, so its selections are read.
+ */
+function holdsBind(node: OperationNode): boolean {
+  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)
+  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)
+}
+
+/** Whether one operand of a test holds a bound value and the other names a state column. */
+function bindsState(bound: OperationNode, named: OperationNode): boolean {
+  if (!holdsBind(bound)) return false
+  return STATE_COLUMNS.some((column) => namesColumn(named, column))
+}
+
+/**
+ * Whether a test compares a state column with a bound value, whichever side each stands on.
+ * The builder writes the column first unless it is told otherwise, and `? = state` reads the
+ * same to a partial index as `state = ?`.
+ */
 function comparesStateWithBind(node: BinaryOperationNode): boolean {
-  if (!isBind(node.rightOperand)) return false
-  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))
+  return (
+    bindsState(node.rightOperand, node.leftOperand) ||
+    bindsState(node.leftOperand, node.rightOperand)
+  )
 }
 
 /** The one set operation the grammar lists. UNION, INTERSECT and EXCEPT compare whole rows, which no read here needs. */
@@ -1288,11 +1344,11 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
  * the root, and no schema-qualified table. It lists one set operation, UNION ALL, and
  * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
  * write, so a set operation there is a form nobody considered. A read may not compare a
- * state or status column with a bound value, because a partial index is matched by the
- * literal. A transition finds its row by key, so it may. An INSERT takes one row of values or one
- * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
- * what is built from nodes. A store fragment is opaque text, reviewed through the
- * generated corpus.
+ * state or status column with a bound value, wherever it stands below the right side of the
+ * test, because a partial index is matched by the literal. A transition finds its row by key, so
+ * it may. An INSERT takes one row of values or one SELECT, with a conflict clause that names
+ * its columns (`insertShapeProblem`). It binds what is built from nodes. A store fragment is
+ * opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode, reading = false): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
@@ -1370,6 +1426,95 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
     return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
   }
   return undefined
+}
+
+/**
+ * Every value a statement gives `tasks.state`: what an UPDATE's SET list or an INSERT's
+ * conflict arm assigns it, and what an INSERT's row gives it.
+ */
+function taskStateValues(tree: OperationNode): OperationNode[] {
+  if (statementTable(tree) !== 'tasks') return []
+  const assigned = assignedUpdates(tree)
+    .filter((update) => assignedColumn(update) === 'state')
+    .map((update) => update.value)
+  const inserted = InsertQueryNode.is(tree) ? insertedValue(tree, 'state') : undefined
+  return [...assigned, inserted].filter((value) => value !== undefined)
+}
+
+/**
+ * Why the state a statement gives a task cannot be read, or null when it can. A batch
+ * reads that state to know whether the statement ends the task (`writesTerminalTaskState`),
+ * and it reads nodes: a state's name is a value node, and the copy of a run's state is a
+ * subquery built from nodes. A fragment is text, and text can spell a state in more ways
+ * than a reader of text closes, so a fragment anywhere in that value is refused, whatever
+ * it holds.
+ */
+export function taskStateProblem(tree: OperationNode): string | null {
+  return taskStateValues(tree).some((value) => someNode(value, (node) => RawNode.is(node)))
+    ? "gives tasks.state a value that holds a SQL fragment: a batch reads the state a statement gives a task to know whether the statement ends it, and it cannot read text, so name the state as a value (`taskStateValue`) or copy a run's from nodes (`stampedRunState`)"
+    : null
+}
+
+/**
+ * The nodes below a value that can be what its column receives. A CASE gives one of its
+ * results and never the condition that chose it. A subquery gives what it selects, from a
+ * table or from another subquery, and never what it filters, joins on, groups or orders
+ * by. Anything else is read whole, as an operand of what the column receives.
+ */
+function receivedNodes(value: OperationNode): OperationNode[] {
+  if (CaseNode.is(value)) {
+    const results = [...(value.when ?? []).map((when) => when.result), value.else]
+    return results.filter((result) => result !== undefined).flatMap(receivedNodes)
+  }
+  if (SelectQueryNode.is(value)) {
+    const sources = [
+      ...(value.selections ?? []),
+      ...(value.from?.froms ?? []),
+      ...(value.joins ?? []).map((join) => join.table),
+    ]
+    return sources.flatMap(receivedNodes)
+  }
+  return [value, ...children(value).flatMap(receivedNodes)]
+}
+
+/**
+ * Whether a statement can end a task, as far as its tree says: it writes `tasks`, and the
+ * value it gives `state` names a terminal state where the column can receive it
+ * (`receivedNodes`), so one arm of a CASE counts and its condition does not. A run id is a
+ * caller's string, and in the filter of a copied state it chooses a row and names nothing.
+ * A batch that holds such a statement owes the task's parent its completion event
+ * (DESIGN.md §3.2). A value that produces a terminal state and names none is not seen:
+ * the copy of a run's state, which every shipped statement takes from a run this batch
+ * left live.
+ */
+export function writesTerminalTaskState(tree: OperationNode): boolean {
+  return taskStateValues(tree).some((value) =>
+    receivedNodes(value).some((node) => isTerminalState(boundValue(node))),
+  )
+}
+
+/**
+ * Why a statement is not serialized on the event it writes, or null when it is or when it
+ * writes none (DESIGN.md §3.4 rule 2). An INSERT into `events` records an event, and one
+ * into `waits` registers a wait on one. Either must run under that event's lock, or an
+ * emit and an await can each miss what the other wrote. So the statement's definition
+ * names a lock, and the lock's event is the one the row names. The name is read as the
+ * plain value every shipped statement binds: a name the tree cannot read is refused.
+ */
+export function eventLockProblem(
+  tree: OperationNode,
+  lock: SqlEventLockCoordinates | null,
+): string | null {
+  const written = statementTable(tree)
+  if (!InsertQueryNode.is(tree) || (written !== 'events' && written !== 'waits')) return null
+  const eventName = boundValue(insertedValue(tree, 'event_name'))
+  if (lock === null) {
+    return `inserts into ${written} and its definition names no event lock: a statement that records an event or registers a wait is serialized on that event, so defineStatement takes the lock it names (§3.4 rule 2)`
+  }
+  if (eventName !== lock.eventName) {
+    return `inserts into ${written} under the lock of event '${lock.eventName}', which is not the event_name it writes as a plain value: the lock a statement names is the lock of the event its row names (§3.4 rule 2)`
+  }
+  return null
 }
 
 /**

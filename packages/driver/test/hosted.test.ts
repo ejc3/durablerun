@@ -1,4 +1,18 @@
-import { type Clock, type SchedulerStore, parseTaskValueJson, systemClock } from '@durablerun/core'
+import {
+  ChildAwaitRefusedError,
+  type Clock,
+  IDENTIFIER_CHARACTERS,
+  InvalidDurableStringError,
+  PermanentStoreError,
+  PortRefusalError,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  type SchedulerStore,
+  StoreUnavailableError,
+  parseTaskValueJson,
+  systemClock,
+} from '@durablerun/core'
+import { withStoreOverrides } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -50,15 +64,17 @@ async function fixture(
     onWorkAvailable?: () => void | Promise<void>
     scheduleWake?: WakeScheduler
     recordStoreCalls?: string[]
+    wrapStore?: (store: SchedulerStore) => SchedulerStore
   } = {},
 ) {
   const { raw, admin, ids, close } = await openTestDb({ idNamespace: seed })
   await admin.setFakeNowEpochMs(1_000_000)
   const baseStore = new LibsqlSchedulerStore(raw, ids)
-  const store =
+  const recorded =
     options.recordStoreCalls === undefined
       ? baseStore
       : recordingStore(baseStore, options.recordStoreCalls)
+  const store = options.wrapStore === undefined ? recorded : options.wrapStore(recorded)
   const base = {
     store,
     ids,
@@ -75,6 +91,59 @@ async function fixture(
     ...(options.scheduleWake === undefined ? {} : { scheduleWake: options.scheduleWake }),
   })
   return { raw, admin, store: baseStore, router, close }
+}
+
+function inspect(f: Awaited<ReturnType<typeof fixture>>, taskId: string): Promise<Response> {
+  return f.router.handle(request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'))
+}
+
+type HostedFixture = Awaited<ReturnType<typeof fixture>>
+
+/** The status and the body of an inspect answer. */
+async function inspected(f: HostedFixture, taskId: string) {
+  const response = await inspect(f, taskId)
+  return { status: response.status, body: await responseBody(response) }
+}
+
+/** Claim the queue's one claimable run, and activate it. */
+async function claimed(f: HostedFixture, worker: string) {
+  const [run] = await f.store.claim(Q, worker, { leaseSeconds: 60, limit: 1 })
+  if (run === undefined) throw new Error(`nothing to claim for ${worker}`)
+  await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+  return run
+}
+
+const SAGA_CAUSE = '{"name":"CardDeclined"}'
+
+/** A task whose one registered step started, and whose failure placed a rollback pass. */
+async function rollingBack(f: HostedFixture) {
+  const spawned = await f.store.spawn(Q, 'saga', '{}')
+  const forward = await claimed(f, 'forward')
+  await f.store.setCheckpoint(
+    Q,
+    forward.taskId,
+    forward.runId,
+    forward.claimToken,
+    `${SAGA_STARTED_PREFIX}charge`,
+    '1',
+    60,
+  )
+  await expect(
+    f.store.fail(Q, forward.runId, forward.claimToken, SAGA_CAUSE, null),
+  ).resolves.toEqual({ rollingBack: true })
+  return { taskId: spawned.taskId, pass: await claimed(f, 'pass') }
+}
+
+/** The pass fails its rollback for good, and `errorJson` is the failure its attempt record holds. */
+function haltRollback(
+  f: HostedFixture,
+  pass: { runId: string; claimToken: string },
+  errorJson: string,
+) {
+  return f.store.failRollback(Q, pass.runId, pass.claimToken, SAGA_CAUSE, null, {
+    stepKey: 'charge',
+    errorJson,
+  })
 }
 
 describe('hosted-alpha Web Request router', () => {
@@ -116,6 +185,44 @@ describe('hosted-alpha Web Request router', () => {
     } finally {
       f.close()
     }
+  })
+
+  describe('a store failure, by kind', () => {
+    const enqueueOver = async (seed: string, failure: Error) => {
+      const f = await fixture(seed, {
+        wrapStore: (store) => withStoreOverrides(store, { spawn: () => Promise.reject(failure) }),
+      })
+      try {
+        const response = await f.router.handle(
+          request('/api/tasks', 'POST', JSON.stringify({ taskName: 'job', params: {} })),
+        )
+        return { status: response.status, body: await responseBody(response) }
+      } finally {
+        f.close()
+      }
+    }
+
+    it('answers 500 for a permanent store error, which no retry repairs, and never 400', async () => {
+      // The store's answer, not a refusal of what the caller sent, so it is no 400. And a 503
+      // would invite a producer to retry a request the store refuses the same way each time.
+      expect(
+        await enqueueOver(
+          'hosted-permanent-store-error',
+          new PermanentStoreError(
+            'batch(spawn) failed permanently (SQLSTATE 23505): duplicate key value',
+          ),
+        ),
+      ).toEqual({ status: 500, body: { error: 'internal_error' } })
+    })
+
+    it('answers 503 for a store outage, which a retry can cure', async () => {
+      expect(
+        await enqueueOver(
+          'hosted-store-outage',
+          new StoreUnavailableError('batch(spawn) failed: connection refused'),
+        ),
+      ).toEqual({ status: 503, body: { error: 'service_unavailable' } })
+    })
   })
 
   it('returns 503 for a failed rearm without rolling back a completed task', async () => {
@@ -190,9 +297,7 @@ describe('hosted-alpha Web Request router', () => {
         workerOutcome: { kind: 'completed' },
       })
 
-      const inspected = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(spawned.taskId)}`, 'GET'),
-      )
+      const inspected = await inspect(f, spawned.taskId)
       expect(inspected.status).toBe(200)
       await expect(responseBody(inspected)).resolves.toEqual({
         taskId: spawned.taskId,
@@ -213,20 +318,189 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  it('answers a task id no store keeps as invalid, and never as another task', async () => {
+    const f = await fixture('hosted-inspect-undurable-id')
+    try {
+      const spawned = await f.store.spawn(Q, 'real-task', '{}')
+      // The store refuses a task id with a NUL before it reads anything, as it refuses one
+      // past the width, and the route answers the refusal as the caller's mistake. With a
+      // real task present, its id followed by a NUL names no task.
+      expect({
+        exact: (await inspected(f, spawned.taskId)).status,
+        withANul: await inspected(f, `${spawned.taskId}\u0000anything-after`),
+        pastTheWidth: await inspected(f, 'x'.repeat(256)),
+        absent: await inspected(f, 'no-such-task'),
+      }).toEqual({
+        exact: 200,
+        withANul: { status: 400, body: { error: 'invalid_request' } },
+        pastTheWidth: { status: 400, body: { error: 'invalid_request' } },
+        absent: { status: 404, body: { error: 'task_not_found' } },
+      })
+    } finally {
+      await f.close()
+    }
+  })
+
   it('returns the stored failure reason when inspecting a cancelled task', async () => {
     const f = await fixture('hosted-inspect-cancelled')
     try {
       const spawned = await f.store.spawn(Q, 'job', '{}')
       await expect(f.store.cancelTask(Q, spawned.taskId)).resolves.toBe(true)
 
-      const inspected = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(spawned.taskId)}`, 'GET'),
-      )
+      const inspected = await inspect(f, spawned.taskId)
       expect(inspected.status).toBe(200)
       await expect(responseBody(inspected)).resolves.toEqual({
         taskId: spawned.taskId,
         state: 'cancelled',
         failure: { name: '$Cancelled' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('shows how the saga ended when inspecting a task that rolled back', async () => {
+    const f = await fixture('hosted-inspect-rollback')
+    try {
+      const rolledBack = await rollingBack(f)
+      await f.store.setCheckpoint(
+        Q,
+        rolledBack.taskId,
+        rolledBack.pass.runId,
+        rolledBack.pass.claimToken,
+        `${SAGA_ROLLBACK_PREFIX}charge`,
+        'null',
+        60,
+      )
+      await f.store.fail(Q, rolledBack.pass.runId, rolledBack.pass.claimToken, SAGA_CAUSE, null)
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, '{"name":"RefundDown"}')
+      expect({
+        rolledBack: await inspected(f, rolledBack.taskId),
+        halted: await inspected(f, halted.taskId),
+      }).toEqual({
+        rolledBack: {
+          status: 200,
+          body: {
+            taskId: rolledBack.taskId,
+            state: 'failed',
+            failure: { name: 'CardDeclined' },
+            rollback: { outcome: 'complete' },
+          },
+        },
+        halted: {
+          status: 200,
+          body: {
+            taskId: halted.taskId,
+            state: 'failed',
+            failure: { name: 'CardDeclined' },
+            rollback: { outcome: 'failed', error: { name: 'RefundDown' } },
+          },
+        },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  // A store caller that is not the SDK can store text that is no JSON, and no value of a task
+  // that ended ever changes. A route that throws on such a value answers 500 for that task
+  // for good, so it answers with the text, under a key of its own.
+  it('answers with the text of a rollback error that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-error-text')
+    try {
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, 'refund service down')
+      expect(await inspected(f, halted.taskId)).toEqual({
+        status: 200,
+        body: {
+          taskId: halted.taskId,
+          state: 'failed',
+          failure: { name: 'CardDeclined' },
+          rollback: { outcome: 'failed', errorText: 'refund service down' },
+        },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers with the text of a failure reason that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-failure-text')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const run = await claimed(f, 'worker')
+      await f.store.fail(Q, run.runId, run.claimToken, 'disk full', null)
+      expect(await inspected(f, spawned.taskId)).toEqual({
+        status: 200,
+        body: { taskId: spawned.taskId, state: 'failed', failureText: 'disk full' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers with the text of a result that is not JSON', async () => {
+    const f = await fixture('hosted-inspect-result-text')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const run = await claimed(f, 'worker')
+      await f.store.complete(Q, run.runId, run.claimToken, 'done, mostly')
+      expect(await inspected(f, spawned.taskId)).toEqual({
+        status: 200,
+        body: { taskId: spawned.taskId, state: 'completed', resultText: 'done, mostly' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  // A value can parse and still not serialize: JSON nested deeper than the serializer can
+  // walk. The answer is then serialized with every stored value as its text, which always
+  // serializes, so no value the port accepted makes the route throw.
+  it('answers with the text of stored values that parse and cannot be serialized', async () => {
+    const f = await fixture('hosted-inspect-unserializable')
+    try {
+      const deep = `${'['.repeat(100_000)}${']'.repeat(100_000)}`
+      const completed = await f.store.spawn(Q, 'job', '{}')
+      const first = await claimed(f, 'first')
+      await f.store.complete(Q, first.runId, first.claimToken, deep)
+      const failed = await f.store.spawn(Q, 'job', '{}')
+      const second = await claimed(f, 'second')
+      await f.store.fail(Q, second.runId, second.claimToken, deep, null)
+      const halted = await rollingBack(f)
+      await haltRollback(f, halted.pass, deep)
+      // The text is 200 KB, so an answer is compared with a label where it holds the text whole.
+      const told = async (taskId: string): Promise<unknown> =>
+        JSON.parse(JSON.stringify(await inspected(f, taskId)), (_key, value) =>
+          value === deep ? 'the stored text, whole' : value,
+        )
+      expect({
+        result: await told(completed.taskId),
+        failure: await told(failed.taskId),
+        error: await told(halted.taskId),
+      }).toEqual({
+        result: {
+          status: 200,
+          body: {
+            taskId: completed.taskId,
+            state: 'completed',
+            resultText: 'the stored text, whole',
+          },
+        },
+        failure: {
+          status: 200,
+          body: { taskId: failed.taskId, state: 'failed', failureText: 'the stored text, whole' },
+        },
+        error: {
+          status: 200,
+          body: {
+            taskId: halted.taskId,
+            state: 'failed',
+            failureText: SAGA_CAUSE,
+            rollback: { outcome: 'failed', errorText: 'the stored text, whole' },
+          },
+        },
       })
     } finally {
       f.close()
@@ -304,6 +578,68 @@ describe('hosted-alpha Web Request router', () => {
         { status: response.status, body: await responseBody(response), claimed: tick.claimed },
         'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
       ).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers each kind of port refusal with 400 through one mapping, and any other error with 500', async () => {
+    const thrown: Record<string, Error> = {
+      'a reserved name or key': new PortRefusalError("spawn idempotencyKey '$k' is reserved"),
+      'a string no store can keep': new InvalidDurableStringError('taskId holds a NUL'),
+      'a child that can never end the await': new ChildAwaitRefusedError('child', 'no-such-task'),
+      'a RangeError of the engine': new RangeError('task t has unknown state'),
+      'any other error': new TypeError('a defect'),
+    }
+    const f = await fixture('hosted-port-refusals', {
+      wrapStore: (store) =>
+        withStoreOverrides(store, {
+          getTaskResult: async (_queue: string, taskId: string) => {
+            throw thrown[taskId] ?? new Error(`no error is registered for ${taskId}`)
+          },
+        }),
+    })
+    try {
+      const answers: Record<string, unknown> = {}
+      for (const kind of Object.keys(thrown)) {
+        const response = await f.router.handle(
+          request(`/api/inspect?taskId=${encodeURIComponent(kind)}`, 'GET'),
+        )
+        answers[kind] = { status: response.status, body: await responseBody(response) }
+      }
+      const refused = { status: 400, body: { error: 'invalid_request' } }
+      const fault = { status: 500, body: { error: 'internal_error' } }
+      expect(answers).toEqual({
+        'a reserved name or key': refused,
+        'a string no store can keep': refused,
+        'a child that can never end the await': refused,
+        'a RangeError of the engine': fault,
+        'any other error': fault,
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('answers a key wider than a durable identifier with 400 through the same mapping, and enqueues nothing', async () => {
+    const f = await fixture('hosted-wide-key')
+    try {
+      const response = await f.router.handle(
+        request(
+          '/api/tasks',
+          'POST',
+          JSON.stringify({
+            taskName: 'job',
+            idempotencyKey: 'k'.repeat(IDENTIFIER_CHARACTERS + 1),
+          }),
+        ),
+      )
+      const tick = await f.router.runTick()
+      expect({
+        status: response.status,
+        body: await responseBody(response),
+        claimed: tick.claimed,
+      }).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
     } finally {
       f.close()
     }
@@ -389,9 +725,7 @@ describe('hosted-alpha Web Request router', () => {
         claimed: 1,
         workerOutcome: { kind: 'suspended' },
       })
-      const sleeping = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
-      )
+      const sleeping = await inspect(f, taskId)
       await expect(responseBody(sleeping)).resolves.toEqual({ taskId, state: 'sleeping' })
 
       const emitted = await f.router.handle(
@@ -404,9 +738,7 @@ describe('hosted-alpha Web Request router', () => {
         workerOutcome: { kind: 'completed' },
       })
 
-      const completed = await f.router.handle(
-        request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, 'GET'),
-      )
+      const completed = await inspect(f, taskId)
       await expect(responseBody(completed)).resolves.toEqual({
         taskId,
         state: 'completed',

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { fuzzBatchSeeds, fuzzProcessBatches } from './fuzz-shard-runner.js'
+import { RARE_STAT_FLOOR_STEPS, fuzzBatchSeeds, fuzzProcessBatches } from './fuzz-shard-runner.js'
 
 interface HostedFuzzProcess {
   readonly shard: number
@@ -398,6 +398,14 @@ describe('fuzz shard batch plan', () => {
           }).length,
         )
         expect(process.steps).toBe(150)
+        // The halt count holds its floor only from this many walked steps in a batch, and
+        // the common floors only from twenty walks. A batch under either switches the halt
+        // floor off in the nightly, and nothing else would say so.
+        expect(process.walks).toBeGreaterThanOrEqual(20)
+        expect(RARE_STAT_FLOOR_STEPS.haltsNamed).toBeDefined()
+        expect(process.walks * process.steps).toBeGreaterThanOrEqual(
+          RARE_STAT_FLOOR_STEPS.haltsNamed ?? 0,
+        )
       }
     }
   })

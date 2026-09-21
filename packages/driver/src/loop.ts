@@ -5,7 +5,7 @@ import {
   type Launcher,
   type SchedulerStore,
   durationToMs,
-  requireIdentifiersFit,
+  requirePortString,
   requirePositiveInt,
 } from '@durablerun/core'
 import { type TickOptions, type TickResult, tick } from './tick.js'
@@ -44,9 +44,10 @@ export interface DriverLoopOptions extends TickOptions {
    */
   wakeFloorMs?: number
   /**
-   * Abandon a hanging launcher call after this long (default 10s). Pass
-   * null for bounded-slot SYNC launchers that legitimately run the worker
-   * inline (§3.9) — their calls are supposed to take as long as the run.
+   * Stop waiting for a launcher call after this long (default 10s): the launch counts as
+   * failed, and the signal the call was handed fires so the transport can let go of what
+   * the call holds (§3.9). Pass null for a bounded-slot SYNC launcher that runs the worker
+   * inline (§3.9): its calls are supposed to take as long as the run.
    */
   launchTimeoutSeconds?: number | null
   /** Registry liveness row cadence (default 15s; ttl = 2x cadence). */
@@ -147,10 +148,12 @@ export class DriverLoop {
     if (typeof this.driverId !== 'string' || this.driverId.length === 0) {
       throw new RangeError('driverId must be a non-empty string')
     }
-    // Every store refuses a queue or a driver id past the width of a durable identifier.
-    // A refused tick reads as an outage and a refused beat is swallowed, so a loop
-    // configured with one would run forever and do nothing.
-    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })
+    // Every store refuses a queue or a driver id that is past the width of a durable
+    // identifier or outside the durable string domain. A refused tick reads as an outage
+    // and a refused beat is swallowed, so a loop configured with one would run forever and
+    // do nothing. The port's own check of the two names is asked here, once.
+    requirePortString('queue', opts.queue)
+    requirePortString('driverId', this.driverId)
     // A hanging transport call must never stall the loop: race it against
     // the clock and hand a timeout to the reconciler as a failed launch.
     this.launcher =
@@ -318,13 +321,24 @@ export class DriverLoop {
   }
 }
 
-/** Race launch() against the clock; a hang becomes a failed launch. */
-function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number): Launcher {
+/**
+ * Race launch() against the clock. A call that outlives the deadline becomes a failed
+ * launch, and the signal the call was handed fires. The wrapper hands on what its own caller
+ * hands it: the wrapped launcher hears one signal, which fires when the caller's does or when
+ * the deadline passes, whichever comes first. Exported for the case that reads what the
+ * wrapped launcher is handed. The package's entry point does not export it.
+ */
+export function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number): Launcher {
   return {
-    async launch(invocation) {
+    async launch(invocation, options) {
       const settled = new AbortController()
+      const gaveUp = new AbortController()
+      const signal =
+        options?.signal === undefined
+          ? gaveUp.signal
+          : AbortSignal.any([gaveUp.signal, options.signal])
       const timedOut = Symbol('timeout')
-      const launch = launcher.launch(invocation).finally(() => settled.abort())
+      const launch = launcher.launch(invocation, { signal }).finally(() => settled.abort())
       const outcome = await Promise.race([
         launch,
         clock.sleep(timeoutMs, settled.signal).then(() => timedOut as unknown),
@@ -334,9 +348,12 @@ function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number):
         // launch that interrupted it (.finally adds resolution hops). The
         // abort flag is the truth: if the launch settled, honor it.
         if (settled.signal.aborted) return launch
-        // The transport call stays pending in the background — its promise
-        // is abandoned, never awaited again. The run recovers through the
+        // Nobody is waiting any more. The abort lets the transport let go of what the
+        // call holds, and nothing the call answers from here on is read. The outcome is
+        // the failed launch a call that never settles has always had: the worker may
+        // hold the launch, only the lease can say, and the run recovers through the
         // normal lost-launch path.
+        gaveUp.abort()
         return LaunchOutcome.launchFailed()
       }
       return outcome as LaunchOutcome

@@ -1,4 +1,5 @@
 import {
+  PermanentStoreError,
   RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
@@ -10,6 +11,8 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -19,6 +22,7 @@ import {
   Pool,
   type PoolClient,
   type PoolConfig,
+  type QueryConfig,
   type QueryResult,
 } from 'pg'
 import { compilePostgresPlaceholders } from './placeholders.js'
@@ -38,6 +42,20 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
   '42P01', // undefined_table
   '42P07', // duplicate_table/relation
 ])
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. The same batch fails the same way on every retry. The schema
+ * mismatch states above are read first, because a migration repairs those and they keep
+ * their own type.
+ *
+ * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
+ * serialization failure, and a deadlock victim, which the executor runs again before it
+ * reports one), 53 insufficient resources, 57 operator intervention, 58 system error, and
+ * any class this list does not name.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 type PoolPort = Pick<Pool, 'connect' | 'end'>
 
@@ -149,7 +167,72 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
   }
 }
 
-async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
+/**
+ * One migrator at a time, and the second one waits. This lock conflicts with itself and
+ * with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
+ * holding nothing, and when the first has committed it loses to that sentinel. Without it
+ * the second blocks on the first one's uncommitted sentinel while it holds its own
+ * row-exclusive lock on meta, and a version that then locks the table deadlocks with it,
+ * which PostgreSQL ends only after its deadlock timeout. A read does not conflict with this
+ * lock, so it stops no statement's clock read. A version that locks meta itself, as version
+ * 7 does, stops every statement from its own lock until it commits.
+ *
+ * It is a lock on the version table, so only a batch that runs once that table exists can
+ * name it: every version's batch, and not the bootstrap. The released build sent this same
+ * statement as the first of each version's batch, so a migrator of either build waits for
+ * the other's.
+ */
+const MIGRATION_LOCK_SQL = 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE'
+
+/**
+ * A write whose label begins with `migrate:` is a migration write, and every one but the
+ * bootstrap has to name the migration lock in its control. The label is read here only to
+ * REFUSE: the lock a batch runs under is the one its control names. The lock was a
+ * statement of the batch once, which no wrapper could drop. A control can be dropped, by a
+ * wrapper that rebuilds it from a mode, and the batch would then run with no lock on meta,
+ * where a second migrator deadlocks with a version that locks the table. The bootstrap names
+ * no lock, because the lock lives on the table it creates.
+ */
+function refuseMigrationWriteWithoutItsLock(
+  label: string,
+  mode: SqlBatchMode,
+  lock: SqlTransactionLock | undefined,
+): void {
+  const needsTheLock =
+    mode === 'write' && label.startsWith('migrate:') && label !== 'migrate:bootstrap'
+  if (needsTheLock && lock?.kind !== 'migration') {
+    throw new TypeError(
+      `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
+    )
+  }
+}
+
+type LockAcquisition = (client: PoolClient) => Promise<void>
+
+/**
+ * How a lock is taken, decided before a connection is: a lock of a kind this executor does
+ * not implement is refused with nothing sent. A later build of core can add a kind. Taken
+ * for a kind this executor knows, the batch would run under the wrong lock, and ignored it
+ * would run under none.
+ */
+function transactionLockAcquisition(lock: SqlTransactionLock): LockAcquisition {
+  switch (lock.kind) {
+    case 'event':
+    case 'claim':
+      return (client) => acquireTransactionLock(client, lock)
+    case 'migration':
+      return async (client) => {
+        await client.query(MIGRATION_LOCK_SQL)
+      }
+    default:
+      return refuseUnknownLockKind(lock)
+  }
+}
+
+async function acquireTransactionLock(
+  client: PoolClient,
+  lock: Exclude<SqlTransactionLock, { readonly kind: 'migration' }>,
+): Promise<void> {
   if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {
     // A caller's event takes the lock every build has taken for it: a row of
     // `event_locks`, inserted when it is missing and then locked. A process of an older
@@ -209,8 +292,9 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
   )
 }
 
-// A read batch is one REPEATABLE READ snapshot. The canonical schema-version read is the
-// exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
+// A read batch is one REPEATABLE READ snapshot, unless it is one read the executor knows
+// to be a read, which is sent alone (`sentAlone`). The canonical schema-version read is
+// the other exception. PostgreSQL resolves a name against the newest catalog, and REPEATABLE READ
 // takes its snapshot before the statement does that, so the read could see a concurrent
 // bootstrap's meta table and not the version row committed with it. READ COMMITTED takes
 // the execution snapshot after the lookup, and one statement needs no snapshot held
@@ -218,6 +302,53 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
 // REPEATABLE READ, and in none of 1800 under READ COMMITTED.
 const BEGIN_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'
+
+/**
+ * One statement for the extended query protocol: parse, bind, execute and sync, sent in one
+ * flush, so it costs the round trip the simple protocol costs. The server refuses text
+ * that holds more than one statement there. The driver's types do not name the option.
+ */
+function oneStatement(
+  text: string,
+  values: readonly unknown[],
+): QueryConfig & { readonly queryMode: 'extended' } {
+  return { text, values: [...values], queryMode: 'extended' }
+}
+
+/**
+ * Whether a batch is sent as its one statement alone, outside a transaction block, where
+ * PostgreSQL runs it in a transaction of its own, in one round trip where a read batch's
+ * transaction cost three.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar. How a statement's text begins shows nothing: a text that begins with SELECT can
+ * call `nextval`, and the simple query protocol runs `SELECT 1; DELETE ...` whole. A read
+ * sent as text therefore keeps the read-only transaction, where the server refuses every
+ * write. The schema-version read is text, so it keeps its transaction and the READ
+ * COMMITTED it needs.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, because a read sent alone goes through the extended
+ * protocol (`oneStatement`), which takes one statement. A fragment that CALLS a function
+ * that writes is refused by nothing once the read goes alone. No read of the stores calls
+ * one.
+ *
+ * What the transaction gave such a read still holds: one statement reads through one
+ * snapshot, its subqueries included, at any isolation level. It runs at the session's
+ * default level, which belongs to whoever owns the pool.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * its result is refused, which the executor learns only after the server has run the
+ * statement, and a statement such as LOCK TABLE needs the block.
+ */
+function sentAlone(statements: readonly SqlStatement[], mode: SqlBatchMode): boolean {
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return isTreeBuiltRead(statement)
+}
 
 function isSchemaVersionRead(
   label: string,
@@ -270,6 +401,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
+    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (SQLSTATE ${error.code}): ${error.message}`,
+        { cause: error },
+      )
+    }
   }
 
   const state =
@@ -280,10 +417,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over node-postgres. Every batch owns one checked-out client and
- * one transaction, so statements are atomic, ordered, and observe earlier
- * statements from the same batch. Read batches use a repeatable-read,
- * read-only snapshot; write batches use PostgreSQL's read-committed default.
+ * SqlExecutor over node-postgres. Every batch owns one checked-out client. A batch of
+ * more than one statement owns one transaction, so its statements are atomic, ordered,
+ * and observe earlier statements from the same batch: a read batch in a repeatable-read,
+ * read-only snapshot, a write batch at PostgreSQL's read-committed default. One read
+ * that the executor knows to be a read is sent alone, because one statement reads one
+ * snapshot by itself (`sentAlone`).
  */
 export class PgExecutor implements SqlExecutor {
   private closePromise: Promise<void> | null = null
@@ -319,10 +458,15 @@ export class PgExecutor implements SqlExecutor {
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
-    if (prepared.length === 0) return []
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
+    // Both refusals come before a connection is taken, and before an empty batch is answered.
+    refuseMigrationWriteWithoutItsLock(label, mode, transactionLock)
+    const acquireLock =
+      transactionLock === undefined ? undefined : transactionLockAcquisition(transactionLock)
+    if (prepared.length === 0) return []
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    const alone = sentAlone(statements, mode)
 
     let client: PoolClient
     try {
@@ -347,14 +491,14 @@ export class PgExecutor implements SqlExecutor {
         let transactionStarted = false
         let activeStatementIndex: number | null = null
         try {
-          await client.query(
-            mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
-          )
-          transactionStarted = true
-
-          if (transactionLock !== undefined) {
-            await acquireTransactionLock(client, transactionLock)
+          if (!alone) {
+            await client.query(
+              mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
+            )
+            transactionStarted = true
           }
+
+          if (acquireLock !== undefined) await acquireLock(client)
 
           const results: SqlResult[] = []
           for (const [statementIndex, statement] of prepared.entries()) {
@@ -366,14 +510,20 @@ export class PgExecutor implements SqlExecutor {
               continue
             }
             activeStatementIndex = statementIndex
-            const result = await client.query<Record<string, unknown>>(
-              statement.sql,
-              statement.args,
-            )
+            // A read sent alone goes through the extended protocol, which takes one
+            // statement and refuses a second whatever the text holds. The simple protocol,
+            // which the driver uses for a statement with no bind, runs every statement of
+            // its text, and a read core built can hold a store's fragment that core reads
+            // for clocks and comments only.
+            const result = alone
+              ? await client.query<Record<string, unknown>>(
+                  oneStatement(statement.sql, statement.args),
+                )
+              : await client.query<Record<string, unknown>>(statement.sql, statement.args)
             activeStatementIndex = null
             results.push(normalizeResult(result))
           }
-          await client.query('COMMIT')
+          if (transactionStarted) await client.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {
@@ -391,13 +541,13 @@ export class PgExecutor implements SqlExecutor {
           // PostgreSQL ends a deadlock by aborting one transaction. That batch committed
           // nothing, so running it again is a first delivery, and the other transaction
           // has its locks by now. Reported as an outage, a finished run would be left for
-          // the sweep to charge an infrastructure retry. Only a write batch is run again:
-          // a read batch takes no row lock, so a deadlock there is not this engine's lock
-          // order. It is run again at once, because PostgreSQL chose the victim only
-          // after `deadlock_timeout`, and a store source has no timer to wait on.
+          // the sweep to charge an infrastructure retry. A read batch is run again like a
+          // write: it takes no row lock, and it still takes table locks, so it loses a
+          // deadlock to anything that takes stronger ones, as a schema version does. The
+          // batch is run again at once, because PostgreSQL chose the victim only after
+          // `deadlock_timeout`, and a store source has no timer to wait on.
           if (isDeadlockVictim(error)) this.deadlockVictims += 1
           const runAgain =
-            mode !== 'read' &&
             attempt < DEADLOCK_VICTIM_ATTEMPTS &&
             releaseError === undefined &&
             clientError === undefined &&

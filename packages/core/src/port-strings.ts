@@ -1,0 +1,391 @@
+import { InvalidDurableStringError } from './errors.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
+import type { SchedulerStore } from './ports.js'
+import { requireDurableString, requireIdentifiersFit } from './validate.js'
+
+const {
+  ArrayIsArray: isArray,
+  ObjectCreate: createObject,
+  ObjectDefineProperty: defineProperty,
+  ObjectFreeze: freeze,
+  ObjectHasOwn: hasOwn,
+  ObjectGetPrototypeOf: getPrototypeOf,
+  ObjectKeys: objectKeys,
+  PromiseReject: rejected,
+  ReflectApply: apply,
+  ReflectGet: reflectGet,
+  TypeError: TrustedTypeError,
+} = TASK_INTRINSICS
+
+/**
+ * Every string a caller passes the port, by the name the caller knows it by, and what the
+ * port holds it to before any statement is sent (DESIGN.md §3.4 rule 10).
+ *
+ * - `identifier`: a string a store indexes. It is held to the durable string domain, the
+ *   strings every store keeps exactly as they were passed, and to the width of a durable
+ *   identifier.
+ * - `durable`: a string a store keeps and does not index, so its length is not bounded.
+ *   It is held to the domain alone. A task name is the one such string.
+ *
+ * A claim token is an identifier. One dialect indexes it whole, and an index row has a
+ * size limit, so a token is held to the width the narrowest dialect sets for every
+ * indexed string. It is held at every place that takes one, so the table says one thing
+ * about a token: `claim` refuses one past the width, so no row holds one, and a longer
+ * token at any other entry could match nothing. A token that a store changed would be
+ * held by every token that changes to the same string, which is why the domain matters
+ * most here.
+ * - `payload`: JSON text. A payload that is passed is held to being a string, and what is
+ *   in the string is its serializer's: this check leaves that alone. A value that is not a
+ *   string there is refused as one is where an identifier belongs, and a payload that is
+ *   left out is refused as any string the port requires is.
+ * - `map`: a map of strings, which is a spawn's headers. The whole map is its serializer's,
+ *   the strings in it too, and this check leaves it alone. It is named so that the table is
+ *   whole: a value is left unheld because someone wrote that down here, never because
+ *   nobody listed it.
+ */
+export const PORT_STRING_RULES = freeze({
+  queue: 'identifier',
+  taskId: 'identifier',
+  runId: 'identifier',
+  driverId: 'identifier',
+  childTaskId: 'identifier',
+  idempotencyKey: 'identifier',
+  eventName: 'identifier',
+  stepName: 'identifier',
+  checkpointName: 'identifier',
+  'checkpoint.key': 'identifier',
+  'rollback.stepKey': 'identifier',
+  'childOf.parentQueue': 'identifier',
+  'childOf.parentTaskId': 'identifier',
+  'childOf.runId': 'identifier',
+  'childOf.replayKey': 'identifier',
+  claimToken: 'identifier',
+  'childOf.claimToken': 'identifier',
+  taskName: 'durable',
+  paramsJson: 'payload',
+  resultJson: 'payload',
+  failureJson: 'payload',
+  stateJson: 'payload',
+  'checkpoint.stateJson': 'payload',
+  'rollback.errorJson': 'payload',
+  payloadJson: 'payload',
+  headers: 'map',
+} as const)
+
+export type PortStringName = keyof typeof PORT_STRING_RULES
+export type PortStringRule = (typeof PORT_STRING_RULES)[PortStringName]
+
+/** The names the rules hold as `Rule`. */
+type NamesHeldAs<Rule extends PortStringRule> = {
+  [Name in PortStringName]: (typeof PORT_STRING_RULES)[Name] extends Rule ? Name : never
+}[PortStringName]
+
+/**
+ * The name of a map of strings, and the name of one string. Neither fits where the other
+ * belongs: nothing holds a map, so a string named as one would be held to nothing.
+ */
+type MapName = NamesHeldAs<'map'>
+type StringName = Exclude<PortStringName, MapName>
+export type PortMethod = keyof SchedulerStore
+
+/**
+ * Whether a string type is one its caller chooses. A union of literals is not: the caller
+ * picks among the engine's words, and the entry that reads it refuses any other. Every
+ * other string type is, a branded string and a template literal string among them, because
+ * neither is a list of words. A record keyed by a list of words requires each word, and a
+ * record keyed by any other string type requires nothing, which is the test.
+ */
+type CallersString<T extends string> = Record<never, never> extends Record<T, 1> ? true : false
+
+/** Whether a value of this type can carry a string its caller chose. */
+type CarriesStrings<T> = T extends string
+  ? CallersString<T>
+  : T extends object
+    ? string extends keyof T
+      ? true
+      : { [Key in keyof T]-?: CarriesStrings<NonNullable<T[Key]>> }[keyof T]
+    : false
+
+/**
+ * How the table marks a value the caller may leave out: an optional argument, or an
+ * optional member of an options object. What is not marked the port requires.
+ */
+export type MayBeLeftOut<Spec> = { readonly '?': Spec }
+
+/** Whether the port's type lets the caller leave the argument or the member at `Key` out. */
+type MayLeaveOut<T, Key extends keyof T> = T extends Record<Key, unknown> ? false : true
+
+/**
+ * What the table has to say about the argument or the member at `Key`: null when it
+ * carries no string, and otherwise its names, marked when the caller may leave it out. The
+ * mark is computed from the port's type, so a mark the type does not have, and a mark the
+ * type has that the table lacks, each stop the build.
+ */
+type NamedAt<T, Key extends keyof T> = true extends CarriesStrings<NonNullable<T[Key]>>
+  ? true extends MayLeaveOut<T, Key>
+    ? MayBeLeftOut<Named<NonNullable<T[Key]>>>
+    : Named<NonNullable<T[Key]>>
+  : null
+
+/**
+ * What the table has to say about one value of a call: the name of a string, the names
+ * of the strings inside an object, or null for a value that carries none.
+ */
+type Named<T> = true extends CarriesStrings<T>
+  ? T extends string
+    ? StringName
+    : T extends object
+      ? string extends keyof T
+        ? MapName
+        : {
+            readonly [Key in keyof T as true extends CarriesStrings<NonNullable<T[Key]>>
+              ? Key
+              : never]-?: NamedAt<T, Key>
+          }
+      : never
+  : null
+
+type NamedArguments<Arguments extends readonly unknown[]> = {
+  readonly [Index in keyof Arguments]-?: NamedAt<Arguments, Index>
+}
+
+/**
+ * The shape the table is held to: every method of the port, and for each one, every
+ * argument in order. It is computed from `SchedulerStore`, so a method the port gains, a
+ * string argument a method gains, and a string inside an options object each stop the
+ * build until the table names them.
+ */
+export type PortStringsOf<Port> = {
+  readonly [Method in keyof Port]: Port[Method] extends (...args: infer Arguments) => unknown
+    ? NamedArguments<Arguments>
+    : never
+}
+
+export type PortStrings = PortStringsOf<SchedulerStore>
+
+/** Freeze a part of the table, and every array and object under it. */
+function frozenThroughout<Part>(part: Part): Part {
+  if (typeof part !== 'object' || part === null) return part
+  const keys = objectKeys(part)
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]
+    if (key !== undefined) frozenThroughout(reflectGet(part, key))
+  }
+  return freeze(part)
+}
+
+/**
+ * Where each named string enters the port: for every method, its arguments in order. A
+ * value under `'?'` is one the caller may leave out. Every other the port requires.
+ *
+ * It is frozen throughout, its inner arrays and its marks too. The table is on core's main
+ * entry, and a caller that could write null over a name would switch the check off at that
+ * place for every store in the process.
+ */
+export const PORT_STRINGS = frozenThroughout({
+  spawn: [
+    'queue',
+    'taskName',
+    'paramsJson',
+    {
+      '?': {
+        idempotencyKey: { '?': 'idempotencyKey' },
+        childOf: {
+          '?': {
+            parentQueue: 'childOf.parentQueue',
+            parentTaskId: 'childOf.parentTaskId',
+            runId: 'childOf.runId',
+            claimToken: 'childOf.claimToken',
+            replayKey: 'childOf.replayKey',
+          },
+        },
+        headers: { '?': 'headers' },
+      },
+    },
+  ],
+  claim: ['queue', 'claimToken', null],
+  activate: ['queue', 'runId', 'claimToken', null],
+  claimedTaskName: ['queue', 'runId', 'claimToken', null],
+  deferLaunch: ['queue', 'runId', 'claimToken', null, null],
+  heartbeat: ['queue', 'runId', 'claimToken', null],
+  reschedule: ['queue', 'runId', 'claimToken', null],
+  complete: ['queue', 'runId', 'claimToken', 'resultJson'],
+  suspendRun: [
+    'queue',
+    'runId',
+    'claimToken',
+    null,
+    { key: 'checkpoint.key', stateJson: 'checkpoint.stateJson' },
+  ],
+  fail: ['queue', 'runId', 'claimToken', 'failureJson', null],
+  failRollback: [
+    'queue',
+    'runId',
+    'claimToken',
+    'failureJson',
+    null,
+    { stepKey: 'rollback.stepKey', errorJson: 'rollback.errorJson' },
+  ],
+  sweep: ['queue', null],
+  expireLeaseNow: ['queue', 'runId', 'claimToken'],
+  getCheckpoints: ['queue', 'taskId', null],
+  setCheckpoint: ['queue', 'taskId', 'runId', 'claimToken', 'checkpointName', 'stateJson', null],
+  emitEvent: ['queue', 'eventName', 'payloadJson'],
+  awaitEvent: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'eventName', null],
+  awaitTaskDone: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'childTaskId', null],
+  getTaskResult: ['queue', 'taskId'],
+  nextWakeAtEpochMs: ['queue'],
+  driverHeartbeat: ['queue', 'driverId', null],
+  cancelTask: ['queue', 'taskId'],
+  retryTask: ['queue', 'taskId'],
+} as const satisfies PortStrings)
+
+/** The table as the check walks it, without the port's types. */
+type NamedStrings = PortStringName | null | { readonly [property: string]: NamedStrings }
+
+/**
+ * Hold one named value to its rule. A string place holds a string, whatever its rule, so
+ * that is asked first and once: a value that was left out, null, and every other value
+ * that is not a string are refused there, and the refusal says which. Only a string is then
+ * held to its rule's domain and width. A map of strings is its serializer's.
+ */
+export function requirePortString(name: PortStringName, raw: unknown): void {
+  const rule = PORT_STRING_RULES[name]
+  if (rule === 'map') return
+  // Left to an entry, a string that was left out became a TypeError from a bind or a stored
+  // key that ends in the word undefined, a payload of null was reported as an outage, and a
+  // payload that was a number was stored.
+  if (typeof raw !== 'string') {
+    const what = raw === undefined ? 'was left out, and the port requires it' : 'must be a string'
+    throw new InvalidDurableStringError(`${name} ${what}`)
+  }
+  // What is in a payload is its serializer's.
+  if (rule === 'payload') return
+  requireDurableString(name, raw)
+  if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })
+}
+
+/** `where` is the place in the call, as a refusal shows it: `spawn[3].childOf`. */
+function requireNamed(named: NamedStrings | undefined, value: unknown, where: string): void {
+  if (named === null || named === undefined) return
+  if (typeof named !== 'string' && hasOwn(named, '?')) {
+    // What the port's type lets a caller leave out is held only when it was passed.
+    if (value === undefined) return
+    requireNamed(named['?'], value, where)
+    return
+  }
+  if (typeof named === 'string') {
+    // Everything else the port requires, a payload too: whether a string is there is the
+    // port's shape and not the payload's domain. The one check of a string place refuses
+    // a string that was left out, because a value that is not there is not a string.
+    requirePortString(named, value)
+    return
+  }
+  // An options object. One that is passed is an object: null, an array and every other
+  // value are refused. Read as an object such a value has no member, so whatever may be
+  // left out would seem to have been, and the entry would go on as if `{}` had been passed.
+  if (value !== undefined && (typeof value !== 'object' || value === null || isArray(value))) {
+    throw new InvalidDurableStringError(`${where} must be an object`)
+  }
+  // One the port requires that was left out has every string in it left out.
+  const properties = objectKeys(named)
+  for (let index = 0; index < properties.length; index++) {
+    const property = properties[index]
+    if (property === undefined) continue
+    const member = value === undefined ? undefined : reflectGet(value, property)
+    requireNamed(named[property], member, `${where}.${property}`)
+  }
+}
+
+/**
+ * The one check of the strings a port call carries: every string the table names is held
+ * to its rule, in the order of the arguments, before the entry runs, a string the port
+ * requires is refused when it was left out, and so is a value that is not an object where
+ * an options object belongs. The refusal is `InvalidDurableStringError`, and it names what
+ * the caller passed or left out.
+ */
+export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
+  const named: readonly NamedStrings[] = PORT_STRINGS[method]
+  for (let index = 0; index < named.length; index++) {
+    const spec = named[index]
+    // Only an options object shows its place in a refusal, so only one has it written out.
+    const where = typeof spec === 'object' && spec !== null ? `${method}[${index}]` : ''
+    requireNamed(spec, args[index], where)
+  }
+}
+
+/** Every method the table names, which is every method of the port. */
+export const PORT_METHODS: readonly PortMethod[] = freeze(objectKeys(PORT_STRINGS) as PortMethod[])
+
+/**
+ * The descriptor of a checked entry: a getter, no setter, and it cannot be defined again.
+ * It is built on an object with no prototype, so it says what is written here and nothing
+ * that `Object.prototype` holds while a store is constructed. A literal inherits from
+ * there, and a store built while `configurable` read true there could have its check
+ * defined away.
+ */
+function checkedEntry(checked: unknown): PropertyDescriptor {
+  const descriptor = createObject(null) as PropertyDescriptor
+  descriptor.configurable = false
+  descriptor.enumerable = false
+  descriptor.get = () => checked
+  return descriptor
+}
+
+/**
+ * What every dialect's store extends, and the only place the port's strings are checked.
+ *
+ * The constructor puts `requirePortStrings` in front of every method the table names, as
+ * an accessor of the instance that cannot be assigned, defined again, or replaced by a
+ * class field. So a dialect's
+ * entry holds nothing and cannot forget to: it is reached only through the check. A
+ * dialect inherits the check by extending this, and a method the port gains is checked
+ * once the table names its strings, which the table's type makes it do.
+ *
+ * A refusal is a rejected promise, as it was when each entry checked for itself, and a
+ * call that passes returns the entry's own promise, so the check adds no turn of the
+ * event loop to a call.
+ */
+export abstract class HeldPort {
+  private declare readonly heldPortBrand: undefined
+
+  constructor() {
+    // An indexed loop over a frozen array. A `for...of` would ask the array iterator as it
+    // is when a store is constructed, and a store built while that answered nothing would
+    // hold no entry and say nothing.
+    for (let index = 0; index < PORT_METHODS.length; index++) {
+      const method = PORT_METHODS[index]
+      if (method === undefined) continue
+      const entry: unknown = reflectGet(this, method)
+      if (typeof entry !== 'function') {
+        throw new TrustedTypeError(
+          `a store that extends HeldPort must define ${method} as a method`,
+        )
+      }
+      const checked = (...args: unknown[]): unknown => {
+        try {
+          requirePortStrings(method, args)
+        } catch (error) {
+          return rejected(error)
+        }
+        // The entry is looked up when it is called, on the prototype chain and so past
+        // this property, and never captured: a method patched onto the class after this
+        // store was constructed, as a test double is, is reached, with the check in front.
+        const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)
+        if (typeof called !== 'function') {
+          return rejected(new TrustedTypeError(`the store no longer defines ${method}`))
+        }
+        return apply(called as (...entryArgs: unknown[]) => unknown, this, args)
+      }
+      // An accessor with a getter and no setter, which cannot be defined again. A class
+      // field that would replace an entry, an assignment, and a redefinition each throw,
+      // where a property that could be defined again let a field replace the check in
+      // silence. A proxy over a store may still answer the method with its own function:
+      // only a data property that cannot be written binds a proxy to its value.
+      defineProperty(this, method, checkedEntry(checked))
+    }
+  }
+}
+
+/** A store whose strings are held: what a dialect hands the conformance suite. */
+export type HeldSchedulerStore = HeldPort & SchedulerStore

@@ -1,13 +1,19 @@
 import { EventEmitter } from 'node:events'
 import {
+  FencedBatch,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   SchemaNotInitializedError,
+  type SqlTransactionLock,
   StoreUnavailableError,
+  prepareRead,
+  refusalStateRead,
 } from '@durablerun/core'
 import { DatabaseError, type FieldDef, type Pool, type QueryResult } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PgExecutor } from '../src/executor.js'
 import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
+import { TREE_DIALECT } from '../src/tree.js'
 
 const EMPTY_RESULT: QueryResult<Record<string, unknown>> = {
   command: '',
@@ -46,6 +52,8 @@ function databaseError(code: string, message = 'database rejected query'): Datab
 interface QueryCall {
   text: string
   args: unknown[] | undefined
+  /** Set when the statement was sent as a config object that names a protocol. */
+  queryMode?: string
 }
 
 class FakeClient extends EventEmitter {
@@ -61,8 +69,18 @@ class FakeClient extends EventEmitter {
     super()
   }
 
-  async query(text: string, args?: unknown[]): Promise<QueryResult<Record<string, unknown>>> {
-    this.calls.push({ text, args })
+  /** A pg client takes a text with its values, or one config object, as a read sent alone is. */
+  async query(
+    sent: string | { text: string; values?: unknown[]; queryMode?: string },
+    values?: unknown[],
+  ): Promise<QueryResult<Record<string, unknown>>> {
+    const text = typeof sent === 'string' ? sent : sent.text
+    const args = typeof sent === 'string' ? values : sent.values
+    this.calls.push(
+      typeof sent === 'string' || sent.queryMode === undefined
+        ? { text, args }
+        : { text, args, queryMode: sent.queryMode },
+    )
     return this.respond(text, args)
   }
 
@@ -94,6 +112,21 @@ class FakePool {
 function executor(pool: FakePool): PgExecutor {
   return PgExecutor.fromPool(pool as unknown as Pool)
 }
+
+const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+  refusalStateRead(binds),
+)
+
+/** Reads as core's read path builds them, the one kind of statement an executor knows for a read. */
+function readsFromCore(...names: string[]): FencedBatch {
+  const batch = new FencedBatch('reads', 'seed', { now: 'CLOCK', tree: TREE_DIALECT })
+  for (const name of names) batch.readPrepared(name, REFUSAL_STATE, { runId: name })
+  return batch
+}
+
+/** What was sent, with each read that core built named for what it is. */
+const namingReads = (sent: readonly string[]) =>
+  sent.map((sql) => (sql.startsWith('select "state" from "runs"') ? 'a read core built' : sql))
 
 describe('PgExecutor transactions', () => {
   it('runs a write batch sequentially on one checked-out client', async () => {
@@ -136,6 +169,52 @@ describe('PgExecutor transactions', () => {
       'COMMIT',
     ])
     expect(pool.connectCalls).toBe(1)
+  })
+
+  it('sends a read that core built alone, outside a transaction block', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await readsFromCore('first').run(executor(new FakePool(client)))
+    expect(namingReads(client.calls.map(({ text }) => text))).toEqual(['a read core built'])
+    // Through the extended protocol, which takes one statement whatever the text holds.
+    expect(client.calls.map(({ queryMode }) => queryMode)).toEqual(['extended'])
+    expect(client.releases).toEqual([undefined])
+  })
+
+  it('gives two reads that core built one repeatable-read, read-only snapshot', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await readsFromCore('first', 'second').run(executor(new FakePool(client)))
+    expect(
+      namingReads(client.calls.map(({ text }) => text)),
+      'mutation-verdict:construction:postgres-lone-statement-is-the-whole-batch',
+    ).toEqual([
+      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      'a read core built',
+      'a read core built',
+      'COMMIT',
+    ])
+  })
+
+  it('keeps the transaction around a single write', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await executor(new FakePool(client)).batch('single-write', [
+      { sql: 'UPDATE t SET v = ?', args: ['x'] },
+    ])
+    expect(client.calls.map(({ text }) => text)).toEqual(['BEGIN', 'UPDATE t SET v = $1', 'COMMIT'])
+  })
+
+  it('sends nothing after a read sent alone that failed, and releases its client', async () => {
+    // PostgreSQL ran the statement in a transaction of its own and aborted it, so the
+    // client holds no open transaction to roll back.
+    const failure = databaseError('40001', 'serialization failure')
+    const client = new FakeClient(() => {
+      throw failure
+    })
+    await expect(readsFromCore('first').run(executor(new FakePool(client)))).rejects.toMatchObject({
+      name: 'StoreUnavailableError',
+      cause: failure,
+    })
+    expect(namingReads(client.calls.map(({ text }) => text))).toEqual(['a read core built'])
+    expect(client.releases).toEqual([undefined])
   })
 
   it('reads the schema version under READ COMMITTED, whose snapshot follows the name lookup', async () => {
@@ -196,7 +275,11 @@ describe('PgExecutor transactions', () => {
   })
 
   it('runs a batch again when PostgreSQL chose it as a deadlock victim, and gives up after three', async () => {
-    const run = async (deadlocksBeforeSuccess: number, code = '40P01') => {
+    const run = async (
+      deadlocksBeforeSuccess: number,
+      code = '40P01',
+      mode: 'write' | 'read' = 'write',
+    ) => {
       let attempts = 0
       const client = new FakeClient((text) => {
         if (text !== 'UPDATE contended') return EMPTY_RESULT
@@ -205,7 +288,7 @@ describe('PgExecutor transactions', () => {
         return result([], [], 1)
       })
       const outcome = await executor(new FakePool(client))
-        .batch('contended', [{ sql: 'UPDATE contended', args: [] }])
+        .batch('contended', [{ sql: 'UPDATE contended', args: [] }], mode)
         .then(
           (results) => results.map((entry) => entry.rowsAffected),
           (error: unknown) => (error instanceof Error ? error.name : String(error)),
@@ -217,14 +300,19 @@ describe('PgExecutor transactions', () => {
       {
         victimOnce: await run(1),
         victimAlways: await run(99),
-        anotherError: await run(1, '23505'),
+        anotherError: await run(1, '40001'),
+        victimOnceInARead: (await run(1, '40P01', 'read')).outcome,
       },
       'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
     ).toEqual({
       victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
-      // Only a deadlock is run again. Any other failure is reported the first time.
+      // Only a deadlock is run again. Any other failure is reported the first time: here a
+      // serialization failure, which is an outage under any map of the classes, so this
+      // case does not move with that map.
       anotherError: { outcome: 'StoreUnavailableError', texts: once },
+      // A read is run again like a write. It takes table locks, so it can be the victim.
+      victimOnceInARead: [1],
     })
   })
 
@@ -400,6 +488,95 @@ describe('PgExecutor transactions', () => {
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
   })
 
+  it("takes the version table's lock ahead of a migration write's statements, as the released build sent it", async () => {
+    // The released build sent this lock as the first statement of each version's batch. It
+    // is the control's now, and what reaches the server is the same text in the same place,
+    // with no bind, so a migrator of either build waits for the other's.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    await executor(new FakePool(client)).batch(
+      'migrate:v1',
+      [{ sql: "INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", args: [] }],
+      MIGRATION_WRITE,
+    )
+    expect(client.calls.map(({ text, args }) => [text, args ?? []])).toEqual([
+      ['BEGIN', []],
+      ['LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', []],
+      ["INSERT INTO meta (key, value) VALUES ('applied:v1', '1')", []],
+      ['COMMIT', []],
+    ])
+  })
+
+  it('refuses a migration write that names no migration lock, the bootstrap excepted, and sends nothing', async () => {
+    // The lock that makes a second migrator wait was a statement of every version's batch,
+    // which no wrapper could drop. It is the control's now, and a wrapper that rebuilds a
+    // control from a mode drops it: the batch would then run with no lock on meta, and a
+    // second migrator would deadlock with a version that locks the table. The bootstrap
+    // names no lock, because the lock lives on the table it creates.
+    const sent = async (label: string) => {
+      const client = new FakeClient(() => EMPTY_RESULT)
+      const pool = new FakePool(client)
+      const outcome = await executor(pool)
+        .batch(label, [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+        .then(
+          () => 'accepted',
+          (error: unknown) =>
+            error instanceof TypeError ? `refused: ${error.message}` : `failed: ${String(error)}`,
+        )
+      return { outcome, statements: client.calls.length, connections: pool.connectCalls }
+    }
+    expect(
+      {
+        aVersion: await sent('migrate:v1'),
+        aLabelNoListKnows: await sent('migrate:backfill'),
+        theBootstrap: await sent('migrate:bootstrap'),
+      },
+      'mutation-verdict:construction:postgres-migration-write-names-its-lock',
+    ).toEqual({
+      aVersion: {
+        outcome: expect.stringContaining('names no migration lock'),
+        statements: 0,
+        connections: 0,
+      },
+      aLabelNoListKnows: {
+        outcome: expect.stringContaining('names no migration lock'),
+        statements: 0,
+        connections: 0,
+      },
+      theBootstrap: { outcome: 'accepted', statements: 3, connections: 1 },
+    })
+  })
+
+  it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
+    // A lock kind is added by a later build of core, and an executor of this build can
+    // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
+    // keyed on coordinates that are not there. Ignored, it runs under none.
+    const client = new FakeClient(() => EMPTY_RESULT)
+    const pool = new FakePool(client)
+    const outcome = await executor(pool)
+      .batch('a-later-protocol', [{ sql: 'UPDATE t SET v = 1', args: [] }], {
+        mode: 'write',
+        transactionLock: { kind: 'a kind of a later build' } as unknown as SqlTransactionLock,
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      {
+        refusal,
+        sent: client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+        connections: pool.connectCalls,
+      },
+      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
+      refusal: expect.stringContaining('a kind of a later build'),
+      sent: [],
+      connections: 0,
+    })
+  })
+
   it('rolls back the same client before releasing it after a failed statement', async () => {
     const failure = databaseError('40001', 'serialization failure')
     const client = new FakeClient((text) => {
@@ -560,6 +737,63 @@ describe('PgExecutor error classification', () => {
     await expect(
       executor(new FakePool(client)).batch('retryable', [{ sql: 'UPDATE t SET v = 1', args: [] }]),
     ).rejects.toMatchObject({ name: 'StoreUnavailableError', cause: retryable })
+  })
+
+  it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other class an outage', async () => {
+    const thrownFor = (code: string, message?: string): Promise<Error> => {
+      const client = new FakeClient((text) => {
+        if (text === 'UPDATE t SET v = 1') throw databaseError(code, message)
+        return EMPTY_RESULT
+      })
+      return executor(new FakePool(client))
+        .batch('typed', [{ sql: 'UPDATE t SET v = 1', args: [] }])
+        .then(
+          () => new Error('answered'),
+          (error: unknown) => error as Error,
+        )
+    }
+    const codes = {
+      uniqueViolation: '23505',
+      notNullViolation: '23502',
+      numericValueOutOfRange: '22003',
+      syntaxError: '42601',
+      insufficientPrivilege: '42501',
+      // Read first, and a type of its own: a migration repairs it.
+      undefinedTable: '42P01',
+      serializationFailure: '40001',
+      deadlockDetected: '40P01',
+      connectionFailure: '08006',
+      tooManyConnections: '53300',
+      adminShutdown: '57P01',
+      ioError: '58030',
+      featureNotSupported: '0A000',
+      internalError: 'XX000',
+    }
+    const observed: Record<string, string> = {}
+    for (const [name, code] of Object.entries(codes)) observed[name] = (await thrownFor(code)).name
+    expect(
+      observed,
+      'mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed',
+    ).toEqual({
+      uniqueViolation: 'PermanentStoreError',
+      notNullViolation: 'PermanentStoreError',
+      numericValueOutOfRange: 'PermanentStoreError',
+      syntaxError: 'PermanentStoreError',
+      insufficientPrivilege: 'PermanentStoreError',
+      undefinedTable: 'SchemaMismatchError',
+      serializationFailure: 'StoreUnavailableError',
+      deadlockDetected: 'StoreUnavailableError',
+      connectionFailure: 'StoreUnavailableError',
+      tooManyConnections: 'StoreUnavailableError',
+      adminShutdown: 'StoreUnavailableError',
+      ioError: 'StoreUnavailableError',
+      featureNotSupported: 'StoreUnavailableError',
+      internalError: 'StoreUnavailableError',
+    })
+    expect(await thrownFor('23505', 'duplicate key')).toMatchObject({
+      message: 'batch(typed) failed permanently (SQLSTATE 23505): duplicate key',
+      cause: { code: '23505' },
+    })
   })
 
   it('does not reclassify a malformed PostgreSQL result as an outage', async () => {

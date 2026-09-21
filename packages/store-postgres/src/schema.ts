@@ -25,6 +25,23 @@ export const SCHEMA_VERSION_READ_SQL =
 // volatile default, TRUNCATE) as empty to a snapshot older than the rewrite. Creating an
 // empty table and adding a nullable column are safe. The meta table is the one created
 // with a required row, which is why its version read is READ COMMITTED (executor.ts).
+//
+// A version that does long work on more than one table takes every lock it needs in its
+// first statement. `migrate()` runs a version as one transaction. A version that takes a
+// table's lock only after its work on the tables before it deadlocks with a live
+// transaction that holds the later table while it waits for an earlier one, and once that
+// work outlasts the deadlock timeout the migration is the transaction PostgreSQL aborts,
+// with its work done. With the locks first it can only be aborted before it has done
+// anything, and the executor runs it again.
+//
+// It takes them in the order the engine's own statements do. A batch that locks an event
+// takes `event_locks` before anything else. A worker's reads name `checkpoints` before
+// `runs` and `runs` before `tasks`. Every statement that reads the clock takes its own
+// table and then `meta`, so `meta` comes last. A statement that arrives while the version
+// waits for older transactions then waits holding nothing, and a waiter that holds nothing
+// cannot deadlock. No one order fits every statement: the sweep's scan and the task result
+// read name `tasks` first, and a write batch of several statements can hold a table the
+// list has passed. Those can still lose a deadlock to a version, or make it lose one.
 export const MIGRATIONS: readonly PostgresMigration[] = [
   {
     version: 1,
@@ -184,6 +201,127 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
       `CREATE INDEX runs_woken ON runs (queue, wake_event)
        WHERE wake_event IS NOT NULL AND state = 'pending'`,
     ],
+  },
+  {
+    // A text column takes the collation of its database unless it declares one, and a
+    // database's collation is its operator's or its host's choice. Under a linguistic one
+    // `getCheckpoints` returned a caller's names in an order no other dialect returns,
+    // the task result's tie between two names broke another way, and a range over a name
+    // would miss its rows. SQLite compares bytes and the MySQL schema declares a binary
+    // collation on every string column, so every text column here declares "C", which
+    // compares bytes. The stored bytes do not change, so no table is rewritten, which the
+    // rule above forbids: PostgreSQL rebuilds each index that holds a changed column and
+    // nothing else, and the collation test holds both. The first statement takes every
+    // lock, by the rule above and in its order. Measured under live traffic with four
+    // million rows a table, this version without that statement lost all three of the
+    // executor's attempts, every time. Measured on an empty schema under writes, reads and
+    // event batches, the same statement with `meta` first lost all three in 11 of 80
+    // migrations while the server counted 568 deadlocks. In this order it lost none of 80,
+    // and the server counted 126.
+    version: 7,
+    statements: [
+      `LOCK TABLE event_locks, events, waits, checkpoints, runs, tasks, drivers, meta
+        IN ACCESS EXCLUSIVE MODE`,
+      `ALTER TABLE meta
+        ALTER COLUMN key TYPE TEXT COLLATE "C",
+        ALTER COLUMN value TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE tasks
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN params TYPE TEXT COLLATE "C",
+        ALTER COLUMN headers TYPE TEXT COLLATE "C",
+        ALTER COLUMN retry_strategy TYPE TEXT COLLATE "C",
+        ALTER COLUMN cancellation TYPE TEXT COLLATE "C",
+        ALTER COLUMN idempotency_key TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN last_attempt_run TYPE TEXT COLLATE "C",
+        ALTER COLUMN completed_payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN failure_reason TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE runs
+        ALTER COLUMN run_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN claimed_by TYPE TEXT COLLATE "C",
+        ALTER COLUMN wake_event TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN run_db TYPE TEXT COLLATE "C",
+        ALTER COLUMN result TYPE TEXT COLLATE "C",
+        ALTER COLUMN failure_reason TYPE TEXT COLLATE "C",
+        ALTER COLUMN wake_step TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE checkpoints
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN checkpoint_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN state TYPE TEXT COLLATE "C",
+        ALTER COLUMN status TYPE TEXT COLLATE "C",
+        ALTER COLUMN owner_run_id TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE events
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN payload TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE waits
+        ALTER COLUMN run_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN step_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN task_id TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C",
+        ALTER COLUMN status TYPE TEXT COLLATE "C",
+        ALTER COLUMN fence_stamp TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE event_locks
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN event_name TYPE TEXT COLLATE "C"`,
+      `ALTER TABLE drivers
+        ALTER COLUMN queue TYPE TEXT COLLATE "C",
+        ALTER COLUMN driver_id TYPE TEXT COLLATE "C"`,
+    ],
+  },
+  // Version 8 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. PostgreSQL's DELETE takes no lock on the rows its subquery reads.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 8, statements: [] },
+  {
+    // A claim finds what ONE token holds three ways: its held guard asks whether the token
+    // holds a run already, its two follow-ons find the runs the batch just took, and its
+    // receipt read returns them. By queue and state alone the only index was `runs_poll`,
+    // so each of those read every running run of the queue, on every tick, the idle ones
+    // included: one claim measured 64 ms beside 100,000 running runs against 7 ms. This
+    // index holds only running runs, by their token. PostgreSQL matches it to a statement
+    // that binds the state only when it plans with the value, which it does for the
+    // unnamed statements the executor sends. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged. Like version 6, it is built under a
+    // lock that blocks writes to `runs` while it builds.
+    version: 9,
+    statements: [
+      `CREATE INDEX runs_held ON runs (queue, claimed_by)
+       WHERE state = 'running'`,
+    ],
+  },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the column refuses it too, for every writer
+    // there is, a port in another language included.
+    //
+    // The statement takes an ACCESS EXCLUSIVE lock on `events` as its first act and then
+    // reads every row once. It rewrites nothing, so a read batch's older snapshot sees the
+    // table as it was. It is one statement on one table, which is the rule above in its
+    // smallest form: the version never asks for a second store table, and a statement that
+    // holds `events` needs only a read of `meta`, which the runner's lock on `meta` does not
+    // block, so there is no cycle for a deadlock to close. Measured on a million events
+    // under the traffic of a build whose last version is 9: 85 to 129 ms with 64 B payloads
+    // and 390 ms with 1 KB, the longest call that overlapped it waited that long, and no call
+    // failed.
+    //
+    // A row that holds NULL makes the statement fail with SQLSTATE 23502, the transaction
+    // rolls back, and the database stays at version 9 with the row as it was. The rows are
+    // found with `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],
   },
 ]
 

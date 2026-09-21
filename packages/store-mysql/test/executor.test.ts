@@ -1,8 +1,17 @@
-import { StoreUnavailableError } from '@durablerun/core'
+import {
+  FencedBatch,
+  MIGRATION_WRITE,
+  type SqlStatement,
+  type SqlTransactionLock,
+  StoreUnavailableError,
+  prepareRead,
+  refusalStateRead,
+} from '@durablerun/core'
 import type { FieldPacket, Pool } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
+import { TREE_DIALECT } from '../src/tree.js'
 
 const OK = [{ affectedRows: 0, info: '' }, undefined] as const
 const rows = (values: Record<string, unknown>[], name: string) =>
@@ -73,6 +82,21 @@ function executorOver(connection: FakeConnection): MysqlExecutor {
 const afterSessionSetup = (connection: FakeConnection) =>
   connection.sent.filter((sql) => !sql.startsWith('SET SESSION'))
 
+const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
+  refusalStateRead(binds),
+)
+
+/** Reads as core's read path builds them, the one kind of statement an executor knows for a read. */
+function readsFromCore(...names: string[]): FencedBatch {
+  const batch = new FencedBatch('reads', 'seed', { now: 'CLOCK', tree: TREE_DIALECT })
+  for (const name of names) batch.readPrepared(name, REFUSAL_STATE, { runId: name })
+  return batch
+}
+
+/** What was sent, with each read that core built named for what it is. */
+const namingReads = (sent: readonly string[]) =>
+  sent.map((sql) => (sql.startsWith('select `state` from `runs`') ? 'a read core built' : sql))
+
 describe('MysqlExecutor transactions', () => {
   it('reads the schema version under READ COMMITTED, with no snapshot taken ahead of the statement', async () => {
     const connection = new FakeConnection()
@@ -85,12 +109,7 @@ describe('MysqlExecutor transactions', () => {
     expect(
       afterSessionSetup(connection),
       'mutation-verdict:construction:mysql-version-read-is-read-committed',
-    ).toEqual([
-      'SET TRANSACTION ISOLATION LEVEL READ COMMITTED',
-      'START TRANSACTION READ ONLY',
-      SCHEMA_VERSION_READ_SQL,
-      'COMMIT',
-    ])
+    ).toEqual([SCHEMA_VERSION_READ_SQL])
     expect(connection.released).toBe(1)
   })
 
@@ -109,11 +128,88 @@ describe('MysqlExecutor transactions', () => {
     ])
   })
 
+  it('sends a read that core built alone, with no transaction around it', async () => {
+    const connection = new FakeConnection()
+    await readsFromCore('first').run(executorOver(connection))
+    expect(namingReads(afterSessionSetup(connection))).toEqual(['a read core built'])
+    expect(connection.released).toBe(1)
+  })
+
+  it('gives two reads that core built one consistent read-only snapshot', async () => {
+    const connection = new FakeConnection()
+    await readsFromCore('first', 'second').run(executorOver(connection))
+    expect(
+      namingReads(afterSessionSetup(connection)),
+      'mutation-verdict:construction:mysql-lone-statement-is-the-whole-batch',
+    ).toEqual([
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+      'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
+      'a read core built',
+      'a read core built',
+      'COMMIT',
+    ])
+  })
+
+  it('decides whether a batch goes alone when it copies the statements, and not from what the array holds later', async () => {
+    // The executor copies what it will send, then waits for a connection. A caller that
+    // changes its array during that wait must not change what the executor decided: here
+    // a delete passed as a read is swapped for a read that core built, and the delete the
+    // executor copied must still go inside the read-only transaction that refuses it.
+    const branded: SqlStatement[] = []
+    await readsFromCore('first').run({
+      batch: async (_label, statements) => {
+        branded.push(...statements)
+        return statements.map(() => ({ rows: [], rowsAffected: 0 }))
+      },
+    })
+    const [read] = branded
+    if (read === undefined) throw new Error('core built no read')
+    const connection = new FakeConnection()
+    const statements: SqlStatement[] = [{ sql: 'DELETE FROM t', args: [] }]
+    const pool = {
+      getConnection: async () => {
+        statements[0] = read
+        return connection
+      },
+      end: async () => undefined,
+      pool: OWNED_POOL_CONFIG,
+    }
+    await MysqlExecutor.fromPool(pool as unknown as Pool).batch('fixture:swap', statements, 'read')
+    expect(
+      afterSessionSetup(connection),
+      'mutation-verdict:construction:mysql-lone-send-is-decided-with-the-copy',
+    ).toEqual([
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+      'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
+      'DELETE FROM t',
+      'COMMIT',
+    ])
+  })
+
+  it('keeps the transaction around a single write', async () => {
+    const connection = new FakeConnection()
+    const sql = 'UPDATE t SET a = ?'
+    await executorOver(connection).batch('fixture:write', [{ sql, args: ['x'] }])
+    expect(afterSessionSetup(connection)).toEqual(['START TRANSACTION', sql, 'COMMIT'])
+  })
+
+  it('turns autocommit on with the session settings, which a read sent alone depends on', async () => {
+    // With autocommit off, a read sent alone would open a transaction that stays open on
+    // the pooled connection it returns.
+    const connection = new FakeConnection()
+    await readsFromCore('first').run(executorOver(connection))
+    expect(connection.sent[0], 'mutation-verdict:construction:mysql-session-autocommit-on').toMatch(
+      /^SET SESSION\s+autocommit = 1,/,
+    )
+  })
+
   it('holds the migration lock from before a migration transaction until after it', async () => {
     const connection = new FakeConnection()
-    await executorOver(connection).batch('migrate:v1', [
-      { sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] },
-    ])
+    await executorOver(connection).batch(
+      'migrate:v1',
+      [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+      MIGRATION_WRITE,
+    )
     const sent = afterSessionSetup(connection)
     expect(
       sent.map((sql) =>
@@ -126,6 +222,78 @@ describe('MysqlExecutor transactions', () => {
       'COMMIT',
       'unlock',
     ])
+  })
+
+  it('refuses a migration write that names no migration lock, and sends nothing', async () => {
+    // MySQL commits each DDL statement on its own, so a migration write is safe only while
+    // no other migrator runs. The batch itself has to name the lock. Chosen from a list of
+    // labels, a `migrate:` label the list does not know runs its DDL beside another
+    // migrator, and nothing says so.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('migrate:backfill', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      { refusal, sent: afterSessionSetup(connection) },
+      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
+    ).toEqual({
+      refusal: expect.stringContaining('names no migration lock'),
+      sent: [],
+    })
+  })
+
+  it('refuses a migration batch sent as a read, and sends nothing', async () => {
+    // A read batch runs in a read-only transaction, which refuses DML. It does not refuse
+    // DDL: a DDL statement commits by itself, and that commit ends the read-only
+    // transaction first. So a `migrate:` batch sent as a read would run its DDL with no
+    // lock. The one read under that label is the canonical version read, which is known by
+    // its whole text.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }], 'read')
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      { refusal, sent: connection.sent },
+      'mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused',
+    ).toEqual({
+      refusal: expect.stringContaining('sent as a read'),
+      sent: [],
+    })
+  })
+
+  it('refuses a lock of a kind it does not implement, and sends nothing', async () => {
+    // A lock kind is added by a later build of core, and an executor of this build can
+    // meet it. Taken for a kind it knows, the batch runs under the wrong lock, or under one
+    // named from coordinates that are not there. Ignored, it runs under none.
+    const connection = new FakeConnection()
+    const outcome = await executorOver(connection)
+      .batch('a-later-protocol', [{ sql: 'UPDATE t SET a = 1', args: [] }], {
+        mode: 'write',
+        transactionLock: { kind: 'a kind of a later build' } as unknown as SqlTransactionLock,
+      })
+      .then(
+        () => 'accepted',
+        (error: unknown) => error,
+      )
+    const refusal =
+      outcome instanceof TypeError ? outcome.message : `not refused: ${String(outcome)}`
+    expect(
+      { refusal, sent: connection.sent },
+      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
+    ).toEqual({
+      refusal: expect.stringContaining('a kind of a later build'),
+      sent: [],
+    })
   })
 
   it('reports a DELETE of two rows as two rows', async () => {
@@ -183,7 +351,11 @@ describe('MysqlExecutor transactions', () => {
     const connection = new FakeConnection()
     connection.lockAnswer = 0
     const outcome = await executorOver(connection)
-      .batch('migrate:v1', [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }])
+      .batch(
+        'migrate:v1',
+        [{ sql: 'CREATE TABLE IF NOT EXISTS t (a INT)', args: [] }],
+        MIGRATION_WRITE,
+      )
       .then(
         () => 'accepted',
         (error: unknown) => error,
@@ -246,7 +418,7 @@ describe('MysqlExecutor transactions', () => {
       // The outcome is taken first, so that a batch which is not run again fails the
       // assertion below and not the test's own await.
       const outcome = await executorOver(connection)
-        .batch('migrate:v1', [{ sql: WRITE, args: [] }])
+        .batch('migrate:v1', [{ sql: WRITE, args: [] }], MIGRATION_WRITE)
         .then(
           (results) => `answered ${results.length} statement`,
           (error: unknown) => error,
@@ -352,5 +524,93 @@ describe('MysqlExecutor transactions', () => {
       'read',
     )
     expect(connection.sent.some((sql) => sql.includes('GET_LOCK'))).toBe(false)
+  })
+})
+
+describe('MysqlExecutor error typing, by the state and the number the server sends', () => {
+  const WRITE = 'UPDATE t SET a = 1'
+  /** The name of what a write batch throws when the server fails its statement this way. */
+  const typed = async (failure: { errno?: number; sqlState?: string; times?: number }) => {
+    const { times = 1, ...fields } = failure
+    const connection = new FakeConnection()
+    connection.failures.set(WRITE, {
+      error: Object.assign(new Error('the server refused'), fields),
+      times,
+    })
+    return executorOver(connection)
+      .batch('fixture:write', [{ sql: WRITE, args: [] }])
+      .then(
+        () => 'answered',
+        (error: unknown) => (error instanceof Error ? error.name : String(error)),
+      )
+  }
+
+  it('types SQLSTATE classes 22, 23 and 42 permanent, and leaves every other state an outage', async () => {
+    const failures = {
+      duplicateEntry: { errno: 1062, sqlState: '23000' },
+      columnCannotBeNull: { errno: 1048, sqlState: '23000' },
+      syntaxError: { errno: 1064, sqlState: '42000' },
+      truncatedValue: { errno: 1292, sqlState: '22007' },
+      valueOutOfRange: { errno: 1264, sqlState: '22003' },
+      // Read first, and types of their own: a name too long, and a schema a migration repairs.
+      dataTooLong: { errno: 1406, sqlState: '22001' },
+      unknownColumn: { errno: 1054, sqlState: '42S22' },
+      lockWaitTimeout: { errno: 1205, sqlState: 'HY000' },
+      // Run again twice, and an outage once it is reported.
+      deadlock: { errno: 1213, sqlState: '40001', times: 3 },
+      serverHasGoneAway: { errno: 2006 },
+      closedPool: {},
+    }
+    const observed: Record<string, string> = {}
+    for (const [name, failure] of Object.entries(failures)) observed[name] = await typed(failure)
+    expect(observed, 'mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed').toEqual({
+      duplicateEntry: 'PermanentStoreError',
+      columnCannotBeNull: 'PermanentStoreError',
+      syntaxError: 'PermanentStoreError',
+      truncatedValue: 'PermanentStoreError',
+      valueOutOfRange: 'PermanentStoreError',
+      dataTooLong: 'InvalidDurableStringError',
+      unknownColumn: 'SchemaMismatchError',
+      lockWaitTimeout: 'StoreUnavailableError',
+      deadlock: 'StoreUnavailableError',
+      serverHasGoneAway: 'StoreUnavailableError',
+      closedPool: 'StoreUnavailableError',
+    })
+  })
+
+  it('types a limit on connections or on prepared statements an outage, though MySQL files it under a permanent class', async () => {
+    // Another session's release lifts each of these, so a retry cures it. MySQL files all
+    // three under 42000, beside a syntax error, so they are read before the class.
+    expect(
+      {
+        tooManyUserConnections: await typed({ errno: 1203, sqlState: '42000' }),
+        userLimitReached: await typed({ errno: 1226, sqlState: '42000' }),
+        maxPreparedStatementsReached: await typed({ errno: 1461, sqlState: '42000' }),
+      },
+      'mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage',
+    ).toEqual({
+      tooManyUserConnections: 'StoreUnavailableError',
+      userLimitReached: 'StoreUnavailableError',
+      maxPreparedStatementsReached: 'StoreUnavailableError',
+    })
+  })
+
+  it('types the permanent answers MySQL files outside the three classes by their numbers', async () => {
+    expect(
+      {
+        wrongValueForField: await typed({ errno: 1366, sqlState: 'HY000' }),
+        brokenCheckConstraint: await typed({ errno: 3819, sqlState: 'HY000' }),
+        columnLeftOut: await typed({ errno: 1364, sqlState: 'HY000' }),
+        textThatIsNoNumber: await typed({ errno: 1265, sqlState: '01000' }),
+        anotherGeneralError: await typed({ errno: 1105, sqlState: 'HY000' }),
+      },
+      'mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent',
+    ).toEqual({
+      wrongValueForField: 'PermanentStoreError',
+      brokenCheckConstraint: 'PermanentStoreError',
+      columnLeftOut: 'PermanentStoreError',
+      textThatIsNoNumber: 'PermanentStoreError',
+      anotherGeneralError: 'StoreUnavailableError',
+    })
   })
 })

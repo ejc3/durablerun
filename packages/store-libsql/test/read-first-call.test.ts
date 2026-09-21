@@ -20,7 +20,11 @@ describe('a prepared read checks its first call as it checks every call', () => 
 
   it('refuses a malformed first call, and sends nothing', async () => {
     const store = new LibsqlSchedulerStore(executor, testIdSource('first-call-a'))
-    await expect(store.getTaskResult('q', undefined as never)).rejects.toThrow(
+    // Through the port a task id that is not a string is refused before the entry runs, so
+    // no malformed bind reaches a prepared read that way. The entry is called from the
+    // prototype, which is the entry with nothing in front of it.
+    const getTaskResult = LibsqlSchedulerStore.prototype.getTaskResult
+    await expect(getTaskResult.call(store, 'q', undefined as never)).rejects.toThrow(
       /bind 'taskId' is undefined/,
     )
     expect(sent).toEqual([])
@@ -36,7 +40,9 @@ describe('a prepared read checks its first call as it checks every call', () => 
     // The batch is built before the read is handed to the caller that reads a failed read
     // as a lost lease. A heartbeat that matched no row asks for that read.
     const store = new LibsqlSchedulerStore(executor, testIdSource('first-call-c'))
-    await expect(store.heartbeat('q', undefined as never, 'token', 30)).rejects.toThrow(
+    // From the prototype, for the reason the first case gives.
+    const heartbeat = LibsqlSchedulerStore.prototype.heartbeat
+    await expect(heartbeat.call(store, 'q', undefined as never, 'token', 30)).rejects.toThrow(
       /bind 'runId' is undefined/,
     )
   })

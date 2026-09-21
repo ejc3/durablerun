@@ -1,21 +1,26 @@
 import {
   ChildAwaitRefusedError,
   type ClaimedRun,
-  IDENTIFIER_CHARACTERS,
-  InvalidDurableStringError,
+  type FailOutcome,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
-  encodeRollbackTry,
+  decodeRollbackTry,
   isRefusedWrite,
   taskDoneEventName,
 } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
-import { childTaskViolations } from './child-tasks.js'
+import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
-import { engineInvariantViolations } from './invariants.js'
-import { sagaViolations } from './saga-rows.js'
-import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
+import { HELD_PLACES, OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
+import {
+  awaitOwned,
+  awaitTaskOwned,
+  checkpointOwned,
+  checkpointState,
+  refusalName,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 
@@ -54,8 +59,10 @@ export interface FuzzStats {
   rollbackFailures: number
   /** Tasks that ended from inside the phase by a pass's own write. */
   sagasEnded: number
-  /** Names one character past the width that the port refused (DESIGN.md §3.4 rule 10). */
-  overWidthRefusals: number
+  /** Results read at the end of a walk that named the rollback whose failure ended the task. */
+  haltsNamed: number
+  /** Names past the width or outside the durable string domain that the port refused. */
+  portStringRefusals: number
 }
 
 /**
@@ -107,7 +114,8 @@ async function runWalk(
     rollbacks: 0,
     rollbackFailures: 0,
     sagasEnded: 0,
-    overWidthRefusals: 0,
+    haltsNamed: 0,
+    portStringRefusals: 0,
   }
   /** What the walk knows of each task's saga: its steps in start order, and what ran. */
   const sagas = new Map<
@@ -116,6 +124,8 @@ async function runWalk(
   >()
   /** Tasks the walk saw enter the phase. One may since have ended by a cancel or a sweep. */
   const rolling = new Set<string>()
+  /** The failure of the rollback that ended a task, by task: the one its result must name. */
+  const haltedBy = new Map<string, string>()
   const sagaOf = (taskId: string) => {
     const known = sagas.get(taskId)
     if (known) return known
@@ -124,12 +134,7 @@ async function runWalk(
     return fresh
   }
 
-  /** The engine invariants, and what ChildTasks.tla requires of rows only the engine wrote. */
-  const violationsNow = async (): Promise<string[]> => [
-    ...(await engineInvariantViolations(f.raw)),
-    ...(await childTaskViolations(f.raw)),
-    ...(await sagaViolations(f.raw)),
-  ]
+  const violationsNow = (): Promise<string[]> => engineHistoryViolations(f.raw)
 
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
   const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)
@@ -177,23 +182,34 @@ async function runWalk(
     if (step !== undefined && kind < 0.8) {
       const tries = (saga.tries.get(step) ?? 0) + 1
       const halts = kind >= 0.7
-      const failed = await countIfHeld('rollbackFailures', () =>
-        f.store.failRollback(
+      // Each attempt's failure is its own, so a result that names another attempt's is seen.
+      const errorJson = JSON.stringify({ name: 'FuzzRollbackBoom', step, tries })
+      const answered: { outcome?: FailOutcome } = {}
+      const failed = await countIfHeld('rollbackFailures', async () => {
+        answered.outcome = await f.store.failRollback(
           Q,
           run.runId,
           run.claimToken,
           SAGA_CAUSE,
           halts ? null : { delaySeconds: rng.int(5) + frac() },
-          {
-            key: `${SAGA_TRIES_PREFIX}${step}`,
-            stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"FuzzRollbackBoom"}' }),
-          },
-        ),
-      )
+          { stepKey: step, errorJson },
+        )
+      })
       if (failed) saga.tries.set(step, tries)
-      if (failed && halts) {
+      // The walk knows what it asked for, and the store says what it did. A pass that does
+      // not fit ends the task whatever was asked, and no delay of this walk fails to fit. So
+      // an answer other than what was asked for is the store's error: a saga it ended that
+      // was owed a retry, or one it kept rolling back that asked for none.
+      if (failed && answered.outcome?.rollingBack !== !halts) {
+        throw new Error(
+          `fuzz seed ${seed}: a failed rollback that asked for ${halts ? 'no retry' : 'a retry that fits'} was answered ${JSON.stringify(answered.outcome)}`,
+        )
+      }
+      // The store's answer says whether this failure ended the task.
+      if (failed && answered.outcome?.rollingBack === false) {
         stats.sagasEnded++
         rolling.delete(run.taskId)
+        haltedBy.set(run.taskId, errorJson)
       }
       return
     }
@@ -214,54 +230,40 @@ async function runWalk(
     }
   }
 
-  // Names past the width come from a stream of their own, so this op's draws never move
-  // another op's, and the rest of a seed's walk does not depend on it.
-  const widthRng = new Rng(`fuzz-width-${seed}`)
+  // The names the port must refuse come from a stream of their own, so this op's draws
+  // never move another op's, and the rest of a seed's walk does not depend on it.
+  const refusedNameRng = new Rng(`fuzz-width-${seed}`)
   /**
-   * Pass the port a name one character past the width (DESIGN.md §3.4 rule 10): an event
-   * name, an idempotency key, and, under a held run, a checkpoint name and a child's call
-   * site that fits while the child key built from it does not. The port refuses each
-   * before it sends anything, so the walk goes on as if this had not run. An accepted
-   * name does not fail the walk here. The row it leaves is what the invariant library's
-   * width condition reports, on the two dialects whose columns do not bound a name, and
-   * the walk's next check of the invariants is what fails. The count is of refusals by their
-   * class. MySQL's executor gives the column's own refusal, error 1406, that same class, so
-   * there the count could not tell an entry's refusal from the column's. Every caller of this
-   * walk runs libSQL.
+   * Pass the port a name it must refuse (DESIGN.md §3.4 rule 10), at a place drawn from
+   * every place the port holds a string: a name outside the durable string domain at
+   * any of them, or, at an identifier's place, a name past the width. The places and
+   * the names are the identifier surface's own, generated from core's table, so a place
+   * the port gains is walked without being listed here.
+   *
+   * The port refuses before it sends anything, so the walk goes on as if this had not
+   * run, and a refused call mints no id. Any other answer fails the walk at the call.
+   * It cannot be left to the invariants: a store that let a NUL by would leave a row
+   * that is valid and is another name, and most places write nothing for a caller that
+   * holds no claim.
    */
-  const passNamePastTheWidth = async (): Promise<void> => {
-    const past = 'w'.repeat(IDENTIFIER_CHARACTERS + 1)
-    const run = held[widthRng.int(held.length + 1)]
-    const passes: (() => Promise<unknown>)[] = [
-      () => f.store.emitEvent(Q, past, '{}'),
-      () => f.store.spawn(Q, 'past-the-width', '{}', { idempotencyKey: past }),
-    ]
-    if (run !== undefined) {
-      passes.push(
-        () => checkpointOwned(f.store, Q, run, past, '1', 60),
-        () =>
-          f.store.spawn(Q, 'past-the-width', '{}', {
-            childOf: {
-              parentQueue: Q,
-              parentTaskId: run.taskId,
-              runId: run.runId,
-              claimToken: run.claimToken,
-              replayKey: 'w'.repeat(IDENTIFIER_CHARACTERS),
-            },
-          }),
-      )
+  const passNameThePortRefuses = async (): Promise<void> => {
+    const place = refusedNameRng.pick(HELD_PLACES)
+    const [what, name] = refusedNameRng.pick(
+      Object.entries(
+        place.rule === 'identifier' && refusedNameRng.next() < 0.5
+          ? PAST_THE_WIDTH
+          : OUTSIDE_THE_DOMAIN,
+      ),
+    )
+    const answer = await refusalName(place.call(f.store, name))
+    if (answer !== 'InvalidDurableStringError') {
+      throw new Error(`${place.place} was passed ${what}, and the port answered: ${answer}`)
     }
-    try {
-      await passes[widthRng.int(passes.length)]?.()
-    } catch (error) {
-      if (error instanceof InvalidDurableStringError) stats.overWidthRefusals++
-      // A store that let the name by may still refuse the write for a lost lease.
-      else if (!isRefusedWrite(error)) throw error
-    }
+    stats.portStringRefusals++
   }
 
   for (let step = 0; step < steps; step++) {
-    if (widthRng.next() < 0.1) await passNamePastTheWidth()
+    if (refusedNameRng.next() < 0.1) await passNameThePortRefuses()
     const roll = rng.next()
     if (roll < 0.03) {
       // Invalid-numeric corpus: the port MUST refuse these (§3.4 rule 7) —
@@ -561,6 +563,34 @@ async function runWalk(
   const violations = await violationsNow()
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
+  }
+  // TriesOnlyGrow, over every walk: the store counts a rollback's failed attempts itself,
+  // so the count it stored is the number of failed attempts the walk saw it record.
+  for (const [taskId, saga] of sagas) {
+    for (const [step, tries] of saga.tries) {
+      const stored = decodeRollbackTry(
+        String(await checkpointState(f.raw, taskId, `${SAGA_TRIES_PREFIX}${step}`)),
+      )?.tries
+      if (stored !== tries) {
+        throw new Error(
+          `fuzz seed ${seed} final: task ${taskId} stores ${stored} failed attempts of the rollback of ${step}, and the walk saw ${tries} recorded`,
+        )
+      }
+    }
+  }
+  // FailedOutcomeHonest, for the error beside the outcome: a result names a rollback error
+  // exactly when a rollback's failure ended the task, and the error is that rollback's. An
+  // attempt that failed with budget left, in a saga that something else then halted, is
+  // not it, and no row invariant can say so, because the error is derived when it is read.
+  // Every task the walk spawned is read, so a plain task is held to naming none.
+  for (const taskId of new Set(knownTasks)) {
+    const named = (await f.store.getTaskResult(Q, taskId))?.rollback?.errorJson
+    if (named !== haltedBy.get(taskId)) {
+      throw new Error(
+        `fuzz seed ${seed} final: task ${taskId} names the rollback error ${named}, and the rollback that ended it failed with ${haltedBy.get(taskId)}`,
+      )
+    }
+    if (named !== undefined) stats.haltsNamed++
   }
   // Progress floor: safety-only fuzz cannot see total loss of progress (a
   // fence regression making every transition a fenced no-op stays

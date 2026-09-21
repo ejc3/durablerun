@@ -9,6 +9,7 @@ import {
   type SqlExecutor,
   compileOnlyBuilder,
   defineStatement,
+  taskStateValue,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import {
@@ -19,7 +20,7 @@ import {
 } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { engineInvariantViolations } from '../src/invariants.js'
+import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 
 const stampBuilder = compileOnlyBuilder<Record<string, Record<string, unknown>>>()
 
@@ -1262,7 +1263,7 @@ describe('fence provenance', () => {
         relation: 'runs-to-tasks',
         fence: 'source',
         queue: Q,
-        set: { state: `'completed'` },
+        set: { state: taskStateValue('sleeping') },
         rows: 'source-keys',
       })
       await bound.run(f.raw)
@@ -1273,7 +1274,7 @@ describe('fence provenance', () => {
       expect(states, 'mutation-verdict:behavior:generated-bound-queue-holds-both-sides').toEqual([
         { task_id: 'bound-foreign-run', state: 'pending' },
         { task_id: 'bound-foreign-task', state: 'pending' },
-        { task_id: 'bound-same', state: 'completed' },
+        { task_id: 'bound-same', state: 'sleeping' },
       ])
       const refused = (build: () => unknown): string => {
         try {
@@ -1334,7 +1335,7 @@ describe('fence provenance', () => {
       runsToTasks.derived('target', {
         relation: 'runs-to-tasks',
         fence: 'source',
-        set: { state: `'completed'` },
+        set: { state: taskStateValue('sleeping') },
         rows: 'one',
       })
       await runsToTasks.run(f.raw)
@@ -1465,6 +1466,11 @@ describe('fence provenance', () => {
         'go',
         null,
       )
+      // The schema refuses this write, so the test opens the door the way tampering would,
+      // by dropping the two triggers that hold the payload. What is held here is the port's
+      // own refusal, which has to stand behind a schema that no longer does.
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_insert')
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_update')
       await exec(
         f.raw,
         `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
@@ -1500,6 +1506,48 @@ describe('fence provenance', () => {
         run: { state: 'sleeping', event_payload: null },
         waits: [{ status: 'waiting' }],
       })
+    } finally {
+      await f.close()
+    }
+  })
+
+  it('an event row that holds SQL NULL is an invariant violation, whoever wrote it', async () => {
+    // The schema refuses the write and the port never makes it, so the invariant library's
+    // two conditions on a stored NULL can only be seen firing behind a schema that was
+    // tampered with. This is their positive control: a checker that no test has seen fire
+    // checks nothing. One event is an orphan, which only the row's own condition sees. The
+    // other is the event of a woken run that carries a payload, which the older condition
+    // of a wake sees too. They are told apart by condition, because the older one shares
+    // its name with two neighbours, and the next of them fires when it cannot.
+    const f = await fixture()
+    try {
+      await exec(f.raw, 'DROP TRIGGER events_payload_not_null_insert')
+      for (const eventName of ['orphan', 'carried']) {
+        await exec(
+          f.raw,
+          `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+           VALUES (?, ?, NULL, ?)`,
+          [Q, eventName, NOW],
+        )
+      }
+      await insertTask(f.raw, { id: 'T', state: 'pending' })
+      await insertRun(f.raw, { id: 'R', taskId: 'T', state: 'pending', availableAtMs: NOW })
+      await exec(
+        f.raw,
+        `UPDATE runs SET wake_event = 'carried', event_payload = '{"carried":1}'
+         WHERE run_id = 'R'`,
+      )
+      const fired = (await engineInvariantFindings(f.raw))
+        .map(({ conditionId, subject }) => `${conditionId} ${subject}`)
+        .sort()
+      expect(
+        fired,
+        'mutation-verdict:behavior:event-payload-null-is-an-invariant-violation',
+      ).toEqual([
+        `event/payload-null events/${Q}/carried`,
+        `event/payload-null events/${Q}/orphan`,
+        'payload/stored-payload-null R',
+      ])
     } finally {
       await f.close()
     }

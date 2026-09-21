@@ -1,9 +1,10 @@
-import { InvalidDurableStringError, LaunchOutcome } from '@durablerun/core'
+import { InvalidDurableStringError, type LaunchInvocation, LaunchOutcome } from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { DriverLoop } from '../src/index.js'
+import { withLaunchTimeout } from '../src/loop.js'
 import { FakeLauncher, until } from './loop-harness.js'
 
 const Q = 'q'
@@ -23,6 +24,68 @@ async function fx(seed: string) {
 }
 
 const OPTS = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60 }
+
+/**
+ * A launcher whose first call never settles on its own. When `letsGo`, that call settles once
+ * its signal fires, and then says the launch was taken. Every later call is accepted at once.
+ * `signals` holds what each call was handed.
+ */
+function firstCallHangs(letsGo: boolean) {
+  const signals: (AbortSignal | undefined)[] = []
+  const launcher = new FakeLauncher((_inv, options) => {
+    signals.push(options?.signal)
+    if (signals.length > 1) return LaunchOutcome.accepted()
+    return new Promise<LaunchOutcome>((resolve) => {
+      if (!letsGo) return
+      options?.signal?.addEventListener('abort', () => resolve(LaunchOutcome.accepted()), {
+        once: true,
+      })
+    })
+  })
+  return { launcher, signals }
+}
+
+describe('the launch deadline as a wrapper of the port', () => {
+  const invocation: LaunchInvocation = {
+    queue: Q,
+    runId: 'run',
+    attempt: 1,
+    claimToken: 'token',
+    claimGen: 1,
+    deadlineHintEpochMs: 0,
+  }
+
+  it('hands a signal of its own caller on to the launcher it wraps, joined with its own', async () => {
+    const clock = new FakeClock()
+    const first = firstCallHangs(true)
+    const caller = new AbortController()
+    const answer = withLaunchTimeout(first.launcher, clock, 5_000).launch(invocation, {
+      signal: caller.signal,
+    })
+    await until(() => first.signals.length === 1, 'the wrapped launcher called')
+    const beforeTheAbort = first.signals[0]?.aborted
+    caller.abort()
+    // The caller's abort reaches the wrapped launcher with the clock where it was.
+    expect(
+      [beforeTheAbort, first.signals[0]?.aborted],
+      'mutation-verdict:behavior:launch-deadline-wrapper-hands-on-the-callers-signal',
+    ).toEqual([false, true])
+    // The launcher let go and answered. The wrapper hands that answer back and leaves no
+    // sleep on the clock.
+    await answer
+    expect(clock.sleeps).toEqual([])
+    // The deadline still reaches a launcher whose caller's signal never fires.
+    const second = firstCallHangs(true)
+    const late = withLaunchTimeout(second.launcher, clock, 5_000).launch(invocation, {
+      signal: new AbortController().signal,
+    })
+    await until(() => second.signals.length === 1, 'the second wrapped launcher called')
+    clock.advance(5_000)
+    clock.fire()
+    await late
+    expect(second.signals[0]?.aborted).toBe(true)
+  })
+})
 
 describe('DriverLoop', () => {
   it('drains due work, then parks until the next wake', async () => {
@@ -180,6 +243,78 @@ describe('DriverLoop', () => {
     f.close()
   })
 
+  it('the watchdog aborts the launch it stops waiting for, and reads nothing the launcher answers after that', async () => {
+    const f = await fx('loop-abort')
+    await f.store.spawn(Q, 'job', '{}')
+    const { launcher, signals } = firstCallHangs(true)
+    const loop = new DriverLoop(
+      { store: f.store, launcher, ids: f.ids, clock: f.clock },
+      { ...OPTS, launchTimeoutSeconds: 5 },
+    )
+    const done = loop.run()
+    await until(() => signals.length === 1, 'first launch waiting')
+    const insideTheDeadline = signals[0]?.aborted
+    await f.advance(5_000)
+    await until(() => loop.stats.launched + loop.stats.launchFailed === 1, 'the launch counted')
+    // The call carries a signal that has not fired inside the deadline and has fired past it.
+    expect(
+      [insideTheDeadline, signals[0]?.aborted],
+      'mutation-verdict:behavior:launch-deadline-tells-the-launcher',
+    ).toEqual([false, true])
+    // The answer that came after the abort was not read. It is a failed launch, as a
+    // timeout always was, and the run comes back through the lost-launch path.
+    expect(
+      { launched: loop.stats.launched, launchFailed: loop.stats.launchFailed },
+      'mutation-verdict:behavior:aborted-launch-answer-is-never-read',
+    ).toEqual({ launched: 0, launchFailed: 1 })
+    await f.advance(5_000)
+    await until(() => signals.length === 2, 'relaunch after recovery')
+    expect(signals[1]?.aborted).toBe(false)
+    await loop.stop()
+    await done
+    expect(
+      await (await import('@durablerun/conformance')).engineInvariantViolations(f.raw),
+    ).toEqual([])
+    f.close()
+  })
+
+  it('an aborted launch leaves the rows and the counters that an abandoned one leaves', async () => {
+    // One seed, so both runs mint the same ids. One launcher never hears the abort. The
+    // other lets go when it fires and then says the launch was taken.
+    const outcomeWhen = async (letsGo: boolean) => {
+      const f = await fx('loop-abort-same-outcome')
+      await f.store.spawn(Q, 'job', '{}')
+      const { launcher, signals } = firstCallHangs(letsGo)
+      const loop = new DriverLoop(
+        { store: f.store, launcher, ids: f.ids, clock: f.clock },
+        { ...OPTS, launchTimeoutSeconds: 5 },
+      )
+      const done = loop.run()
+      await until(() => signals.length === 1, 'first launch waiting')
+      await f.advance(5_000)
+      await until(() => loop.stats.launchFailed === 1, 'timeout counted')
+      await f.advance(5_000)
+      await until(() => signals.length === 2, 'relaunch after recovery')
+      await loop.stop()
+      await done
+      const [tasks, runs] = await f.raw.batch('t', [
+        { sql: 'SELECT * FROM tasks ORDER BY task_id', args: [] },
+        { sql: 'SELECT * FROM runs ORDER BY run_id', args: [] },
+      ])
+      f.close()
+      const { lastResult: _newest, ...counters } = loop.stats
+      return {
+        tasks: tasks?.rows.map((row) => ({ ...row })),
+        runs: runs?.rows.map((row) => ({ ...row })),
+        counters,
+      }
+    }
+    const abandoned = await outcomeWhen(false)
+    expect(abandoned.runs?.length).toBe(1)
+    expect(abandoned.counters).toMatchObject({ launchFailed: 1, launched: 1 })
+    expect(await outcomeWhen(true)).toEqual(abandoned)
+  })
+
   it('beats the registry row on its cadence', async () => {
     const f = await fx('loop-registry')
     const loop = new DriverLoop(
@@ -296,6 +431,15 @@ describe('DriverLoop review regressions', () => {
     expect(() => new DriverLoop(deps, { ...OPTS, queue: 'q'.repeat(256) })).toThrow(
       InvalidDurableStringError,
     )
+    // The same holds for a name outside the durable string domain, which no store keeps.
+    for (const undurable of ['d\u0000', 'd\uD800']) {
+      expect(() => new DriverLoop(deps, { ...OPTS, driverId: undurable })).toThrow(
+        InvalidDurableStringError,
+      )
+      expect(() => new DriverLoop(deps, { ...OPTS, queue: undurable })).toThrow(
+        InvalidDurableStringError,
+      )
+    }
     // A registry interval whose doubled TTL fails downstream validation
     // must fail HERE, not silently on every beat.
     expect(() => new DriverLoop(deps, { ...OPTS, registryIntervalSeconds: 2_000_000_000 })).toThrow(

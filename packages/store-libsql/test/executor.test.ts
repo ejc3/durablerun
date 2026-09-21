@@ -60,3 +60,44 @@ describe('value normalization', () => {
     expect([...(value as Uint8Array)]).toEqual([1, 2, 3, 255])
   })
 })
+
+describe('error typing, by the result code and never by the message', () => {
+  const thrownBy = (sql: string) =>
+    db.batch('typed', [{ sql, args: [] }]).then(
+      () => 'answered',
+      (error: unknown) => ({
+        name: (error as Error).name,
+        code: ((error as Error).cause as { code?: unknown } | undefined)?.code,
+      }),
+    )
+
+  it('types a broken constraint and a datatype mismatch permanent, and every other code an outage', async () => {
+    await db.batch('setup', [
+      {
+        sql: `CREATE TABLE strict (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, n INTEGER CHECK (n < 10))`,
+        args: [],
+      },
+      { sql: `INSERT INTO strict VALUES (1, 'a', 1)`, args: [] },
+    ])
+    expect(
+      {
+        primaryKey: await thrownBy(`INSERT INTO strict VALUES (1, 'b', 1)`),
+        unique: await thrownBy(`INSERT INTO strict VALUES (2, 'a', 1)`),
+        notNull: await thrownBy(`INSERT INTO strict VALUES (3, NULL, 1)`),
+        check: await thrownBy(`INSERT INTO strict VALUES (4, 'd', 99)`),
+        mismatch: await thrownBy(`INSERT INTO strict VALUES ('not a rowid', 'e', 1)`),
+        // SQLite's generic code. It also names a transaction state error that a new
+        // connection cures, so a syntax error cannot be told from one by its code.
+        syntax: await thrownBy(`SELEC 1`),
+      },
+      'mutation-verdict:behavior:libsql-permanent-result-code-is-typed',
+    ).toEqual({
+      primaryKey: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_PRIMARYKEY' },
+      unique: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_UNIQUE' },
+      notNull: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_NOTNULL' },
+      check: { name: 'PermanentStoreError', code: 'SQLITE_CONSTRAINT_CHECK' },
+      mismatch: { name: 'PermanentStoreError', code: 'SQLITE_MISMATCH' },
+      syntax: { name: 'StoreUnavailableError', code: 'SQLITE_ERROR' },
+    })
+  })
+})

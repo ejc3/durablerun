@@ -7,21 +7,17 @@ import {
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
   SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
-  type SqlExecutor,
   type TaskOutcome,
-  decodeTaskOutcome,
-  encodeRollbackTry,
   encodeTaskOutcome,
-  isTerminalState,
   taskDoneEventName,
-  taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { childTaskViolations } from './child-task-rows.js'
+import { engineHistoryViolations } from './engine-history.js'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from './fixture.js'
-import { engineInvariantViolations, eventKey } from './invariants.js'
+import { engineInvariantViolations } from './invariants.js'
 import {
   awaitTaskOwned,
   checkpointOwned,
@@ -36,59 +32,6 @@ import {
 const Q = 'q'
 const START_MS = 1_000_000
 const STEP = '$await-task'
-
-/**
- * What specs/ChildTasks.tla requires of any history the engine itself produced, read
- * from the shared schema. It is not part of the invariant library, because that library
- * also judges states the poison matrix writes by hand, and a hand-written terminal task
- * has no batch that could have written its event. Every walk and scenario whose rows
- * only the engine wrote runs this beside the library.
- *
- * - TerminalImpliesDone: a terminal task has its completion event, in its own queue.
- * - DoneAuthority, as far as rows can show it: a completion event names a task of its
- *   queue, and its payload is an outcome `encodeTaskOutcome` wrote.
- */
-export async function childTaskViolations(raw: SqlExecutor): Promise<string[]> {
-  const [tasks, events] = await raw.batch(
-    'child-task-violations',
-    [
-      { sql: 'SELECT task_id, queue, state FROM tasks', args: [] },
-      { sql: 'SELECT queue, event_name, payload FROM events', args: [] },
-    ],
-    'read',
-  )
-  const violations: string[] = []
-  const done = new Map<string, { eventName: string; payload: string }>()
-  for (const event of events?.rows ?? []) {
-    const eventName = String(event.event_name)
-    if (taskIdOfDoneEvent(eventName) === null) continue
-    done.set(eventKey(String(event.queue), eventName), {
-      eventName,
-      payload: String(event.payload),
-    })
-  }
-  for (const task of tasks?.rows ?? []) {
-    const taskId = String(task.task_id)
-    const key = eventKey(String(task.queue), taskDoneEventName(taskId))
-    const event = done.get(key)
-    done.delete(key)
-    if (event === undefined) {
-      if (isTerminalState(task.state)) {
-        violations.push(`terminal-task-without-completion-event: ${taskId}`)
-      }
-      continue
-    }
-    try {
-      decodeTaskOutcome(taskId, event.payload)
-    } catch (error) {
-      violations.push(`completion-event-undecodable: ${taskId}: ${String(error)}`)
-    }
-  }
-  for (const { eventName } of done.values()) {
-    violations.push(`completion-event-without-task: ${eventName}`)
-  }
-  return violations
-}
 
 /** A store over the fixture's real executor that records every batch label, in order. */
 function recordingLabels(f: StoreFixture): { store: StoreFixture['store']; labels: string[] } {
@@ -212,8 +155,8 @@ export const TERMINAL_BATCHES: readonly TerminalBatch[] = [
         advanceMs: 0,
         end: async (store) => {
           await store.failRollback(queue, pass.runId, pass.claimToken, FAILURE, null, {
-            key: `${SAGA_TRIES_PREFIX}a`,
-            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+            stepKey: 'a',
+            errorJson: '{"name":"RollbackBoom"}',
           })
         },
       }
@@ -318,9 +261,11 @@ async function runState(f: StoreFixture, runId: string): Promise<unknown> {
 }
 
 /**
- * The executable twins of specs/ChildTasks.tla, for every dialect. The model's ledger
- * block is read by nothing (`scripts/spec-ledger.py` reads Scheduler.tla), so each of
- * its actions and guards is held here by a case that names it.
+ * The executable twins of specs/ChildTasks.tla, for every dialect. `scripts/spec-ledger.py`
+ * holds the model's ledger block to the stores' labels and to the model's actions, and it
+ * reads no guard, so the model's actions and guards are held here, by cases under
+ * descriptive titles. SpawnChild's guard is held in the scheduler suite, where a child is
+ * created only under its parent's live claim.
  */
 export function childTaskConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`child task conformance [${dialect}]`, () => {
@@ -375,10 +320,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
             parent: parentRun,
             waits: await waitCount(fx),
             woken: woken?.runId === parent.runId ? woken.wake : 'the parent was not claimable',
-            violations: [
-              ...(await engineInvariantViolations(fx.raw)),
-              ...(await childTaskViolations(fx.raw)),
-            ],
+            violations: await engineHistoryViolations(fx.raw),
           }
           expected[batch.label] = {
             ran: true,
@@ -558,7 +500,38 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
         refused,
         parent: await runState(f, parent.runId),
         waits: await waitCount(f),
-      }).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
+      }).toEqual({ refused: 'PortRefusalError', parent: 'running', waits: 0 })
+    })
+
+    // The store that activated a run remembers its task, so the worker's own terminal
+    // write pays no read. Once that write has ended the run the entry has no further
+    // use, and the store lets it go: asked to end the same run again, it reads the run's
+    // task (`run-task`) like a store that never knew it.
+    it('forgets the task of a run once its terminal batch has ended the run', async () => {
+      const recorded = recordingLabels(f)
+      const failure = '{"name":"Boom"}'
+      const endings = {
+        complete: (run: ClaimedRun) => recorded.store.complete(Q, run.runId, run.claimToken, '{}'),
+        fail: (run: ClaimedRun) => recorded.store.fail(Q, run.runId, run.claimToken, failure, null),
+        'fail with a retry': (run: ClaimedRun) =>
+          recorded.store.fail(Q, run.runId, run.claimToken, failure, { delaySeconds: 60 }),
+      }
+      const askedAgain: Record<string, { refusal: string; labels: string[] }> = {}
+      for (const [name, end] of Object.entries(endings)) {
+        await recorded.store.spawn(Q, name, '{}')
+        const run = await claimActivated(recorded.store, Q, `w-${name}`)
+        await end(run)
+        recorded.labels.length = 0
+        askedAgain[name] = { refusal: await refusalName(end(run)), labels: [...recorded.labels] }
+      }
+      expect(askedAgain, 'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run').toEqual({
+        complete: { refusal: 'LeaseLostError', labels: ['run-task', 'complete', 'refusal-state'] },
+        fail: { refusal: 'LeaseLostError', labels: ['run-task', 'fail', 'refusal-state'] },
+        'fail with a retry': {
+          refusal: 'LeaseLostError',
+          labels: ['run-task', 'fail', 'refusal-state'],
+        },
+      })
     })
 
     // AwaitRefused and RefusedNeverWaits: a child in another queue is refused for good,
@@ -913,8 +886,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           } else {
             expect(inline, `seed ${seed}`).toBe(payloadJson)
           }
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          expect(await childTaskViolations(fx.raw), `seed ${seed}`).toEqual([])
+          expect(await engineHistoryViolations(fx.raw), `seed ${seed}`).toEqual([])
         })
       }
     })
@@ -963,10 +935,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           observed[batch.label] = {
             delivered: outcomes.filter(Boolean).length,
             strandedWaits: await waitCount(fx),
-            violations: [
-              ...(await engineInvariantViolations(fx.raw)),
-              ...(await childTaskViolations(fx.raw)),
-            ],
+            violations: await engineHistoryViolations(fx.raw),
             // The executor runs a deadlock victim again, so every wakeup can be delivered
             // while the await and the batch take their locks in opposite orders.
             deadlocks: fx.deadlocks(),

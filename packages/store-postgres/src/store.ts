@@ -1,12 +1,17 @@
 import {
   type Buggify,
+  CHECKPOINT_INTEGER_BOUNDS,
   type Checkpoint,
   type CheckpointWrite,
   type ClaimedRun,
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_RETRY,
   DERIVED_INTEGER_BOUNDS,
   EventName,
   type FailOutcome,
+  type FailedRollback,
   FencedBatch,
+  HeldPort,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
   LOST_LEASE,
@@ -15,17 +20,16 @@ import {
   NOW,
   PARKED_CLAIM_CLEARED_TEXT,
   PERSISTED_INTEGER_BOUNDS,
-  POSITIVE_CLAIM_GENERATION_BOUNDS,
-  type PersistedIntegerBounds,
-  type PersistedIntegerBoundsExceptClaimGeneration,
   READS_SEED,
   REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
+  RUN_INTEGER_BOUNDS,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
+  SWEEP_PIPELINE_WIDTH,
   SWEEP_SCAN_DRIFT,
   type SchedulerStore,
   type SpawnOptions,
@@ -33,18 +37,20 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  TASK_INTEGER_BOUNDS,
+  type TaskDoneDialect,
   type TaskOutcome,
   type TaskResult,
   type WakeSpec,
   activateCas,
   activatedRunRead,
   addTaskDone,
+  awaitTaskDone,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
   checkpointsRead,
-  childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
@@ -53,35 +59,35 @@ import {
   coalesced,
   completeCas,
   completeTaskMirror,
-  decodeBoundedInteger,
+  decodeClaimedRun,
   decodeRollbackOutcome,
   decodeTaskResult,
   deferLaunchCas,
   durationToMs,
   emitEventCas,
   emittedEventRead,
-  encodeTaskOutcome,
+  endingTask,
+  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
   heartbeatCas,
   heartbeatRemainingRead,
-  isTerminalState,
   mapLimit,
-  materializeTaskDoneCas,
   neverBuggify,
   nextWakeRead,
   normalizeRetryStrategy,
-  parseTaskValueJson,
+  persistedPositiveClaimGeneration,
+  persistedRowInteger,
   prepareRead,
   rawSql,
+  readRows,
   refusalStateRead,
   refusedLease,
   refusedWriteError,
   registerWaitCas,
   reopenLostLaunchCas,
   requireDerivedInteger,
-  requireDurableString,
-  requireIdentifiersFit,
+  requireFailedRollback,
   requireSagaStepFits,
   requireEpochMs,
   requirePositiveClaimGeneration,
@@ -91,7 +97,6 @@ import {
   reviveCas,
   revivedRunRead,
   rollbackPassInsert,
-  runTaskRead,
   serializeTaskHeaders,
   serializeTaskValue,
   spawnIdempotencyKey,
@@ -99,14 +104,15 @@ import {
   spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
-  storageValueKind,
+  stampedRunState,
   storedEventRead,
   suspendCas,
   sweepDueCancelsRead,
   sweepExpiredClaimsRead,
-  taskDoneStateRead,
   taskResultRead,
+  taskStateValue,
   userRetrySuccessorInsert,
+  wakeHasOwn,
   wakeRunsUpdate,
 } from '@durablerun/core'
 import {
@@ -114,7 +120,6 @@ import {
   QUEUED,
   cancelDue,
   checkpointInItsPhase,
-  checkpointIsAnAttemptRecord,
   checkpointIsTheEngines,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -147,21 +152,6 @@ import {
 } from './fragments.js'
 import { NOW_MS } from './time.js'
 import { TREE_DIALECT } from './tree.js'
-
-const DEFAULT_RETRY = normalizeRetryStrategy({
-  kind: 'exponential',
-  baseSeconds: 5,
-  factor: 2,
-  maxSeconds: 3600,
-})
-const DEFAULT_MAX_ATTEMPTS = 5
-const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
-const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
-const CHECKPOINT_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.checkpoints
-const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.hasOwnProperty) as (
-  value: object,
-  key: PropertyKey,
-) => boolean
 
 /**
  * Classify and read a wake once before constructing its SQL shape.
@@ -332,10 +322,8 @@ function taskMirrorsRun(b: FencedBatch, queue: string, runId: string, after: str
     where: 'f.run_id = ?',
     whereArgs: [runId],
     set: {
-      state: `(SELECT f.state FROM runs f
-               WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+      state: stampedRunState(runId, after),
     },
-    setArgs: [runId],
     narrow: `state IN ${LIVE}`,
     rows: 'one',
   })
@@ -431,13 +419,6 @@ const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
   AND ${sweepScanAdmissible('r', 't')}`
 
 /**
- * The sweep runs its per-item batches at most this many at once through core
- * `mapLimit`. The fencing discipline requires per-item atomicity, never
- * sequential issuance.
- */
-const SWEEP_PIPELINE_WIDTH = 8
-
-/**
  * The task still admits this run's completion: it is already terminal, or this is its
  * only live run and no saga began. A task that is rolling back cannot complete
  * (DESIGN.md §3.10, specs/Sagas.tla ForwardFrozenInSaga).
@@ -457,13 +438,6 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
  */
 const REFUSAL_STATE = prepareRead({ runId: 'string' }, (binds: { runId: string }) =>
   refusalStateRead(binds),
-)
-const RUN_TASK = prepareRead(
-  { queue: 'string', runId: 'string' },
-  (binds: { queue: string; runId: string }) => runTaskRead(binds),
-)
-const TASK_DONE_STATE = prepareRead({ taskId: 'string' }, (binds: { taskId: string }) =>
-  taskDoneStateRead(binds),
 )
 const TASK_RESULT = prepareRead(
   { queue: 'string', taskId: 'string' },
@@ -517,14 +491,17 @@ const NEXT_WAKE = prepareRead({ queue: 'string' }, (binds: { queue: string }) =>
  * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
  * timestamps come from NOW_MS (rule 3).
  */
-export class PostgresSchedulerStore implements SchedulerStore {
+export class PostgresSchedulerStore extends HeldPort implements SchedulerStore {
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
     private readonly buggify: Buggify = neverBuggify,
-  ) {}
+  ) {
+    super()
+  }
 
   private readonly runTasks = new RunTaskMemo()
+  private taskDoneFacts: TaskDoneDialect | undefined
 
   async spawn(
     queue: string,
@@ -532,10 +509,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
-    requireIdentifiersFit({ queue })
-    // The queue becomes durable here, so it is held to the domain every store keeps.
-    requireDurableString('queue', queue)
-    const durableTaskName = requireDurableString('taskName', taskName)
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
     const taskId = this.ids.uuidv7()
@@ -588,7 +561,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       spawnTaskCas({
         taskId,
         queue,
-        taskName: durableTaskName,
+        taskName,
         paramsJson,
         headersJson,
         retryStrategyJson: retry,
@@ -605,6 +578,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
                 claimToken: childOf.claimToken,
                 taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
                 liveTask: sqlFragment(`t.state IN ${LIVE}`),
+                // A child is forward progress, and the forward phase is frozen once a saga began.
+                phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [childOf.parentTaskId]),
               },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS BIGINT) + CAST(? AS BIGINT)`, [
@@ -691,7 +666,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIdentifiersFit({ queue })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
@@ -755,16 +729,25 @@ export class PostgresSchedulerStore implements SchedulerStore {
       }),
       effectiveLimit,
     )
+    // The runs this batch took, as both follow-ons below select them. The stamp is the
+    // fence, and core adds it to every derived source. The token is there for the planner
+    // and narrows nothing: the compare-and-set above wrote the token and the stamp on the
+    // same rows in one statement, and under a token that already holds a run it took
+    // nothing. By queue and state alone the only index is `runs_poll`, so each of these
+    // reads walked every running run of the queue. `runs_held` finds what one token holds.
+    const taken = {
+      where: `f.queue = ? AND f.state = 'running' AND f.claimed_by = ?`,
+      whereArgs: [queue, claimToken],
+    }
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
       relation: 'runs-to-tasks',
       fence: 'claim',
       queue,
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       set: {
-        state: `'running'`,
+        state: taskStateValue('running'),
         // The eligibility guard makes this exactly one. Keep the expression
         // scalar even under a guard regression so every dialect exposes that
         // regression as the same poisoned-state change instead of relying on
@@ -791,8 +774,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     b.derived('waits-timeout', {
       relation: 'runs-to-waits',
       fence: 'claim',
-      where: `f.queue = ? AND f.state = 'running'`,
-      whereArgs: [queue],
+      ...taken,
       narrow: `status = 'waiting'
             AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms)}
             AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
@@ -836,7 +818,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<ClaimedRun | null> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('activate.claimGen', claimGen)
     // Buggify: a lost activation is always legal — the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
@@ -921,7 +902,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     extendLeaseSeconds: number,
   ): Promise<LeaseState> {
-    requireIdentifiersFit({ queue, runId })
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
@@ -969,7 +949,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * sequentially (the reviewed RTT pileup).
    */
   async sweep(queue: string, limit: number): Promise<SweptRun[]> {
-    requireIdentifiersFit({ queue })
     const budget = clampLimit(limit)
     if (budget === 0) return []
     const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
@@ -1056,7 +1035,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
     const launchLost = sqlFragment(guard)
@@ -1120,7 +1098,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -1130,7 +1108,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_RELAUNCH_CAP],
       // Terminal only when this batch placed no rollback pass.
       narrow: `state IN ${LIVE}
@@ -1181,7 +1159,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
@@ -1256,7 +1233,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: { state: `'failed'`, failure_reason: '?' },
+      set: { state: taskStateValue('failed'), failure_reason: '?' },
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE}
             AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries)}
@@ -1283,7 +1260,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       whereArgs: [successorId],
       set: {
         infra_retries: INFRA_RETRIES_FROM('?', b.fence('successor')),
-        state: `'pending'`,
+        state: taskStateValue('pending'),
         last_attempt_run: '?',
       },
       setArgs: [successorId, successorId],
@@ -1334,7 +1311,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * sole authority and advisory signals never revoke it.
    */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
-    requireIdentifiersFit({ queue, runId })
     const unexpired = runClaimUnexpired('runs', NOW_MS)
     const owner = runOwnedByTask('runs', 't')
     const [expired] = await this.db.batch('expire-lease-now', [
@@ -1358,7 +1334,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * Replay-safe: re-applying the same beat is the same row.
    */
   async driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void> {
-    requireIdentifiersFit({ queue, driverId })
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
@@ -1384,7 +1359,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     queue: string,
     taskId: string,
   ): Promise<{ runId: string; attempt: number } | null> {
-    requireIdentifiersFit({ queue, taskId })
     const runId = this.ids.uuidv7()
     const top = (task: string) =>
       `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
@@ -1452,7 +1426,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    requireIdentifiersFit({ queue, taskId })
     const batch = new FencedBatch('cancel-task', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1476,7 +1449,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
       'cancel',
@@ -1533,10 +1505,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
 
   /** The rows of the read a batch holds under a name. A name it does not hold is refused, never read as no row. */
   private async rows(b: FencedBatch, name: string): Promise<SqlRow[]> {
-    const result = (await b.run(this.db)).results[name]
-    if (result === undefined)
-      throw new Error(`FencedBatch[${b.label}] holds no read named '${name}'`)
-    return result.rows
+    return readRows(b, await b.run(this.db), name)
   }
 
   /**
@@ -1557,7 +1526,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<string | null> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('claimedTaskName.claimGen', claimGen)
     // The launch carries only ids, so the worker learns the claimed task's name
     // here. The name is immutable, so an unfenced read is safe; the claim
@@ -1582,7 +1550,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimGen: number,
     inSeconds: number,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
     const wakePlan = prepareWake({ inSeconds }, true)
     // The rolling-deploy deferral, decided before activation.
@@ -1628,7 +1595,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     wake: WakeSpec,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
     // The task must be ELIGIBLE, not merely live — the same predicate
@@ -1682,7 +1648,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     wake: WakeSpec,
     checkpoint: CheckpointWrite,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId, 'checkpoint.key': checkpoint?.key })
     requireSagaStepFits('checkpoint.key', checkpoint?.key)
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
@@ -1741,10 +1706,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'complete',
       completeCas({
@@ -1763,6 +1726,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
+    this.runTasks.forget(runId)
   }
 
   /**
@@ -1838,11 +1802,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       set: {
         attempts: USER_ATTEMPTS_FROM('?', b.fence(fence)),
         max_attempts: `${USER_ATTEMPTS_FROM('?', b.fence(fence))} + 1`,
-        state: `(SELECT f.state FROM runs f
-                 WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('rollback-pass')})`,
+        state: stampedRunState(passId, 'rollback-pass'),
         last_attempt_run: '?',
       },
-      setArgs: [failedRunId, failedRunId, passId, passId],
+      setArgs: [failedRunId, failedRunId, passId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -1864,13 +1827,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
     failureJson: string,
     retry: { delaySeconds: number } | null,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId })
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
     const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'fail',
       queue,
@@ -1896,19 +1857,28 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId, 'rollbackTry.key': rollbackTry.key })
-    requireSagaStepFits('rollbackTry.key', rollbackTry.key)
+    const failed = requireFailedRollback(rollback)
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
     const taskId = await this.endingTask('failRollback', queue, runId)
+    // The store names the attempt record and counts the attempt, one past the last one
+    // stored, which core reads here and the claim's fence keeps current (DESIGN.md §3.10).
+    const tried = await failedRollbackRecord(
+      {
+        open: () =>
+          new FencedBatch('rollback-tries', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        run: (batch: FencedBatch) => batch.run(this.db),
+      },
+      taskId,
+      failed,
+    )
     const b = new FencedBatch('fail-rollback', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     return this.failInto(b, {
       operation: 'failRollback',
       queue,
@@ -1919,7 +1889,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       successorId: null,
       retryDelayMs: null,
       passId,
-      rollback: { tried: rollbackTry, passDelayMs },
+      rollback: { tried, passDelayMs },
     })
   }
 
@@ -1972,21 +1942,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
-         )${rollback === undefined ? '' : ` AND ${checkpointIsAnAttemptRecord('?')}`}`,
-          [
-            ...(retryDelayMs === null ? [] : [retryDelayMs]),
-            // The attempt record is the caller's checkpoint, and it may carry no other name.
-            ...(rollback === undefined ? [] : [rollback.tried.key]),
-          ],
+         )`,
+          retryDelayMs === null ? [] : [retryDelayMs],
         ),
       }),
     )
     // The saga arms (DESIGN.md §3.10, specs/Sagas.tla). Outside the phase, a failure no
     // retry follows is the task's terminal decision. When a registered step started and
     // is not rolled back, this batch enters the phase in place of ending the task. A
-    // retry the user budget refuses is that same decision. Inside the phase the caller
-    // hands over the failed rollback's attempt record, which lands behind the failure
-    // itself, so a failed attempt is counted or the pass did not fail. A retry there is
+    // retry the user budget refuses is that same decision. Inside the phase the entry
+    // hands over the failed rollback's attempt record, which the store named and counted
+    // and which lands behind the failure itself, so a failed attempt is counted or the
+    // pass did not fail. A retry there is
     // a pass the user budget does not cap, and a failure without the record is capped
     // like any other, which halts the saga.
     if (rollback !== undefined) {
@@ -2063,11 +2030,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [successorId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `(SELECT f.state FROM runs f
-                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')})`,
+          state: stampedRunState(successorId, 'successor'),
           last_attempt_run: '?',
         },
-        setArgs: [runId, successorId, successorId],
+        setArgs: [runId, successorId],
         narrow: `state IN ${LIVE}`,
         rows: 'one',
       })
@@ -2080,7 +2046,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2102,7 +2068,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         whereArgs: [runId],
         set: {
           attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
-          state: `'failed'`,
+          state: taskStateValue('failed'),
           failure_reason: '?',
         },
         setArgs: [runId, failureJson],
@@ -2126,11 +2092,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    this.runTasks.forget(runId)
     return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
-    requireIdentifiersFit({ queue, taskId })
     const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
     const b = new FencedBatch('get-checkpoints', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('checkpoints', CHECKPOINTS, { queue, taskId, visibleThrough })
@@ -2177,7 +2143,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     stateJson: string,
     extendLeaseSeconds: number,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, taskId, runId, checkpointName })
     requireSagaStepFits('checkpointName', checkpointName)
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     const b = new FencedBatch('set-checkpoint', this.ids.token(), {
@@ -2227,7 +2192,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
-    requireIdentifiersFit({ queue, taskId })
     const b = new FencedBatch('task-result', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('result', TASK_RESULT, { queue, taskId })
     const rows = await this.rows(b, 'result')
@@ -2239,7 +2203,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
-    requireIdentifiersFit({ queue })
     const b = new FencedBatch('next-wake', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('wake', NEXT_WAKE, { queue })
     const rows = await this.rows(b, 'wake')
@@ -2261,7 +2224,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    requireIdentifiersFit({ queue, eventName })
     const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
@@ -2270,7 +2232,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -2302,27 +2263,49 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
     if (stored?.payload_type !== 'text') {
-      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      throw new RangeError(`emitEvent ${queue}/${name.display} found a non-TEXT stored payload`)
     }
   }
 
   /**
-   * A run's task, read before the batch that ends the run. A terminal batch names its
-   * task's completion event, and `complete` and `fail` are handed only the run. The
-   * task of a run never changes, so an unfenced read is safe, and so is the answer
-   * `activate` gave this store a moment ago, which costs no read. A run remembered
-   * under another queue still loses, because the batch's compare-and-set names the
-   * queue. A run this queue does not have is refused here as the batch would refuse it.
+   * What this dialect supplies to core's side of a task's ending and of a child await,
+   * built on first use: a worker's own terminal write finds its task in the memo and
+   * needs none of it.
    */
-  private async endingTask(operation: string, queue: string, runId: string): Promise<string> {
-    const remembered = this.runTasks.recall(runId)
-    if (remembered !== undefined) return remembered
-    const b = new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', RUN_TASK, { queue, runId })
-    const rows = await this.rows(b, 'task')
-    const taskId = rows[0]?.task_id
-    if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
-    return taskId
+  private taskDoneDialect(): TaskDoneDialect {
+    this.taskDoneFacts ??= {
+      run: (batch: FencedBatch) => batch.run(this.db),
+      open: {
+        runTask: () => new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        taskDoneState: () =>
+          new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        recordTaskDone: () =>
+          new FencedBatch('record-task-done', this.ids.token(), {
+            now: NOW_MS,
+            tree: TREE_DIALECT,
+          }),
+      },
+      awaitNamedEvent: (awaited, name) =>
+        this.awaitNamedEvent(
+          awaited.queue,
+          awaited.taskId,
+          awaited.runId,
+          awaited.claimToken,
+          awaited.stepName,
+          name,
+          awaited.timeoutSeconds,
+        ),
+      refusal: (operation, runId) => this.refusal(operation, runId),
+      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      storedPayloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+    }
+    return this.taskDoneFacts
+  }
+
+  /** A run's task, before the batch that ends the run: core's read, behind this store's memo. */
+  private endingTask(operation: string, queue: string, runId: string): Promise<string> {
+    return endingTask(this.taskDoneDialect(), this.runTasks, operation, queue, runId)
   }
 
   /**
@@ -2449,7 +2432,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: `f.wake_event = ? AND f.state = 'pending'`,
       whereArgs: [eventName],
-      set: { state: `'pending'` },
+      set: { state: taskStateValue('pending') },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',
     })
@@ -2504,7 +2487,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     eventName: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    requireIdentifiersFit({ queue, taskId, runId, stepName, eventName })
     const answer = await this.awaitNamedEvent(
       queue,
       taskId,
@@ -2513,21 +2495,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
       stepName,
       EventName.fromPort('awaitEvent', eventName),
       timeoutSeconds,
-      null,
     )
     if (answer === null) throw await this.refusal('awaitEvent', runId)
     return answer
   }
 
-  /**
-   * The child await (DESIGN.md §3.2, specs/ChildTasks.tla): `await-event` for the
-   * completion event of `childTaskId`. The batch decides everything the model's await
-   * does in one step: it hits an event that exists, and it registers only on a live
-   * child in this queue. An await that did neither reads the child, once, to say why.
-   * A child in another queue, or no such task, is refused. A child that ended with
-   * nothing recorded has its outcome recorded by the await itself, in a second batch
-   * fenced on the row that was read. Anything else is this run's own claim, lost.
-   */
+  /** The child await (DESIGN.md §3.2). The protocol is core's `awaitTaskDone`, and this dialect supplies its facts. */
   async awaitTaskDone(
     queue: string,
     taskId: string,
@@ -2537,112 +2510,15 @@ export class PostgresSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    requireIdentifiersFit({ queue, taskId, runId, stepName })
-    const name = EventName.awaitedTaskDone(childTaskId)
-    // A child revived before the read, or between the read and the batch that records it,
-    // is live again, so the next round registers. Two rounds cover that. A live child that
-    // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
-    // the claim is lost, the task is cancelled, or the timeout does not fit.
-    for (let round = 0; round < 2; round++) {
-      const answer = await this.awaitNamedEvent(
-        queue,
-        taskId,
-        runId,
-        claimToken,
-        stepName,
-        name,
-        timeoutSeconds,
-        childTaskId,
-      )
-      if (answer !== null) return answer
-      const child = await this.taskDoneState(childTaskId)
-      const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
-      if (refusal !== null) throw refusal
-      // A live child was revived since the batch looked, and the next round registers on it.
-      if (child === null || !isTerminalState(child.outcome.state)) continue
-      const recorded = await this.recordTaskDone(
-        { queue, taskId, runId, claimToken },
-        childTaskId,
-        child.stamp,
-        child.outcome as TaskOutcome,
-      )
-      if (recorded !== null) return recorded
-    }
-    throw await this.refusal('awaitTaskDone', runId)
-  }
-
-  /**
-   * A task as a child await sees it: its queue, its outcome, and the stamp its row
-   * carries. Read only off the common path: by an await that neither registered nor
-   * hit, to say why.
-   */
-  private async taskDoneState(taskId: string): Promise<{
-    queue: string
-    outcome: TaskResult
-    stamp: string | null
-  } | null> {
-    const b = new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
-    b.readPrepared('task', TASK_DONE_STATE, { taskId })
-    const rows = await this.rows(b, 'task')
-    const row = rows[0]
-    if (row === undefined) return null
-    return {
-      queue: String(row.queue),
-      outcome: decodeTaskResult(taskId, row),
-      stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
-    }
-  }
-
-  /**
-   * Record the outcome of a child that ended with no completion event, and answer the
-   * await with it (ChildTasks.tla's AwaitMaterialize). Null when the batch recorded
-   * nothing and found no event: the child's row is no longer the one that was read, or
-   * this run's claim is gone.
-   */
-  private async recordTaskDone(
-    claim: { queue: string; taskId: string; runId: string; claimToken: string },
-    childTaskId: string,
-    childStamp: string | null,
-    outcome: TaskOutcome,
-  ): Promise<{ emitted: true; payloadJson: string } | null> {
-    const { queue } = claim
-    const name = EventName.taskDone(childTaskId)
-    const b = new FencedBatch('record-task-done', this.ids.token(), {
-      now: NOW_MS,
-      tree: TREE_DIALECT,
+    return awaitTaskDone(this.taskDoneDialect(), {
+      queue,
+      taskId,
+      runId,
+      claimToken,
+      stepName,
+      childTaskId,
+      timeoutSeconds,
     })
-    b.lockEvent({ queue, eventName: name })
-    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
-    b.casTree(
-      'materialize',
-      materializeTaskDoneCas({
-        ...awaiting,
-        childTaskId,
-        eventName: name,
-        payloadJson: encodeTaskOutcome(outcome),
-        childStamp,
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    b.openTailTree(
-      'hit',
-      'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
-      emittedEventRead({
-        ...awaiting,
-        eventName: name,
-        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
-        liveTask: sqlFragment(`t.state IN ${LIVE}`),
-      }),
-    )
-    const { results } = await b.run(this.db)
-    const row = results.hit?.rows[0]
-    if (row === undefined) return null
-    if (row.payload_type !== 'text') {
-      throw new RangeError(
-        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
-      )
-    }
-    return { emitted: true, payloadJson: String(row.payload) }
   }
 
   /**
@@ -2662,7 +2538,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     stepName: string,
     name: EventName,
     timeoutSeconds: number | null,
-    awaitedTaskId: string | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
     const eventName = name.value
     const timeoutMs =
@@ -2673,7 +2548,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName: name })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by
@@ -2696,7 +2570,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
         claimToken,
         stepName,
         eventName: name,
-        awaitedTaskId,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2747,7 +2620,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       queue,
       where: `f.run_id = ? AND f.state = 'sleeping'`,
       whereArgs: [runId],
-      set: { state: `'sleeping'` },
+      set: { state: taskStateValue('sleeping') },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
@@ -2773,11 +2646,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
         // A child await reaches the task's code, which never sees the engine's event name.
-        const subject =
-          awaitedTaskId === null
-            ? `awaitEvent ${queue}/${eventName}`
-            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
-        throw new RangeError(`${subject} found a non-TEXT stored payload`)
+        const operation = name.taskId === null ? 'awaitEvent' : 'awaitTaskDone'
+        throw new RangeError(
+          `${operation} ${queue}/${name.display} found a non-TEXT stored payload`,
+        )
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }
@@ -2786,79 +2658,4 @@ export class PostgresSchedulerStore implements SchedulerStore {
     if (won !== 'register') return null
     return { emitted: false }
   }
-}
-
-/**
- * Decode one persisted field through the bounds branded for that exact field.
- *
- * The query supplies only its row and a field descriptor. The descriptor owns
- * both the row key and the interval, so a caller cannot decode one property
- * through another property's coincidentally equal bounds.
- */
-export function persistedRowInteger(
-  scope: string,
-  row: SqlRow,
-  bounds: PersistedIntegerBoundsExceptClaimGeneration,
-): number {
-  return decodePersistedRowInteger(scope, row, bounds)
-}
-
-function persistedPositiveClaimGeneration(scope: string, row: SqlRow): number {
-  return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
-}
-
-function decodePersistedRowInteger(
-  scope: string,
-  row: SqlRow,
-  bounds: PersistedIntegerBounds,
-): number {
-  const separator = bounds.field.indexOf('.')
-  if (separator < 0 || separator === bounds.field.length - 1) {
-    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
-  }
-  const column = bounds.field.slice(separator + 1)
-  const value = row[column]
-  const decoded = decodeBoundedInteger(value, bounds)
-  if (decoded.ok) return decoded.value
-  throw new RangeError(
-    `${scope}.${column} must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
-  )
-}
-
-function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
-  const claimed: ClaimedRun = {
-    runId: String(row.run_id),
-    taskId: String(row.task_id),
-    taskName: String(row.task_name),
-    attempt: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.attempt),
-    infraRetries: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.infra_retries),
-    claimGen: persistedPositiveClaimGeneration('claim', row),
-    claimToken,
-    claimExpiresAtEpochMs: persistedRowInteger(
-      'claim',
-      row,
-      RUN_INTEGER_BOUNDS.claim_expires_at_ms,
-    ),
-    leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
-    paramsJson: String(row.params),
-    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),
-    maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
-    headers:
-      row.headers === null
-        ? {}
-        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),
-  }
-  if (row.wake_event !== null && row.wake_step !== null) {
-    // The SDK matches on the exact step key. Rows parked before schema v3
-    // carry it only in waits, so claim and emit copy it into the run before
-    // deleting that registration. Never fabricate a step from the event name:
-    // repeated awaits may share the event while using distinct step keys.
-    const event = String(row.wake_event)
-    const step = String(row.wake_step)
-    claimed.wake =
-      row.event_payload === null
-        ? { event, step, timedOut: true }
-        : { event, step, payloadJson: String(row.event_payload) }
-  }
-  return claimed
 }

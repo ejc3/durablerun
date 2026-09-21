@@ -1,5 +1,6 @@
 import {
   InvalidDurableStringError,
+  PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -10,6 +11,8 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   StoreUnavailableError,
+  isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -38,6 +41,7 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
   1060, // ER_DUP_FIELDNAME
   1061, // ER_DUP_KEYNAME
   ER_NO_SUCH_TABLE,
+  1176, // ER_KEY_DOES_NOT_EXITS, as MySQL spells it: a statement forces an index that is not there
   1305, // ER_SP_DOES_NOT_EXIST
 ])
 /**
@@ -47,6 +51,45 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
  * budget was gone.
  */
 const ER_DATA_TOO_LONG = 1406
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. MySQL sends the state beside its error number, and a class takes
+ * in every number MySQL files under it, 1064 among them, a statement the server will never
+ * accept. The PostgreSQL executor reads the same three classes, and nothing holds the two
+ * lists together: each is its own server's rule.
+ *
+ * The answers above keep a branch by number and are read first, because each has a type of
+ * its own: a missing `meta` on the version read, a value too long for its column, and the
+ * schema mismatch numbers. Every other state is an outage: a deadlock victim (1213, state
+ * 40001), which the executor runs again before it reports one, a lock wait timeout (1205,
+ * HY000), and an error with no state at all, as a lost connection or a closed pool is.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
+
+/**
+ * Answers as permanent as the classes above that MySQL files outside them, so no class can
+ * name them: three under HY000, its general state, which also holds a lock wait timeout,
+ * and one under 01000, the state of a warning.
+ */
+const PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS = new Set([
+  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column
+  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default
+  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column
+  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
+])
+
+/**
+ * Numbers MySQL files under one of the classes above that a retry cures, so they are read
+ * before the class: a limit on the server's or an account's connections, and on prepared
+ * statements. Another session's release lifts each of them.
+ */
+const OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS = new Set([
+  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections
+  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits
+  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count
+])
 
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
@@ -82,8 +125,12 @@ class MysqlResultContractError extends TypeError {}
  *   truncation, whatever the server's default is. Backslash escapes stay on.
  * - UTC, English server messages, because the affected-row normalization reads the
  *   server's `Rows matched:` line.
+ * - Autocommit on. It is the server's default, and a read sent alone depends on it
+ *   (`sentAlone`): with autocommit off, the read would open a transaction that stays open
+ *   on a pooled connection.
  */
 const SESSION_SETUP = `SET SESSION
+  autocommit = 1,
   transaction_isolation = 'READ-COMMITTED',
   sql_mode = 'STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ONLY_FULL_GROUP_BY,NO_ZERO_DATE,NO_ZERO_IN_DATE',
   time_zone = '+00:00',
@@ -274,23 +321,15 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch sees one consistent snapshot, and cannot write. */
+/**
+ * A read batch sees one consistent snapshot, unless it is one read sent alone (`sentAlone`),
+ * and its read-only transaction refuses DML. It does not refuse DDL: a DDL statement commits
+ * by itself, and that commit ends the transaction first. No store sends DDL as a read, and a
+ * `migrate:` batch sent as one is refused before it is sent (`refuseMigrationBatchWithoutItsLock`).
+ */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
-] as const
-/**
- * The one-statement schema-version read begins under READ COMMITTED, with no snapshot
- * taken ahead of it. A consistent snapshot is older than the statement that reads
- * through it, and MySQL refuses to read a table whose definition committed after the
- * snapshot (error 1412, "Table definition has changed"), so a version read racing a
- * bootstrap failed. Measured over 250 cold starts with six racing readers: 1500 such
- * refusals under the snapshot and none under READ COMMITTED, where the statement sees
- * either no table or the table with its row.
- */
-const BEGIN_VERSION_READ = [
-  'SET TRANSACTION ISOLATION LEVEL READ COMMITTED',
-  'START TRANSACTION READ ONLY',
 ] as const
 
 /** Matching coordinates hash to one server-wide lock name, scoped to this database. */
@@ -300,9 +339,16 @@ const NAMED_UNLOCK_SQL = `SELECT RELEASE_LOCK(SHA2(JSON_ARRAY(DATABASE(), ?, ?, 
 type LockCoordinates = readonly [domain: string, first: string, second: string]
 
 function lockCoordinates(lock: SqlTransactionLock): LockCoordinates {
-  return lock.kind === 'event'
-    ? ['durablerun:event', lock.queue, lock.eventName]
-    : ['durablerun:claim', lock.queue, lock.claimToken]
+  switch (lock.kind) {
+    case 'event':
+      return ['durablerun:event', lock.queue, lock.eventName]
+    case 'claim':
+      return ['durablerun:claim', lock.queue, lock.claimToken]
+    case 'migration':
+      return [MIGRATION_LOCK, '', '']
+    default:
+      return refuseUnknownLockKind(lock)
+  }
 }
 
 /**
@@ -321,10 +367,11 @@ async function acquireNamedLock(connection: PoolConnection, lock: LockCoordinate
 }
 
 /**
- * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, where
- * any other excess is error 1406. The cut value is a different identifier, so a write that
- * was cut is refused like one that did not fit, and its transaction rolls back. The server
- * reports a warning count with every result, so this costs a round trip only when there
+ * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, and was
+ * measured to cut a trailing tab and a trailing line break the same way under this session's
+ * mode, where any other excess is error 1406. The cut value is a different identifier, so a
+ * write that was cut is refused like one that did not fit, and its transaction rolls back. The
+ * server reports a warning count with every result, so this costs a round trip only when there
  * is something to read.
  */
 async function refuseWriteCutToFit(
@@ -343,6 +390,56 @@ async function refuseWriteCutToFit(
   }
 }
 
+/**
+ * Whether a batch is sent as its one statement alone, with no transaction around it. The
+ * session has autocommit on, so the server commits the statement by itself, in one round
+ * trip where a read batch's transaction cost four.
+ *
+ * Only a read goes alone, and only one the executor KNOWS is a read: a statement core
+ * compiled on its read path (`isTreeBuiltRead`), whose root is a SELECT inside a closed
+ * grammar, or the canonical schema-version read, which is matched by its whole text. How a
+ * statement's text begins shows nothing, because a text that begins with SELECT can still
+ * call what writes. A read sent as text therefore keeps the read-only transaction, where
+ * the server refuses every write.
+ *
+ * The brand says where a statement came from, and not what a store's own fragment holds:
+ * core reads a fragment for clocks and comments only. A fragment that holds a second
+ * statement is refused by the server, which takes one statement in a text unless the
+ * connection asked for more, and a pool this executor opens never does
+ * (`multipleStatements: false`). A pool handed to `fromPool` that does is outside what was
+ * checked. A fragment that CALLS a function that writes is refused by nothing once the
+ * read goes alone. No read of the stores calls one.
+ *
+ * What the transaction gave such a read still holds. One statement reads through one view
+ * under READ COMMITTED, its subqueries included. The schema-version read has to be such a
+ * statement: a snapshot taken ahead of it is older than a table created since, and MySQL
+ * refuses to read such a table (error 1412). Measured over 250 cold starts with six racing
+ * readers: 1500 such refusals under a snapshot, and none for one statement under READ
+ * COMMITTED, which sees either no table or the table with its row.
+ *
+ * A write always keeps its transaction. The transaction is what rolls a write back when
+ * MySQL cut a value to fit (`refuseWriteCutToFit`) or when its result is refused, and the
+ * executor learns of either only after the server has run the statement. Nothing about a
+ * statement's text or binds shows that neither will happen: MySQL cuts a trailing tab or
+ * line break as it cuts a space, in a bind sent as bytes or a literal in the text as in a
+ * bound string.
+ */
+function sentAlone(
+  statements: readonly SqlStatement[],
+  mode: SqlBatchMode,
+  schemaVersionRead: boolean,
+): boolean {
+  const [statement] = statements
+  if (statement === undefined || statements.length !== 1) return false
+  if (mode !== 'read') return false
+  return schemaVersionRead || isTreeBuiltRead(statement)
+}
+
+/**
+ * The canonical version read, for which a missing table means a database with no schema
+ * yet. It is matched by its whole text, so the executor knows it for a read and sends it
+ * alone.
+ */
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -358,12 +455,44 @@ function isSchemaVersionRead(
   )
 }
 
-const isMigrationWrite = (label: string, mode: SqlBatchMode): boolean =>
-  mode === 'write' && (label === 'migrate:bootstrap' || /^migrate:v[0-9]+$/.test(label))
+/**
+ * A batch whose label begins with `migrate:` is a migration batch. It is a write that names
+ * the migration lock in its control, or it is the canonical version read, which is known by
+ * its whole text and takes no lock. Anything else under that label is refused: a write that
+ * names no lock, and a batch sent as a read, whose read-only transaction does not stop DDL.
+ * The label is read here only to REFUSE. The lock a batch
+ * runs under is the one its control names, and no label chooses one: chosen from a list of
+ * labels, a `migrate:` label the list does not know runs its DDL beside another migrator,
+ * and MySQL commits each DDL statement on its own, so nothing can undo it.
+ */
+function refuseMigrationBatchWithoutItsLock(
+  label: string,
+  mode: SqlBatchMode,
+  lock: SqlTransactionLock | undefined,
+  schemaVersionRead: boolean,
+): void {
+  if (!label.startsWith('migrate:') || schemaVersionRead) return
+  if (mode === 'read') {
+    throw new TypeError(
+      `batch(${label}) is a migration batch sent as a read: a read-only transaction does not stop DDL, and the one read under this label is the canonical version read`,
+    )
+  }
+  if (lock?.kind !== 'migration') {
+    throw new TypeError(
+      `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
+    )
+  }
+}
 
 function errorNumber(error: unknown): number | undefined {
   const errno = (error as { errno?: unknown } | null)?.errno
   return typeof errno === 'number' ? errno : undefined
+}
+
+/** The class of the SQLSTATE a server error carries: its first two characters. */
+function sqlStateClass(error: unknown): string | undefined {
+  const state = (error as { sqlState?: unknown } | null)?.sqlState
+  return typeof state === 'string' ? state.slice(0, 2) : undefined
 }
 
 /** One definition of a deadlock victim, for the count and for the decision to run it again. */
@@ -375,7 +504,12 @@ function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
-function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
+/**
+ * The typed error a batch's failure becomes. Exported for the case that reads the server's
+ * own list of error numbers and asks this function about each: the package's index does not
+ * name it.
+ */
+export function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof MysqlResultContractError ||
     error instanceof InvalidDurableStringError ||
@@ -404,6 +538,20 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
+    // A limit that a retry cures is an outage whatever class MySQL files it under, so its
+    // class is not read.
+    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)
+      ? undefined
+      : sqlStateClass(error)
+    if (
+      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
+      PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS.has(errno)
+    ) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,
+        { cause: error },
+      )
+    }
   }
   const state = errno === undefined ? '' : ` (MySQL error ${errno})`
   return new StoreUnavailableError(`batch(${label}) failed${state}: ${errorDescription(error)}`, {
@@ -412,15 +560,18 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
 }
 
 /**
- * SqlExecutor over mysql2. Every batch owns one connection and one transaction, so
- * statements are ordered and observe earlier statements of the same batch. Write batches
- * run at READ COMMITTED. Read batches run in a read-only consistent snapshot.
+ * SqlExecutor over mysql2. Every batch owns one connection. A batch of more than one
+ * statement owns one transaction, so its statements are ordered, atomic, and observe
+ * earlier statements of the same batch: a write batch at READ COMMITTED, a read batch
+ * in a read-only consistent snapshot. One read that the executor knows to be a read is
+ * sent alone, because one statement reads one view by itself (`sentAlone`).
  *
  * Statements that carry arguments go through the server's prepared-statement protocol,
  * so a bind is data and never SQL text.
  *
  * A DDL statement commits on its own in MySQL. Only migration batches hold DDL, and they
- * run one at a time under the migration lock, with every statement safe to repeat. The
+ * run one at a time under the migration lock, which each names in its control
+ * (`refuseMigrationBatchWithoutItsLock`), with every statement safe to repeat. The
  * schema-version read takes no lock: the bootstrap is one statement, so there is no
  * state between "no version table" and "a version table with its row" to be kept from.
  */
@@ -489,16 +640,16 @@ export class MysqlExecutor implements SqlExecutor {
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
-    if (prepared.length === 0) return []
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
-    const lock: LockCoordinates | null =
-      transactionLock !== undefined
-        ? lockCoordinates(transactionLock)
-        : isMigrationWrite(label, mode)
-          ? [MIGRATION_LOCK, '', '']
-          : null
+    // The refusals come before anything is sent, and before an empty batch is answered.
+    refuseMigrationBatchWithoutItsLock(label, mode, transactionLock, schemaVersionRead)
+    const lock = transactionLock === undefined ? null : lockCoordinates(transactionLock)
+    if (prepared.length === 0) return []
+    // Decided here, beside the copy and before any wait: what the caller's array holds
+    // after a wait is not what was copied. The brand is on the caller's own object.
+    const alone = sentAlone(statements, mode, schemaVersionRead)
 
     let connection: PoolConnection
     try {
@@ -516,7 +667,7 @@ export class MysqlExecutor implements SqlExecutor {
         await connection.query(SESSION_SETUP)
         this.configured.add(physical)
       }
-      return await this.transact(connection, prepared, mode, lock, schemaVersionRead)
+      return await this.transact(connection, prepared, mode, lock, alone)
     } catch (error) {
       discard = !(error instanceof MysqlResultContractError) && errorNumber(error) === undefined
       throw classifyError(error, label, schemaVersionRead)
@@ -531,7 +682,7 @@ export class MysqlExecutor implements SqlExecutor {
     prepared: readonly PreparedStatement[],
     mode: SqlBatchMode,
     lock: LockCoordinates | null,
-    schemaVersionRead: boolean,
+    alone: boolean,
   ): Promise<SqlResult[]> {
     let locked = false
     try {
@@ -542,14 +693,14 @@ export class MysqlExecutor implements SqlExecutor {
       for (let attempt = 1; ; attempt += 1) {
         let transactionStarted = false
         try {
-          if (mode === 'read') {
-            for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {
-              await connection.query(statement)
+          if (!alone) {
+            if (mode === 'read') {
+              for (const statement of BEGIN_READ) await connection.query(statement)
+            } else {
+              await connection.query('START TRANSACTION')
             }
-          } else {
-            await connection.query('START TRANSACTION')
+            transactionStarted = true
           }
-          transactionStarted = true
           const results: SqlResult[] = []
           for (const statement of prepared) {
             // Each statement is a round trip here. One whose gating statement wrote no row
@@ -572,7 +723,7 @@ export class MysqlExecutor implements SqlExecutor {
               normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql),
             )
           }
-          await connection.query('COMMIT')
+          if (transactionStarted) await connection.query('COMMIT')
           transactionStarted = false
           return results
         } catch (error) {
@@ -593,10 +744,13 @@ export class MysqlExecutor implements SqlExecutor {
           // InnoDB ends a deadlock by rolling one transaction back. That batch committed
           // nothing, so running it again is a first delivery, and the other transaction
           // has its locks by now. Reported as an outage, a finished run would be left for
-          // the sweep to charge an infrastructure retry. Only a write batch is run again:
-          // a read batch takes no row lock, so a deadlock there is not this engine's lock
-          // order. The named lock is held across the attempts, because it was taken before
-          // the transaction and a rollback does not release it.
+          // the sweep to charge an infrastructure retry. Only a write batch is run again.
+          // A read batch cannot be a victim here today: a consistent read takes no InnoDB
+          // lock, and MySQL commits each DDL statement on its own, so no version holds a lock
+          // on one table while it waits for another, which is what aborted reads on
+          // PostgreSQL (DESIGN.md §3.4 rule 11). A version that does is the trigger to run a
+          // read again here as well. The named lock is held across the attempts, because it
+          // was taken before the transaction and a rollback does not release it.
           const runAgain =
             mode === 'write' && attempt < DEADLOCK_VICTIM_ATTEMPTS && isDeadlockVictim(error)
           if (!runAgain) throw error

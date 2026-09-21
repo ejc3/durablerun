@@ -1,12 +1,19 @@
 import {
   InvalidDurableStringError,
+  MIGRATION_WRITE,
   SchemaMismatchError,
-  encodeRollbackTry,
   taskDoneEventName,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
-import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
+import {
+  META_BOOTSTRAP_SQL,
+  META_TABLE_SQL,
+  MIGRATIONS,
+  RUNS_STAMP_INDEX,
+  createIndexIfMissing,
+  setNotNullWhileNullable,
+} from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
@@ -270,32 +277,125 @@ describe('MysqlExecutor against a real server', () => {
     // A migrator that died after the index and before the version runs the version again.
     const db = await openMysqlTestDb({ idNamespace: 'index-repeat' })
     try {
-      const columns = async () => {
-        const [index] = await db.raw.batch(
+      const indexes = [
+        ['runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
+        ['runs_stamp', '(fence_stamp(768))', 'fence_stamp'],
+        ['runs_held', '(queue, claimed_by(255), state)', 'queue,claimed_by,state'],
+      ] as const
+      for (const [name, definition, expected] of indexes) {
+        const columns = async () => {
+          const [index] = await db.raw.batch(
+            'fixture:read',
+            [
+              {
+                sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
+                      FROM information_schema.statistics
+                      WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = ?`,
+                args: [name],
+              },
+            ],
+            'read',
+          )
+          return index?.rows[0]?.columns
+        }
+        const version = createIndexIfMissing('runs', name, definition).map((sql) => ({
+          sql,
+          args: [],
+        }))
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
+        expect(await columns()).toBe(expected)
+        await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
+        expect(await columns()).toBeNull()
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
+        expect(await columns()).toBe(expected)
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone', async () => {
+    // MODIFY restates the whole column. A migrator that planned from a stale read replays
+    // every version that was pending when it read, so a bare MODIFY replayed after a later
+    // version had changed the column would put this declaration back over it. The guarded
+    // form acts on the one fact it is about: a nullable column becomes NOT NULL, and a column
+    // that is not nullable is left as it stands, whatever else has become of it.
+    const db = await openMysqlTestDb({ idNamespace: 'column-repeat' })
+    try {
+      const catalog = async (columns: string) => {
+        const [read] = await db.raw.batch(
           'fixture:read',
           [
             {
-              sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
-                    FROM information_schema.statistics
-                    WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_woken'`,
+              sql: `SELECT ${columns} FROM information_schema.columns
+                     WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
               args: [],
             },
           ],
           'read',
         )
-        return index?.rows[0]?.columns
+        return read?.rows[0]
       }
-      const version6 = createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)').map(
-        (sql) => ({ sql, args: [] }),
+      const column = () => catalog('is_nullable AS nullable, column_comment AS comment')
+      // The form under test is version 10 as it ships, and what this case restates of the
+      // column it reads from the catalog, so it holds no copy of the schema's text.
+      const version = (
+        MIGRATIONS.find((migration) => migration.version === 10)?.statements ?? []
+      ).map((sql) => ({ sql, args: [] }))
+      expect(version).toHaveLength(4)
+      const declared = await catalog(
+        'column_type AS type, character_set_name AS charset, collation_name AS collation',
       )
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
-      await db.raw.batch('fixture:drop', [{ sql: 'DROP INDEX runs_woken ON runs', args: [] }])
-      expect(await columns()).toBeNull()
-      await db.raw.batch('migrate:v6', version6)
-      await db.raw.batch('migrate:v6', version6)
-      expect(await columns()).toBe('queue,wake_event,state')
+      const declaration = `${String(declared?.type)} CHARACTER SET ${String(declared?.charset)} COLLATE ${String(declared?.collation)}`
+      const seen: unknown[] = [await column()]
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:a-later-version', [
+        {
+          sql: `ALTER TABLE events MODIFY payload ${declaration} NOT NULL COMMENT 'as a later version left it'`,
+          args: [],
+        },
+      ])
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:nullable-again', [
+        { sql: `ALTER TABLE events MODIFY payload ${declaration} NULL`, args: [] },
+      ])
+      seen.push(await column())
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      expect(seen, 'mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable').toEqual([
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: 'as a later version left it' },
+        { nullable: 'YES', comment: '' },
+        { nullable: 'NO', comment: '' },
+      ])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('fails loudly over a column the catalog does not hold, where doing nothing would record the version', async () => {
+    // The form does nothing only when the catalog says the column is already NOT NULL. A
+    // column the catalog does not hold is a caller's mistake, and a form that chose to do
+    // nothing there would let its version be recorded over a column that never changed,
+    // where the index form over a missing table fails.
+    const db = await openMysqlTestDb({ idNamespace: 'column-missing' })
+    try {
+      const form = setNotNullWhileNullable('events', 'no_such_column', 'LONGTEXT').map((sql) => ({
+        sql,
+        args: [],
+      }))
+      const answer = await db.raw.batch('migrate:column', form, MIGRATION_WRITE).then(
+        () => 'accepted',
+        (error: unknown) => /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+      )
+      // 1054: unknown column.
+      expect(answer).toBe('MySQL error 1054')
     } finally {
       await db.close()
     }
@@ -398,10 +498,7 @@ describe('MysqlExecutor against a real server', () => {
           pass.claimToken,
           '{"why":"boom"}',
           null,
-          {
-            key: '$rollback-tries:charge',
-            stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"why":"refund failed"}' }),
-          },
+          { stepKey: 'charge', errorJson: '{"why":"refund failed"}' },
         )
         expect(halted).toEqual({ rollingBack: false })
         expect(await store.getTaskResult(queue, task.taskId)).toMatchObject({
@@ -414,20 +511,93 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
-  it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
+  it('runs a write at READ COMMITTED with autocommit on, and refuses a write sent as a read', async () => {
+    // A read is sent alone only when core's read path built it. A statement sent as a read
+    // in text keeps the read-only transaction, where the server refuses a write.
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
       const [write] = await db.raw.batch('fixture:isolation', [
-        { sql: 'SELECT @@transaction_isolation AS level', args: [] },
+        { sql: 'SELECT @@transaction_isolation AS level, @@autocommit AS autocommit', args: [] },
       ])
-      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED' }])
-      await expect(
-        db.raw.batch(
+      expect(write?.rows).toEqual([{ level: 'READ-COMMITTED', autocommit: 1 }])
+      await db.raw.batch('fixture:seed', [
+        { sql: "INSERT INTO meta (`key`, value) VALUES ('kept', 'v')", args: [] },
+      ])
+      const outcome = await db.raw
+        .batch(
           'fixture:read-only',
-          [{ sql: "DELETE FROM meta WHERE `key` = 'nothing'", args: [] }],
+          [{ sql: "DELETE FROM meta WHERE `key` = 'kept'", args: [] }],
           'read',
-        ),
-      ).rejects.toThrow(/READ ONLY/)
+        )
+        .then(
+          () => 'accepted',
+          (error: unknown) => (/READ ONLY/.test(String(error)) ? 'refused by the server' : error),
+        )
+      const [kept] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE `key` = 'kept'", args: [] }],
+        'read',
+      )
+      expect(
+        { outcome, kept: kept?.rows },
+        'mutation-verdict:behavior:mysql-lone-read-is-known-to-be-a-read',
+      ).toEqual({ outcome: 'refused by the server', kept: [{ n: 1 }] })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses a single write whose key ends in a tab and would be cut to fit, and writes nothing', async () => {
+    // MySQL cuts more than a trailing space with a note: a tab, a line break, a bind sent
+    // as bytes, a literal in the text. The executor cannot tell from a statement that none
+    // of them is in it, so a single write keeps its transaction, where the cut rolls back.
+    const db = await openMysqlTestDb({ idNamespace: 'cut-tab' })
+    try {
+      const outcome = await db.raw
+        .batch('fixture:cut-tab', [
+          {
+            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+            args: [`${'k'.repeat(255)}\t`, 'tabbed'],
+          },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      const [rows] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'tabbed'", args: [] }],
+        'read',
+      )
+      expect(
+        { refused: outcome instanceof InvalidDurableStringError, stored: rows?.rows[0]?.n },
+        'mutation-verdict:behavior:mysql-lone-statement-is-a-read',
+      ).toEqual({ refused: true, stored: 0 })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('answers a statement that forces an index the database lacks with a schema mismatch, which no retry repairs', async () => {
+    // A keyed delete reads its keys through `runs_stamp`, which version 8 adds, so a database
+    // that has not reached version 8 answers every batch that holds one with error 1176. That
+    // is a schema this build does not expect, and it is permanent: booked as an outage, a
+    // caller would retry it forever.
+    const db = await openMysqlTestDb({ idNamespace: 'no-stamp-index' })
+    try {
+      await db.raw.batch('fixture:drop-the-stamp-index', [
+        { sql: `ALTER TABLE runs DROP INDEX ${RUNS_STAMP_INDEX}`, args: [] },
+      ])
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      await store.spawn('q', 'task', '{}')
+      const refusal = await store
+        .claim('q', 'w', { leaseSeconds: 60, limit: 1 })
+        .catch((error: unknown) => error)
+      expect(
+        refusal,
+        'mutation-verdict:behavior:mysql-missing-forced-index-is-a-schema-mismatch',
+      ).toBeInstanceOf(SchemaMismatchError)
+      expect(String(refusal)).toContain('MySQL error 1176')
     } finally {
       await db.close()
     }
@@ -438,13 +608,21 @@ describe('the version table on a real server', () => {
   it('is created with its row by one statement, which leaves a recorded version alone', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'bootstrap-once', migrate: false })
     try {
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(0)
       await db.raw.batch('fixture:set-schema-version', [
         { sql: "UPDATE meta SET value = '3' WHERE `key` = 'schema_version'", args: [] },
       ])
       // Over a table that is there, the statement inserts nothing.
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(3)
     } finally {
       await db.close()

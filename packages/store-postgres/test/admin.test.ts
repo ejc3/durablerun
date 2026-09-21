@@ -1,8 +1,9 @@
 import {
   MAX_EPOCH_MS,
+  MIGRATION_WRITE,
   SchemaMismatchError,
   SchemaNotInitializedError,
-  type SqlBatchMode,
+  type SqlBatchControl,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -13,14 +14,18 @@ import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from '../src/schema.js'
 
 class MigrationExecutor implements SqlExecutor {
   version: number | null = null
-  readonly calls: { label: string; statements: readonly SqlStatement[]; mode?: SqlBatchMode }[] = []
+  readonly calls: {
+    label: string
+    statements: readonly SqlStatement[]
+    control?: SqlBatchControl
+  }[] = []
 
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode?: SqlBatchMode,
+    control?: SqlBatchControl,
   ): Promise<SqlResult[]> {
-    this.calls.push({ label, statements, ...(mode === undefined ? {} : { mode }) })
+    this.calls.push({ label, statements, ...(control === undefined ? {} : { control }) })
     if (label === 'migrate:version') {
       if (this.version === null) {
         throw new SchemaNotInitializedError('schema metadata has not been initialized')
@@ -55,17 +60,39 @@ describe('PostgresStoreAdmin', () => {
     expect(migrationCalls.map(({ label }) => label)).toEqual(
       MIGRATIONS.map(({ version }) => `migrate:v${version}`),
     )
+    // The bootstrap names no lock: PostgreSQL's migration lock is a lock on the table that
+    // the bootstrap creates.
+    expect(db.calls.find(({ label }) => label === 'migrate:bootstrap')?.control).toBeUndefined()
     for (const [index, call] of migrationCalls.entries()) {
       const migration = MIGRATIONS[index]
+      // The control names the lock that makes a second migrator wait, which the executor
+      // takes ahead of every statement. Then the sentinel, which comes before every
+      // statement of the version, then the version's statements and nothing else.
+      expect(
+        call?.control,
+        'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
+      ).toBe(MIGRATION_WRITE)
       expect(call?.statements).toHaveLength((migration?.statements.length ?? 0) + 2)
       expect(call?.statements[0]?.sql).toBe(
         `INSERT INTO meta (key, value) VALUES ('applied:v${migration?.version}', '1')`,
       )
+      expect(call?.statements.slice(1, -1).map(({ sql }) => sql)).toEqual(migration?.statements)
       expect(call?.statements.at(-1)).toEqual({
         sql: `UPDATE meta SET value = ? WHERE key = 'schema_version' AND value = ?`,
         args: [String(migration?.version), String((migration?.version ?? 0) - 1)],
       })
     }
+  })
+
+  it('tells a build older than the schema to run a newer build, and never to repair', async () => {
+    const db = new MigrationExecutor()
+    db.version = CURRENT_SCHEMA_VERSION + 1
+    const refusal = await new PostgresStoreAdmin(db).migrate().catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(SchemaMismatchError)
+    expect((refusal as Error).message).toMatch(/a newer build migrated this database/)
+    expect((refusal as Error).message).not.toMatch(/repaired by hand/)
+    // It wrote nothing on the way to saying so.
+    expect(db.calls.filter(({ control }) => control !== 'read')).toEqual([])
   })
 
   it('rejects malformed schema result shapes and noncanonical values', async () => {

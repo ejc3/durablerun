@@ -48,7 +48,7 @@ export type WorkerOutcome =
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
   | { kind: 'cancelled' } // the task was cancelled mid-run (AB001): aborted quietly
-  | { kind: 'aborted' } // store unreachable mid-pass: user budget untouched
+  | { kind: 'aborted' } // store unreachable mid-pass, or its answer was permanent: user budget untouched
   //   and the lease story recovers. NOTE: 'unreachable' includes a lost
   //   RESPONSE — the write may or may not have committed; recovery is
   //   correct either way (fences + sweep), but do not read 'aborted' as
@@ -99,6 +99,10 @@ function infrastructureOutcome(
     case 'run-cancelled':
       return { kind: 'cancelled' }
     case 'store-unavailable':
+    // A permanent answer of the store ends the pass exactly as an outage does. It is not
+    // the task's failure, so it may not spend the task's attempts, and no transition exists
+    // yet that ends a run for it (DESIGN.md §3.2).
+    case 'store-permanent':
       return { kind: 'aborted' }
     default:
       return control satisfies never
@@ -275,7 +279,7 @@ export async function runClaimedRun(
                 claimToken,
                 causeJson,
                 failure.retry,
-                failure.record,
+                failure.failed,
               )
               // The store says whether a pass follows. It can end the task where the retry
               // decision asked for a pass, when the pass does not fit the budget bound.
@@ -289,7 +293,7 @@ export async function runClaimedRun(
           // The task ends `failed` with the failure that began the saga either way. The
           // rollback outcome is derived from what ran, and stored nowhere.
           if (next.kind === 'halt') {
-            await store.failRollback(queue, runId, claimToken, causeJson, null, next.record)
+            await store.failRollback(queue, runId, claimToken, causeJson, null, next.failed)
           } else {
             await store.fail(queue, runId, claimToken, causeJson, null)
           }

@@ -1,10 +1,5 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import {
-  SAGA_STARTED_PREFIX,
-  SAGA_TRIES_PREFIX,
-  encodeRollbackTry,
-  isTreeBuiltStatement,
-} from '@durablerun/core'
+import { SAGA_STARTED_PREFIX, isTreeBuiltStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
@@ -15,10 +10,11 @@ import {
   withFixture,
 } from '../src/scenario.js'
 import {
-  type CorpusDescriptor,
+  CORPUS_VARIANT_NAMERS,
   type CorpusSignature,
-  type VariantNamers,
   enrolCorpus,
+  readCorpus,
+  readCorpusDescriptor,
   recordingTreeBatches,
 } from '../src/sql-corpus.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
@@ -34,32 +30,7 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  * to a signature outside the corpus or to more signatures than it declares: a new label or
  * branch must be declared, not discovered.
  */
-const DESCRIPTOR: CorpusDescriptor = JSON.parse(
-  readFileSync(new URL('../corpus/labels.json', import.meta.url), 'utf8'),
-)
-
-/**
- * A label with more than one variant names each signature by what it holds, never by
- * the order the scenario happened to reach it in.
- */
-const VARIANT_OF: VariantNamers = {
-  spawn: (signature) =>
-    signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
-      ? 'spawned-child'
-      : 'spawned',
-  // Every failure carries the rollback pass, and only a retrying one a successor run too.
-  fail: (signature) =>
-    signature.filter(({ sql }) => /insert into ["`]runs["`]/.test(sql)).length > 1
-      ? 'retrying'
-      : 'final',
-  // Only a failed rollback with budget left inserts a run, the pass that retries it.
-  'fail-rollback': (signature) =>
-    signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
-  'await-event': (signature) =>
-    signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
-      ? 'registered-child'
-      : 'registered',
-}
+const DESCRIPTOR = readCorpusDescriptor()
 
 describe('generated SQL corpus', () => {
   for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
@@ -165,10 +136,7 @@ describe('generated SQL corpus', () => {
         expect(forward.taskId).toBe(saga.taskId)
         await checkpointOwned(store, 'q', forward, `${SAGA_STARTED_PREFIX}a`, '1', 30)
         await store.fail('q', forward.runId, forward.claimToken, '{"name":"E"}', null)
-        const tried = (tries: number) => ({
-          key: `${SAGA_TRIES_PREFIX}a`,
-          stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"R"}' }),
-        })
+        const tried = { stepKey: 'a', errorJson: '{"name":"R"}' }
         const pass = await claimActivated(store, 'q', 'w7c')
         expect(pass.taskId).toBe(saga.taskId)
         await store.failRollback(
@@ -177,7 +145,7 @@ describe('generated SQL corpus', () => {
           pass.claimToken,
           '{"name":"E"}',
           { delaySeconds: 0 },
-          tried(1),
+          tried,
         )
         const lastPass = await claimActivated(store, 'q', 'w7d')
         expect(lastPass.taskId).toBe(saga.taskId)
@@ -187,7 +155,7 @@ describe('generated SQL corpus', () => {
           lastPass.claimToken,
           '{"name":"E"}',
           null,
-          tried(2),
+          tried,
         )
         expect((await store.getTaskResult('q', saga.taskId))?.rollback?.outcome).toBe('failed')
         // Last, because it moves the clock. Under the early fake clock only these three
@@ -211,7 +179,7 @@ describe('generated SQL corpus', () => {
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
       })
-      const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, VARIANT_OF)
+      const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, CORPUS_VARIANT_NAMERS)
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)
       const text = `${JSON.stringify(corpus, null, 2)}\n`
       if (process.env.DURABLERUN_UPDATE_CORPUS === '1') writeFileSync(path, text)
@@ -308,13 +276,11 @@ describe('corpus enrolment', () => {
 
   it('enrols every label the descriptor names in the corpus of every dialect', () => {
     for (const { dialect } of SELECTED_DIALECT_FIXTURES) {
-      const corpus = JSON.parse(
-        readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'),
-      )
+      const corpus = readCorpus(dialect)
       const enrolled = DESCRIPTOR
       expect(Object.keys(corpus)).toEqual(Object.keys(enrolled))
       for (const [label, variants] of Object.entries(enrolled)) {
-        for (const variant of Object.keys(corpus[label])) expect(variants).toContain(variant)
+        for (const variant of Object.keys(corpus[label] ?? {})) expect(variants).toContain(variant)
       }
     }
   })

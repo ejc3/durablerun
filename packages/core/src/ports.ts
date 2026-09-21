@@ -4,6 +4,7 @@ import type {
   CheckpointWrite,
   ClaimedRun,
   FailOutcome,
+  FailedRollback,
   LaunchIdentity,
   LeaseState,
   SpawnOptions,
@@ -148,13 +149,22 @@ export interface SchedulerStore {
 
   /**
    * A rollback of a task that is rolling back failed (DESIGN.md §3.10, specs/Sagas.tla
-   * RollbackRetry and RollbackHalts). `rollbackTry` is that rollback's attempt record,
-   * and it commits with the failure, so a failed attempt is counted or the run did not
-   * fail. With `retry` another pass follows, and the user attempt budget does not cap
-   * it. With none the saga halts, and the task ends `failed` with `failureJson`, which
-   * the caller passes as the failure that began the saga. Refused outside the phase.
-   * It is its own method and batch label ('fail-rollback'), not an option of `fail`,
-   * so nothing that forwards `fail` can drop the record.
+   * RollbackRetry and RollbackHalts). `rollback` is the step and the failure of this
+   * attempt. The store names the rollback's attempt record and counts the attempt: one
+   * past the last record it can read, one when it can read none, and never past the
+   * largest safe integer. A caller chooses neither the name nor the count. An argument of
+   * another shape is refused before anything is read or sent. The port's one check answers
+   * it first, as it answers any string the port requires that was left out: a caller of an
+   * older build, which hands over the attempt record as `{ key, stateJson }`, is told that
+   * `rollback.stepKey` was left out. That refusal is a TypeError by its class, and the
+   * entry's own reader refuses the same shapes with a TypeError for a caller that reaches
+   * the entry some other way. No hosted route calls this port.
+   * The record commits with the failure, so a failed attempt is counted or the run did
+   * not fail. With `retry` another pass follows, and the user attempt budget does not
+   * cap it. With none the saga halts, and the task ends `failed` with `failureJson`,
+   * which the caller passes as the failure that began the saga. Refused outside the
+   * phase. It is its own method and batch label ('fail-rollback'), not an option of
+   * `fail`, so nothing that forwards `fail` can drop the record.
    */
   failRollback(
     queue: string,
@@ -162,7 +172,7 @@ export interface SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-    rollbackTry: CheckpointWrite,
+    rollback: FailedRollback,
   ): Promise<FailOutcome>
 
   /** §3.1 steps 0–1: cancellation policies + expired leases, classified by activation state. */
@@ -271,14 +281,29 @@ export interface LaunchInvocation extends LaunchIdentity {
   deadlineHintEpochMs: number
 }
 
+/** What a caller may hand a launcher beside the invocation (§3.9 port 2). */
+export interface LaunchOptions {
+  /**
+   * Fires once the caller has stopped waiting for this launch, which for the resident
+   * driver is when its launch deadline passes. Nothing the launcher answers after that is
+   * read, and the caller reconciles the launch as failed, exactly as it does for a call
+   * that never settles. A launcher may use the signal to let go of what the call holds (a
+   * request in flight, a socket), and may ignore it. The signal says nothing about the
+   * run: the worker may already hold the launch, so a launcher never reads it as evidence
+   * that the run did not start, and never as a reason to stop a worker.
+   */
+  signal?: AbortSignal
+}
+
 /**
  * Execution transport (§3.9 port 2). Fire-and-forget may silently lose
  * launches. Outcomes are constructed via LaunchOutcome's static factories
  * (core/launch.ts) and consumed ONLY via LaunchOutcome.reconcile — callers
- * have no other affordance, by design.
+ * have no other affordance, by design. `options` is optional on both sides: a
+ * caller may pass none, and a launcher may declare the invocation alone.
  */
 export interface Launcher {
-  launch(invocation: LaunchInvocation): Promise<LaunchOutcome>
+  launch(invocation: LaunchInvocation, options?: LaunchOptions): Promise<LaunchOutcome>
 }
 
 /**

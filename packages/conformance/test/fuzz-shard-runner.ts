@@ -42,6 +42,25 @@ export interface FuzzBatchCoordinates {
 }
 
 /**
+ * A stat too rare for the common floor holds its floor from this many walked steps in a
+ * shard. A saga is halted by one pass move in ten, behind a claimed pass with a rollback
+ * owed. Measured on libSQL with a correct store: a halt was named in 248 of 6,000 walks of
+ * 50 steps and in 386 of 3,720 walks of 100 steps, and 121 of 300 shards of twenty walks
+ * of 50 steps named none. At the size of `verify:fuzz`, 62 walks of 100 steps, that rate
+ * misses in about one shard of nine hundred, which is one run in thirty. So the floor
+ * starts at 20,000 steps. The rate grows faster than a walk's length, so what a shard of
+ * that size misses depends on its walks: about five in a hundred million for walks of 50
+ * steps, and under one in a billion for walks of 100 steps or more. Nothing but the
+ * nightly plan test ties the nightly's batch to this size: it holds every batch at or
+ * above it, so a batch count or a seed count that would switch this floor off fails there.
+ * The check itself runs at the end of every walk of every size. Only the floor waits for
+ * a shard large enough.
+ */
+export const RARE_STAT_FLOOR_STEPS: Partial<Record<keyof FuzzStats, number>> = {
+  haltsNamed: 20_000,
+}
+
+/**
  * The single seed-ownership definition for ordinary and bounded-process fuzz.
  *
  * A logical shard owns one residue modulo `shardCount`; its process batches
@@ -140,7 +159,8 @@ function runFuzzBatch(shard: number, of: number, batch: number): void {
         rollbacks: 0,
         rollbackFailures: 0,
         sagasEnded: 0,
-        overWidthRefusals: 0,
+        haltsNamed: 0,
+        portStringRefusals: 0,
       }
       let walks = 0
       for (const seed of seeds) {
@@ -162,7 +182,7 @@ function runFuzzBatch(shard: number, of: number, batch: number): void {
       // unlucky seed as a deterministic failure; aggregates cannot.)
       if (walks >= 20 && STEPS >= 50) {
         for (const key of Object.keys(totals) as (keyof FuzzStats)[]) {
-          if (totals[key] === 0) {
+          if (totals[key] === 0 && walks * STEPS >= (RARE_STAT_FLOOR_STEPS[key] ?? 0)) {
             failures.push(`op '${key}' never succeeded across ${walks} walks x ${STEPS} steps`)
           }
         }

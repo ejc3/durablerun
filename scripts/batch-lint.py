@@ -102,7 +102,7 @@ DYNAMIC = {
         "one batch per migration version, labelled by version"
     ),
     ("packages/store-mysql/src/admin.ts", "migrate:v"): (
-        "one batch per migration version, labelled by version"
+        "one batch for every pending migration version, labelled by the last of them"
     ),
 }
 DYNAMIC_LABELS = listed("migration")
@@ -123,9 +123,10 @@ OPAQUE_STATEMENT_LISTS = {
     ),
     ("packages/store-mysql/src/admin.ts", "migrate:v*"): (
         "versionBatch(migration)",
-        "MySQL commits each DDL statement on its own, so the executor runs "
-        "every migrate: write under one named lock, every statement is safe "
-        "to repeat, and schema tests execute and freeze every migration",
+        "MySQL commits each DDL statement on its own, so the batch's control names "
+        "the migration lock, which the executor refuses a migrate: write without, "
+        "every statement is safe to repeat at every place a migrator can die, "
+        "and schema tests execute and freeze every migration",
     ),
 }
 
