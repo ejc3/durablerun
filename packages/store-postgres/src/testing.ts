@@ -97,11 +97,11 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     const holder = await control.connect()
     try {
       await holder.query('BEGIN')
-      // schemaName contains only the lowercase identifier alphabet, as above.
-      await holder.query(`SELECT 1 FROM ${schemaName}.tasks WHERE task_id = $1 FOR UPDATE`, [
-        taskId,
-      ])
       try {
+        // schemaName contains only the lowercase identifier alphabet, as above.
+        await holder.query(`SELECT 1 FROM ${schemaName}.tasks WHERE task_id = $1 FOR UPDATE`, [
+          taskId,
+        ])
         await during()
       } finally {
         await holder.query('ROLLBACK')

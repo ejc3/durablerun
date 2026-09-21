@@ -92,11 +92,12 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     const holder = await control.getConnection()
     try {
       await holder.query('START TRANSACTION')
-      // databaseName contains only the lowercase identifier alphabet, as above.
-      await holder.query(`SELECT task_id FROM ${databaseName}.tasks WHERE task_id = ? FOR UPDATE`, [
-        taskId,
-      ])
       try {
+        // databaseName contains only the lowercase identifier alphabet, as above.
+        await holder.query(
+          `SELECT task_id FROM ${databaseName}.tasks WHERE task_id = ? FOR UPDATE`,
+          [taskId],
+        )
         await during()
       } finally {
         await holder.query('ROLLBACK')

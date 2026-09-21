@@ -175,15 +175,6 @@ export interface StorageCorruptionAttempt {
 }
 
 /**
- * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
- * factory passes the identical suite — scheduler plane today, run-bookkeeping
- * (RunStateStore) when it lands. store-libsql implements this now;
- * store-postgres and store-mysql implement the same factory in Phase 4, and a
- * future Rust engine proves itself against the same scenarios through its own
- * runner (the scenarios, schema, and batch semantics are the language-neutral
- * spec).
- */
-/**
  * What the executor error surface's lock-wait case needs from a dialect (§3.4): an executor
  * on a database a second connection can reach, a way to hold the write lock on a task's row
  * from that second connection, and the dialect's own statements that shorten how long its
@@ -202,6 +193,15 @@ export interface LockWaitSurface {
   close(): Promise<void>
 }
 
+/**
+ * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
+ * factory passes the identical suite — scheduler plane today, run-bookkeeping
+ * (RunStateStore) when it lands. store-libsql implements this now;
+ * store-postgres and store-mysql implement the same factory in Phase 4, and a
+ * future Rust engine proves itself against the same scenarios through its own
+ * runner (the scenarios, schema, and batch semantics are the language-neutral
+ * spec).
+ */
 export interface StoreFixture {
   store: SchedulerStore
   admin: StoreAdmin

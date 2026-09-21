@@ -125,10 +125,16 @@ export async function makeLibsqlFixture(
     lockWait: async () => {
       const dir = mkdtempSync(join(tmpdir(), 'durablerun-lock-wait-'))
       const url = `file:${join(dir, 'db.sqlite')}`
-      const opened = await openTestDb({
-        url,
-        idNamespace: conformanceIdNamespace(`${seed}-lock-wait`),
-      })
+      let opened: Awaited<ReturnType<typeof openTestDb>>
+      try {
+        opened = await openTestDb({
+          url,
+          idNamespace: conformanceIdNamespace(`${seed}-lock-wait`),
+        })
+      } catch (error) {
+        rmSync(dir, { recursive: true, force: true })
+        throw error
+      }
       return {
         store: new LibsqlSchedulerStore(opened.raw, opened.ids),
         raw: opened.raw,

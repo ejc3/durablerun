@@ -264,7 +264,7 @@ describe('a write batch that fails busy on a file database', () => {
       try {
         expect(
           () => accessSync(file, constants.R_OK),
-          'this process cannot open the file',
+          'this process cannot open a file whose mode is 0, which holds for a normal user and not for root: run the suite as a normal user',
         ).toThrow()
         // Two calls. The first finds the connection broken and cannot open another, and the
         // second meets the client that the failed open left closed, which must refuse the call
@@ -376,7 +376,7 @@ describe('a write batch that fails busy on a file database', () => {
         return typeof value === 'function' ? value.bind(target) : value
       },
     })
-    const handed = new LibsqlExecutor(failing, true)
+    const handed = new LibsqlExecutor(failing, true, url)
     try {
       await handed.batch('shorten', [shorten], 'read')
       expect(await outcome(handed.batch('write', [insert(1)]))).toMatchObject(BUSY)
@@ -444,6 +444,24 @@ describe('a file database executor', () => {
     args[0] = 99
     expect(await outcome(write)).toBe('answered')
     expect(await ids(victim)).toEqual([1])
+  })
+
+  it('sends the bytes a batch was called with, whatever the caller does to them after the call', async () => {
+    await victim.batch('blobs', [
+      { sql: 'CREATE TABLE b (id INTEGER PRIMARY KEY, v BLOB NOT NULL)', args: [] },
+    ])
+    const bytes = new Uint8Array([1, 2, 3])
+    const write = victim.batch('write', [
+      { sql: 'INSERT INTO b (id, v) VALUES (?, ?)', args: [1, bytes] },
+    ])
+    bytes[0] = 99
+    expect(await outcome(write)).toBe('answered')
+    const [read] = await victim.batch(
+      'read',
+      [{ sql: 'SELECT v FROM b WHERE id = 1', args: [] }],
+      'read',
+    )
+    expect([...(read?.rows[0]?.v as Uint8Array)]).toEqual([1, 2, 3])
   })
 
   it('never reopens a client its owner closed, handed to the constructor', async () => {

@@ -48,6 +48,13 @@ function primaryResultCode(error: LibsqlError): string {
 const settled = (): void => {}
 
 /**
+ * An argument as it is at the call. A byte array is copied, because a caller can change one
+ * after the call; every other argument is a string, a number, a bigint or null.
+ */
+const copied = (arg: SqlStatement['args'][number]) =>
+  arg instanceof Uint8Array ? arg.slice() : arg
+
+/**
  * A file URL's path as the client stores it: percent-decoded as the client decodes it, and
  * relative when the URL's is. Undefined for every URL that names no database file: a hosted
  * one, `:memory:`, and an empty path, which SQLite makes a private database of its one
@@ -172,6 +179,12 @@ export class LibsqlExecutor implements SqlExecutor {
   private reopening = false
 
   /**
+   * This executor made its client, in open(), so no owner can close it: the client's closed
+   * state is then this executor's own close's or the recovery's.
+   */
+  private ownsClient = false
+
+  /**
    * The database file this executor fixed when it was made, or null when it has none it can be
    * sure of, and then it never reconnects. A new connection opens a path, and that path must
    * still name this file before the reopen and after it.
@@ -206,6 +219,7 @@ export class LibsqlExecutor implements SqlExecutor {
       createClient(authToken ? { url: opened, authToken } : { url: opened }),
       file !== undefined,
     )
+    executor.ownsClient = true
     if (file !== undefined) executor.file = fixedFile(before, fileAt(file.path))
     return executor
   }
@@ -237,8 +251,11 @@ export class LibsqlExecutor implements SqlExecutor {
       this.pragmasApplied = false
       this.reopening = true
       this.client.close()
-      await this.client.reconnect()
-      this.reopening = false
+      try {
+        await this.client.reconnect()
+      } finally {
+        this.reopening = false
+      }
       await this.refuseAnotherFileOpened(had)
     }
     if (!this.pragmasApplied) {
@@ -249,11 +266,13 @@ export class LibsqlExecutor implements SqlExecutor {
   }
 
   /**
-   * Closed by close(), or by the owner of a client handed to the constructor. A client the
-   * recovery closed while it reconnects is not closed by its owner.
+   * Closed by close(), or, for a client handed to the constructor, by its owner. A client the
+   * recovery closed while it reconnects is not closed by its owner. After a reconnect that
+   * threw, a handed client's owner's close can no longer be told from the recovery's, so that
+   * client is taken for closed by its owner and is never reopened.
    */
   private closedByItsOwner(): boolean {
-    return this.closed || (this.client.closed && !this.reopening)
+    return this.closed || (!this.ownsClient && this.client.closed && !this.reopening)
   }
 
   /**
@@ -350,9 +369,10 @@ export class LibsqlExecutor implements SqlExecutor {
     // The one call that reaches the driver, written here inside batch(). On a database
     // file it runs in this batch's turn, and a failure marks the connection before the
     // next turn begins. Every error is typed below, in one place, whichever way it came.
-    // The statements as they are at the call. A database file's batch waits for its turn, and
-    // an argument array its caller changes after the call must change nothing that is sent.
-    const sent = statements.map((s) => ({ sql: s.sql, args: [...s.args] }))
+    // The statements as they are at the call, their argument arrays and byte arrays copied. A
+    // database file's batch waits for its turn, and what a caller changes after the call must
+    // change nothing that is sent.
+    const sent = statements.map((s) => ({ sql: s.sql, args: s.args.map(copied) }))
     const send = async () => {
       try {
         if (this.fileBacked) await this.prepareConnection()
