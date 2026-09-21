@@ -3288,6 +3288,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the three statements it names now. No check reports its trigger, which is a
     person's finding: a shipped read found, by a review or by a measurement, to
     range over what is due under no bound.
+  - Option, not a deferral of this PR: the 1.5 s completion watchdog that
+    `lint-selftest.py` holds its suite timeout child to times the machine as
+    well as the child. Alone the child took 1.06 to 1.21 s in twenty runs on
+    this machine, the base and this branch alike, at load averages near 23 and
+    near 37. About a quarter of a second of that is CPU time, and the rest is
+    time it spends waiting, on its two verifiers' 0.1 s deadlines among other
+    things, so if only its CPU time doubled it would take about 1.35 s. In this
+    branch's gate list it tripped, at a load average of 36 to 47 while three
+    other builders' lists ran, and the self-test passed when it was run again
+    alone. CI's verify job runs it on every pull request. Its trigger is the
+    watchdog seen tripping on CI, and then the margin is measured on CI's
+    runners before the watchdog moves.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It
