@@ -411,9 +411,9 @@ a last docs PR gives a live owner to every open bullet that is left.
     place, before any statement is sent. An identifier is inside the durable
     string domain and within the width, a claim token is held as an identifier
     is, a task name is inside the domain, a payload that is passed is a string
-    whose content is its serializer's, a value that is not a string is refused
-    as a string outside the domain is, and a value that is not an object is
-    refused where an options object belongs.
+    whose content is its serializer's, one check of every string place refuses
+    a value that is not a string, one left out among them, and a value that is
+    not an object is refused where an options object belongs.
     Core names every
     string once in a table whose type is computed from the port's, so a method
     the port gains, a string argument a method gains, and a string inside an
@@ -427,13 +427,15 @@ a last docs PR gives a live owner to every open bullet that is left.
     name with a NUL or a lone surrogate. All 25 per-entry checks are gone from
     each of the three stores. Nineteen type controls each fail to compile for
     the reason written beside it. Twenty-two registered mutations are each caught
-    by one case by name: seven that named deleted or renamed lines and moved,
-    and fifteen that are new, which bend the check, the table, one for each kind
-    of string, a queue, a step key, an event name and a claim token, the rule of
-    a claim token, the four things the one review found at the mechanism, and
-    four more at the same mechanism: an accessor whose descriptor inherits from
-    `Object.prototype`, a table frozen only at its outer object, an options value
-    that is not an object, and a payload that is not a string.
+    by one case by name: eight that named deleted or renamed lines and moved,
+    main's mutation of the claim token's width among them, and fourteen that are
+    new, which bend the check, the table, one for each kind of string, a queue, a
+    step key, an event name and a claim token, the rule of a claim token, the four
+    things the one review found at the mechanism, and three more at the same
+    mechanism: an accessor whose descriptor inherits from `Object.prototype`, a
+    table frozen only at its outer object, and an options value that is not an
+    object. The mutation of a string left out holds a payload that is not a string
+    as well, because one check of a string place refuses both.
     Two of the table's four survived their first probes, because a place renamed
     to a payload name its method already had folded into that place and the
     surface did not see it, and the fix was committed after them. The one review

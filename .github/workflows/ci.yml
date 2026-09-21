@@ -372,9 +372,9 @@ jobs:
               # Eight entries moved in all. One base verdict moved with no entry re-aimed: the
               # reader of a failed rollback's argument refuses another shape behind the one
               # check now, so the mutation that stops it refusing answers to core's own case
-              # of the reader. Fifteen mutations are new, four of them for what the review of
-              # the one check found at the mechanism and four more at the same mechanism, and
-              # with that verdict they answer to eleven verdict markers that are newer than the
+              # of the reader. Fourteen mutations are new, four of them for what the review of
+              # the one check found at the mechanism and three more at the same mechanism, and
+              # with that verdict they answer to ten verdict markers that are newer than the
               # base. No entry was retired.
               repaired = previous
               for name in (
@@ -397,7 +397,6 @@ jobs:
                   'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
                   'mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing',
                   'mutation-verdict:construction:port-table-frozen-throughout',
-                  'mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place',
                   'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
                   'mutation-verdict:behavior:saga-failed-rollback-shape-is-checked',
               ))

@@ -78,15 +78,24 @@ describe('the strings a port call carries', () => {
     })
   })
 
-  it('refuses a value that is not a string where the port takes one, with the refusal of the domain', () => {
+  it('refuses a value that is not a string at every string place, whatever its rule, and says when it was left out', () => {
     expect({
       number: refusalOf(() => requirePortString('queue', 42)),
       undefined: refusalOf(() => requirePortString('runId', undefined)),
       object: refusalOf(() => requirePortString('claimToken', { toString: () => 'token' })),
+      aTaskName: refusalOf(() => requirePortString('taskName', null)),
+      aPayload: refusalOf(() => requirePortString('paramsJson', 42)),
+      aPayloadLeftOut: refusalOf(() => requirePortString('paramsJson', undefined)),
+      // A map of strings is its serializer's whole.
+      aMap: refusalOf(() => requirePortString('headers', 42)),
     }).toEqual({
-      number: 'queue must be a string without NUL or lone UTF-16 surrogates',
-      undefined: 'runId must be a string without NUL or lone UTF-16 surrogates',
-      object: 'claimToken must be a string without NUL or lone UTF-16 surrogates',
+      number: 'queue must be a string',
+      undefined: 'runId was left out, and the port requires it',
+      object: 'claimToken must be a string',
+      aTaskName: 'taskName must be a string',
+      aPayload: 'paramsJson must be a string',
+      aPayloadLeftOut: 'paramsJson was left out, and the port requires it',
+      aMap: 'accepted',
     })
   })
 
@@ -170,7 +179,7 @@ describe('the strings a port call carries', () => {
   it('refuses null and any other value that is not a string where a string was passed, and a required string that was left out', () => {
     const spawn = (options?: unknown) =>
       refusalOf(() => requirePortStrings('spawn', ['q', 't', '{}', options]))
-    const outside = 'idempotencyKey must be a string without NUL or lone UTF-16 surrogates'
+    const notAString = 'idempotencyKey must be a string'
     expect({
       'an optional argument left out': spawn(),
       'an optional member left out': spawn({ idempotencyKey: undefined }),
@@ -181,10 +190,9 @@ describe('the strings a port call carries', () => {
     }).toEqual({
       'an optional argument left out': 'accepted',
       'an optional member left out': 'accepted',
-      'an optional member that is null': outside,
-      'an optional member that is a number': outside,
-      'a required argument that is null':
-        'queue must be a string without NUL or lone UTF-16 surrogates',
+      'an optional member that is null': notAString,
+      'an optional member that is a number': notAString,
+      'a required argument that is null': 'queue must be a string',
       'a required argument left out': 'queue was left out, and the port requires it',
     })
   })

@@ -2313,14 +2313,16 @@ are load-bearing):
      RangeError by a third, and a number was stored.
    - A spawn's headers are a map of strings. The whole map is its serializer's, the
      strings in it too, and this check leaves it alone.
-   - A value that is not a string where the port takes one is refused as a string outside
-     the domain is, because the domain is of strings. Null is not a way to leave a
-     string out.
+   - A string place holds a string, whatever its rule, and that is asked first. A value
+     that is not a string where the port takes one, null and a number among them, is
+     refused with the refusal of a string outside the domain, and the refusal says that it
+     must be a string. Null is not a way to leave a string out.
    - A string the port's type lets a caller leave out is not a refusal: an optional
      argument, or an optional member of an options object, which today are a spawn's
      options, its idempotency key, its parent and its headers. Every other string the port
-     requires, and one that is left out is refused the same way, a payload too, because
-     whether a string is there is the port's shape and not the payload's domain. An
+     requires, and one that is left out is refused by that same first question, a payload
+     too: a value that is not there is not a string, and whether a string is there is the
+     port's shape and not the payload's domain. The refusal says that it was left out. An
      options object the port requires that is left out has every string in it left out.
      Left to the entries, a string that was left out became a TypeError from a bind, or,
      for a child spawn's replay key, a stored key that ends in the word undefined.

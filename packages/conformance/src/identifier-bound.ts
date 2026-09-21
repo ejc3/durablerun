@@ -147,14 +147,16 @@ export function identifierBoundConformance(
       // What is in a payload is its serializer's, and the case of the written list below
       // holds that. That it is a string is the port's shape. Left to the entries, null was
       // reported as an outage by two of them and as a RangeError by a third, and a number
-      // was stored.
+      // was stored. One check of every string place refuses these and a string left out, so
+      // its mutation is owned by the case of the strings left out, below.
       for (const [what, notAString] of Object.entries(NOT_A_STRING)) {
         const { store, reached } = storeOverRecorder(f)
         const refusals = await refusalsAt(PAYLOAD_PLACES, store, notAString)
-        expect(
-          { what, refusals, sent: reached },
-          'mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place',
-        ).toEqual({ what, refusals: allRefused(refusals), sent: [] })
+        expect({ what, refusals, sent: reached }).toEqual({
+          what,
+          refusals: allRefused(refusals),
+          sent: [],
+        })
       }
     })
 

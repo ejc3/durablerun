@@ -244,20 +244,23 @@ export const PORT_STRINGS = frozenThroughout({
 type NamedStrings = PortStringName | null | { readonly [property: string]: NamedStrings }
 
 /**
- * Hold one named value to its rule. A value that is not a string where a string belongs
- * is refused with the domain's own refusal, because the domain is of strings.
+ * Hold one named value to its rule. A string place holds a string, whatever its rule, so
+ * that is asked first and once: a value that was left out, null, and every other value
+ * that is not a string are refused there, and the refusal says which. Only a string is then
+ * held to its rule's domain and width. A map of strings is its serializer's.
  */
 export function requirePortString(name: PortStringName, raw: unknown): void {
   const rule = PORT_STRING_RULES[name]
   if (rule === 'map') return
-  if (rule === 'payload') {
-    // What is in a payload is its serializer's. That it is a string is the port's shape:
-    // left to an entry, null was reported as an outage and a number was stored.
-    if (typeof raw !== 'string') {
-      throw new InvalidDurableStringError(`${name} must be a string`)
-    }
-    return
+  // Left to an entry, a string that was left out became a TypeError from a bind or a stored
+  // key that ends in the word undefined, a payload of null was reported as an outage, and a
+  // payload that was a number was stored.
+  if (typeof raw !== 'string') {
+    const what = raw === undefined ? 'was left out, and the port requires it' : 'must be a string'
+    throw new InvalidDurableStringError(`${name} ${what}`)
   }
+  // What is in a payload is its serializer's.
+  if (rule === 'payload') return
   requireDurableString(name, raw)
   if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })
 }
@@ -273,11 +276,8 @@ function requireNamed(named: NamedStrings | undefined, value: unknown, where: st
   }
   if (typeof named === 'string') {
     // Everything else the port requires, a payload too: whether a string is there is the
-    // port's shape and not the payload's domain. Left to an entry, a string that was left
-    // out became a TypeError from a bind, or a stored key that ends in the word undefined.
-    if (value === undefined) {
-      throw new InvalidDurableStringError(`${named} was left out, and the port requires it`)
-    }
+    // port's shape and not the payload's domain. The one check of a string place refuses
+    // a string that was left out, because a value that is not there is not a string.
     requirePortString(named, value)
     return
   }

@@ -14615,7 +14615,8 @@ for _verdict, _names in (
 # checked entry is an accessor that cannot be defined again, so a class field cannot replace
 # it. The constructor loops by index, so a store built while the array iterator answers
 # nothing still holds every entry. And a string the port requires is refused when it is
-# left out, which the identifier surface asks of every place.
+# left out, by the one check of a string place, which the identifier surface asks of every
+# place left out.
 MUTATION_SPECS.extend(
     (
         (
@@ -14642,9 +14643,9 @@ MUTATION_SPECS.extend(
         (
             "port-required-string-left-out-is-refused",
             "packages/core/src/port-strings.ts",
-            "    if (value === undefined) {\n      throw new InvalidDurableStringError(`${named} was left out, and the port requires it`)\n    }\n",
-            "    // MUTATION: a required string that was left out is left to the entry\n",
-            "a payload or a checkpoint key that was left out is a TypeError from a bind or a batch that is sent first, and never the refusal of a caller's mistake",
+            "  if (typeof raw !== 'string') {\n    const what = raw === undefined ? 'was left out, and the port requires it' : 'must be a string'\n    throw new InvalidDurableStringError(`${name} ${what}`)\n  }\n",
+            "  // MUTATION: a value that is not a string is handed to its rule\n",
+            "a payload or a checkpoint's state that was left out, or passed as null or a number, reaches the entry: one left out is a TypeError from a bind, null is reported as an outage, and a number is stored",
         ),
     )
 )
@@ -14749,19 +14750,13 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
-# What the one check holds besides a string's domain. A payload that is passed is a string,
-# and what is in it stays its serializer's. A value where an options object belongs is an
-# object: read as one, null, a number, a string and an array have no member, and a spawn
-# went on as if empty options had been passed.
+# What the one check holds besides a string's domain. A value where an options object
+# belongs is an object: read as one, null, a number, a string and an array have no member,
+# and a spawn went on as if empty options had been passed. A payload that is not a string
+# is refused by the one check of a string place, the check whose mutation is
+# port-required-string-left-out-is-refused.
 MUTATION_SPECS.extend(
     (
-        (
-            "port-payload-that-is-not-a-string-is-refused",
-            "packages/core/src/port-strings.ts",
-            "    if (typeof raw !== 'string') {\n      throw new InvalidDurableStringError(`${name} must be a string`)\n    }\n",
-            "    // MUTATION: a payload that is not a string is left to the entry\n",
-            "a spawn or a checkpoint whose payload is a number stores the number, and one whose payload is null is reported as an outage that a driver retries for ever",
-        ),
         (
             "port-options-value-that-is-not-an-object-is-refused",
             "packages/core/src/port-strings.ts",
@@ -14772,18 +14767,6 @@ MUTATION_SPECS.extend(
     )
 )
 for _verdict, _names in (
-    (
-        ExpectedVerdict(
-            "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "identifier bound conformance [libsql] refuses a payload that is not a string at every place of one, before anything is sent",
-            "mutation-verdict:behavior:payload-that-is-not-a-string-refused-at-every-place",
-            "packages/conformance/src/identifier-bound.ts",
-        ),
-        (
-            "port-payload-that-is-not-a-string-is-refused",
-        ),
-    ),
     (
         ExpectedVerdict(
             "behavior",
@@ -20509,7 +20492,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1084:
+        if len(MUTATIONS) != 1083:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
