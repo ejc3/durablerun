@@ -3133,6 +3133,20 @@ not depend on careful reading:
   unseen. PostgreSQL has no such catalog, so its map is held by its SQLSTATE
   classes alone, which the standard defines. A batch sent after the executor
   closed is a `StoreUnavailableError`.
+  One case holds that a failed batch is reported once and its executor serves
+  the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
+  statement a write and the second a broken primary key, which is more than
+  either server pool holds connections, so an executor that lost a connection
+  to every failed batch would stop answering there. Then a read finds nothing
+  written and a write is answered, on the same executor. On libSQL the
+  fixture's database is in memory and a broken constraint halts its statement,
+  so there the case passes with the executor's recovery or without it: the
+  lock wait, the path that breaks a connection, is held by the libSQL store's
+  own cases on a file (§3.2). Run by hand against
+  an executor that fails the call after a failed batch, the case fails by
+  name, and so do the five constraint cases, whose read of what was written is
+  such a call: they held a read behind a failed batch of one statement, and
+  nothing held a write, a failure inside a longer batch, or a pool.
   Two write batches that update the same two rows in opposite orders, started
   together on connections that are already open, are both answered with each
   update applied once: PostgreSQL and MySQL make one of them a deadlock victim

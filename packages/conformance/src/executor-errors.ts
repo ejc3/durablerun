@@ -27,6 +27,19 @@ async function taskRows(f: StoreFixture) {
   return read?.rows ?? []
 }
 
+/** One more attempt on a task's row: a write every dialect reads alike, and one a read can see. */
+const bump = (taskId: string): SqlStatement => ({
+  sql: 'UPDATE tasks SET attempts = attempts + 1 WHERE task_id = ?',
+  args: [taskId],
+})
+
+/**
+ * More write batches fail in a row than a server executor's pool holds connections, which
+ * is ten on both, so an executor that lost a connection to every failed batch would stop
+ * answering inside the case.
+ */
+const FAILED_BATCHES_IN_A_ROW = 12
+
 /**
  * One refused write for each kind of constraint the `tasks` table declares on every
  * dialect, as plain SQL that all three read alike.
@@ -91,6 +104,38 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
         }))
     }
 
+    /**
+     * A failed batch is reported once, and its executor serves the next call (DESIGN.md
+     * §3.2). The failure is a real one from the real driver, INSIDE a write batch: the first
+     * statement writes and the second breaks a constraint. A fault injected above the driver
+     * cannot show what a driver leaves behind on its connection, which is where this class
+     * of defect lives, so the fault matrix cannot stand in for this case.
+     */
+    it('answers a read and a write on the same executor after write batches that failed inside', () =>
+      withFixture(makeFixture, 'executor-errors-next-call', async (f) => {
+        const [first, second] = await twoTasks(f)
+        const before = await taskRows(f)
+        const duplicate = BROKEN_CONSTRAINTS['primary key']
+        if (duplicate === undefined) throw new Error('the primary key case is gone')
+        for (let failed = 0; failed < FAILED_BATCHES_IN_A_ROW; failed++) {
+          expect(
+            await refusalName(
+              f.raw.batch('executor-errors:fail-inside', [bump(first), duplicate(first, second)]),
+            ),
+            `failed batch ${failed + 1}`,
+          ).toBe('PermanentStoreError')
+        }
+        // The read: every failed batch was undone whole, its first statement included.
+        expect(await taskRows(f)).toEqual(before)
+        // The write, and a read of what it wrote.
+        expect(await refusalName(f.raw.batch('executor-errors:write-after', [bump(first)]))).toBe(
+          'accepted',
+        )
+        expect((await taskRows(f)).map((row) => Number(row.attempts))).toEqual(
+          before.map((row) => Number(row.attempts) + (row.task_id === first ? 1 : 0)),
+        )
+      }))
+
     it('types a batch sent after the executor closed an outage', async () => {
       const f = await makeFixture('executor-errors-closed', { migrate: false })
       await f.close()
@@ -118,10 +163,6 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
       () =>
         withFixture(makeFixture, 'executor-errors-deadlock', async (f) => {
           const [first, second] = await twoTasks(f)
-          const bump = (taskId: string): SqlStatement => ({
-            sql: 'UPDATE tasks SET attempts = attempts + 1 WHERE task_id = ?',
-            args: [taskId],
-          })
           const between: SqlStatement[] = Array.from({ length: 20 }, () => ({
             sql: 'SELECT 1',
             args: [],
