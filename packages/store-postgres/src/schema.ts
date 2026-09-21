@@ -301,6 +301,28 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
        WHERE state = 'running'`,
     ],
   },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the column refuses it too, for every writer
+    // there is, a port in another language included.
+    //
+    // The statement takes an ACCESS EXCLUSIVE lock on `events` as its first act and then
+    // reads every row once. It rewrites nothing, so a read batch's older snapshot sees the
+    // table as it was. It is one statement on one table, which is the rule above in its
+    // smallest form: the version never asks for a second store table, and a statement that
+    // holds `events` needs only a read of `meta`, which the runner's lock on `meta` does not
+    // block, so there is no cycle for a deadlock to close. Measured on a million events
+    // under the traffic of a build whose last version is 9: 85 to 129 ms with 64 B payloads
+    // and 390 ms with 1 KB, the longest call that overlapped it waited that long, and no call
+    // failed.
+    //
+    // A row that holds NULL makes the statement fail with SQLSTATE 23502, the transaction
+    // rolls back, and the database stays at version 9 with the row as it was. The rows are
+    // found with `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

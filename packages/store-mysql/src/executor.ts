@@ -1,5 +1,6 @@
 import {
   InvalidDurableStringError,
+  PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -50,6 +51,45 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
  * budget was gone.
  */
 const ER_DATA_TOO_LONG = 1406
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. MySQL sends the state beside its error number, and a class takes
+ * in every number MySQL files under it, 1064 among them, a statement the server will never
+ * accept. The PostgreSQL executor reads the same three classes, and nothing holds the two
+ * lists together: each is its own server's rule.
+ *
+ * The answers above keep a branch by number and are read first, because each has a type of
+ * its own: a missing `meta` on the version read, a value too long for its column, and the
+ * schema mismatch numbers. Every other state is an outage: a deadlock victim (1213, state
+ * 40001), which the executor runs again before it reports one, a lock wait timeout (1205,
+ * HY000), and an error with no state at all, as a lost connection or a closed pool is.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
+
+/**
+ * Answers as permanent as the classes above that MySQL files outside them, so no class can
+ * name them: three under HY000, its general state, which also holds a lock wait timeout,
+ * and one under 01000, the state of a warning.
+ */
+const PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS = new Set([
+  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column
+  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default
+  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column
+  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
+])
+
+/**
+ * Numbers MySQL files under one of the classes above that a retry cures, so they are read
+ * before the class: a limit on the server's or an account's connections, and on prepared
+ * statements. Another session's release lifts each of them.
+ */
+const OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS = new Set([
+  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections
+  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits
+  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count
+])
 
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
@@ -449,6 +489,12 @@ function errorNumber(error: unknown): number | undefined {
   return typeof errno === 'number' ? errno : undefined
 }
 
+/** The class of the SQLSTATE a server error carries: its first two characters. */
+function sqlStateClass(error: unknown): string | undefined {
+  const state = (error as { sqlState?: unknown } | null)?.sqlState
+  return typeof state === 'string' ? state.slice(0, 2) : undefined
+}
+
 /** One definition of a deadlock victim, for the count and for the decision to run it again. */
 function isDeadlockVictim(error: unknown): boolean {
   return errorNumber(error) === ER_LOCK_DEADLOCK
@@ -458,7 +504,12 @@ function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
-function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
+/**
+ * The typed error a batch's failure becomes. Exported for the case that reads the server's
+ * own list of error numbers and asks this function about each: the package's index does not
+ * name it.
+ */
+export function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof MysqlResultContractError ||
     error instanceof InvalidDurableStringError ||
@@ -484,6 +535,20 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
     if (SCHEMA_MISMATCH_ERRNOS.has(errno)) {
       return new SchemaMismatchError(
         `batch(${label}) hit a schema this build does not expect (MySQL error ${errno}): ${errorDescription(error)}`,
+        { cause: error },
+      )
+    }
+    // A limit that a retry cures is an outage whatever class MySQL files it under, so its
+    // class is not read.
+    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)
+      ? undefined
+      : sqlStateClass(error)
+    if (
+      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
+      PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS.has(errno)
+    ) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,
         { cause: error },
       )
     }

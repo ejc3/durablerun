@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   FatalTaskError,
   LeaseLostError,
+  PermanentStoreError,
   StoreUnavailableError,
   SuspendSignal,
   UNINSPECTABLE_TASK_FAILURE_JSON,
@@ -145,6 +146,9 @@ describe('snapshotTaskThrowable', () => {
       snapshotTaskThrowable(new StoreUnavailableError('offline')),
       'mutation-verdict:construction:task-throwable-public-store-unavailable',
     ).toEqual(failure('StoreUnavailableError', 'offline'))
+    expect(snapshotTaskThrowable(new PermanentStoreError('refused for good'))).toEqual(
+      failure('PermanentStoreError', 'refused for good'),
+    )
   })
 
   it('rejects prototype forgeries as ordinary user failures', () => {
@@ -202,5 +206,12 @@ describe('snapshotTaskThrowable', () => {
     expect(UNINSPECTABLE_TASK_FAILURE_JSON).toBe(
       '{"name":"Error","message":"task threw an uninspectable value"}',
     )
+  })
+})
+
+describe('PermanentStoreError', () => {
+  it('is no outage, and an outage is not one', () => {
+    expect(new PermanentStoreError('refused for good')).not.toBeInstanceOf(StoreUnavailableError)
+    expect(new StoreUnavailableError('offline')).not.toBeInstanceOf(PermanentStoreError)
   })
 })

@@ -407,6 +407,43 @@ a last docs PR gives a live owner to every open bullet that is left.
     are each caught by a generated cell of that profile. Six generated cases
     hold the ten run inserts of the corpus, and a successor that drops the
     parked wake step and a revival that carries nothing each fail one by name.
+22. PR3.3c: every string a caller passes the store port is checked in one
+    place, before any statement is sent. An identifier is inside the durable
+    string domain and within the width, a claim token is held as an identifier
+    is, a task name is inside the domain, a payload that is passed is a string
+    whose content is its serializer's, one check of every string place refuses
+    a value that is not a string, one left out among them, and a value that is
+    not an object is refused where an options object belongs.
+    Core names every
+    string once in a table whose type is computed from the port's, so a method
+    the port gains, a string argument a method gains, and a string inside an
+    options object each stop the build, and every store extends one class whose
+    constructor puts the one check in front of every entry. The identifier
+    surface generates every place a string enters the port from that table and
+    asks each held place, on every dialect, for names that are not only ASCII,
+    and the fuzz walk draws its places and names from the same source. This is
+    met. One shared case was committed failing on libSQL, PostgreSQL and MySQL,
+    where 49 of the 56 places an identifier entered sent their statements for a
+    name with a NUL or a lone surrogate. All 25 per-entry checks are gone from
+    each of the three stores. Nineteen type controls each fail to compile for
+    the reason written beside it. Twenty-two registered mutations are each caught
+    by one case by name: eight that named deleted or renamed lines and moved,
+    main's mutation of the claim token's width among them, and fourteen that are
+    new, which bend the check, the table, one for each kind of string, a queue, a
+    step key, an event name and a claim token, the rule of a claim token, the four
+    things the one review found at the mechanism, and three more at the same
+    mechanism: an accessor whose descriptor inherits from `Object.prototype`, a
+    table frozen only at its outer object, and an options value that is not an
+    object. The mutation of a string left out holds a payload that is not a string
+    as well, because one check of a string place refuses both.
+    Two of the table's four survived their first probes, because a place renamed
+    to a payload name its method already had folded into that place and the
+    surface did not see it, and the fix was committed after them. The one review
+    found that a method patched onto a store class after a store exists was not
+    reached, that a class field could replace the check, and that a string the
+    port requires was not refused when it was left out. Each was committed
+    failing before its fix, the last as a case that asks every place left out. One hosted answer moved: the inspect route
+    answers 400 where it answered 404 for a task id with a NUL in it.
 23. PR3.14c: a check generated from the corpus plans every statement of every
     label the libSQL store ships, and fails on a statement in which a step that
     runs once for each row of another is not keyed, or runs once for each row of
@@ -417,6 +454,44 @@ a last docs PR gives a live owner to every open bullet that is left.
     nests of each plan are judged. One registered mutation, a read that joins
     its task by the queue alone, fails it and passes every older pin of the
     file.
+24. PR2.5a: a broken constraint of each kind the `tasks` table declares, sent
+    through a store's executor, is typed
+    `PermanentStoreError` on libSQL, PostgreSQL and MySQL, a batch on a closed
+    executor is typed `StoreUnavailableError`, and two batches that lock the
+    same rows in opposite orders are both answered, by one shared conformance
+    surface with no dialect fork.
+    A worker pass ends on the new type exactly as on an outage, and a hosted
+    route answers it 500. This is met. The primary key case of
+    `packages/conformance/src/executor-errors.ts` was committed failing on all
+    three dialects, beside two worker pass cases in
+    `packages/sdk/test/run-worker.test.ts`, and the CHECK case was committed
+    failing on MySQL. Every member of every executor's map is held by a
+    registered mutation against the executor's own case, and the
+    self-concurrency surface books a permanent store error with the outages, so
+    a port call that breaks a constraint fails its contest.
+
+25. PR3.1d: an event's payload is never SQL NULL by the schema. One case of
+    the shared schema and admin surface writes SQL NULL over a stored event's
+    payload past the port, through the fixture's raw executor, and the schema
+    of libSQL, PostgreSQL and MySQL each refuses it, with no dialect fork in
+    the case. A database where an event already holds NULL fails `migrate()`
+    by the dialect's own refusal, stays at version 9 and keeps the row as it
+    was, on each dialect through the real executor. The invariant library
+    reports an event row that holds NULL.
+    This is met. The shared case was committed failing on all three dialects,
+    each of which stored the NULL. Schema version 10 declares the column NOT
+    NULL on PostgreSQL, declares it on MySQL through a form the catalog guards,
+    which is the repeatable column change PR4.3's open item (4) asked for, and
+    holds it on libSQL with two triggers, because SQLite cannot add NOT NULL to
+    a column that exists and the rebuild that would declare it was measured and
+    refused. The poison matrix's witnesses of a stored NULL
+    go through the fixture's storage-corruption door, where every dialect now
+    refuses them, by an UPDATE and by an INSERT. Six registered mutations hold
+    the servers' lines and the invariant library's two conditions, and libSQL's
+    frozen statements are held by its cases and by their hash. The entry under
+    PR3.1d has the measurements on a million events under the older build's
+    traffic.
+
 26. PR3.14d: a statement the libSQL store ships, of any kind, in which a step
     walks a table fails the generated plan check by the statement's name and the
     table's, whether the walk stands alone, drives another step or is driven,
@@ -833,9 +908,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   against real processes. The transport-lifecycle deferrals it carried from
   the residual review (the worker's shutdown order, deadlines on the detached
   launch and wake requests, header and request timeouts, body draining) are
-  PR2.5b. It still carries one from that review:
-  splitting permanent SQL errors from transient
-  unavailability in the executor's error typing. Includes the systematic fault MATRIX from the
+  PR2.5b. The last one it carried from that review, splitting permanent SQL
+  errors from transient unavailability in the executor's error typing, is
+  PR2.5a. Includes the systematic fault MATRIX from the
   PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
   with per-operation bounds asserted — curated fault lists missed the
   duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup
@@ -852,6 +927,103 @@ these three things; nothing else in the system does I/O, time, or randomness.
   told that URL. The start helpers take a started worker and refuse a bare
   number. The test determinism review rule flags any port number fixed before
   the bind and passes port 0.
+- **PR2.5a executors type a permanent SQL error apart from an outage**: DONE.
+  A constraint violation, a value out of range and a syntax error read as
+  `StoreUnavailableError` on every dialect, which every consumer retries, so a
+  deterministic failure inside an activated run was retried until its
+  infrastructure budget was gone. Core has a new type, `PermanentStoreError`, a
+  sibling of `StoreUnavailableError` as `SchemaMismatchError` is, and each
+  executor types it from the driver's error code and never from message text
+  (DESIGN.md §3.2): libSQL from the primary SQLite result code, PostgreSQL and
+  MySQL from SQLSTATE classes 22, 23 and 42. MySQL keeps two lists of numbers
+  beside the classes: 1203, 1226 and 1461 are read before the class and stay
+  outages, because they are limits that a retry cures and MySQL files them
+  under class 42, and 1265, 1364, 1366 and 3819 are typed permanent though
+  MySQL files them outside the three classes.
+  A code the map does not know stays an outage, a deadlock victim keeps its
+  retry, and on libSQL a syntax error stays an outage, because SQLite files it
+  under its generic code. One shared conformance surface, `executor-errors`,
+  holds the kinds on three dialects. Its constraint case was committed failing
+  on libSQL, PostgreSQL and MySQL, beside two worker pass cases. The surface
+  first broke one kind of constraint, a primary key. The simplify pass asked
+  why the shared surface held one kind where the schemas declare four, and the
+  CHECK case then failed on MySQL alone, which answers a broken CHECK
+  constraint with error 3819 under HY000: committed failing, then typed by
+  number. Each executor's own cases run on a fake driver, or on a table of the
+  author's own, so they could not show it. The pull request's one review then
+  found the same gap three more times
+  (`postmortems/pr2.5a-permanent-store-errors-review.md`):
+  the three limits under class 42, which this entry's rule
+  by class had turned from outages into permanent errors, a NOT NULL column
+  left out (1364), and text that is no number (1265). Each was committed
+  failing and then fixed, and the class was closed at its source: one
+  real-server case reads the server's own list of error numbers and holds both
+  of the executor's lists to it (DESIGN.md §3.4). Run over the executor as it
+  was before the fold, it fails naming all five numbers.
+  What consumers do was decided before any code. A worker pass treats the new
+  type exactly as an outage, through an internal control kind of its own,
+  because naming an error more precisely must not change who pays for it, and
+  the published `WorkerOutcome` did not change. The one visible change is the
+  hosted answer: 500, where the same failure answered 503. No log line was
+  added, because no log seam exists. The self-concurrency surface books the new
+  type with the outages, so a port call that breaks a constraint still fails
+  its contest, and the SDK's replay equivalence harness fails every store call
+  it samples, the odd calls from the third and the last call, once with an
+  outage and once with a permanent store error, under a floor that fails unless
+  every store method the sweeps failed met both kinds. The harness first drew
+  the kind by the call's number, which landed the permanent kind on two store
+  methods of twelve while this entry said every call: the review measured it,
+  and the floor was committed failing before the draw changed. Twenty-three
+  mutations hold the new conditions: one for the rule of each map, one for each
+  member of a map and of MySQL's two lists, one for the rule that reads a limit
+  before its class, two owned by the case that reads the server's list, and
+  one each for the worker pass and the contest's booking. The registry holds
+  1069.
+  - Option for the worker pass, not built, with its trigger: a run whose store
+    call fails permanently ends at once, as neither the task's failure nor an
+    exhausted infrastructure budget. It needs a terminal reason of its own and
+    a transition that writes it, so it is a spec change first
+    (`specs/Scheduler.tla`, beside FailRunTerminal), and it holds a design
+    question for the maintainer: the write that ends the run goes to the store
+    that has just refused a write. Whoever builds it keeps the admin's
+    convergence out of it: racing migrators meet a constraint violation by
+    design, the loser's sentinel (DESIGN.md §3.4), and `migrate()` has no run to
+    end. Its spec also says what a run does with a unique violation that came
+    from an id collision, which a retry with a new id cures, where no retry
+    cures any other permanent answer. Trigger: the first permanent code met on
+    an activated run in dogfood or CI, or the first `$InfraRetriesExhausted`
+    whose cause was one.
+  - Option for the libSQL executor, not built, with its trigger: type a syntax
+    error permanent on libSQL too. `SQLITE_ERROR` is SQLite's generic code, and
+    it also names a transaction state error that a new connection cures, so the
+    code alone cannot say which, and the executor reads no message text.
+    Trigger: the driver reports a code, or a field, that tells the two apart.
+  - Option for the fault matrix, not built, with its trigger: fail a cell when
+    a port call rejects with a type the cell did not inject. The matrix's
+    driver actor wraps every port call in a bare catch, so that a crash it
+    injected reads as a process that died, and a green matrix therefore says
+    nothing about a port call that met a permanent store error, or any other
+    rejection nobody expected. It was so before this entry. Here the question
+    was answered another way, by counting every `PermanentStoreError` the
+    conformance directory constructs on three dialects, by batch label: no
+    scheduler port batch met one under legal use. Trigger: a port call is found
+    to reject with an unexpected type inside a cell the matrix passed.
+  - Option for the self-concurrency surface, not built, with its trigger: book
+    as a refusal only what the contract names as one, and fail a contest on
+    everything else. Its booking lists what is NOT a refusal, an outage and now
+    a permanent store error, so any other type that fails the same way in both
+    orders of a contest still passes, a `SchemaMismatchError` among them. It
+    was so before this entry, and turning the list around needs every contest's
+    legal refusals enumerated first, the admin's and the spawn's among them.
+    Trigger: a contest is found to pass with an error in both orders.
+  - Option for the executors, not built, with its trigger: widen the maps.
+    `SQLITE_TOOBIG` and `SQLITE_RANGE` on libSQL, and SQLSTATE classes 21 and
+    54 on the two servers, stay outages, because no case here could produce one
+    through a port. On MySQL the case that reads the server's list names every
+    number it leaves an outage though its name says a refused value, and why.
+    A name can miss one: 1153 (`ER_NET_PACKET_TOO_LARGE`, 08S01) stays an
+    outage though the same statement is refused every time, which is main's
+    behaviour and the safe side. Trigger: one of them is met in a run.
 - **PR2.5b the HTTP transport's lifecycle, and an abort signal through the Launcher port**: DONE.
   `Launcher.launch` takes an optional second argument whose one field is an
   abort signal. The resident driver's launch deadline hands every call a signal
@@ -914,10 +1086,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   wake-consumption binding (a wake bound to its awaiting step instead of
   consumed by a flag — DONE: the wake_step column, codex final review).
   A second review round against the final head found six more bugs (see
-  postmortems/pr11-codex-final-review.md), leaving two deferrals of its own:
-  a schema/emit-boundary guarantee that an event payload is never SQL NULL
-  (lifting the timeout sentinel from a type-only to a structural guarantee);
-  and canonicalize-and-classify a handler result at the source so a
+  postmortems/pr11-codex-final-review.md), leaving two deferrals of its own.
+  One is DONE as PR3.1d below: a schema guarantee that an event payload is
+  never SQL NULL. The other stays:
+  canonicalize-and-classify a handler result at the source so a
   non-serializable result is a permanent user failure, not a silent completion
   with NULL. Attestation-artifact freshness is DONE: the Codex log and
   multi-lens journal each carry one exact review-head binding checked against
@@ -966,6 +1138,111 @@ these three things; nothing else in the system does I/O, time, or randomness.
     three holds of the column that could not fail, and two sentences that said
     more than was held. All six are folded. The fold's own unfiltered audit
     caught one defect that a fix had introduced, before anything was pushed.
+- **PR3.1d an event's payload is never SQL NULL, by the schema**: DONE. The
+  deferral PR3.1's entry carried from `postmortems/pr11-codex-final-review.md`.
+  An await that timed out answers with no payload and an emitted event answers
+  with its payload, so an event row that held SQL NULL would read as a
+  timeout, and only the port, a TypeScript type and the two reads of an event
+  stood in the way. Schema version 10 makes the state unwritable on all three
+  dialects (DESIGN.md §3.4 rule 12).
+  - Red first: one case of the shared schema and admin surface writes SQL NULL
+    over a stored event's payload through the fixture's raw executor, by a new
+    kind at the fixture's storage-corruption door, and requires the schema to
+    refuse it. It failed on libSQL, PostgreSQL and MySQL, each of which stored
+    the NULL.
+  - PostgreSQL declares the column NOT NULL with one `ALTER TABLE`. MySQL
+    declares it through a form the catalog guards, which closes PR4.3's open
+    item (4): it does nothing once `information_schema` calls the column NOT
+    NULL, so a rerun after a crash or a replay from a stale plan leaves a later
+    declaration alone, a column the catalog does not hold fails loudly, and the
+    runner's generated crash cuts took the version in with no edit. It asks
+    for the change in place and with no lock, so its own text refuses a NULL in
+    a session with no strict `sql_mode`, where the bare change stored an empty
+    string. libSQL cannot declare it, because SQLite cannot
+    add NOT NULL to a column that exists. The rebuild that would declare it was
+    measured and refused: on a million events of 1 KB it took 48 and 56 s,
+    doubled a 4.5 GB file, and a fifth to a third of the calls of a worker of
+    the older build failed, few of them by waiting out its busy timeout and most
+    by the defect that PR3.15 names. Two triggers hold the payload there, and
+    the version's third statement makes the update trigger check the rows
+    already there.
+  - Measured on a million events under the traffic of a build whose last
+    version is 9 (DESIGN.md has the traffic and every run): PostgreSQL 85 to
+    129 ms with 64 B payloads and 390 ms with 1 KB, MySQL 1.1 s and 2.5 to 2.6
+    s, libSQL 90 and 430 ms with nothing else running. No call of the older
+    build failed on any dialect. Those are warm figures. On a libSQL file that
+    is not in the page cache the version's check is a scan under the writer
+    lock: on a cold 4.5 GB file `migrate()` took 14.9 s and 24 of another
+    connection's calls failed, at most three of them by waiting out its busy
+    timeout and the rest by PR3.15's defect. The finding query run first, under
+    no write lock, took it to 0.3 to 0.4 s with no call failing, and DESIGN.md's
+    operator note says to run it. Each server's statement queues behind an older
+    transaction that holds `events`, and MySQL's rebuilds the whole table in
+    place, holding the named migration lock throughout.
+  - A row that already holds NULL is a foreign writer's or tampering. On each
+    dialect a case through the real executor holds that `migrate()` fails by
+    the dialect's own refusal, leaves version 9 and leaves the row as it was.
+    The bare MySQL change refuses only under a strict `sql_mode`: without one
+    it succeeds and stores an empty string where the NULL was. The version's
+    text therefore asks for the change in place and with no lock, which MySQL
+    refuses outside a strict mode with error 1846, and a case sends the
+    version's own statements over such a session and requires that refusal.
+  - The statement builder's table declarations say NOT NULL, so assigning a
+    value that may be NULL to the payload is a type error in every statement
+    the stores build. The shared comparison of those declarations with each
+    catalog gained one rule for every dialect: NOT NULL in the catalog, or a
+    raw write of NULL seen refused through the storage-corruption door, by
+    both kinds of write that can store one, an UPDATE and an INSERT.
+  - The invariant library reports an event row that holds NULL, so every sim,
+    scenario and fuzz walk checks it. Its witness and the older witness of a
+    run whose stored event holds NULL go through the same door, and every
+    dialect refuses them. Its positive control is a libSQL case that drops a
+    trigger as tampering would.
+  - Six registered mutations: the column change on each server, MySQL's guarded
+    form, its clause, and the invariant library's two conditions on a stored
+    NULL.
+    libSQL's three statements have none, by the registry's own rule: its
+    self-test refuses a live mutation of libSQL's migration file, which a hash
+    freezes. Three entries were written first, each caught by a filtered run,
+    which is the evidence that libSQL's two cases can fail, and the self-test
+    then refused them. No engine statement changed, so no corpus file moved,
+    and nothing here is a new protocol, so no TLA model changed.
+  - Options, not built. (1) libSQL's catalog could declare the column through a
+    table rebuild for databases small enough. Trigger: a reader that needs the
+    rule from a catalog read of libSQL. (2) The port's own refusals of a stored
+    NULL (the emit gate and the two reads' type checks) are now behind the
+    schema on every dialect. They stay: libSQL's also refuses a payload that is
+    not text, a build can meet a database below version 10, and removing them
+    would move the corpus on three dialects. Trigger: a stated oldest schema
+    version. (3) The poison matrix runs a witness that every dialect's schema
+    refuses once for each of its 21 write labels, and each run opens a fixture,
+    sees the write refused and closes. One cell for such a witness would do,
+    for these two and for the numeric witnesses PostgreSQL and MySQL refuse.
+    It changes the matrix's machinery and its pinned counts. Trigger: the
+    matrix's share of a conformance leg's time becoming a finding. (4) A read
+    that the runner sends outside the write transaction before a version whose
+    check scans a table, so that libSQL's scan under the writer lock always
+    finds its pages warm, where today DESIGN.md's operator note asks for it by
+    hand. It changes the runner's shape on three dialects. Trigger: a
+    deployment whose `events` table does not fit the page cache. (5)
+    PostgreSQL's three-transaction form: `ADD CONSTRAINT ... CHECK (payload IS
+    NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and a drop of
+    the constraint. Measured in review on a million rows of 1 KB (1.2 GB): 0.3
+    ms, 263 ms under SHARE UPDATE EXCLUSIVE, which blocks neither reads nor
+    writes, 0.3 ms and 0.6 ms, against the shipped form's 176 ms scan under
+    ACCESS EXCLUSIVE. A lock is held to its transaction's end, so it costs
+    three versions under the present runner, and it does not remove the queue
+    behind an older transaction. Trigger: a deployment where the scan under
+    ACCESS EXCLUSIVE is measured to matter.
+- **PR3.15 a libSQL write that fails busy fails the calls that follow it on its
+  connection**: IN PROGRESS as its own pull request, which rewrites this entry
+  when it merges. Older than any version here, and met while PR3.1d was measured
+  and reviewed. After a write batch on a file database fails with SQLITE_BUSY,
+  calls that follow it on the same `LibsqlExecutor`, writes among them, fail
+  with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`,
+  and they keep failing for about 70 ms after the lock is free. The cause is a
+  statement the client library leaves in progress after a busy failure, which is
+  an open bug upstream. Not built in PR3.1d, which changes no executor.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -2185,10 +2462,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
     more are the completion event, the wake, and the lock. Folding statements
     needs a grammar the tree path does not have.
-  - Every other string a store port takes. This round holds the spawn queue
-    and a port's event name to the durable string domain, each where it enters.
-    A queue or a step name at the other ports is not checked at the port. One
-    check for the whole port is its own change.
+  - DONE in PR3.3c: every string a store port takes is checked in one place,
+    core's table of the port's strings and the class every store extends.
   - The row lock of a caller's event can be dropped once no build that takes it
     can still run. That needs a stated oldest build, which nothing records today.
   - DONE in PR4.4c: the deadlock count is held at zero across the concurrency
@@ -2302,6 +2577,77 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A file that is listed as calling the invariant library directly can gain
     a seeded race that calls it alone, and the list does not see it. The
     suite's scenario cases are the listed sites of that kind today.
+- **PR3.3c one check of every string the port takes**: DONE. Measured at the
+  port on all three dialects, a name outside the durable string domain was kept
+  by no store as it was passed. Every driver replaces a lone surrogate with
+  U+FFFD, so two checkpoint names that differ only in one were one row, and a
+  run claimed under one token was held under another that differs only in one.
+  Where libSQL stores a name it ends the name at a NUL, and where it reads with
+  one it matches nothing. MySQL stores a NUL whole, and PostgreSQL refuses it,
+  which its executor reported as an outage that a driver retries for ever. 49
+  of the 56 places an identifier entered the port met no check of the domain,
+  and a claim token met none of any kind. A direct caller of the port reaches
+  this, and a queue or a driver id from configuration. Task code does not,
+  because `UserName.parse` already refuses such a name for every name the SDK
+  takes, before any store call.
+  Core names every string once (`PORT_STRING_RULES`, `PORT_STRINGS`), in a
+  table whose type is computed from the port's. One check is built from it, and
+  every store extends `HeldPort`, whose constructor puts that check in front of
+  every entry, so the 25 per-entry checks are gone from each store and a fourth
+  dialect inherits the check by extending the same class. The conformance
+  fixture types its store as one that does. The identifier surface generates
+  all 82 places from the table and asks each held place for names that are not
+  only ASCII, and the fuzz walk draws from the same source. The driver loop
+  asks the port's check of its queue and its id when it is constructed. The
+  same check refuses a string the port requires when it is left out, a payload
+  that is not a string, and a value that is not an object where an options
+  object belongs: left to the entries, a payload of null was reported as an
+  outage and a number was stored, and a spawn whose options were a number went
+  on as if empty options had been passed. The accessor that holds the check is
+  built from a descriptor that inherits nothing, and the table is frozen
+  throughout. One
+  hosted answer moved: the inspect route answers 400 where it answered 404 for
+  a task id with a NUL in it. Open, each with its reason:
+  - Any name fits any string position of the table, so a place written as a
+    payload compiles. The surface writes down every place that is not an
+    identifier and how many places there are, so that edit is visible. It is
+    not a proof, and two names of one rule that change places move neither.
+  - An entry called from a store class's prototype is reached with nothing in
+    front of it. Two libSQL cases do that on purpose. A test that lists every
+    such call in the repository would keep it to them, and is not built. A
+    patch of the prototype is reached through the check.
+  - An option, not built: the wrapper hands the entry a copy of each options
+    object it read. Today the check reads a member once and the entry reads it
+    again, so an object whose getter answers a clean string and then another
+    hands the entry what was never checked. A caller that can pass such an
+    object already holds the store. Its trigger is a store handed to code its
+    owner does not trust.
+  - An option, not built: a surface generated from the port's type and not from
+    the table of strings, which gives every argument of every method each kind
+    of value its type forbids and holds the answer to a refusal of the family
+    before anything is sent. The table is of strings, so an argument that
+    carries none is outside it: `claim` with null for its options is a
+    TypeError from inside the entry. Most such arguments are numbers and
+    durations with checks and refusal types of their own, so it is its own
+    change. Its trigger is the first report of a wrong-kind argument that reads
+    as a bug in the engine.
+  - An option, not built: deleting the refusal inside core's reader of a
+    failed rollback's argument. It is dead behind the one check for every call
+    through a store: a caller of the older shape is refused first, as a step
+    that was left out. It stays because the reader turns an unknown value into
+    two strings and the refusal is how it narrows them, because its message
+    names the whole shape for a caller that reaches an entry from the
+    prototype, and because core exports the reader. Its mutation answers to
+    core's own case of the reader, which calls it directly. Its trigger is the
+    reader losing its last direct caller.
+  - An option, not built: the hosted router holds its configured queue only to
+    non-empty, so a deployment configured with a queue the port refuses
+    answers every request 400, as it did for a queue past the width before
+    this. Its trigger is a hosted deployment whose queue comes from outside
+    its own configuration.
+  - `requireSagaStepFits` is still called by the three entries that carry a
+    checkpoint name. It is a rule about a derived name, and PR3.4c rewrites the
+    entry that carries one of them.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -3468,13 +3814,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   key on MySQL. The guard and the decoder read the same member, so nothing is
   decoded that was not checked. (3) A claim leg can lock up to the limit in
   runs the merged order leaves out, which other claimers skip until that claim
-  commits. (4) Version 1 holds the whole schema because MySQL DDL cannot roll
-  back. The first migration that alters a table needs a repeatable form, which
-  MySQL has no `ADD COLUMN IF NOT EXISTS` for. Version 6, the `runs_woken`
+  commits. (4) Closed by PR3.1d for a column that changes. Version 1 holds the
+  whole schema because MySQL DDL cannot roll back. Version 6, the `runs_woken`
   index that child tasks read through, is the first statement after version 1:
-  it is chosen from the catalog and prepared, which is safe to repeat, and a
-  column will need the same form. (5) The optional PlanetScale
-  smoke job is not built. (6) Child tasks and sagas are both ported, each in the
+  it is chosen from the catalog and prepared, which is safe to repeat. Version
+  10 is the first that alters a table, and makes a column NOT NULL through the
+  same form, guarded by what the catalog says of the column. A column that is
+  ADDED still has no form here, because no version adds one. (5) The optional
+  PlanetScale smoke job is not built. (6) Child tasks and sagas are both
+  ported, each in the
   entry that brought it, PR3.3 and PR3.4: the MySQL leg of the identical suite
   runs their surfaces and the fault and poison matrix cells of their labels,
   and nothing is owed.
@@ -3846,12 +4194,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     compiler alone refuses both, because its rule takes one plain table that
     declares an index of its stamp. Trigger: the first statement of either
     shape, which fails when its batch is built in `conformance-mysql`.
-  - Option for the MySQL executor, not built, with its trigger: classify the
-    server's permanent answers by SQLSTATE class in place of error numbers kept
-    by hand. A value too long for its column has a branch of its own by number,
-    error 1176 joined the schema mismatch set in PR4.4e's fold, and error 1064,
-    a statement the server will never accept, is still answered as an outage
-    that callers retry. Trigger: another number is added by hand.
+  - The option this entry recorded for the MySQL executor is built, as PR2.5a:
+    the server's permanent answers are typed by SQLSTATE class in place of
+    error numbers kept by hand, and error 1064, a statement the server will
+    never accept, is no longer answered as an outage. A value too long for its
+    column and the schema mismatch numbers keep their branches by number,
+    because each has a type of its own.
   - Option for the conformance surface, not built, with its trigger: run every
     labeled batch against a database stopped at each earlier schema version and
     expect a typed mismatch or success, never an outage. MySQL's version 8 is
@@ -4002,10 +4350,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     store packages' test exports and to the fixture contract. The pin reads
     the migrations' text, which sees a VARCHAR column in any statement and not
     a column bounded by another type.
-  - An option, not built: draw the fuzz op's names from the port-typed
-    `ENTRIES` table of `identifier-bound.ts`. The op lists four entries by
-    hand, and its names are ASCII. PR3.3c generates an axis from that table
-    and may absorb this.
+  - DONE in PR3.3c: the fuzz op draws its places and its names from the places
+    the identifier surface generates from core's table. The hand-written
+    `ENTRIES` table is gone, and the names are not only ASCII.
   - An option, not built: a poison witness for each of the 22 identifier
     columns. One column has one.
   - An option, not built: read PostgreSQL's `event_locks`, which holds
@@ -4159,7 +4506,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     at most (the statement takes its tables one at a time, so what queues
     meanwhile is whatever touches a table it has already taken), and it tries
     again. Its trigger is a deployment that must migrate under sustained
-    traffic, or beside transactions that stay open for long.
+    traffic, or beside transactions that stay open for long. Version 10 is the
+    first MySQL version that takes a table's metadata lock, and reads queue
+    behind it too, so the same option exists there as a short
+    `lock_wait_timeout` for the migrating session, which is a year by default.
   - An option, not built: PostgreSQL's saga reads as ranges of the checkpoints
     key. Those reads walk a task's checkpoints because a range over a name was
     not sound under a linguistic collation. From version 7 on the range is

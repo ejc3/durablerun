@@ -351,41 +351,55 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'fb6db974e87d8de57c7bdbcf015f900220a57acbe30006ca3689ca1d6337cd93':
-              # The migration lock travels in the batch control, so three base entries follow
-              # their lines. Two bootstrap calls gained the control as a third argument and are
-              # laid out one argument to a line: libSQL's label and MySQL's one-statement list
-              # each stand on a line of their own now, and each entry is the mutant it was.
-              # PostgreSQL's lock on meta left the admin's statement list for the executor, which
-              # sends the same statement in the same place, so the mutant that removed the
-              # statement from the list now removes the executor's send. Thirteen mutations are
-              # newer than the base, which has to exempt their markers.
+          if digest == '542dda82478873b84428dc4e889e932f51859b95b6c253e6e141deb3b27b9054':
+              # Four base entries name lines this tree deleted. Each store checked its own
+              # entries, and the driver loop held its two names to the width alone. One check
+              # in core now stands in front of every entry, built from one table of the port's
+              # strings, so each mutant moved to what holds its property now: the spawn queue's
+              # to the table's first place, the emitted name's to the width half of the check's
+              # rule, the loop's to the line that asks the port's check of its driver id, and
+              # the claim token's, which named the first line of `claim` in the libSQL store,
+              # to the table's place for the token at `claim`. Each keeps its owner but the
+              # last, which the width case cannot own: that case draws its places from the
+              # table and asks nothing of a place the table stopped holding, so the written
+              # list of places owns it. Each owner still fails under its mutant. Three more
+              # named a second copy of a check that stood behind the one check in core, where
+              # no mutant of it could be seen through the port once the one check answered
+              # first. The copies are deleted, and each of the three moved to the table's place
+              # for its string: an emitted event name, a parent's queue and a parent's run id.
+              # One more names the line that refuses a reserved key, which reads the caller's
+              # key under another local now that the key's own checks are gone from beside it.
+              # Eight entries moved in all. One base verdict moved with no entry re-aimed: the
+              # reader of a failed rollback's argument refuses another shape behind the one
+              # check now, so the mutation that stops it refusing answers to core's own case
+              # of the reader. Fourteen mutations are new, four of them for what the review of
+              # the one check found at the mechanism and three more at the same mechanism, and
+              # with that verdict they answer to ten verdict markers that are newer than the
+              # base. No entry was retired.
               repaired = previous
               for name in (
-                  'text-statement-list-holds-every-raw-batch',
-                  'postgres-migrator-locks-meta-before-its-sentinel',
-                  'mysql-bootstrap-is-one-statement',
+                  'spawn-queue-is-a-durable-string',
+                  'libsql-emitted-name-held-at-the-entry',
+                  'driver-identifiers-held-at-construction',
+                  'event-name-is-a-durable-string',
+                  'parent-queue-held-to-the-width',
+                  'parent-run-id-held-to-the-width',
+                  'spawn-refuses-reserved-idempotency-key',
+                  'claim-token-held-to-the-width',
               ):
                   repaired = reaim_entry(repaired, candidate, name)
-              repaired = exempt(
-                  repaired,
-                  candidate,
-                  (
-                      'mutation-verdict:construction:postgres-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:construction:postgres-version-batch-names-the-migration-lock',
-                      'mutation-verdict:construction:libsql-migration-write-names-the-migration-lock',
-                      'mutation-verdict:construction:postgres-migration-write-names-its-lock',
-                      'mutation-verdict:construction:mysql-migration-write-names-its-lock',
-                      'mutation-verdict:construction:mysql-migration-batch-sent-as-a-read-is-refused',
-                      'mutation-verdict:construction:mysql-lock-of-an-unknown-kind-is-refused',
-                      'mutation-verdict:behavior:mysql-migration-lock-keeps-the-released-name',
-                      'mutation-verdict:behavior:mysql-index-form-is-safe-to-repeat',
-                      'mutation-verdict:construction:mysql-failed-batch-is-forgiven-where-the-version-moved',
-                      'mutation-verdict:construction:mysql-migrator-plans-again-only-after-progress',
-                      'mutation-verdict:behavior:mysql-advance-is-guarded-on-the-version-before',
-                      'mutation-verdict:construction:mysql-pending-batch-names-the-migration-lock',
-                  ),
-              )
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+                  'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
+                  'mutation-verdict:behavior:port-entry-looked-up-when-called',
+                  'mutation-verdict:behavior:port-check-cannot-be-defined-away',
+                  'mutation-verdict:behavior:port-constructor-loops-by-index',
+                  'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
+                  'mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing',
+                  'mutation-verdict:construction:port-table-frozen-throughout',
+                  'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
+                  'mutation-verdict:behavior:saga-failed-rollback-shape-is-checked',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
