@@ -650,61 +650,67 @@ One invocation executes one claimed run to its next suspension point:
   tursodatabase/libsql-js#228), and the newest binding and client read the same
   way.
 
-  The executor therefore ASKS before it trusts. Every failed batch of a
-  database file marks its connection suspect, and the next batch first puts the
-  question a `COMMIT` is asked: an empty read transaction commits only when no
-  writing statement is in progress and the connection is outside a transaction,
-  the two states that fail the batches after a failed one. It is sent as SQL
-  text, which the binding prepares, steps and finalizes inside one call, and
-  the client rolls back the empty transaction when its `COMMIT` is refused, so
-  the question leaves nothing behind whatever the answer. It costs a median of
-  about 3 microseconds on a whole connection. A connection that answers is
-  kept, which is every failure that left nothing in progress, a broken
-  constraint for one. A connection that refuses is replaced through the
-  client's `reconnect()`, and the two PRAGMAs a file needs are applied to the
-  new one before the batch runs. The rule is "ask, then replace what is
-  broken", and not "replace after any failure", because a replaced connection
-  is not closed at once, as the measurements below say. The lock wait is the
-  path production meets, and the question does not name it. One other path is
-  known. SQLite ends an `EXPLAIN` listing with `SQLITE_DONE` and does not halt
-  its statement, so an `EXPLAIN` of a writing statement stays counted as
-  writing and fails its own batch's `COMMIT` and every later one on its
-  connection, measured on an in-memory client with no lock anywhere. On a file
-  the question covers it. An in-memory database is never given a new
-  connection, and no statement a store sends is an `EXPLAIN`, so there it is a
-  hazard only for a test that sends one inside a batch, and the plan tests
-  send a write's `EXPLAIN` through the raw client, outside any batch.
+  The executor therefore ASKS before it trusts. Every failed batch of a database
+  file marks its connection suspect, and the next batch first puts the question
+  a `COMMIT` is asked: an empty read transaction commits only when no writing
+  statement is in progress and the connection is outside a transaction, the two
+  states that fail the batches after a failed one. It is sent as SQL text, which
+  the binding prepares, steps and finalizes inside one call, and the client
+  rolls back the empty transaction when its `COMMIT` is refused, so the question
+  leaves nothing behind whatever the answer. It costs a median of about 3
+  microseconds on a whole connection. A connection that answers is kept, which
+  is every failure that left nothing in progress, a broken constraint for one. A
+  connection that refuses is replaced: the executor closes the client and
+  reconnects it, and the two PRAGMAs a file needs are applied to the new one
+  before the batch runs. The rule is "ask, then replace what is broken", and not
+  "replace after any failure", because a replaced connection is not closed at
+  once, as the measurements below say. The lock wait is the path production
+  meets, and the question does not name it. One other path is known. SQLite ends
+  an `EXPLAIN` listing with `SQLITE_DONE` and does not halt its statement, so an
+  `EXPLAIN` of a writing statement stays counted as writing and fails its own
+  batch's `COMMIT` and every later one on its connection, measured on an
+  in-memory client with no lock anywhere. On a file the question covers it. An
+  in-memory database is never given a new connection, and no statement a store
+  sends is an `EXPLAIN`, so there it is a hazard only for a test that sends one
+  inside a batch, and the plan tests send a write's `EXPLAIN` through the raw
+  client, outside any batch.
 
   A recovery can fail too, because opening a connection and applying its
   PRAGMAs are calls on a file that another connection may hold or that may be
   gone. That failure is an outage, reported once, to the caller whose batch was
   next, and the debt stands: the connection stays suspect, so the call after it
-  tries again before its batch. One state needs care of its own. When the new
-  connection cannot be opened, the client is left holding the connection it
-  closed, and the binding ends the whole PROCESS, with a panic that no `catch`
-  sees, when the transaction state of a closed connection is read, which the
-  client's batch does whenever it fails. So the executor remembers that a
-  connection was asked for and not opened, and until one opens it sends that
-  client nothing, the question included.
+  tries again before its batch. One state needs care of its own. The client's
+  `reconnect()` closes the old connection and then opens the new one, so an open
+  that failed would leave the client holding the connection it closed, and the
+  binding ends the whole PROCESS, with a panic that no `catch` sees, when the
+  transaction state of a closed connection is read, which the client's batch
+  does whenever it fails. So the executor closes the client before it
+  reconnects: a client whose open failed is then closed itself, and it refuses
+  every call, the question included, before anything reaches the binding.
 
-  A database file's batches run ONE AT A TIME, each after the one before it
-  has been answered and has marked its connection if it failed. The local
-  client runs a batch without yielding, so two batches never overlapped, and
-  the queue takes no concurrency away: it costs one microtask a batch. Without
-  it, a batch that was already waiting when another failed ran on the broken
-  connection BEFORE the failed call's own error handling had run, and the
-  outage was reported twice again. Two store calls made in one tick is an
-  ordinary shape, a task that starts two steps together. A hosted client keeps
-  its concurrent requests, and an in-memory database is not queued. Three things
-  a queue can do wrong are each held or ruled out. No batch can wait for
-  itself: the only code that runs inside a turn is the executor's own send,
-  which calls nothing of the port, and the store, the admin and core's fenced
-  batch all await `batch` from outside a turn. A rejected batch neither stops
-  the batches behind it nor leaves a rejection unhandled, which a case holds
-  with five batches sent in one tick, two of which fail. `close()` with batches
-  queued answers each of them with the client's own refusal and hangs none, and
-  a closed executor stays closed: `reconnect()` reopens a closed client, so a
-  closed client is never reconnected.
+  A database file's batches run ONE AT A TIME, each after the one before it has
+  been answered and has marked its connection if it failed. The local client
+  runs a batch without yielding, so two batches never overlapped, and the queue
+  takes no concurrency away. It adds a few promise hops to each batch.
+  Interleaved on a file with main's executor, a read batch's median was 47 to 48
+  microseconds against 49 on main and a write batch's 420 to 424 against 417 to
+  425, while a write's 95th percentile was 620 to 634 against 595 to 598 in both
+  runs, which may be those hops or the load of a shared machine: the measurement
+  cannot tell them apart. Without it, a batch that was already waiting when
+  another failed ran on the broken connection BEFORE the failed call's own error
+  handling had run, and the outage was reported twice again. Two store calls
+  made in one tick is an ordinary shape, a task that starts two steps together.
+  A hosted client keeps its concurrent requests, and an in-memory database is
+  not queued. Three things a queue can do wrong are each held or ruled out. No
+  batch can wait for itself: the only code that runs inside a turn is the
+  executor's own send, which calls nothing of the port, and the store, the admin
+  and core's fenced batch all await `batch` from outside a turn. A rejected
+  batch neither stops the batches behind it nor leaves a rejection unhandled,
+  which a case holds with five batches sent in one tick, two of which fail.
+  `close()` with batches queued answers each of them with the client's own
+  refusal and hangs none, and a closed executor stays closed: it keeps a flag of
+  its own and is never reconnected, because `reconnect()` reopens a closed
+  client and the recovery closes the client itself before it reconnects.
 
   An in-memory database lives in its one connection, so it is never replaced,
   and a case holds that it keeps its rows through a failed batch. It cannot
@@ -714,41 +720,42 @@ One invocation executes one claimed run to its next suspension point:
   client, and the executor does nothing there. That is read from the client's
   source and not run: nobody here can run a hosted server.
 
-  What a replaced connection costs, measured in a process that does nothing
-  else, in plain JavaScript on Node 22, with a lock held throughout, the busy
-  timeout lowered to 1 ms, and every failed write followed by a read that must
-  be answered. Replacing, the PRAGMAs and the first batch take a median 0.33 ms,
-  against 0.05 ms for a batch on a kept connection, paid only after a failure
-  that really broke the connection. The abandoned connection holds no lock: a
-  case has another executor write and a `wal_checkpoint(TRUNCATE)` complete
-  unblocked while the abandoned connection is still open. It does hold two
-  descriptors and about 0.2 MB, because the binding keeps a connection open
-  until every statement prepared on it has been collected. What releases it is
-  a collection and then a turn of the event loop, both. A collection with no
-  turn after it released nothing in the reproduction, and turns with no
-  collection release nothing: after each storm with turns below, a second of
-  idle turns released none of the 165 to 216 descriptors left. With one turn
-  of the event loop after every failure, 3,000 and 20,000 failures in a row
-  peaked at 237 descriptors on the database, 265 in the process, which began
-  with 33: a sawtooth between about 80 and 237, with 99 to 127 MB resident. A
-  process limited to 1,024 descriptors has about 760 to spare at that peak.
-  Every write failed locked, no read failed, and nothing else happened. With
-  NO turn of the event loop between failures nothing is released: 3,000
-  failures left 6,003 descriptors and 635 MB, and a second of idle turns
-  afterwards released about half of them, whose collection had run and whose
-  finalizers were waiting for that turn. Production does not get there. A
-  failure that breaks the connection is a lock wait, which blocks its process
-  for the whole busy timeout, five seconds that production cannot shorten, so
-  2,000 of them are 2.8 hours in a process that serves no timer and no socket.
-  A call on the local client is no turn of its own, because the native call
-  returns before its promise settles, so what matters is that every path that
-  calls the store again after an outage waits on a timer first. The resident
-  loop parks on the clock after a failed tick, and yields a turn after at most
-  32 passes that did not sleep. One tick fails at most a few calls for each run
-  it claimed, which its claim limit bounds. The heartbeat pump sleeps half a
-  lease before every beat and stops at its first failure. A worker pass ends
-  at a store outage, and a later tick launches it again. The rollback loop
-  returns at an outage. A hosted route makes one attempt for each request,
+  What a replaced connection costs. Closing the client, reconnecting it, its two
+  PRAGMAs and the first batch on the new connection take a median 0.23 ms,
+  against 0.03 ms for a batch on a kept connection, measured on a file with a
+  schema of the store's size, and they are paid only after a failure that really
+  broke the connection. The abandoned connection holds no lock: a case has
+  another executor write and a `wal_checkpoint(TRUNCATE)` complete unblocked
+  while the abandoned connection is still open. It does hold two descriptors and
+  about 0.2 MB, because the binding keeps a connection open until every
+  statement prepared on it has been collected. What releases it is a collection
+  and then a turn of the event loop, both. A collection with no turn after it
+  released nothing in the reproduction, and turns with no collection release
+  nothing: after each storm with turns below, a second of idle turns released
+  none of the 201 to 244 descriptors left. The storms ran in a process that does
+  nothing else, in plain JavaScript on Node 22, with a lock held throughout, the
+  busy timeout lowered to 1 ms, and every failed write followed by a read that
+  must be answered. With one turn of the event loop after every failure, 3,000
+  and 20,000 failures in a row peaked at 251 to 255 descriptors on the database,
+  279 to 283 in the process, which began with 33: a sawtooth between about 135
+  and 255, with 115 to 123 MB resident. A process limited to 1,024 descriptors
+  has about 740 to spare at that peak. Every write failed locked, no read
+  failed, and nothing else happened. With NO turn of the event loop between
+  failures nothing is released: 3,000 failures left 6,003 descriptors and 625
+  MB, and a second of idle turns afterwards released about half of them, whose
+  collection had run and whose finalizers were waiting for that turn. Production
+  does not get there. A failure that breaks the connection is a lock wait, which
+  blocks its process for the whole busy timeout, five seconds that production
+  cannot shorten, so 2,000 of them are 2.8 hours in a process that serves no
+  timer and no socket. A call on the local client is no turn of its own, because
+  the native call returns before its promise settles, so what matters is that
+  every path that calls the store again after an outage waits on a timer first.
+  The resident loop parks on the clock after a failed tick, and yields a turn
+  after at most 32 passes that did not sleep. One tick fails at most a few calls
+  for each run it claimed, which its claim limit bounds. The heartbeat pump
+  sleeps half a lease before every beat and stops at its first failure. A worker
+  pass ends at a store outage, and a later tick launches it again. The rollback
+  loop returns at an outage. A hosted route makes one attempt for each request,
   which arrives over a socket. A failure that leaves nothing in progress
   replaces nothing, so a storm of permanent errors holds the descriptors it
   began with, 4 of 4 across 3,000 failures, turn or no turn.

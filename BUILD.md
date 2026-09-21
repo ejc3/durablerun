@@ -1100,29 +1100,29 @@ these three things; nothing else in the system does I/O, time, or randomness.
     queued behind the failed write each failed by name with that message, and a
     read on a third executor passed as the control. A case lowers the five
     second wait on its own connection with a PRAGMA sent through the batch
-    port, which no store statement does, so it runs in about a tenth of a
-    second. Run once at the full five seconds, the first case failed the same
-    way after 5.0 s.
+    port, which no store statement does, so its wait is 10 ms. Run once at
+    the full five seconds, the first case failed the same way after 5.0 s.
   - The fix is in the libSQL executor alone. A failed batch of a database file
     marks its connection suspect. The next batch first asks the connection the
     question a COMMIT is asked, an empty read transaction sent as SQL text,
-    keeps a connection that answers, and replaces one that refuses through the
-    client's `reconnect()`, with the two PRAGMAs applied again. A recovery
-    that fails is an outage once and is owed by the next call. A file's
+    keeps a connection that answers, and replaces one that refuses by closing
+    the client and reconnecting it, with the two PRAGMAs applied again. A
+    recovery that fails is an outage once and is owed by the next call. A file's
     batches run one at a time, so a batch that was waiting behind a failed one
     runs after the mark and not before it. An in-memory database keeps its one
     connection, a closed executor stays closed, and a hosted client is
-    untouched. Eleven cases on a real file hold this and one holds an
-    in-memory database through a failed batch. Each guard of the executor,
-    removed by hand, fails named cases among them, but for one, whose removal
-    ends the test process, as the next bullet says.
+    untouched. Eleven cases on a real file hold this and one holds an in-memory
+    database through a failed batch. Each guard of the executor, removed by
+    hand, fails named cases among them, but for one, whose removal ends the test
+    process, as the next bullet says.
   - A second defect of the binding was met on the way. It is avoided and not
     fixed: reading the transaction state of a closed connection ends the
     process with a panic, and the client reads it whenever a batch fails after
-    a `reconnect()` that could not open the database. The executor sends
-    nothing to a client whose new connection did not open. It was not found
-    reported upstream on 2026-09-20, and by reading it is gone on the binding's
-    main branch.
+    a `reconnect()` that could not open the database. The executor closes the
+    client before it reconnects, so a client whose new connection did not open
+    is closed itself and refuses every call before anything reaches the
+    binding. It was not found reported upstream on 2026-09-20, and by reading
+    it is gone on the binding's main branch.
   - The class. The layer that should have caught this is a check with real
     drivers that a failed batch leaves its executor able to serve the next
     one, and the fault matrix cannot be that layer, because it injects faults
@@ -1142,10 +1142,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     then answered a read while the lock was held and a write once it was free,
     with every failed batch's first write undone.
   - What a replaced connection costs is measured and stated in DESIGN.md §3.2
-    with its conditions: about a third of a millisecond, paid only after a
+    with its conditions: about a quarter of a millisecond, paid only after a
     failure that really broke the connection, and two descriptors and about
     0.2 MB until a collection and then a turn of the event loop release them,
-    a peak of 237 descriptors across 20,000 failures in a row when the event
+    a peak of 255 descriptors across 20,000 failures in a row when the event
     loop turns.
   - WHEN TO DELETE THE WORKAROUND. The canary case of
     `packages/store-libsql/test/failed-batch-recovery.test.ts` sends the defect
@@ -1153,9 +1153,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     message that says so, when a release of the library finishes a statement
     whose step failed busy. Upstream: tursodatabase/libsql-client-ts#352, which
     points at tursodatabase/libsql-js#228. Delete then, from the executor, the
-    question, the reconnect and the memory of a connection that did not open,
-    and the canary with them, and the queue unless something else has come to
-    rely on it. Keep the other cases, which must stay green without them.
+    question, the close and the reconnect, and the canary with them, and the
+    queue unless something else has come to rely on it. Keep the other cases,
+    which must stay green without them.
+  - An option, not built: a leg of the shared conformance suite on a libSQL
+    database FILE, at least for the executor error surface. The suite runs
+    libSQL in memory, so no shared case can reach a file's lock wait or its
+    recovery, and only the libSQL store's own cases hold them. Trigger: a
+    second defect found on libSQL that only a file database shows.
   - An option, not built: the servers' lock-wait form as a committed case. It
     needs a lock wait limit on the executor's own sessions, PostgreSQL's
     through its connection options and MySQL's through a session setting the
