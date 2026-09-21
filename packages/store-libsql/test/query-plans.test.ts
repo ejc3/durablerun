@@ -1196,6 +1196,18 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ])
   })
 
+  it('reads a write as a write whatever its conflict clause or its schema', async () => {
+    // A write may name what it does on a conflict, and a table may be named with its schema.
+    // Each of these reaches one row by its key, and each is read as the write it is.
+    for (const sql of [
+      'update or ignore runs set wake_event = null where run_id = ?',
+      'update main.runs set wake_event = null where run_id = ?',
+      'delete from "main"."waits" where run_id = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
   it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
     // A step is judged by its constrained columns, whatever table it names, so an equality on
     // a column named `key` reads as keyed on any table. It is true of `meta`, whose key is
