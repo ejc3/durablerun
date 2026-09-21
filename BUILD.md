@@ -1142,9 +1142,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     run whose stored event holds NULL go through the same door, and every
     dialect refuses them. Its positive control is a libSQL case that drops a
     trigger as tampering would.
-  - Six registered mutations, 1037 to 1043: the column change on each server,
-    MySQL's guarded form, its clause, and the invariant library's two
-    conditions on a stored NULL.
+  - Six registered mutations: the column change on each server, MySQL's guarded
+    form, its clause, and the invariant library's two conditions on a stored
+    NULL.
     libSQL's three statements have none, by the registry's own rule: its
     self-test refuses a live mutation of libSQL's migration file, which a hash
     freezes. Three entries were written first, each caught by a filtered run,
