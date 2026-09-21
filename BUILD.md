@@ -48,11 +48,9 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left. Three
-lines are left when the last docs PR merges. Line 18 is held for the
-maintainer's choice. Line 16 is PR3.5d's and arrives with its pull request,
-#71, and line 27 is PR3.15's, whose branch is in review. Both arrive after
-the last docs PR.
+a last docs PR gives a live owner to every open bullet that is left. Two lines
+are left. Line 18 is held for the maintainer's choice, and line 27 is PR3.15's,
+whose branch is in review.
 
 **Exit test:**
 
@@ -2630,11 +2628,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   otherwise, and the released types did: `FencedBatch.lockEvent` is gone,
   `DefinedStatement` gains a required `eventLock`, `DerivedSet` takes no text
   for a task's state, and a libSQL batch whose statements name two events now
-  throws where it was sent. The published-surface check compares exported
-  names, and no name left, so it sees none of that. A build-time refusal also
-  got narrower: a declared event lock had to be followed at once by a
-  compare-and-set, and an event lock that arrives with its statement is held
-  to nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
+  throws where it was sent. The published-surface check compared exported
+  names, and no name left, so it saw none of that until PR3.5d, whose check
+  compares declarations and lists each of these changes. A build-time refusal
+  also got narrower: a declared event lock had to be followed at once by a
+  compare-and-set, and an event lock that arrives with its statement is held to
+  nothing of the kind, which DESIGN.md §3.4 rule 2 now says.
 - **PR3.3d the child-task review's smaller list**: five small items from the
   second review of PR3.3, on three stores. The run-to-task memo forgets a run
   once the store's own `complete`, `fail`, or `failRollback` has ended it. A
