@@ -3,6 +3,7 @@ export type {
   StorageCorruptionAttempt,
   StorageCorruptionDisposition,
   PersistedNumericTable,
+  LockWaitSurface,
   StoreFixture,
   StoreFixtureFactory,
   StoreFixtureOptions,

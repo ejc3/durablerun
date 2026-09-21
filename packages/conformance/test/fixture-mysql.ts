@@ -112,8 +112,9 @@ export async function makeMysqlFixture(
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   const { raw, admin, ids } = opened
+  const store = new MysqlSchedulerStore(raw, ids)
   return {
-    store: new MysqlSchedulerStore(raw, ids),
+    store,
     admin,
     adminOver: (db: SqlExecutor) => new MysqlStoreAdmin(db),
     raw,
@@ -128,6 +129,16 @@ export async function makeMysqlFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
     deadlocks: () => raw.deadlocks,
+    lockWait: async () => ({
+      store,
+      raw,
+      holdWriteLock: (taskId: string, during: () => Promise<void>) =>
+        opened.holdTaskRowLock(taskId, during),
+      shortenFirst: [],
+      // MySQL waits at the locked row until innodb_lock_wait_timeout, set in whole seconds.
+      shortenInside: [{ sql: 'SET SESSION innodb_lock_wait_timeout = 1', args: [] }],
+      close: async () => {},
+    }),
     close: opened.close,
   }
 }

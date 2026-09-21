@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
+import { holdLibsqlWriteLock, openTestDb } from '@durablerun/store-libsql/testing'
 import {
   type PersistedNumericTable,
   type StorageCorruption,
@@ -119,6 +122,27 @@ export async function makeLibsqlFixture(
     // SQLite has one writer at a time and never picks a victim: a writer that cannot get
     // the lock waits out its busy timeout and fails, and the executor runs nothing again.
     deadlocks: () => 0,
+    lockWait: async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'durablerun-lock-wait-'))
+      const url = `file:${join(dir, 'db.sqlite')}`
+      const opened = await openTestDb({
+        url,
+        idNamespace: conformanceIdNamespace(`${seed}-lock-wait`),
+      })
+      return {
+        store: new LibsqlSchedulerStore(opened.raw, opened.ids),
+        raw: opened.raw,
+        holdWriteLock: (_taskId: string, during: () => Promise<void>) =>
+          holdLibsqlWriteLock(url, during),
+        // libSQL waits for its lock at the batch's BEGIN, before any statement of the batch.
+        shortenFirst: [{ sql: 'PRAGMA busy_timeout=10', args: [] }],
+        shortenInside: [],
+        close: async () => {
+          opened.close()
+          rmSync(dir, { recursive: true, force: true })
+        },
+      }
+    },
     close: async () => raw.close(),
   }
 }

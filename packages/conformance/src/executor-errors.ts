@@ -1,4 +1,4 @@
-import { PermanentStoreError, type SqlStatement } from '@durablerun/core'
+import { PermanentStoreError, type SqlExecutor, type SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { refusalName, warmConnections, withFixture } from './scenario.js'
@@ -25,6 +25,22 @@ async function taskRows(f: StoreFixture) {
     'read',
   )
   return read?.rows ?? []
+}
+
+/** A read of one task's attempts. */
+const attemptsStatement = (taskId: string): SqlStatement => ({
+  sql: 'SELECT attempts FROM tasks WHERE task_id = ?',
+  args: [taskId],
+})
+
+/** The attempts of one task, read through the executor a case makes wait. */
+async function attemptsOf(raw: SqlExecutor, taskId: string): Promise<number> {
+  const [read] = await raw.batch(
+    'executor-errors:read-attempts',
+    [attemptsStatement(taskId)],
+    'read',
+  )
+  return Number(read?.rows[0]?.attempts)
 }
 
 /** One more attempt on a task's row: a write every dialect reads alike, and one a read can see. */
@@ -135,6 +151,61 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
           before.map((row) => Number(row.attempts) + (row.task_id === first ? 1 : 0)),
         )
       }))
+
+    /**
+     * The failure production meets on libSQL, which a broken constraint cannot show because it
+     * halts its statement: a write batch that waits for a lock another connection holds until
+     * the executor's wait runs out (§3.2). Each dialect shortens that wait with a statement of
+     * its own, libSQL before the batch, because it waits for its lock at the batch's BEGIN, and
+     * the servers inside the batch's transaction. The read comes while the lock is still held,
+     * because a read takes no write lock and must be answered, and the write once it is free.
+     */
+    it(
+      'answers a read while the lock is held and a write once it is free, on the same executor, after a write batch gave up waiting for a lock',
+      () =>
+        withFixture(makeFixture, 'executor-errors-lock-wait', async (f) => {
+          const surface = await f.lockWait()
+          try {
+            const { taskId } = await surface.store.spawn(Q, 'waits-for-a-lock', '{}')
+            if (surface.shortenFirst.length > 0) {
+              await surface.raw.batch(
+                'executor-errors:shorten-the-lock-wait',
+                surface.shortenFirst,
+                'read',
+              )
+            }
+            await surface.holdWriteLock(taskId, async () => {
+              expect(
+                await refusalName(
+                  surface.raw.batch('executor-errors:wait-for-the-lock', [
+                    ...surface.shortenInside,
+                    bump(taskId),
+                  ]),
+                ),
+                'the write waits for the held lock and gives up',
+              ).toBe('StoreUnavailableError')
+              expect(
+                await refusalName(
+                  surface.raw.batch(
+                    'executor-errors:read-while-the-lock-is-held',
+                    [attemptsStatement(taskId)],
+                    'read',
+                  ),
+                ),
+              ).toBe('accepted')
+            })
+            expect(
+              await refusalName(
+                surface.raw.batch('executor-errors:write-once-the-lock-is-free', [bump(taskId)]),
+              ),
+            ).toBe('accepted')
+            expect(await attemptsOf(surface.raw, taskId)).toBe(1)
+          } finally {
+            await surface.close()
+          }
+        }),
+      60_000,
+    )
 
     it('types a batch sent after the executor closed an outage', async () => {
       const f = await makeFixture('executor-errors-closed', { migrate: false })
