@@ -336,13 +336,25 @@ describe('version 9 over a run held under a token too long for its index', () =>
         x = (Math.imul(x, 1664525) + 1013904223) >>> 0
         return (x >>> 28).toString(16)
       }).join('')
+      // Version 9 is named by what it builds, and every version from it on is recorded as
+      // not applied, so this case holds whatever the newest version is. The versions after
+      // it are then applied a second time, over their own effect, which each of them so far
+      // allows: version 10 makes a column NOT NULL that already is.
+      const heldIndex = MIGRATIONS.find(({ statements }) =>
+        statements.some((sql) => sql.includes('runs_held')),
+      )
+      if (heldIndex === undefined) throw new Error('no version builds the index runs_held')
+      expect(heldIndex.version).toBe(9)
       await client.query('DROP INDEX runs_held')
-      await client.query(`DELETE FROM meta WHERE key = 'applied:v${CURRENT_SCHEMA_VERSION}'`)
+      await client.query('DELETE FROM meta WHERE key = ANY($1)', [
+        MIGRATIONS.filter(({ version }) => version >= heldIndex.version).map(
+          ({ version }) => `applied:v${version}`,
+        ),
+      ])
       await client.query(`UPDATE meta SET value = $1 WHERE key = 'schema_version'`, [
-        String(CURRENT_SCHEMA_VERSION - 1),
+        String(heldIndex.version - 1),
       ])
       await client.query('UPDATE runs SET claimed_by = $1 WHERE run_id = $2', [token, run.runId])
-      expect(CURRENT_SCHEMA_VERSION).toBe(9)
       const migrated = async () => ({
         answer: await admin.migrate().then(
           () => 'migrated',
@@ -380,7 +392,7 @@ describe('version 9 over a run held under a token too long for its index', () =>
         await pause(50)
       }
       // Asked once, not until it works: nothing that was open when the run ended is open.
-      expect(await migrated()).toEqual({ answer: 'migrated', version: 9 })
+      expect(await migrated()).toEqual({ answer: 'migrated', version: CURRENT_SCHEMA_VERSION })
       const built = await client.query(
         `SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'runs_held'`,
         [db.schemaName],

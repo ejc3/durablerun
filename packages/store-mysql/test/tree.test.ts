@@ -118,8 +118,8 @@ describe('MySQL spelling of the shared statement trees', () => {
       .values({ queue: 'q', event_name: 'e', payload: '{}', emitted_at_ms: 1 })
       .onConflict((conflict) =>
         conflict.columns(['queue', 'event_name']).doUpdateSet((eb) => ({
-          fence_stamp: eb.ref('events.payload'),
-          payload: eb.ref('events.fence_stamp'),
+          emitted_at_ms: eb.ref('events.fence_at_ms'),
+          fence_at_ms: eb.ref('events.emitted_at_ms'),
         })),
       )
     expect(

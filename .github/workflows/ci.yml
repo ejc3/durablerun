@@ -307,37 +307,11 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
-          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
-          def reaim_entry(repaired, candidate, name):
-              # Replace one entry of the base registry with this tree's entry of the same name, for a
-              # mutation whose target line this tree rewrote. Its name must stand, and so must
-              # whatever comment the entry opens with, so only the file, the find, the replacement and
-              # the description move. The file moves when the text a mutant rewrites moved to another
-              # file, as a store's line does when core takes it over. An entry stands at the top of
-              # the list or inside an extension of it, and its name may also stand in the verdict
-              # group that lists it, so the entry is the one whose next line is its file.
-              def span(text):
-                  found = list(re.finditer(
-                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
-                      text,
-                      re.M,
-                  ))
-                  if len(found) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  entry = found[0]
-                  named = entry.end() - len(entry.group('indent') + '    "packages/')
-                  close = '\n' + entry.group('indent') + '),\n'
-                  return entry.start(), named, text.index(close, named) + len(close)
-              start, named, end = span(repaired)
-              new_start, new_named, new_end = span(candidate)
-              if repaired[start:named] != candidate[new_start:new_named]:
-                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -351,24 +325,18 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '3f3eab4e27ee25dd6f7f28382bb108406677eb3f119d762fe06495e64c5875f5':
-              # Each store's executor types a permanent SQL error apart from an outage, from
-              # the driver's error code, a worker pass ends on the new type as on an outage,
-              # and a contest of the self-concurrency surface books it with the outages.
-              # On MySQL a limit that a retry cures is read before its class, and one
-              # real-server case holds the executor's lists to the server's own list of numbers.
-              # Each new condition registers a mutation the base predates, so their verdict
-              # markers are exempted. No base entry is re-aimed.
+          if digest == '375588de1cb5e1fbd9fa5f8b9d412be97d633625439213b167439abef2d505f6':
+              # An event's payload is NOT NULL in every dialect's schema from version 10. The
+              # mutations that hold it (the two servers' column change, MySQL's guarded form
+              # and its refusal outside a strict mode, and the invariant library's condition)
+              # are newer than the base, which has to exempt their verdict markers. No base
+              # entry is re-aimed. libSQL's statements are frozen migration history, which the
+              # registry keeps mutations off.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:libsql-permanent-result-code-is-typed",
-                  "mutation-verdict:behavior:postgres-permanent-sqlstate-class-is-typed",
-                  "mutation-verdict:behavior:mysql-permanent-sqlstate-class-is-typed",
-                  "mutation-verdict:behavior:mysql-wrong-value-for-field-is-permanent",
-                  "mutation-verdict:behavior:contest-books-a-permanent-store-error-as-an-outage",
-                  "mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass",
-                  "mutation-verdict:behavior:mysql-limit-under-a-permanent-class-is-an-outage",
-                  "mutation-verdict:behavior:mysql-error-list-holds-the-limits-under-a-permanent-class",
-                  "mutation-verdict:behavior:mysql-error-list-holds-the-refused-values-outside-the-classes",
+                  "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+                  "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
+                  "mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode",
+                  "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
