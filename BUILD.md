@@ -492,6 +492,25 @@ a last docs PR gives a live owner to every open bullet that is left.
     PR3.1d has the measurements on a million events under the older build's
     traffic.
 
+26. PR3.14d: a statement the libSQL store ships, of any kind, in which a step
+    walks a table fails the generated plan check by the statement's name and the
+    table's, whether the walk stands alone, drives another step or is driven,
+    and so does an UPDATE or a DELETE whose own select has no step over the
+    table it writes or reaches it by a due range, and the two pins over writes
+    are deleted because the check refuses the walks they refused. Every write
+    they refused that passes now is named in DESIGN.md and run: a write by
+    another entity's key, which is accepted, and four false negatives. This is
+    met. The reader refuses a walk where it stands, no table is excused, and no
+    shipped statement is refused. Its red was one test that failed by name on
+    five statements of one step each, a read and the SELECT of an INSERT among
+    them, which passed every plan test before. With each pin's defect put back
+    the generated check names the statement and the table. The two lines over a
+    write had a red of their own, one test that failed by name on a DELETE with
+    no WHERE and on an UPDATE by a due range. Two registered mutations, a read
+    and the SELECT of an INSERT that each find a run by a comparison no index
+    serves, fail it by name, and before the clause every test of the plan file
+    that reads a plan passed with either in place.
+
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
 work this plan records as an option that is not scheduled or not planned, or as
@@ -3482,9 +3501,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `EXPLAIN QUERY PLAN` returns, and every send of it is held to plan alike. A
   reader beside the test judges the loop nests of each plan: a step that runs
   once for each row of another must be keyed, and every step it runs once for
-  each row of must be keyed or a due range. DESIGN.md §3.4 has the reading, the
+  each row of must be keyed or a due range. DESIGN.md §3.2 has the reading, the
   two declared lists of column names, why a due range may drive, what the rule
-  cannot see, as five statements that were run, and what it refuses though it is
+  cannot see, each as a statement that was run, and what it refuses though it is
   sound. A step is judged by its constraints whatever it is named, a read of a
   subquery's rows as a read of a table is, and a plan line the reader cannot
   read or place is a fault. Two statements of `claim` broke the rule, the task
@@ -3517,15 +3536,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   joined to its task by the queue alone, scans `tasks` once for each lease it
   reads. It fails the nest check by name and passes every older pin of the file,
   the pin of that same read among them.
-  - Option, not a deferral of this PR: a clause that refuses a walk in any
-    statement, alone or not. A lone walk drives nothing and nothing drives it,
-    so the nest rule does not see it. In an UPDATE or a DELETE the two pins over
-    writes refuse it, and a read, or an INSERT ... SELECT, that walks a protocol
-    table alone passes every plan test today. Before PR3.14b the clause would
-    have found exactly the four statements of `claim`, beside
-    `EXCUSED_SOURCE_WALKS`, which is deleted now. Its trigger was PR3.14b
-    merging, which has come: the clause can now replace the two pins over
-    writes, and would not be a second list beside them.
+  - Promoted to PR3.14d below: a clause that refuses a walk in any statement,
+    alone or not, which replaces the two pins over writes.
   - Option, not a deferral of this PR: the same generated check on PostgreSQL
     and MySQL, whose plan tests hold chosen statements. Each needs its own
     reading of its own plan format, and MySQL's test already measures rows
@@ -3546,10 +3558,128 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and as the step that is driven, under each reach, with the expected reading
     derived and not written by hand. The postmortem of that review names it as
     the mechanism its root cause asks for. Its trigger is the next finding
-    against the reader.
+    against the reader, and it has been met: by five findings of PR3.14d's first
+    review, an equality on `key` read as keyed on any table, a test for NULL
+    read as keyed, a table aliased to a body's name never judged, a table's name
+    read wrongly from the text, and the rows of a VALUES read as a walk; by a
+    write hidden behind a comment, whose red PR3.14d committed first; and by
+    findings of its second review, a due range in a subquery of a write, four
+    conditions of the lines over a write held by no case, sound writes refused
+    with wrong words, a table aliased to what a plan prints for the rows of a
+    VALUES, and a select-list alias read as a table's name. Building it waits
+    for the maintainer's decision.
   - Recorded, and not planned: a statement inside a trigger is never planned.
     libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
     scans `drivers`, a table of one row for each live driver.
+- **PR3.14d the plan check refuses a walk in any statement**: the nest rule
+  judges a step against the steps that drive it and the steps it drives, so a
+  step that walks a table alone was no fault. A read, or the SELECT of an
+  INSERT, that walked `runs` by queue and state passed every plan test, and in
+  an UPDATE or a DELETE only two pins over writes refused it. The reader now
+  refuses a walk where it stands, in every statement the libSQL store ships, of
+  every kind, whether or not anything drives it or it drives anything, and the
+  failure names the statement and the table. DESIGN.md §3.2 has what a walk is
+  in the plan's words, why no table is excused and no list of tables is kept,
+  what reads no table, and how the table is named. `meta` is read by its key in
+  27 of the 129 shipped statements, so `key` joined the reader's columns that
+  name one entity. With it taken out again the generated check fails on exactly
+  those 27 statements and on no other table, which was tried. No shipped
+  statement was refused when the clause first ran over the base, and every
+  statement reads as it did. The red came first, as one test that failed by
+  name: five statements of one step each, a read under a generated alias, the
+  SELECT of an INSERT, an UPDATE, a DELETE and a read under a bare alias, each
+  read as no fault through the helper the generated check reads every shipped
+  statement through. The two pins over writes are deleted, with the list of
+  keys they kept for three tables. What each was written against is caught by
+  the clause by name, which was run with both still in place. With the wake's
+  task update correlated to its source on the queue the first pin failed, and
+  the generated check named `[complete#5] SCAN tasks :: is a walk of tasks`.
+  With the wake's sources found by queue and state the second pin failed, and
+  the generated check named `[complete#7] SEARCH f USING INDEX runs_poll
+  (queue=? AND state=?) :: is a walk of runs`. No registered mutation named
+  either pin. The pins also refused writes that are no walk. Two such writes are
+  held now by two lines the reader gained over a write, as properties of the
+  plan and with no list: an UPDATE or a DELETE whose own select has no step over
+  the table it writes, which is how a DELETE with no WHERE plans, and a due
+  range over that table among the steps of its own select, because a write
+  carries no LIMIT. Their red was one test that failed by name on both. The
+  reader refuses a statement whose first word does not say its kind and a write
+  whose table it cannot name, so the two lines cannot hold nothing: with its
+  pattern bent so that it reads no write, the generated check names every one of
+  the 82 shipped writes, which was tried. A write hidden behind a comment read
+  as no fault until then, and its red came first. An UPDATE's conflict clause
+  and a table's schema are read, and their red came first too. Each of the four
+  conditions of the two lines has a case that fails by name with the condition
+  deleted alone, which was tried. What else the pins refused passes now, and
+  each is run: a write by another entity's key, which is accepted because it is
+  bounded by that entity's rows as a keyed read is, and four false negatives, a
+  write that tests an entity column for NULL and three writes whose FROM item
+  shares the written table's name or alias. DESIGN.md lists what else the clause
+  cannot see, each run: a due range that stands alone is named by nothing but
+  among the steps of a write's own select, a test for NULL prints as an equality
+  and reads as keyed, a table aliased to the name of a body of its own select is
+  never judged, a table aliased to what a plan prints for the rows of a VALUES
+  reads as those rows, a statement sent with binds the history never sends is
+  not planned under them, the check plans on a database with no statistics, and
+  the DELETE inside the driver heartbeat's trigger, which the reader refuses
+  when it is planned by hand from the trigger's own text, is never planned. The
+  clause also refuses sound shapes: the drivers of one queue found by the queue
+  alone and a MIN over an index prefix, because a plan carries no row counts,
+  and a statement whose first word is none of the kinds the reader knows, as a
+  comment, a VALUES and a PRAGMA are, and a WITH whose text holds the word
+  update or delete, because the reader cannot tell what it writes. A case holds
+  `key` to `meta` alone, by reading every table's columns and `meta`'s primary
+  key from the migrated schema.
+  Two registered mutations own the clause, one in a read and one in the SELECT
+  of an INSERT, the lease-fenced checkpoint write. Each finds its run by a
+  comparison no index serves and returns what it returned. Before the clause,
+  every test of the plan file that reads a plan passed with either in place, and
+  the one failure was the inventory's tie to the corpus, which fails for any
+  change to a shipped statement's text and reads no plan. With the clause each
+  fails the generated check by name. Six labels send the checkpoint write, and
+  bent under all six it also fails the older pin over the batches a saga
+  touches, under three of them, so the mutation bends the lease-fenced write
+  alone, which that pin plans and does not judge: it exempts the write's label.
+  - Option, not a deferral of this PR: name every due range, the one that stands
+    alone too. The list of names holds a due range only where it drives another
+    step, so one that stands alone under no LIMIT, or that points away from what
+    is due, is no fault, unless it is among the steps of a write's own select
+    over the table the write writes, where the reader refuses it. The reader
+    would report every due range, and the list would name the next-wake read's
+    four legs, each bounded by its MIN, beside the three statements it names
+    now. No check reports its trigger, which is a person's finding: a shipped
+    statement found, by a review or by a measurement, to range over what is due
+    under no bound.
+  - Option, not a deferral of this PR: the suite timeout child that
+    `lint-selftest.py` runs can fail because the machine is slow, in two ways,
+    and this pull request changes neither. The self-test holds it to a 1.5 s
+    completion watchdog, which times the machine as well as the child. In forty
+    runs alone, two sets of twenty over the two modes the self-test runs it in,
+    its production mode took 1.06 to 1.21 s on this machine, the base and this
+    branch alike, at load averages near 23 and near 37, and one run in another
+    session took 1.619 s at a load near 20. About a quarter of a second of it is
+    CPU time, and the rest is time it spends waiting, so if only its CPU time
+    doubled it would take about 1.35 s. In this branch's gate list it tripped,
+    at a load average of 36 to 47 while three other builders' lists ran, and the
+    self-test passed when it was run again alone. The child can also fail on its
+    verifiers' 0.1 s deadline: the SIGTERM sent at that deadline can land before
+    the descendant's first act, which is to ignore SIGTERM, and so before it
+    writes the process id record the child checks. CI's verify job runs it on
+    every pull request. Its trigger is the watchdog seen tripping on CI, and
+    then the margin is measured on CI's runners before the watchdog moves.
+  - Option, not a deferral of this PR: read the kind of a statement and the
+    table a write writes from its EXPLAIN bytecode, where they are the program's
+    own, and not from the statement's first words. Every sound write the two
+    lines over a write refused with wrong words came from reading the text, as
+    did the write a comment hid from them: a conflict clause, a schema, a
+    comment and a WITH. Its trigger is the next write the text misreads.
+  - Option, not a deferral of this PR: before a check is deleted for one that
+    replaces it, run the deleted check's own code and its replacement over the
+    same statements, and list every statement the old refused and the new
+    passes. The two pins over writes were deleted on an argument from what they
+    were written against, and the writes they refused that pass now were found
+    by the reviews, which ran the pins' own code by hand. Its trigger is the
+    next check deleted for a replacement.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It

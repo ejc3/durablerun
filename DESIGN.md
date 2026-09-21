@@ -1021,15 +1021,21 @@ One invocation executes one claimed run to its next suspension point:
     its run. The source already selects that row, so the predicate narrows
     nothing and the fence reaches the same rows through the same stamp. It is
     there for the planner: beside a bound queue and a state, SQLite prefers the
-    (queue, state) index to the key and walks the queue. `store-libsql`'s plan
-    pins recover every UPDATE and DELETE of every label from the real
-    operations. One requires the plan step over the written table, under its
-    name or its alias in that statement, to be a seek by the key the write was
-    handed, so a scan, a walk, or an index added later fails alike. The other
-    refuses any step, under any alias, that is pinned by a queue and a state and
-    nothing more. It excuses nothing: the claim's three statements, which it
-    excused by name until schema version 9, reach what their token holds
-    through `runs_held`, as the item on a claim's reads of `runs` below says.
+    (queue, state) index to the key and walks the queue. `store-libsql`'s
+    generated plan check recovers every statement of every label from the real
+    operations and refuses, in any of them, a step that walks a table, so a
+    follow-on that scans the table it writes, or that is pinned by a queue and a
+    state and nothing more, fails by name. It holds an UPDATE or a DELETE to two
+    lines more: among the steps of its own select its plan must have a step over
+    the table it writes, and that step may not be a due range, because a write
+    carries no LIMIT. It does not hold a write to one spelling of its key: a
+    write that reaches its table by another entity's key is bounded by that
+    entity's rows, and passes. The item on the plan check below has the rule,
+    what it cannot see, and the two pins over writes it replaced, with every
+    write they refused that passes now. It excuses nothing: the claim's three
+    statements, which the pin of a queue and a state excused by name until
+    schema version 9, reach what their token holds through `runs_held`, as the
+    item on a claim's reads of `runs` below says.
     `store-mysql`'s plan test measures claim,
     activate, and complete beside 2,000 tasks from inside each batch. The
     wake's task
@@ -1209,18 +1215,55 @@ One invocation executes one claimed run to its next suspension point:
     columns mean, whatever table or alias it names, from two declared lists of
     column names and no list of index spellings. A step is keyed when it has an
     equality on a column that names one entity (`task_id`, `run_id`,
-    `event_name`, `wake_event`, `idempotency_key`, `driver_id`, `claimed_by`).
-    The last is a claim token, which names one claim: one token holds at most
-    one claim's limit of runs, because `claim` takes nothing under a token that
-    already holds a run, so a seek of `runs_held` by it is as bounded as the
-    claim was. It is a due range when it has a range on a column an index hands
-    work out in the order of (`available_at_ms`, `claim_expires_at_ms`,
-    `cancel_at_ms`). It is a walk otherwise, every SCAN and every automatic
-    index included. `meta`, which holds the clock, is read by its key in a
-    subquery of its own, so it joins no nest. The rule is two lines over every
-    nest of every statement: a step that runs once for each row of another must
-    be keyed, and every step it runs once for each row of must be keyed or a due
-    range. A due range may drive because the literal sentence, that no step
+    `event_name`, `wake_event`, `idempotency_key`, `driver_id`, `claimed_by`,
+    `key`). `claimed_by` is a claim token, which names one claim: one token
+    holds at most one claim's limit of runs, because `claim` takes nothing under
+    a token that already holds a run, so a seek of `runs_held` by it is as
+    bounded as the claim was. `key` is the primary key of `meta`, whose rows are
+    the clock and the schema's versions. It is a due range when it has a range
+    on a column an index hands work out in the order of (`available_at_ms`,
+    `claim_expires_at_ms`, `cancel_at_ms`). It is a walk otherwise: a SCAN of a
+    table, with an index or without one, a SEARCH through an automatic index,
+    and a SEARCH whose constraint list holds neither. The rows of a VALUES are
+    no table's, and a SCAN of them is no walk. The rule is three lines. Over
+    every step of every statement that reads a table: a walk is refused where it
+    stands, in a statement of any kind, whether or not anything drives it or it
+    drives anything, and the failure names the statement and the table. A walk
+    that stands alone joins no nest, and it costs what its table holds all the
+    same. Over every nest of every statement: a step that runs once for each row
+    of another must be keyed, and every step it runs once for each row of must
+    be keyed or a due range. An UPDATE or a DELETE is held to two lines more,
+    over the table it writes, which the statement's first words name, after an
+    UPDATE's conflict clause and under a schema's name or not. Its plan must
+    have a step over that table among the steps of its own select, an OR's legs
+    among them: a DELETE with no WHERE takes SQLite's truncate path and plans as
+    no rows at all, so no line above has a step to judge. And that step may not
+    be a due range, because a write carries no LIMIT, so a range over what is
+    due takes all of it at once. A due range in a subquery of the write is not a
+    step of its own select, and this line does not hold it. Both lines go by the
+    statement's kind, because an INSERT of one row of values also plans as no
+    rows. The statement's first word says its kind, and the reader refuses what
+    it cannot tell: a statement whose first word is none of select, insert,
+    replace, update, delete and with, as the first word of a comment, a VALUES
+    and a PRAGMA is none of them, a statement that begins with WITH and holds
+    the word update or delete anywhere in its text, and an UPDATE or a DELETE
+    whose table it cannot name. So the two lines cannot hold nothing: with the
+    reader's pattern bent so that it reads no write, the generated check fails
+    and names every one of the 82 shipped writes, which was tried.
+    No table is excused from the first line, so the
+    reader keeps no list of tables: every table of the schema is held, and
+    `meta` with them, which a statement reads for the clock, by its key.
+    A step that reads no table is not a walk of one: `json_each` reads a value
+    of the row that drives it, and a step that reads the rows of a body is as
+    bounded as the steps that made them, each of which is judged where it
+    stands. A plan names a step by the alias its statement gave the table, so
+    the failure takes the table's name from the statement's own text, what a
+    FROM, a JOIN, an UPDATE or the comma of a join calls by the step's name,
+    under a schema's name or not. That name is a best effort, read with no
+    scope: an alias inside a subquery that is another table's own name words
+    that table's step with the subquery's table. It words the failure and
+    decides nothing, so a wrong name passes no walk.
+    A due range may drive because the literal sentence, that no step
     reads a table once for each row of another, would refuse the claim's two
     candidate legs and both sweep scans, which read `tasks` by key once for each
     due run, under a LIMIT, by design. A plan line the reader cannot read is a
@@ -1231,9 +1274,32 @@ One invocation executes one claimed run to its next suspension point:
     any other fault in it still fails, and none is excused today. Until schema
     version 9 two statements of `claim` broke the rule, the task update and the
     delete of expired waits, whose IN list walked the running runs of the queue,
-    and they were excused here and by the pins over writes. They reach those
-    runs by the claim token now, as the item on a claim's reads of `runs` above
-    says. A plan prints a range the same way whichever way it points, and it
+    and they were excused here and by the pin of a queue and a state, one of two
+    pins over writes that stood beside this check. They reach those runs by the
+    claim token now, as the item on a
+    claim's reads of `runs` above says. Those two pins planned every UPDATE and
+    DELETE a store ships: the step over the written table had to be a seek by a
+    key from a list kept beside them, and no step could be pinned by a queue and
+    a state and nothing more. The first line of the rule refuses both walks in
+    every statement, so the pins are deleted. The pins also refused writes that
+    are no walk, because the first held the step over the written table to a key
+    from its list and the second held any step pinned by a queue and a state.
+    Two such writes are the two lines over a write above, held now as properties
+    of the plan and with no list: a DELETE with no WHERE, and a write that
+    reaches its table by a due range among the steps of its own select. A write
+    that reaches its table by another entity's key is accepted, and passes: as
+    `delete from waits where queue = ? and event_name = ?` and `delete from
+    checkpoints where task_id = ?` do, it is bounded by that entity's rows, the
+    waiters of one event or the checkpoints of one task, as a keyed read is, and
+    what that leaves unseen is the first item of the list below. The first pin
+    refused it because it held each table to a list of its own keys,
+    `checkpoints` had none, and that list was a second representation of the
+    statements it held. Four more writes the pins refused pass now, and none is
+    accepted: each is a false negative of the list below, run beside its read. A
+    write that tests an entity column for NULL reads as keyed, and three writes
+    whose FROM item shares the written table's name or alias are never judged,
+    one of them a walk by a queue and a state that the second pin refused.
+    A plan prints a range the same way whichever way it points, and it
     never prints a LIMIT, so the test also names every statement in which a due
     range drives another step, with the lines that drive and with what bounds
     them: the statement's own LIMIT, which its text must then hold, or where the
@@ -1255,17 +1321,26 @@ One invocation executes one claimed run to its next suspension point:
       tasks t on t.task_id = r.task_id where r.queue = ? and r.state = 'pending'
       and r.available_at_ms <= ?` reads `tasks` once for every due run of the
       queue, and its plan is the plan of a claim's candidate leg.
-    - A lone walk, which drives nothing and which nothing drives. `insert into
-      events (queue, event_name, payload, emitted_at_ms) select queue, run_id,
-      null, 0 from runs where queue = ? and state = ?` is one step. In an UPDATE
-      or a DELETE the pins over writes refuse it. A read, or an INSERT ...
-      SELECT, that walks a protocol table alone passes every plan test today.
-      The guard inside the claim's runs update was such a walk until schema
-      version 9, and the pins over writes excused it by name.
+    - A due range that stands alone, which drives nothing and which nothing
+      drives. `select run_id from runs where queue = ? and state = 'pending' and
+      available_at_ms > ?` reads every run that is NOT due, and under no LIMIT a
+      range that points the right way reads everything due at once. It is one
+      step and a due range, so it is no walk, and the list of names holds only a
+      due range that drives another step. Among the steps of an UPDATE's or a
+      DELETE's own select, over the table it writes, such a range is refused,
+      and anywhere else it passes: `update runs set attempt = (select count(*)
+      from runs where queue = ? and state = 'running' and claim_expires_at_ms <
+      ?) where run_id = ?` counts every expired lease of its queue in its SET,
+      and `insert into events (queue, event_name, payload, emitted_at_ms) select
+      queue, run_id, null, 0 from runs where queue = ? and state = 'running' and
+      claim_expires_at_ms < ?` copies them. Until this rule had its first line,
+      a walk that stood alone passed the same way, in a read and in the SELECT
+      of an INSERT.
     - A statement inside a trigger is never planned. The driver's heartbeat
       inserts into a view, and its plan is `SCAN CONSTANT ROW`. The `DELETE FROM
-      drivers WHERE expires_at_ms < ...` inside the view's trigger plans, by
-      hand, as `SCAN drivers`, a table of one row for each live driver.
+      drivers WHERE expires_at_ms < ...` inside the view's trigger, taken from
+      the trigger's own text and planned by hand, is `SCAN drivers`, a walk the
+      first line refuses, of a table of one row for each live driver.
     - A range that points away from what is due prints as one that points at it.
       `select r.run_id, t.task_name from runs r join tasks t on t.task_id =
       r.task_id where r.queue = ? and r.state = 'running' and
@@ -1274,7 +1349,47 @@ One invocation executes one claimed run to its next suspension point:
       read of the runs it took was that statement in what shipped until schema
       version 9, and only under its real binds: with the state unknown SQLite
       walked the queue by state, which the rule refuses.
-    The list of names is what holds the second and the fifth. That a LIMIT
+    - A statement sent with binds the history never sends. `select run_id from
+      runs where queue = ? and state = ? and claim_expires_at_ms > ?` is a due
+      range when it is sent with `running` and walks the queue by state when it
+      is sent with `pending`, because SQLite plans from bound values. Every send
+      of the history is planned, and a send the history never makes is not.
+    - A database with statistics. A statement is planned on a fresh database,
+      which has no `sqlite_stat1`. `select run_id from runs where task_id = ?
+      and queue = ?` is keyed there, and on the same schema it walks its queue
+      through `runs_poll (queue=?)` once two rows of `sqlite_stat1` rate
+      `runs_task_attempt` as matching every run and `runs_poll` as selective.
+    - A test for NULL prints as an equality. `select run_id from runs where
+      queue = ? and state = 'running' and claimed_by is null` plans as a seek of
+      `runs_held (queue=? AND claimed_by=?)` and reads as keyed, and it reads
+      every running run of its queue that no claim holds. The partial indexes
+      on `wake_event` and `idempotency_key` leave NULL out, so the same test of
+      either cannot print that way. In a write it reads as keyed too: `update
+      runs set state = 'failed' where queue = ? and state = 'running' and
+      claimed_by is null` fails every such run.
+    - A table aliased to the name of a body of the same select. `with d as
+      materialized (select task_id from runs where run_id = ?) select 1 from d,
+      tasks as d` scans `tasks`, the plan names that step `d`, and the reader
+      reads it as a read of the body's rows, so it is never judged. Under any
+      other alias it is refused twice. In a write, a FROM item that shares the
+      written table's name or alias makes the step over the table read as that
+      item's rows, and that step also stands as the step over the table, so
+      neither line over a write judges it: `update tasks as d set max_attempts =
+      7 from (values (1)) as d` writes every task, `update runs set state =
+      'failed' from (select task_id from tasks where task_id = ? limit 1) as
+      runs` scans `runs`, and in `update tasks set state = 'failed' from (select
+      task_id from runs where run_id = ? limit 1) as d, runs as d where
+      tasks.task_id = ? and d.queue = ? and d.state = ?` the step `SEARCH d
+      USING COVERING INDEX runs_poll (queue=? AND state=?)` is never judged.
+      Under other names each is refused twice.
+    - A table aliased to what a plan prints for the rows of a VALUES. `delete
+      from waits as "2 CONSTANT ROWS" where status = ?` plans as `SCAN 2
+      CONSTANT ROWS`, which reads as rows that read no table and, in a write,
+      stands as the step over the table the write writes, so the scan of `waits`
+      is never judged. A read under that alias passes the same way. It is
+      contrived.
+    The list of names is what holds the second and the fifth, and nothing holds
+    the rest. That a LIMIT
     stands in the statement's text is checked. That it bounds the range that
     drives is a person's reading, which no plan can check, and another nest
     under a driving line of the same text is not seen. One false positive is by
@@ -1282,12 +1397,21 @@ One invocation executes one claimed run to its next suspension point:
     so a walk that filters to a few rows before it probes is refused like one
     that probes for every row, which was the claim's case until it reached its
     runs by the claim token. Beyond it the reader refuses sound statements of
-    four kinds, which is strictness, stated: an IN list that filters and does
+    six kinds, which is strictness, stated: a walk that reads few rows, because
+    a plan carries no row counts, as the drivers of one queue found by the queue
+    alone are a handful and a MIN over an index prefix is one row; an IN list
+    that filters and does
     not seek, because a plan does not say which a list does; a materialized body
     read under an alias, because the step names the alias and not the body;
-    `json_each` as a driver, because nothing bounds its rows; and a due range
+    `json_each` as a driver, because nothing bounds its rows; a due range
     under a keyed driver, because a step that runs once for each row of another
-    must be keyed. The same generated check is not built for PostgreSQL or
+    must be keyed; and a statement whose first word is none of the kinds the
+    reader knows, as a comment, a VALUES and a PRAGMA are, and a WITH whose text
+    holds the word update or delete anywhere, as a WITH SELECT of that word and
+    a WITH INSERT with an upsert do, because the reader cannot tell what it
+    writes. The same
+    generated check is not built for
+    PostgreSQL or
     MySQL, whose plan tests hold chosen statements, and BUILD.md records that as
     an option under PR3.14c.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a

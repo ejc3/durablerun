@@ -103,16 +103,6 @@ it('builds the write-plan schema through the production migration contract', asy
 /** The first two words of a statement, which name it among the statements of its label. */
 const head = (sql: string) => sql.trim().split(/\s+/).slice(0, 2).join(' ')
 
-/** The access a write is allowed to reach each table by: a seek by the key it was handed. */
-const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
-  tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
-  runs: [
-    / USING PRIMARY KEY \(run_id=\?\)$/,
-    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
-  ],
-  waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
-}
-
 describe('claim candidate legs', () => {
   async function shippedClaimStatements(): Promise<{ sql: string; args: unknown[] }[]> {
     const seen: { sql: string; args: unknown[] }[] = []
@@ -190,7 +180,8 @@ describe('claim candidate legs', () => {
    * is listed.
    */
   const CLAIM_REACHES_RUNS_BY: readonly RegExp[] = [
-    ...(KEYED.runs ?? []),
+    / USING PRIMARY KEY \(run_id=\?\)$/,
+    / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
     / USING (?:COVERING )?INDEX runs_held \(queue=\? AND claimed_by=\?\)$/,
     / USING INDEX runs_poll \(queue=\? AND state=\? AND available_at_ms>\? AND available_at_ms<\?\)$/,
   ]
@@ -925,70 +916,13 @@ async function sendEveryStatement(): Promise<Shipped[]> {
   return seen
 }
 
-describe('every write a store ships, by the table it writes', () => {
-  /**
-   * A generated follow-on writes the rows that belong to the rows its batch stamped: the
-   * task of a run, the runs of a task. Left to correlate its source to the written table
-   * on the queue, the source is a correlated subquery, SQLite cannot drive the write from
-   * it, and the statement scans the table it writes and probes the source once for each
-   * row. That is every task in the database, in any queue, on claim, activate, and
-   * complete: one `complete` measured 61 ms beside 100,000 tasks. The statements are
-   * recovered from the real operations, as the other pins of this file are, and every
-   * UPDATE and DELETE of every label is planned, so a new follow-on is read too.
-   */
-  const shippedWrites = async () =>
-    [...(await shippedStatements()).values()].filter((st) => /^\s*(update|delete)\s/i.test(st.sql))
-
-  const named = (st: { label: string; sql: string }) => `${st.label}: ${head(st.sql)}`
-
-  it('reaches the table it writes by the key it was handed, whatever the plan calls that table', async () => {
-    // The property, and not one spelling of its failure: the plan step over the written
-    // table, under its name or its alias in that statement, must be a seek by key. A scan,
-    // a walk of (queue, state), a covering variant, or an index added later all fail alike,
-    // and a table with no key declared above fails until one is.
-    const unkeyed: string[] = []
-    for (const st of await shippedWrites()) {
-      const target = /^\s*(?:update|delete from)\s+"?([a-z_]+)"?(?:\s+as\s+"?([a-z_]+)"?)?/i.exec(
-        st.sql,
-      )
-      if (!target?.[1]) throw new Error(`cannot name the table of: ${st.sql.slice(0, 60)}`)
-      const [, table, alias] = target
-      const p = await writePlan(st.sql, st.args as (string | number)[])
-      const step = p
-        .split('\n')
-        .map((line) => line.trim())
-        .find((line) => new RegExp(`^(?:SCAN|SEARCH) (?:${table}|${alias ?? table})\\b`).test(line))
-      const keyed = step !== undefined && (KEYED[table] ?? []).some((key) => key.test(step))
-      if (!keyed) unkeyed.push(`${named(st)} -> ${step ?? 'no step over the written table'}`)
-    }
-    expect([...new Set(unkeyed)].sort()).toEqual([])
-  })
-
-  it('walks the runs of a queue by state in no step of any write', async () => {
-    // Any step, under any alias, through any index, covering or not, that is pinned by a
-    // queue and a state and nothing more reads every run of the queue in that state.
-    const walks: string[] = []
-    for (const st of await shippedWrites()) {
-      const p = await writePlan(st.sql, st.args as (string | number)[])
-      const walked = p
-        .split('\n')
-        .some((line) =>
-          / USING (?:COVERING )?INDEX \w+ \(queue=\? AND state=\?\)$/.test(line.trim()),
-        )
-      if (walked) walks.push(named(st))
-    }
-    expect([...new Set(walks)].sort()).toEqual([])
-  })
-})
-
 describe('every statement a store ships, by the nests of its plan', () => {
   /**
-   * The pins above hold the statements someone chose, three reads among them, and the block
-   * before this one holds the table each write writes. Neither is generated, so a read added
-   * later, or the SELECT of an INSERT, is planned only if someone chooses it, and neither
-   * sees a step that runs once for each row of a backlog unless it spells the one failure it
-   * was written against. Here every statement of every batch is planned and its
-   * loop nests are judged by `readNests` in `plan-nests.ts`, whose header says what a nest
+   * The pins above hold the statements someone chose, three reads among them. None is
+   * generated, so a statement added later is planned only if someone chooses it, and a pin
+   * sees a walk only where it spells the one failure it was written against. Here every
+   * statement of every batch is planned, of every kind, and its steps and loop nests are
+   * judged by `readNests` in `plan-nests.ts`, whose header says what a walk is, what a nest
    * is and what the rule is. "Every" is held by the two checked inventories of what a store
    * sends: the generated corpus of statement trees, and the list of the statements that
    * stay text.
@@ -1002,16 +936,16 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ).statements,
   )
 
-  /** A text statement no operation of the store sends, with why it has no nest to judge. */
+  /** A text statement no operation of the store sends, with who sends it and what it touches. */
   const NOT_THE_STORES: Readonly<Record<string, string>> = {
     'migrate:bootstrap':
       'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
     'migrate:v*':
       'the migration runner sends it: DDL, which has no plan, beside writes of meta by its key',
-    'migrate:version': 'the migration runner sends it, and it reads meta alone',
-    'admin:set-fake-now': 'the test clock sends it, and it writes meta alone',
-    'admin:clear-fake-now': 'the test clock sends it, and it writes meta alone',
-    'admin:now': 'the test clock sends it, and it reads meta alone',
+    'migrate:version': 'the migration runner sends it, and it reads meta by its key',
+    'admin:set-fake-now': 'the test clock sends it, and it writes meta by its key',
+    'admin:clear-fake-now': 'the test clock sends it, and it writes meta by its key',
+    'admin:now': 'the test clock sends it, and it reads meta by its key',
   }
 
   /**
@@ -1062,6 +996,19 @@ describe('every statement a store ships, by the nests of its plan', () => {
   const nameOf = (st: Shipped) =>
     placeInCorpus.get(keyOf(st.label, st.sql)) ?? `${st.label}#${st.index}`
 
+  /** One statement's plan, read with its text. The generated check reads through this too. */
+  const nestsOf = async (st: { sql: string; args: unknown[] }) =>
+    readNests(await planTree(st.sql, st.args), st.sql)
+  /** The same reading of a statement that nothing runs, so each bind is a placeholder. */
+  const read = (sql: string) => nestsOf({ sql, args: (sql.match(/\?/g) ?? []).map(() => 0) })
+  /** A read of a queue's leases in one state, which SQLite plans from the state it is sent with. */
+  const leasesUnder = (state: string) => ({
+    sql: 'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?',
+    args: ['q', state, 0],
+  })
+  /** The words a walk of a table is refused with, after the line of the step that walks. */
+  const walkOf = (table: string) => `is a walk of ${table}: neither keyed nor a due range`
+
   it("sends every statement of the corpus, and every text statement that is the store's", async () => {
     const sent = await shippedStatements()
     // Every statement of every variant, by its text: a label reached through one of its
@@ -1088,7 +1035,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const textOf = new Map<string, string>()
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
-      const reading = readNests(await planTree(st.sql, st.args))
+      const reading = await nestsOf(st)
       if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
       textOf.set(name, st.sql)
       const excuse = EXCUSED_NESTS[name]
@@ -1127,12 +1074,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
       JSON.stringify((await planTree(st.sql, st.args)).map((row) => [row.parent, row.detail]))
     // A plan does depend on its binds. SQLite reads a bound value when it plans, and the
     // partial index of the running leases serves only a statement sent with that state.
-    const underState = (state: string) =>
-      planUnder({
-        sql: 'select run_id from runs where queue = ? and state = ? and claim_expires_at_ms > ?',
-        args: ['q', state, 0],
-      })
-    expect(await underState('running')).not.toBe(await underState('pending'))
+    expect(await planUnder(leasesUnder('running'))).not.toBe(
+      await planUnder(leasesUnder('pending')),
+    )
     const kept = await shippedStatements()
     const keptPlans = new Map<string, string>()
     const differing = new Set<string>()
@@ -1146,10 +1090,308 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect([...differing]).toEqual([])
   })
 
+  it('refuses a walk of a table that stands alone, in any statement, and names the table', async () => {
+    // A lone walk drives nothing and nothing drives it, so no nest holds it. One statement
+    // of each kind a store ships stands here as one step that walks: a read under the alias
+    // a generated statement gives its source, the SELECT of an INSERT, an UPDATE, a DELETE,
+    // and a read whose alias follows its table with no AS, as a text statement writes it.
+    const alone = {
+      read: `select "f"."run_id" from "runs" as "f" where "f"."queue" = ? and "f"."state" = ?`,
+      insertSelect: `insert into events (queue, event_name, payload, emitted_at_ms)
+                     select queue, run_id, null, 0 from runs where queue = ? and state = ?`,
+      update: 'update runs set wake_event = null where queue = ? and state = ?',
+      delete: 'delete from waits where status = ?',
+      bareAlias: 'select sibling.run_id from runs sibling where sibling.attempt > ?',
+    }
+    const faults: Record<string, string[]> = {}
+    for (const [kind, sql] of Object.entries(alone)) faults[kind] = (await read(sql)).faults
+    const queueByState = 'USING COVERING INDEX runs_poll (queue=? AND state=?)'
+    expect(faults).toEqual({
+      read: [`SEARCH f ${queueByState} :: ${walkOf('runs')}`],
+      insertSelect: [`SEARCH runs ${queueByState} :: ${walkOf('runs')}`],
+      update: [`SEARCH runs ${queueByState} :: ${walkOf('runs')}`],
+      delete: [`SCAN waits :: ${walkOf('waits')}`],
+      bareAlias: [`SCAN sibling USING COVERING INDEX runs_task_attempt :: ${walkOf('runs')}`],
+    })
+    // One alias that names two tables words the fault with both, because the name a plan
+    // gives a step does not say which of the two the step reads.
+    const twice = await read(
+      `select x.run_id from runs x
+       where x.queue = ? and exists (select 1 from tasks x where x.state = ?)`,
+    )
+    expect(twice.faults).toEqual([
+      `SEARCH x USING COVERING INDEX runs_poll (queue=?) :: ${walkOf('runs or tasks')}`,
+      `SCAN x :: ${walkOf('runs or tasks')}`,
+    ])
+    // The table is named under the comma of a join and under a schema's name too.
+    const commaJoin = await read(
+      'select r.run_id from runs r, tasks t where r.run_id = ? and t.queue = r.queue',
+    )
+    const qualified = await read('select x.run_id from main.runs x where x.queue = ?')
+    expect([commaJoin.faults[0], qualified.faults[0]]).toEqual([
+      `SCAN t :: ${walkOf('tasks')}`,
+      `SEARCH x USING COVERING INDEX runs_poll (queue=?) :: ${walkOf('runs')}`,
+    ])
+    // What is no walk: one run by its key, the clock's row of `meta` by its key, and the rows
+    // of a VALUES, which read no table.
+    for (const sql of [
+      'select state from runs where run_id = ?',
+      'select value from meta where key = ?',
+      'select * from (values (1), (2), (3))',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
+  it('refuses a write whose plan has no step over the table it writes, or a due range over it', async () => {
+    // A DELETE with no WHERE takes SQLite's truncate path and plans as no rows at all, so no
+    // step is a walk and no nest is broken. A due range over the written table takes
+    // everything due at once, because an UPDATE or a DELETE carries no LIMIT to bound it.
+    const everyWait = await read('delete from waits')
+    const everyExpiredLease = await read(
+      `update runs set state = 'failed'
+       where queue = ? and state = 'running' and claim_expires_at_ms <= ?`,
+    )
+    const expired =
+      'SEARCH runs USING COVERING INDEX runs_lease (queue=? AND claim_expires_at_ms<?)'
+    expect([everyWait, everyExpiredLease].map((reading) => reading.faults)).toEqual([
+      ['no step of the plan is over waits, the table the statement writes'],
+      [
+        `${expired} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`,
+      ],
+    ])
+    // A write whose table the reader cannot name is refused: SQLite reads a name in brackets.
+    expect((await read('update [runs] set wake_event = null where run_id = ?')).faults).toEqual([
+      'cannot name the table this write writes',
+    ])
+    // A generated statement quotes its table, and is read the same.
+    expect((await read('delete from "waits"')).faults).toEqual([
+      'no step of the plan is over waits, the table the statement writes',
+    ])
+    // A write under a WITH names its table after bodies the reader does not read, so the
+    // reader cannot hold it to either line, and refuses it.
+    const underAWith = await read(
+      `with gone as (select run_id from runs where run_id = ?)
+       delete from waits where run_id in (select run_id from gone)`,
+    )
+    expect(underAWith.faults).toContain(
+      'cannot tell which table a write that begins with WITH writes',
+    )
+    // An UPDATE under a WITH is refused as a DELETE under one is.
+    const updateUnderAWith = await read(
+      `with x as (select 1) update runs set wake_event = null
+       where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+    )
+    expect(updateUnderAWith.faults).toContain(
+      'cannot tell which table a write that begins with WITH writes',
+    )
+    // Every leg of an OR is a step of the write's own select, and a due range in any leg is
+    // refused. A conflict clause and a schema hide no due range over the table either.
+    const dueOverRuns = (line: string) =>
+      `${line} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`
+    for (const [sql, line] of [
+      [
+        `update runs set wake_event = null
+         where run_id = ? or (queue = ? and state = 'running' and claim_expires_at_ms < ?)`,
+        expired,
+      ],
+      [
+        `update or ignore runs set wake_event = null
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+        expired,
+      ],
+      [
+        `update main.runs set wake_event = null
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+        expired.replace('SEARCH runs', 'SEARCH main.runs'),
+      ],
+    ] as const) {
+      expect((await read(sql)).faults, sql).toEqual([dueOverRuns(line)])
+    }
+    // No UPDATE found plans with no step over its table once its name is read, so the line
+    // that refuses one is held on a plan written by hand, as the lines that fail closed are.
+    expect(
+      readNests(
+        [{ id: 1, parent: 0, detail: 'SEARCH tasks USING PRIMARY KEY (task_id=?)' }],
+        'update runs set wake_event = null where run_id = ?',
+      ).faults,
+    ).toEqual(['no step of the plan is over runs, the table the statement writes'])
+    // What is no such write: a DELETE by its key, an UPDATE by its key under an alias, an
+    // UPDATE whose OR finds its table through two keys, and an INSERT of values, which plans
+    // as no rows for one row and as rows that read no table for several.
+    for (const sql of [
+      'delete from waits where run_id = ?',
+      'update runs as r set wake_event = null where r.run_id = ?',
+      'update runs set wake_event = null where run_id = ? or task_id = ?',
+      'insert into events (queue, event_name, payload, emitted_at_ms) values (?, ?, ?, ?)',
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       values (?, ?, ?, ?), (?, ?, ?, ?)`,
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
+  it('refuses a statement whose kind it cannot tell from its first word', async () => {
+    // The two lines over a write go by the statement's kind, which its first word says. A
+    // comment before that word hides a DELETE with no WHERE, which plans as no rows at all.
+    expect((await read('/* every wait */ delete from waits')).faults).toEqual([
+      'cannot tell what kind of statement this is from its first word',
+    ])
+  })
+
+  it('reads a write as a write whatever its conflict clause or its schema', async () => {
+    // A write may name what it does on a conflict, and a table may be named with its schema.
+    // Each of these reaches one row by its key, and each is read as the write it is.
+    for (const sql of [
+      'update or ignore runs set wake_event = null where run_id = ?',
+      'update main.runs set wake_event = null where run_id = ?',
+      'delete from "main"."waits" where run_id = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+  })
+
+  it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
+    // A step is judged by its constrained columns, whatever table it names, so an equality on
+    // a column named `key` reads as keyed on any table. It is true of `meta`, whose primary
+    // key is that column alone. A second table with a column of that name, or a wider key of
+    // `meta`, would make it a guess.
+    const holders = await raw.execute(
+      `select m.name as name from sqlite_master m, pragma_table_info(m.name) p
+       where m.type = 'table' and p.name = 'key' order by m.name`,
+    )
+    expect(holders.rows.map((row) => String(row.name))).toEqual(['meta'])
+    const key = await raw.execute(
+      `select name from pragma_table_info('meta') where pk > 0 order by pk`,
+    )
+    expect(key.rows.map((row) => String(row.name))).toEqual(['key'])
+  })
+
+  it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
+    // A due range that stands alone is no walk, and the list of due ranges names only one
+    // that drives another step. Under no LIMIT it reads everything due at once, and pointed
+    // the other way, as here, it reads the backlog.
+    const everyRunNotYetDue = await read(
+      `select run_id from runs where queue = ? and state = 'pending' and available_at_ms > ?`,
+    )
+    expect(everyRunNotYetDue).toEqual({ faults: [], dueDrivers: [] })
+    // Among the steps of a write's own select, over the table it writes, one is refused.
+    // Anywhere else in a write it is not: this UPDATE counts every expired lease of its
+    // queue in its SET, and this INSERT copies them.
+    for (const sql of [
+      `update runs set attempt = (select count(*) from runs
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?)
+       where run_id = ?`,
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       select queue, run_id, null, 0 from runs
+       where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+    // A write that reaches its table by another entity's key passes: it is bounded by that
+    // entity's rows, the waiters of one event or the checkpoints of one task, as a keyed
+    // read is. One of the two pins this check replaced refused both, because it held each
+    // table to a list of its own keys, and `checkpoints` had none.
+    for (const sql of [
+      'delete from waits where queue = ? and event_name = ?',
+      'delete from checkpoints where task_id = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+    // A test for NULL prints as an equality, so a test of an entity column for NULL reads as
+    // keyed: here it is every running run of the queue that no claim holds.
+    const heldByNoClaim = await read(
+      `select run_id from runs where queue = ? and state = 'running' and claimed_by is null`,
+    )
+    expect(heldByNoClaim).toEqual({ faults: [], dueDrivers: [] })
+    // The same test in a write, which fails every such run, reads as keyed too.
+    const failsTheUnheld = await read(
+      `update runs set state = 'failed'
+       where queue = ? and state = 'running' and claimed_by is null`,
+    )
+    expect(failsTheUnheld).toEqual({ faults: [], dueDrivers: [] })
+    // A table aliased to the name of a body of the same select reads as a read of that body,
+    // so its scan is never judged. Under any other alias it is refused.
+    const beside = (alias: string) =>
+      read(
+        `with d as materialized (select task_id from runs where run_id = ?)
+         select 1 from d, tasks as ${alias}`,
+      )
+    expect((await beside('d')).faults).toEqual([])
+    expect((await beside('e')).faults).toContain(`SCAN e :: ${walkOf('tasks')}`)
+    // In a write, a FROM item that shares the written table's name or alias makes the step
+    // over the table read as that item's rows, and it stands as the step over the table, so
+    // neither line over a write judges it. Each writes or walks the whole of its table, and
+    // under another name each is refused twice, as a walk and in its nest.
+    for (const [shared, apart] of [
+      [
+        'update tasks as d set max_attempts = 7 from (values (1)) as d',
+        'update tasks as d set max_attempts = 7 from (values (1)) as e',
+      ],
+      [
+        `update runs set state = 'failed'
+         from (select task_id from tasks where task_id = ? limit 1) as runs`,
+        `update runs set state = 'failed'
+         from (select task_id from tasks where task_id = ? limit 1) as x`,
+      ],
+      [
+        `update tasks set state = 'failed'
+         from (select task_id from runs where run_id = ? limit 1) as d, runs as d
+         where tasks.task_id = ? and d.queue = ? and d.state = ?`,
+        `update tasks set state = 'failed'
+         from (select task_id from runs where run_id = ? limit 1) as d, runs as e
+         where tasks.task_id = ? and e.queue = ? and e.state = ?`,
+      ],
+    ] as const) {
+      expect((await read(shared)).faults, shared).toEqual([])
+      expect((await read(apart)).faults, apart).toHaveLength(2)
+    }
+    // A table aliased to what a plan prints for the rows of a VALUES reads as those rows,
+    // which read no table, and in a write that step stands as the step over the table the
+    // write writes, so its scan is never judged. It is contrived.
+    for (const sql of [
+      'delete from waits as "2 CONSTANT ROWS" where status = ?',
+      'select 1 from waits as "2 CONSTANT ROWS" where status = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
+    // A statement is planned under the binds its sends carried, and SQLite plans from bound
+    // values. Sent with a state the history never sends it with, this one walks.
+    expect((await nestsOf(leasesUnder('running'))).faults).toEqual([])
+    expect((await nestsOf(leasesUnder('pending'))).faults).toEqual([
+      `SEARCH runs USING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`,
+    ])
+    // What it refuses though it is sound, because a plan does not say how few rows a walk
+    // reads: the drivers of one queue are a handful, and a MIN over an index prefix is one row.
+    const driversOfAQueue = await read('select driver_id from drivers where queue = ?')
+    const earliestPending = await read(
+      `select min(available_at_ms) from runs where queue = ? and state = 'pending'`,
+    )
+    expect([driversOfAQueue, earliestPending].map((reading) => reading.faults)).toEqual([
+      [`SEARCH drivers USING PRIMARY KEY (queue=?) :: ${walkOf('drivers')}`],
+      [`SEARCH runs USING COVERING INDEX runs_poll (queue=? AND state=?) :: ${walkOf('runs')}`],
+    ])
+    // Last, because it changes how this database plans. A plan depends on the database's
+    // statistics, and the database a statement is planned on here has none. Keyed here, this
+    // read walks its queue where the statistics rate the two indexes the other way.
+    const runsOfATask = {
+      sql: 'select run_id from runs where task_id = ? and queue = ?',
+      args: ['t', 'q'],
+    }
+    expect((await nestsOf(runsOfATask)).faults).toEqual([])
+    await raw.execute('ANALYZE sqlite_schema')
+    await raw.execute(
+      `INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES
+         ('runs', 'runs_task_attempt', '1000000 1000000 1000000'),
+         ('runs', 'runs_poll', '1000000 2 2 1')`,
+    )
+    await raw.execute('ANALYZE sqlite_schema')
+    expect((await nestsOf(runsOfATask)).faults).toEqual([
+      `SEARCH runs USING INDEX runs_poll (queue=?) :: ${walkOf('runs')}`,
+    ])
+  })
+
   it('refuses the nests it exists to refuse, and shows what a plan cannot', async () => {
-    // No statement here is run, so each bind is a placeholder.
-    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
-    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
     // A task update correlated to its source on the queue: the table is scanned, and the
     // source is probed once for each task.
     const correlated = await read(
@@ -1157,7 +1399,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
        WHERE task_id IN (SELECT f.task_id FROM runs f
                          WHERE f.run_id = ? AND f.queue = tasks.queue)`,
     )
-    // A read whose IN list walks the runs of a queue by state. No pin of writes sees a read.
+    // A read whose IN list walks the runs of a queue by state.
     const listed = await read(
       `select t.task_name from tasks t
        where t.task_id in (select f.task_id from runs f where f.queue = ? and f.state = ?)`,
@@ -1168,14 +1410,24 @@ describe('every statement a store ships, by the nests of its plan', () => {
        select f.queue, f.run_id, t.task_name, 0
        from runs f join tasks t on t.task_name = f.run_id where f.run_id = ?`,
     )
+    // Each walk is refused as the walk it is, and then for what the nest makes of it.
     expect([correlated, listed, scanned].map((reading) => reading.faults)).toEqual([
-      [expect.stringMatching(/ :: runs once for each row of a walk: SCAN tasks$/)],
       [
+        expect.stringMatching(/^SCAN tasks :: is a walk of tasks: /),
+        expect.stringMatching(/ :: runs once for each row of a walk: SCAN tasks$/),
+      ],
+      [
+        expect.stringMatching(
+          /^SEARCH f .*runs_poll \(queue=\? AND state=\?\) :: is a walk of runs: /,
+        ),
         expect.stringMatching(
           /^SEARCH t .* :: runs once for each row of a walk: SEARCH f .*runs_poll \(queue=\? AND state=\?\)$/,
         ),
       ],
-      [expect.stringMatching(/^SCAN t :: is not keyed, and runs once for each row of SEARCH f /)],
+      [
+        expect.stringMatching(/^SCAN t :: is a walk of tasks: /),
+        expect.stringMatching(/^SCAN t :: is not keyed, and runs once for each row of SEARCH f /),
+      ],
     ])
     // What a plan cannot show, each with the defect present and no fault. Both steps are
     // keyed, and one task's rows are many: every checkpoint of a task, once for each run of it.
@@ -1183,16 +1435,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `update runs set claim_gen = (select count(*) from checkpoints c
                                     where c.task_id = runs.task_id) where task_id = ?`,
     )
-    // A lone walk drives nothing and nothing drives it. In an UPDATE or a DELETE the block
-    // above refuses it, and in an insert or a read nothing does.
-    const lone = await read(
-      `insert into events (queue, event_name, payload, emitted_at_ms)
-       select queue, run_id, null, 0 from runs where queue = ? and state = ?`,
-    )
-    expect([ownRows, lone]).toEqual([
-      { faults: [], dueDrivers: [] },
-      { faults: [], dueDrivers: [] },
-    ])
+    expect(ownRows).toEqual({ faults: [], dueDrivers: [] })
     // What is due under no limit, and what is not due at all, read alike: a due range that
     // drives. The list of names above is what holds them, by a reason a person wrote.
     const unlimited = await read(
@@ -1218,12 +1461,19 @@ describe('every statement a store ships, by the nests of its plan', () => {
     if (!beat) throw new Error('the history sent no driver heartbeat')
     const beatPlan = await planTree(beat.sql, beat.args)
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
-    expect(readNests(beatPlan)).toEqual({ faults: [], dueDrivers: [] })
+    expect(readNests(beatPlan, beat.sql)).toEqual({ faults: [], dueDrivers: [] })
+    // Planned by hand from the trigger's own text, with a bind where it names the new row,
+    // that DELETE is a walk, and the reader refuses it.
+    const triggers = await raw.execute(`select sql from sqlite_master where type = 'trigger'`)
+    const deletes = triggers.rows.flatMap(
+      (row) => String(row.sql).match(/DELETE FROM [^;]+/g) ?? [],
+    )
+    expect(deletes).toHaveLength(1)
+    expect((await read(String(deletes[0]).replace(/NEW\.\w+/g, '?'))).faults).toEqual([
+      `SCAN drivers :: ${walkOf('drivers')}`,
+    ])
   })
   it('judges a read of a body as it judges any step, whatever a step is named', async () => {
-    // No statement here is run, so each bind is a placeholder.
-    const placeholders = (sql: string) => (sql.match(/\?/g) ?? []).map(() => 0)
-    const read = async (sql: string) => readNests(await planTree(sql, placeholders(sql)))
     // A materialized body, scanned once for each run of a walk: every task of the queue,
     // once for each running run of it.
     const scannedBody = await read(
@@ -1275,7 +1525,11 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
   it('fails closed on a plan line it cannot place or read', () => {
     const faultsOf = (...details: [number, number, string][]) =>
-      readNests(details.map(([id, parent, detail]) => ({ id, parent, detail }))).faults
+      readNests(
+        details.map(([id, parent, detail]) => ({ id, parent, detail })),
+        // These lines are no statement's plan. The text is a read's, so no line over a write applies.
+        'select 1',
+      ).faults
     const keyed = 'SEARCH tasks USING PRIMARY KEY (task_id=?)'
     expect({
       aLineItHasNeverSeen: faultsOf([1, 0, 'BLOOM FILTER ON r (task_id=?)']),
@@ -1308,6 +1562,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(plan.map((row) => row.detail)).toContain(
       'SEARCH t USING PRIMARY KEY (task_id=?) LEFT-JOIN',
     )
-    expect(readNests(plan)).toEqual({ faults: [], dueDrivers: [] })
+    expect(readNests(plan, sql)).toEqual({ faults: [], dueDrivers: [] })
   })
 })

@@ -16,10 +16,34 @@
  * bounded as the loops that made them.
  *
  * A plan carries no row counts, so a step's bound is what its constrained columns mean,
- * which the two lists below declare, whatever table or alias the step names. The rule is
- * then two lines over every nest: a step that runs once for each row of another must be
- * keyed, and the step it runs once for each row of must be keyed or due. `meta`, which
- * holds the clock, is read by its key in a subquery of its own, so it joins no nest.
+ * which the two lists below declare, whatever table or alias the step names. A step is
+ * keyed, or it is a due range, or it is a walk: a SCAN of a table, with an index or
+ * without one, a SEARCH through an automatic index, and a SEARCH whose constraint list
+ * holds no equality on a column of the first list and no range on a column of the second.
+ * The rows of a VALUES are no table's, and a SCAN of them is no walk.
+ *
+ * The rule is three lines. Over every step that reads a table: a walk is refused where it
+ * stands, in a statement of any kind, whether or not anything drives it or it drives
+ * anything, because a walk that stands alone joins no nest and costs what the table holds
+ * all the same. Over every nest: a step that runs once for each row of another must be
+ * keyed, and the step it runs once for each row of must be keyed or due.
+ *
+ * An UPDATE or a DELETE is held to two lines more, over the table it writes, which its
+ * text names. Among the steps of its own select its plan must have a step over that table:
+ * a DELETE with no WHERE takes SQLite's truncate path and plans as no rows at all, so no
+ * line above has a step to judge. And that step may not be a due range, because a write
+ * carries no LIMIT, so a range over what is due takes all of it at once. A due range in a
+ * subquery of the write is not a step of its own select, and is not held by that line. An
+ * INSERT of one row of values also plans as no rows, which is why the two lines go by the
+ * statement's kind. Its first word says the kind, and a statement whose first word does
+ * not, or a write whose table cannot be named, is refused.
+ *
+ * No table is excused, so there is no list of tables to keep. `meta`, which holds the
+ * clock, is read by its key, and `key` stands in the first list. A step that reads no
+ * table is not a walk of one: `json_each` reads a value of the row that drives it, and a
+ * step that reads the rows of a body is as bounded as the steps that made them, each of
+ * which is judged where it stands. The fault names the table by what the statement's own
+ * text calls it, because a plan names a step by the table's alias.
  *
  * A due range is bounded by the statement's LIMIT, which a plan never prints, and a plan
  * prints a range the same way whichever way it points: the leases that have expired and
@@ -35,9 +59,10 @@ export interface PlanRow {
 
 /**
  * A column that names one entity: a task, a run, an event, an idempotency key, a driver, a
- * claim. A step with an equality on one reads that entity's own rows, however large the
- * queue is. A claim token names one claim, and one claim holds at most its limit of runs,
- * because `claim` takes nothing under a token that already holds a run.
+ * claim, a row of `meta`. A step with an equality on one reads that entity's own rows,
+ * however large the queue is. A claim token names one claim, and one claim holds at most
+ * its limit of runs, because `claim` takes nothing under a token that already holds a run.
+ * `key` is the primary key of `meta`, whose rows are the clock and the schema's versions.
  */
 const ENTITY_COLUMNS = [
   'task_id',
@@ -47,6 +72,7 @@ const ENTITY_COLUMNS = [
   'idempotency_key',
   'driver_id',
   'claimed_by',
+  'key',
 ]
 
 /**
@@ -82,6 +108,16 @@ const BODY = /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/
 const SELECTS =
   /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY|(?:UNION|INTERSECT|EXCEPT)(?: ALL| USING TEMP B-TREE)?)$/
 const SORTS = /^USE TEMP B-TREE FOR /
+/** The rows of a VALUES, one or several: no table is read, and their count is in the text. */
+const CONSTANT_ROWS = /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS)$/
+/** A statement's first word, which says what kind it is. */
+const KIND = /^\s*(select|insert|replace|update|delete|with)\b/i
+/**
+ * An UPDATE, under any conflict clause, or a DELETE, by its first words: the schema its text
+ * names the table under, the table it writes, and its alias there.
+ */
+const WRITE =
+  /^\s*(?:update(?:\s+or\s+(?:rollback|abort|replace|fail|ignore))?|delete\s+from)\s+(?:"?(\w+)"?\.)?"?(\w+)"?(?:\s+as\s+"?(\w+)"?)?/i
 const EQUALITY = /^([a-z_]+)=\?$/
 const RANGE = /^([a-z_]+)[<>]\?$/
 
@@ -106,8 +142,71 @@ export interface NestReading {
   readonly dueDrivers: string[]
 }
 
-/** The nests of one statement's plan, judged. */
-export function readNests(rows: readonly PlanRow[]): NestReading {
+/**
+ * The table a step reads, for the wording of a fault and for nothing else. A plan names a
+ * step by the alias its statement gave the table, so the name is looked up in the text:
+ * the table that a FROM, a JOIN, an UPDATE or the comma of a join introduces, under a
+ * schema's name or not, and calls by it. An INTO is not read, because a plan has no step
+ * for the table an INSERT writes. A name the text gives to no table is the table's own.
+ * The name is a best effort, because the text is read with no scope: an alias inside a
+ * subquery that is another table's own name words that table's step with the subquery's
+ * table. The comma of a join also matches a select-list alias written without AS, so
+ * `select r.queue t from runs r, tasks t` words the step of `t` as a walk of queue or
+ * tasks. A wrong name sends its reader to the wrong table, and it passes nothing.
+ */
+function tableCalled(name: string, sql: string): string {
+  const called = new RegExp(
+    `(?:\\b(?:from|join|update)\\s+|,\\s*)(?:"?\\w+"?\\.)?"?(\\w+)"?\\s+(?:as\\s+)?"?${name.replace(/\W/g, '\\$&')}"?(?![\\w"])`,
+    'gi',
+  )
+  const tables = new Set([...sql.matchAll(called)].map((match) => (match[1] ?? name).toLowerCase()))
+  return tables.size > 0 ? [...tables].join(' or ') : name
+}
+
+/** The steps of a statement's own select: the lines under no subquery, an OR's legs too. */
+function ownSteps(children: readonly Node[]): RegExpExecArray[] {
+  return children.flatMap((node) => {
+    if (node.detail === 'MULTI-INDEX OR') {
+      return node.children.flatMap((leg) => ownSteps(leg.children))
+    }
+    const step = STEP.exec(node.detail)
+    return step ? [step] : []
+  })
+}
+
+/** What is wrong with how a write reaches the table it writes, which no step or nest shows. */
+function writeFaults(own: readonly Node[], sql: string): string[] {
+  // The two lines go by the statement's kind, so a statement whose first word does not say
+  // its kind is refused, as a plan line that cannot be read is.
+  const kind = KIND.exec(sql)?.[1]?.toLowerCase()
+  if (kind === undefined) return ['cannot tell what kind of statement this is from its first word']
+  // A write under a WITH names its table after bodies this does not read.
+  if (kind === 'with' && /\b(?:update|delete)\b/i.test(sql)) {
+    return ['cannot tell which table a write that begins with WITH writes']
+  }
+  if (kind !== 'update' && kind !== 'delete') return []
+  const write = WRITE.exec(sql)
+  if (!write) return ['cannot name the table this write writes']
+  const [, schema, table = '', alias = table] = write
+  // A plan names the step over a table its text names under a schema with that schema.
+  const names = [table, alias, ...(schema === undefined ? [] : [`${schema}.${table}`])].map(
+    (name) => name.toLowerCase(),
+  )
+  const over = ownSteps(own).filter((step) => names.includes((step[2] ?? '').toLowerCase()))
+  if (over.length === 0) {
+    return [`no step of the plan is over ${table}, the table the statement writes`]
+  }
+  const written = 'the table the statement writes, and a write carries no LIMIT'
+  return over
+    .filter(([, stepKind, , access = '']) => stepKind === 'SEARCH' && reachOf(access) === 'due')
+    .map(([line]) => `${line} :: is a due range over ${table}, ${written}`)
+}
+
+/**
+ * The steps and the nests of one statement's plan, judged, and a write's reach of its table.
+ * The text says what kind of statement it is and words a fault.
+ */
+export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
   const nodes = new Map<number, Node>([[0, { detail: '', children: [] }]])
   for (const row of rows) nodes.set(row.id, { detail: row.detail, children: [] })
   const faults: string[] = []
@@ -125,7 +224,7 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
     drivers: readonly Loop[],
     made: Reach | undefined,
   ): Loop {
-    const [, kind, , access = ''] = step
+    const [, kind, name = '', access = ''] = step
     if (node.children.length > 0) faults.push(`cannot read what is under: ${node.detail}`)
     // A table-valued function over one value of the row that drives it, such as `json_each`:
     // no table is read, and as a driver its rows are bounded by no key.
@@ -134,6 +233,12 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
     // judged against what drives it as any other step is.
     const reach = made ?? (kind === 'SCAN' ? 'walk' : reachOf(access))
     const loop: Loop = { detail: node.detail, reach }
+    // A walk of a table is refused where it stands, whatever drives it and whatever it
+    // drives. The rows of a body are no table's, and the steps that made them are judged.
+    if (made === undefined && reach === 'walk') {
+      const table = tableCalled(name, sql)
+      faults.push(`${loop.detail} :: is a walk of ${table}: neither keyed nor a due range`)
+    }
     if (drivers.length > 0 && loop.reach !== 'keyed') {
       const each = drivers.map((driver) => driver.detail).join(' and of ')
       faults.push(`${loop.detail} :: is not keyed, and runs once for each row of ${each}`)
@@ -163,7 +268,7 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
       const step = STEP.exec(node.detail)
       const subquery = SUBQUERY.exec(node.detail)
       const body = BODY.exec(node.detail)
-      if (node.detail === 'SCAN CONSTANT ROW') {
+      if (CONSTANT_ROWS.test(node.detail)) {
         loops.push({ detail: node.detail, reach: 'keyed' })
       } else if (step) {
         loops.push(stepLoop(node, step, drivers, bodies.get(step[2] ?? '')))
@@ -199,6 +304,8 @@ export function readNests(rows: readonly PlanRow[]): NestReading {
     }
     return loops
   }
-  loopsOf(nodes.get(0)?.children ?? [], [])
+  const own = nodes.get(0)?.children ?? []
+  loopsOf(own, [])
+  faults.push(...writeFaults(own, sql))
   return { faults, dueDrivers: [...dueDrivers] }
 }
