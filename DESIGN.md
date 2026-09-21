@@ -609,24 +609,26 @@ One invocation executes one claimed run to its next suspension point:
   caller whose batch it was. No other batch fails because of it, a batch that
   was already waiting behind it included, and nothing the failed batch began
   stays open on a connection that a later batch uses. The rule binds every
-  executor of the port, a third party's and a port in another language
-  included, and it covers the driver beneath the executor: what a driver
-  leaves behind on a connection after a failure is the executor's to clear.
-  The two server executors meet it by how they run a batch, as one transaction
-  on a pooled connection that is rolled back and given back to the pool when it
-  fails, and discarded instead when the rollback fails or the connection itself
-  was lost. Provoked once on servers of our own, a write that the server's lock
-  wait limit refused inside a batch, PostgreSQL's `lock_timeout` (55P03) and
-  MySQL's `innodb_lock_wait_timeout` (1205), twelve times in a row, left each
-  executor answering a read while the lock was still held and a write once it
-  was free, with every failed batch's first write undone. A shared conformance
-  case holds all three dialects to it with a real driver and a real failure
-  INSIDE a write batch (§3.4), because a fault injected above the driver, which
-  is all the fault matrix can inject, cannot see what a driver leaves behind.
+  executor of the port, a third party's and a port in another language included,
+  and it covers the driver beneath the executor: what a driver leaves behind on
+  a connection after a failure is the executor's to clear. The two server
+  executors meet it by how they run a batch, as one transaction on a pooled
+  connection that is rolled back and given back to the pool when it fails, and
+  discarded instead when the rollback fails or the connection itself was lost.
+  Provoked once on servers of our own, a write that the server's lock wait limit
+  refused inside a batch, PostgreSQL's `lock_timeout` (55P03) and MySQL's
+  `innodb_lock_wait_timeout` (1205), twelve times in a row, left each executor
+  answering a read while the lock was still held and a write once it was free,
+  with every failed batch's first write undone. Two shared conformance cases
+  hold all three dialects to it with a real driver (§3.4), because a fault
+  injected above the driver, which is all the fault matrix can inject, cannot
+  see what a driver leaves behind: one fails write batches inside, on a broken
+  constraint, and one makes a write batch give up waiting for a lock another
+  connection holds, the failure that breaks a libSQL connection.
 
   libSQL's local client does not meet it on a database FILE, and the executor
-  makes up the difference. What is left behind is the failed batch's own
-  `BEGIN IMMEDIATE`. When another connection holds the write lock past the busy
+  makes up the difference. What is left behind is the failed batch's own `BEGIN
+  IMMEDIATE`. When another connection holds the write lock past the busy
   timeout, SQLite fails that statement with `SQLITE_BUSY` and, so that a caller
   may step it again, does not end it: the statement stays in progress, counted
   as a writing statement, until it is reset or finalized. SQLite refuses every
@@ -647,8 +649,10 @@ One invocation executes one claimed run to its next suspension point:
   writes among them, and the first success began 72 ms after the release. One
   outage was reported as several. The defect is the library's and is open
   upstream (tursodatabase/libsql-client-ts#352, which points at
-  tursodatabase/libsql-js#228), and the newest binding and client read the same
-  way.
+  tursodatabase/libsql-js#228). It is still there in `@libsql/client` 0.18.0,
+  measured by a reviewer, whose local connections are a pool that `reconnect()`
+  reopens, so what follows about closing a client before reconnecting it is
+  about 0.15, the version this repository pins.
 
   The executor therefore ASKS before it trusts. Every failed batch of a database
   file marks its connection suspect, and the next batch first puts the question
@@ -673,7 +677,12 @@ One invocation executes one claimed run to its next suspension point:
   in-memory database is never given a new connection, and no statement a store
   sends is an `EXPLAIN`, so there it is a hazard only for a test that sends one
   inside a batch, and the plan tests send a write's `EXPLAIN` through the raw
-  client, outside any batch.
+  client, outside any batch. The question cannot see a READING statement left in
+  progress, because a reading statement does not stop a `COMMIT`: an `EXPLAIN`
+  of a read inside a batch leaves one, and its connection is kept. Measured, a
+  read on that connection after another connection's write still saw the new
+  row. That is the recovery's one known false negative, and it predates the
+  recovery.
 
   A recovery can fail too, because opening a connection and applying its
   PRAGMAs are calls on a file that another connection may hold or that may be
@@ -688,6 +697,26 @@ One invocation executes one claimed run to its next suspension point:
   reconnects: a client whose open failed is then closed itself, and it refuses
   every call, the question included, before anything reaches the binding.
 
+  A new connection must reach the database the executor had, because the
+  client's `reconnect()` opens a path. `open()` resolves a relative path against
+  the directory the process is in when the executor opens, so a later change of
+  directory does not move it, and it reads the scheme case-insensitively, as the
+  client does. An empty path, which SQLite makes a private database of its one
+  connection, is treated as `:memory:` is, and never reconnected. The first
+  connection's file is read from SQLite's `database_list` and recorded with its
+  device and inode. Before a reconnect the file at the path must still be that
+  file: one that was removed or replaced while the executor had it open is
+  refused before anything is opened, because the client offers no way to open
+  without creating a file. After a reconnect the new connection's file must be
+  the recorded one, or the new connection is closed before it serves a batch,
+  which covers a path that came to name another file in between, and a client
+  handed to the constructor that names its file by a relative path. Either
+  refusal is an outage that the next call retries, and never a switch to another
+  database. So a database whose file is replaced under a running executor is
+  served from the file it opened while its connection is whole, and after a
+  failure that breaks the connection every call is an outage until the process
+  opens a new executor.
+
   A database file's batches run ONE AT A TIME, each after the one before it has
   been answered and has marked its connection if it failed. The local client
   runs a batch without yielding, so two batches never overlapped, and the queue
@@ -696,21 +725,30 @@ One invocation executes one claimed run to its next suspension point:
   microseconds against 49 on main and a write batch's 420 to 424 against 417 to
   425, while a write's 95th percentile was 620 to 634 against 595 to 598 in both
   runs, which may be those hops or the load of a shared machine: the measurement
-  cannot tell them apart. Without it, a batch that was already waiting when
-  another failed ran on the broken connection BEFORE the failed call's own error
-  handling had run, and the outage was reported twice again. Two store calls
-  made in one tick is an ordinary shape, a task that starts two steps together.
-  A hosted client keeps its concurrent requests, and an in-memory database is
-  not queued. Three things a queue can do wrong are each held or ruled out. No
-  batch can wait for itself: the only code that runs inside a turn is the
-  executor's own send, which calls nothing of the port, and the store, the admin
-  and core's fenced batch all await `batch` from outside a turn. A rejected
-  batch neither stops the batches behind it nor leaves a rejection unhandled,
-  which a case holds with five batches sent in one tick, two of which fail.
-  `close()` with batches queued answers each of them with the client's own
-  refusal and hangs none, and a closed executor stays closed: it keeps a flag of
-  its own and is never reconnected, because `reconnect()` reopens a closed
-  client and the recovery closes the client itself before it reconnects.
+  cannot tell them apart. A batch's statements and arguments are copied when
+  `batch()` is called, so an argument array its caller changes while the batch
+  waits for its turn changes nothing that is sent. When a caller resumes does
+  change. Each batch settles in its turn, so a caller that closes the executor
+  after its own batch closes it before a batch sent in the same tick has run,
+  and that batch is refused, where before the queue both committed. Without it,
+  a batch that was already waiting when another failed ran on the broken
+  connection BEFORE the failed call's own error handling had run, and the outage
+  was reported twice again. Two store calls made in one tick is an ordinary
+  shape, a task that starts two steps together. A hosted client keeps its
+  concurrent requests, and an in-memory database is not queued. Three things a
+  queue can do wrong are each held or ruled out. No batch can wait for itself:
+  the only code that runs inside a turn is the executor's own send, which calls
+  nothing of the port, and the store, the admin and core's fenced batch all
+  await `batch` from outside a turn. A rejected batch neither stops the batches
+  behind it nor leaves a rejection unhandled, which a case holds with five
+  batches sent in one tick, two of which fail. `close()` with batches queued
+  answers each of them with the client's own refusal and hangs none, and a
+  closed executor stays closed: it keeps a flag of its own and is never
+  reconnected, because `reconnect()` reopens a closed client and the recovery
+  closes the client itself before it reconnects. A client handed to the
+  constructor that its owner closed is not reopened either: the executor tells
+  its own close before a reconnect from the owner's, and checks both after the
+  question.
 
   An in-memory database lives in its one connection, so it is never replaced,
   and a case holds that it keeps its rows through a failed batch. It cannot
@@ -724,41 +762,48 @@ One invocation executes one claimed run to its next suspension point:
   PRAGMAs and the first batch on the new connection take a median 0.23 ms,
   against 0.03 ms for a batch on a kept connection, measured on a file with a
   schema of the store's size, and they are paid only after a failure that really
-  broke the connection. The abandoned connection holds no lock: a case has
-  another executor write and a `wal_checkpoint(TRUNCATE)` complete unblocked
-  while the abandoned connection is still open. It does hold two descriptors and
-  about 0.2 MB, because the binding keeps a connection open until every
-  statement prepared on it has been collected. What releases it is a collection
-  and then a turn of the event loop, both. A collection with no turn after it
-  released nothing in the reproduction, and turns with no collection release
-  nothing: after each storm with turns below, a second of idle turns released
-  none of the 201 to 244 descriptors left. The storms ran in a process that does
-  nothing else, in plain JavaScript on Node 22, with a lock held throughout, the
-  busy timeout lowered to 1 ms, and every failed write followed by a read that
-  must be answered. With one turn of the event loop after every failure, 3,000
-  and 20,000 failures in a row peaked at 251 to 255 descriptors on the database,
-  279 to 283 in the process, which began with 33: a sawtooth between about 135
-  and 255, with 115 to 123 MB resident. A process limited to 1,024 descriptors
-  has about 740 to spare at that peak. Every write failed locked, no read
-  failed, and nothing else happened. With NO turn of the event loop between
-  failures nothing is released: 3,000 failures left 6,003 descriptors and 625
-  MB, and a second of idle turns afterwards released about half of them, whose
-  collection had run and whose finalizers were waiting for that turn. Production
-  does not get there. A failure that breaks the connection is a lock wait, which
-  blocks its process for the whole busy timeout, five seconds that production
-  cannot shorten, so 2,000 of them are 2.8 hours in a process that serves no
-  timer and no socket. A call on the local client is no turn of its own, because
-  the native call returns before its promise settles, so what matters is that
-  every path that calls the store again after an outage waits on a timer first.
-  The resident loop parks on the clock after a failed tick, and yields a turn
-  after at most 32 passes that did not sleep. One tick fails at most a few calls
-  for each run it claimed, which its claim limit bounds. The heartbeat pump
-  sleeps half a lease before every beat and stops at its first failure. A worker
-  pass ends at a store outage, and a later tick launches it again. The rollback
-  loop returns at an outage. A hosted route makes one attempt for each request,
-  which arrives over a socket. A failure that leaves nothing in progress
-  replaces nothing, so a storm of permanent errors holds the descriptors it
-  began with, 4 of 4 across 3,000 failures, turn or no turn.
+  broke the connection. The abandoned connection holds no write lock and no read
+  snapshot: a case has another executor write and a `wal_checkpoint(TRUNCATE)`
+  complete unblocked while it is still open. Until it is collected it is still a
+  connection to the file, and libsql-js#228 reports what that keeps: its shared
+  lock on the file, so that the file cannot leave write-ahead logging mode while
+  it lasts. It holds two descriptors and about 0.2 MB, because the binding keeps
+  a connection open until every statement prepared on it has been collected. The
+  descriptor on the database file can outlive even that: SQLite keeps it open
+  while another connection of the process holds the file, because closing it
+  would release the process's POSIX locks on the file, and later opens reuse it.
+  A reviewer counted 31 such descriptors after 30 replacements. What releases it
+  is a collection and then a turn of the event loop, both. A collection with no
+  turn after it released nothing in the reproduction, and turns with no
+  collection release nothing: after each storm with turns below, a second of
+  idle turns released none of the 201 to 244 descriptors left. The storms ran in
+  a process that does nothing else, in plain JavaScript on Node 22, with a lock
+  held throughout, the busy timeout lowered to 1 ms, and every failed write
+  followed by a read that must be answered. With one turn of the event loop
+  after every failure, 3,000 and 20,000 failures in a row peaked at 251 to 255
+  descriptors on the database, 279 to 283 in the process, which began with 33: a
+  sawtooth between about 135 and 255, with 115 to 123 MB resident. A process
+  limited to 1,024 descriptors has about 740 to spare at that peak. Every write
+  failed locked, no read failed, and nothing else happened. With NO turn of the
+  event loop between failures nothing is released: 3,000 failures left 6,003
+  descriptors and 625 MB, and a second of idle turns afterwards released about
+  half of them, whose collection had run and whose finalizers were waiting for
+  that turn. Production does not get there. A failure that breaks the connection
+  is a lock wait, which blocks its process for the whole busy timeout, five
+  seconds that production cannot shorten, so 2,000 of them are 2.8 hours in a
+  process that serves no timer and no socket. A call on the local client is no
+  turn of its own, because the native call returns before its promise settles,
+  so what matters is that every path that calls the store again after an outage
+  waits on a timer first. The resident loop parks on the clock after a failed
+  tick, and yields a turn after at most 32 passes that did not sleep. One tick
+  fails at most a few calls for each run it claimed, which its claim limit
+  bounds. The heartbeat pump sleeps half a lease before every beat and stops at
+  its first failure. A worker pass ends at a store outage, and a later tick
+  launches it again. The rollback loop returns at an outage. A hosted route
+  makes one attempt for each request, which arrives over a socket. A failure
+  that leaves nothing in progress replaces nothing, so a storm of permanent
+  errors holds the descriptors it began with, 4 of 4 across 3,000 failures, turn
+  or no turn.
 
   The workaround is meant to be deleted. A canary case runs the defect against
   the RAW client, and on the day the library finishes a statement whose step
@@ -3159,6 +3204,21 @@ not depend on careful reading:
   name, and so do the five constraint cases, whose read of what was written is
   such a call: they held a read behind a failed batch of one statement, and
   nothing held a write, a failure inside a longer batch, or a pool.
+  A second case holds the same after the failure that breaks a libSQL
+  connection: a write batch gives up waiting for a lock another connection holds
+  on the task's row, and then a read while the lock is still held and a write
+  once it is free are answered on the same executor. The fixture offers a
+  surface for it: an executor a second connection can reach, which on libSQL is
+  a database FILE of its own, because an in-memory database has no second
+  connection, a hold on the row's write lock from a connection of its own, and
+  the dialect's statements that shorten the executor's wait, libSQL's busy
+  timeout, sent before the batch because libSQL waits for its lock at the
+  batch's BEGIN, and PostgreSQL's `SET LOCAL lock_timeout` and MySQL's `SET
+  SESSION innodb_lock_wait_timeout`, sent inside it. Run against the base
+  executor with its files copied in, the case fails by name on libSQL and passes
+  on the two servers. On a server it holds one row lock of its own fixture for
+  about 0.1 s on PostgreSQL and 1 s on MySQL, under a lock limit scoped to the
+  batch's transaction or to the fixture's session.
   Two write batches that update the same two rows in opposite orders, started
   together on connections that are already open, are both answered with each
   update applied once: PostgreSQL and MySQL make one of them a deadlock victim

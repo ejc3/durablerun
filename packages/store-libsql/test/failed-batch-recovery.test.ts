@@ -225,7 +225,7 @@ describe('a write batch that fails busy on a file database', () => {
     expect(await connectionPragmas(victim)).toEqual({ busyTimeout: 5000, journalMode: 'wal' })
   })
 
-  it('abandons a connection that holds no lock: another executor writes and a TRUNCATE checkpoint is not blocked', async () => {
+  it('abandons a connection that holds no write lock: another executor writes and a TRUNCATE checkpoint is not blocked', async () => {
     // Nothing between the failure and the checkpoint gives the event loop a turn, so the
     // abandoned connection and its unfinished statement cannot have been collected yet.
     // Where /proc exists, the descriptors still open on the file say so.
