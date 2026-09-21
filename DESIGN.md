@@ -2327,9 +2327,10 @@ are load-bearing):
      Left to the entries, a string that was left out became a TypeError from a bind, or,
      for a child spawn's replay key, a stored key that ends in the word undefined.
    - An options object that is passed is an object. Null, an array and every other value
-     are refused, where a spawn takes its options and where the options take a parent:
-     read as an object such a value has no member, so a spawn went on as if empty options
-     had been passed, and null was a TypeError from inside the entry.
+     are refused at every place the table names one: a spawn's options and the parent
+     inside them, a suspension's checkpoint, and a failed rollback. Read as an object such
+     a value has no member, so a spawn went on as if empty options had been passed, and
+     null was a TypeError from inside the entry.
    - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
      happens before an id is minted or anything is sent, and it is a rejected promise and
      never a throw.
@@ -4517,10 +4518,19 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     for a caller that ignores the types: a caller of the newer shape against
     the older store is refused by the statement builder before anything is
     sent, on all three dialects, and a caller of the older shape against the
-    newer store is refused at the entry, which says what the port takes, on
-    all three. Measured with the older SDK over a store that refuses that
-    way: the worker books the refusal as a user failure, and the `fail` that
-    follows inside the phase halts the saga. The task ends `failed` with the
+    newer store is refused on all three before anything is read or sent. The
+    port's one check (§3.4 rule 10) answers it first, as it answers any
+    string the port requires that was left out: `InvalidDurableStringError`,
+    which is a TypeError by its class and inside the port's refusal family,
+    saying that `rollback.stepKey` was left out. The entry's own reader
+    refuses the same shapes with a TypeError that says what the port takes,
+    for a caller that reaches the entry with no check in front of it.
+    Measured with the older SDK over a store that refused with the reader's
+    TypeError: the worker books the refusal as a user failure, and the `fail`
+    that follows inside the phase halts the saga. Read, and not run again:
+    the worker sorts a store call's rejection into infrastructure or not, by
+    its origin, and neither refusal is infrastructure, so the booking does
+    not depend on which of the two answered. The task ends `failed` with the
     refusal as its reason, the rollback outcome is `failed`, no attempt
     record is written, and the rollback's own budget is not honoured.
     Nothing foreign is written, and a rollback that succeeds is untouched,

@@ -2470,6 +2470,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
     front of it. Two libSQL cases do that on purpose. A test that lists every
     such call in the repository would keep it to them, and is not built. A
     patch of the prototype is reached through the check.
+  - An option, not built: the wrapper hands the entry a copy of each options
+    object it read. Today the check reads a member once and the entry reads it
+    again, so an object whose getter answers a clean string and then another
+    hands the entry what was never checked. A caller that can pass such an
+    object already holds the store. Its trigger is a store handed to code its
+    owner does not trust.
+  - An option, not built: a surface generated from the port's type and not from
+    the table of strings, which gives every argument of every method each kind
+    of value its type forbids and holds the answer to a refusal of the family
+    before anything is sent. The table is of strings, so an argument that
+    carries none is outside it: `claim` with null for its options is a
+    TypeError from inside the entry. Most such arguments are numbers and
+    durations with checks and refusal types of their own, so it is its own
+    change. Its trigger is the first report of a wrong-kind argument that reads
+    as a bug in the engine.
+  - An option, not built: deleting the refusal inside core's reader of a
+    failed rollback's argument. It is dead behind the one check for every call
+    through a store: a caller of the older shape is refused first, as a step
+    that was left out. It stays because the reader turns an unknown value into
+    two strings and the refusal is how it narrows them, because its message
+    names the whole shape for a caller that reaches an entry from the
+    prototype, and because core exports the reader. Its mutation answers to
+    core's own case of the reader, which calls it directly. Its trigger is the
+    reader losing its last direct caller.
   - An option, not built: the hosted router holds its configured queue only to
     non-empty, so a deployment configured with a queue the port refuses
     answers every request 400, as it did for a queue past the width before
