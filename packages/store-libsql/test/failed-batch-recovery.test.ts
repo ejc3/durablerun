@@ -356,6 +356,42 @@ describe('a write batch that fails busy on a file database', () => {
     }
   })
 
+  it('honours an owner closing its client after a reconnect that threw', async () => {
+    // A reconnect that fails to open its file, made to fail here because another connection
+    // in this process holds the file and SQLite reuses that connection's descriptor.
+    let failTheNextReconnect = false
+    const client = createClient({ url })
+    const failing = new Proxy(client, {
+      get(target, key) {
+        if (key === 'reconnect') {
+          return async () => {
+            if (!failTheNextReconnect) return target.reconnect()
+            failTheNextReconnect = false
+            throw new Error('the new connection could not be opened')
+          }
+        }
+        const value: unknown = Reflect.get(target, key, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    const handed = new LibsqlExecutor(failing, true)
+    try {
+      await handed.batch('shorten', [shorten], 'read')
+      expect(await outcome(handed.batch('write', [insert(1)]))).toMatchObject(BUSY)
+      await holder.rollback()
+      failTheNextReconnect = true
+      expect(await outcome(handed.batch('read', [count], 'read'))).toMatchObject({
+        name: 'StoreUnavailableError',
+      })
+      expect(failTheNextReconnect, 'the reconnect was attempted and threw').toBe(false)
+      client.close()
+      expect(await outcome(handed.batch('read', [count], 'read'))).toMatchObject(CLOSED)
+      expect(client.closed).toBe(true)
+    } finally {
+      client.close()
+    }
+  })
+
   it('stays closed when it is closed with a failure behind it', async () => {
     expect(await outcome(victim.batch('write', [insert(1)]))).toMatchObject(BUSY)
     victim.close()
