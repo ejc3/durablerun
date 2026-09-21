@@ -1,5 +1,6 @@
 import {
   MAX_EPOCH_MS,
+  MIGRATION_WRITE,
   type SqlExecutor,
   type StoreAdmin,
   applyVersionedWrite,
@@ -34,26 +35,31 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     // first launders the latter into a valid version-zero database.
     if ((await this.readSchemaVersion()) === null) {
       await this.applyVersionedWrite(async () => {
-        await this.db.batch('migrate:bootstrap', [
-          {
-            sql: `CREATE TABLE IF NOT EXISTS meta (
+        await this.db.batch(
+          'migrate:bootstrap',
+          [
+            {
+              sql: `CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                   ) WITHOUT ROWID`,
-            args: [],
-          },
-          {
-            sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
+              args: [],
+            },
+            {
+              sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
                   ON CONFLICT (key) DO NOTHING`,
-            args: [],
-          },
-        ])
+              args: [],
+            },
+          ],
+          MIGRATION_WRITE,
+        )
       }, 0)
     }
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
       await this.applyVersionedWrite(
-        () => this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)),
+        () =>
+          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),
         migration.version,
       )
     }

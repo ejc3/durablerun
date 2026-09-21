@@ -1,4 +1,5 @@
 import {
+  PermanentStoreError,
   RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
@@ -11,6 +12,7 @@ import {
   type SqlTransactionLock,
   StoreUnavailableError,
   isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -40,6 +42,20 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
   '42P01', // undefined_table
   '42P07', // duplicate_table/relation
 ])
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. The same batch fails the same way on every retry. The schema
+ * mismatch states above are read first, because a migration repairs those and they keep
+ * their own type.
+ *
+ * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
+ * serialization failure, and a deadlock victim, which the executor runs again before it
+ * reports one), 53 insufficient resources, 57 operator intervention, 58 system error, and
+ * any class this list does not name.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
 
 type PoolPort = Pick<Pool, 'connect' | 'end'>
 
@@ -151,7 +167,72 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
   }
 }
 
-async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
+/**
+ * One migrator at a time, and the second one waits. This lock conflicts with itself and
+ * with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
+ * holding nothing, and when the first has committed it loses to that sentinel. Without it
+ * the second blocks on the first one's uncommitted sentinel while it holds its own
+ * row-exclusive lock on meta, and a version that then locks the table deadlocks with it,
+ * which PostgreSQL ends only after its deadlock timeout. A read does not conflict with this
+ * lock, so it stops no statement's clock read. A version that locks meta itself, as version
+ * 7 does, stops every statement from its own lock until it commits.
+ *
+ * It is a lock on the version table, so only a batch that runs once that table exists can
+ * name it: every version's batch, and not the bootstrap. The released build sent this same
+ * statement as the first of each version's batch, so a migrator of either build waits for
+ * the other's.
+ */
+const MIGRATION_LOCK_SQL = 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE'
+
+/**
+ * A write whose label begins with `migrate:` is a migration write, and every one but the
+ * bootstrap has to name the migration lock in its control. The label is read here only to
+ * REFUSE: the lock a batch runs under is the one its control names. The lock was a
+ * statement of the batch once, which no wrapper could drop. A control can be dropped, by a
+ * wrapper that rebuilds it from a mode, and the batch would then run with no lock on meta,
+ * where a second migrator deadlocks with a version that locks the table. The bootstrap names
+ * no lock, because the lock lives on the table it creates.
+ */
+function refuseMigrationWriteWithoutItsLock(
+  label: string,
+  mode: SqlBatchMode,
+  lock: SqlTransactionLock | undefined,
+): void {
+  const needsTheLock =
+    mode === 'write' && label.startsWith('migrate:') && label !== 'migrate:bootstrap'
+  if (needsTheLock && lock?.kind !== 'migration') {
+    throw new TypeError(
+      `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
+    )
+  }
+}
+
+type LockAcquisition = (client: PoolClient) => Promise<void>
+
+/**
+ * How a lock is taken, decided before a connection is: a lock of a kind this executor does
+ * not implement is refused with nothing sent. A later build of core can add a kind. Taken
+ * for a kind this executor knows, the batch would run under the wrong lock, and ignored it
+ * would run under none.
+ */
+function transactionLockAcquisition(lock: SqlTransactionLock): LockAcquisition {
+  switch (lock.kind) {
+    case 'event':
+    case 'claim':
+      return (client) => acquireTransactionLock(client, lock)
+    case 'migration':
+      return async (client) => {
+        await client.query(MIGRATION_LOCK_SQL)
+      }
+    default:
+      return refuseUnknownLockKind(lock)
+  }
+}
+
+async function acquireTransactionLock(
+  client: PoolClient,
+  lock: Exclude<SqlTransactionLock, { readonly kind: 'migration' }>,
+): Promise<void> {
   if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {
     // A caller's event takes the lock every build has taken for it: a row of
     // `event_locks`, inserted when it is missing and then locked. A process of an older
@@ -320,6 +401,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
+    if (error.code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(error.code.slice(0, 2))) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (SQLSTATE ${error.code}): ${error.message}`,
+        { cause: error },
+      )
+    }
   }
 
   const state =
@@ -371,9 +458,13 @@ export class PgExecutor implements SqlExecutor {
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
-    if (prepared.length === 0) return []
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
+    // Both refusals come before a connection is taken, and before an empty batch is answered.
+    refuseMigrationWriteWithoutItsLock(label, mode, transactionLock)
+    const acquireLock =
+      transactionLock === undefined ? undefined : transactionLockAcquisition(transactionLock)
+    if (prepared.length === 0) return []
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
     const alone = sentAlone(statements, mode)
 
@@ -407,9 +498,7 @@ export class PgExecutor implements SqlExecutor {
             transactionStarted = true
           }
 
-          if (transactionLock !== undefined) {
-            await acquireTransactionLock(client, transactionLock)
-          }
+          if (acquireLock !== undefined) await acquireLock(client)
 
           const results: SqlResult[] = []
           for (const [statementIndex, statement] of prepared.entries()) {

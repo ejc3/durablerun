@@ -130,10 +130,12 @@ export function decodeRollbackTry(stateJson: string): RollbackTry | null {
 export const rollbackTriesName = (stepKey: string): string => `${SAGA_TRIES_PREFIX}${stepKey}`
 
 /**
- * What `failRollback` was handed, held to its shape where it crosses the port, and read
+ * What `failRollback` was handed, held to its shape where the entry reads it, and read
  * once. A caller of an older build hands over the attempt record itself, as
- * `{ key, stateJson }`. It is refused here, before anything is read or sent, and told what
- * the port takes. The step is held to the room the attempt record's
+ * `{ key, stateJson }`. Through a store the port's one check refuses that first, as a
+ * step that was left out (DESIGN.md §3.4 rule 10). It is refused here too, before anything
+ * is read or sent, and told what the port takes, for a caller that reaches the entry
+ * some other way. The step is held to the room the attempt record's
  * name leaves, here where the name is derived, as core holds a child's key it derives.
  */
 export function requireFailedRollback(value: unknown): FailedRollback {

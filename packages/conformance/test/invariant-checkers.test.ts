@@ -813,11 +813,11 @@ describe('invariant checkers fire on constructed corruption', () => {
 })
 
 /**
- * The width condition can fail only when something stores a name past the width, and the
- * one op of the fuzz walk that passes such a name is refused by a store that holds the rule.
- * So these walks are green while every entry holds it, and a store entry that stops holding
- * it fails them by that condition. The case lives here and not beside the fuzz shards,
- * because the mutation audit leaves the fuzz files out of a mutation's run.
+ * One op of the fuzz walk passes the port names it must refuse, past the width or outside
+ * the durable string domain, at places drawn from every place the port holds a string.
+ * A store that holds them refuses each one, so these walks are green, and a place that
+ * stops holding a name fails them at the call. The case lives here and not beside the
+ * fuzz shards, because the mutation audit leaves the fuzz files out of a mutation's run.
  */
 describe('walks that pass the port names past the width', () => {
   it('uphold the invariants, and the port refuses every name', async () => {
@@ -827,10 +827,10 @@ describe('walks that pass the port names past the width', () => {
     for (let walk = 0; walk < 8; walk++) {
       await runFuzzScenario(makeLibsqlFixture, `past-the-width-${walk}`, 50).then(
         (stats) => {
-          refusals += stats.overWidthRefusals
+          refusals += stats.portStringRefusals
         },
         (error: unknown) => {
-          failures.push(String(error).replace(/w{40,}/g, '<a name past the width>'))
+          failures.push(String(error))
         },
       )
     }

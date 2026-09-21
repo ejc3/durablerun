@@ -1,6 +1,20 @@
 import { SchemaMismatchError, SchemaNotInitializedError } from './errors.js'
-import type { SqlResult } from './primitives.js'
+import type { SqlLockedBatch, SqlResult } from './primitives.js'
 import { storageValueKind } from './validate.js'
+
+/**
+ * The batch control of a migration write. The batch names the migration lock, as an event
+ * batch or a claim batch names its own, so the lock travels in the one value every executor
+ * wrapper forwards, and no executor chooses it from the batch's label.
+ *
+ * Every version's batch carries it. The bootstrap carries it wherever the dialect's lock
+ * does not live in the version table, the table a bootstrap creates: a named lock can be
+ * taken before that table exists, and a lock on the table cannot.
+ */
+export const MIGRATION_WRITE: SqlLockedBatch = Object.freeze({
+  mode: 'write',
+  transactionLock: Object.freeze({ kind: 'migration' }),
+})
 
 /**
  * The recorded schema version, read through the dialect's own version read. `read` is the
@@ -42,12 +56,15 @@ export async function readSchemaVersion(read: () => Promise<SqlResult[]>): Promi
 }
 
 /**
- * A migration write that failed is complete only if the authoritative version says so:
- * the metadata now exists at or beyond the write's target. A concurrent migrator may have
- * won, or this migrator's own commit may have landed with only its answer lost. An absent
- * or behind version rethrows the original failure, so a failure that is not a lost race
- * is never swallowed. The version decides, never the error's code or text: a database may
- * report a lost CREATE as a catalog uniqueness error even under IF NOT EXISTS.
+ * A migration write that failed is forgiven only if the authoritative version says so:
+ * the metadata now exists at or beyond `minimumVersion`, which the caller picks. A batch
+ * of one version passes that version, and the write is then complete. A batch of several
+ * passes the first of them, and then plans again what is still pending.
+ * A concurrent migrator may have won, or this migrator's own commit may have landed with
+ * only its answer lost. An absent or behind version rethrows the original failure, so a
+ * failure that is not a lost race is never swallowed. The version decides, never the
+ * error's code or text: a database may report a lost CREATE as a catalog uniqueness error
+ * even under IF NOT EXISTS.
  */
 export async function applyVersionedWrite(
   write: () => Promise<unknown>,

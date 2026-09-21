@@ -1,11 +1,18 @@
-import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
+import {
+  InvalidDurableStringError,
+  MIGRATION_WRITE,
+  SchemaMismatchError,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
 import {
   META_BOOTSTRAP_SQL,
   META_TABLE_SQL,
+  MIGRATIONS,
   RUNS_STAMP_INDEX,
   createIndexIfMissing,
+  setNotNullWhileNullable,
 } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -296,14 +303,99 @@ describe('MysqlExecutor against a real server', () => {
           args: [],
         }))
         expect(await columns()).toBe(expected)
-        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
         await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
         expect(await columns()).toBeNull()
-        await db.raw.batch('migrate:index', version)
-        await db.raw.batch('migrate:index', version)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
+        await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
       }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone', async () => {
+    // MODIFY restates the whole column. A migrator that planned from a stale read replays
+    // every version that was pending when it read, so a bare MODIFY replayed after a later
+    // version had changed the column would put this declaration back over it. The guarded
+    // form acts on the one fact it is about: a nullable column becomes NOT NULL, and a column
+    // that is not nullable is left as it stands, whatever else has become of it.
+    const db = await openMysqlTestDb({ idNamespace: 'column-repeat' })
+    try {
+      const catalog = async (columns: string) => {
+        const [read] = await db.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: `SELECT ${columns} FROM information_schema.columns
+                     WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'payload'`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+        return read?.rows[0]
+      }
+      const column = () => catalog('is_nullable AS nullable, column_comment AS comment')
+      // The form under test is version 10 as it ships, and what this case restates of the
+      // column it reads from the catalog, so it holds no copy of the schema's text.
+      const version = (
+        MIGRATIONS.find((migration) => migration.version === 10)?.statements ?? []
+      ).map((sql) => ({ sql, args: [] }))
+      expect(version).toHaveLength(4)
+      const declared = await catalog(
+        'column_type AS type, character_set_name AS charset, collation_name AS collation',
+      )
+      const declaration = `${String(declared?.type)} CHARACTER SET ${String(declared?.charset)} COLLATE ${String(declared?.collation)}`
+      const seen: unknown[] = [await column()]
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:a-later-version', [
+        {
+          sql: `ALTER TABLE events MODIFY payload ${declaration} NOT NULL COMMENT 'as a later version left it'`,
+          args: [],
+        },
+      ])
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      await db.raw.batch('fixture:nullable-again', [
+        { sql: `ALTER TABLE events MODIFY payload ${declaration} NULL`, args: [] },
+      ])
+      seen.push(await column())
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      await db.raw.batch('migrate:column', version, MIGRATION_WRITE)
+      seen.push(await column())
+      expect(seen, 'mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable').toEqual([
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: '' },
+        { nullable: 'NO', comment: 'as a later version left it' },
+        { nullable: 'YES', comment: '' },
+        { nullable: 'NO', comment: '' },
+      ])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('fails loudly over a column the catalog does not hold, where doing nothing would record the version', async () => {
+    // The form does nothing only when the catalog says the column is already NOT NULL. A
+    // column the catalog does not hold is a caller's mistake, and a form that chose to do
+    // nothing there would let its version be recorded over a column that never changed,
+    // where the index form over a missing table fails.
+    const db = await openMysqlTestDb({ idNamespace: 'column-missing' })
+    try {
+      const form = setNotNullWhileNullable('events', 'no_such_column', 'LONGTEXT').map((sql) => ({
+        sql,
+        args: [],
+      }))
+      const answer = await db.raw.batch('migrate:column', form, MIGRATION_WRITE).then(
+        () => 'accepted',
+        (error: unknown) => /MySQL error \d+/.exec(String(error))?.[0] ?? String(error),
+      )
+      // 1054: unknown column.
+      expect(answer).toBe('MySQL error 1054')
     } finally {
       await db.close()
     }
@@ -516,13 +608,21 @@ describe('the version table on a real server', () => {
   it('is created with its row by one statement, which leaves a recorded version alone', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'bootstrap-once', migrate: false })
     try {
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(0)
       await db.raw.batch('fixture:set-schema-version', [
         { sql: "UPDATE meta SET value = '3' WHERE `key` = 'schema_version'", args: [] },
       ])
       // Over a table that is there, the statement inserts nothing.
-      await db.raw.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }])
+      await db.raw.batch(
+        'migrate:bootstrap',
+        [{ sql: META_BOOTSTRAP_SQL, args: [] }],
+        MIGRATION_WRITE,
+      )
       expect(await db.admin.schemaVersion()).toBe(3)
     } finally {
       await db.close()

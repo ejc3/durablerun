@@ -1,5 +1,6 @@
 import {
   MAX_EPOCH_MS,
+  MIGRATION_WRITE,
   type SqlExecutor,
   type SqlStatement,
   type StoreAdmin,
@@ -23,6 +24,10 @@ export class PostgresStoreAdmin implements StoreAdmin {
   async migrate(): Promise<void> {
     // The executor turns undefined_table into this typed result only for the
     // canonical version read. No message matching occurs at this layer.
+    //
+    // The bootstrap names no migration lock, where every version's batch does. PostgreSQL's
+    // migration lock is a lock on meta, the table this batch creates. Racing bootstraps
+    // converge without one: the batch is one transaction, and a loser is forgiven below.
     if ((await this.readSchemaVersion()) === null) {
       await this.applyVersionedWrite(
         () =>
@@ -47,7 +52,8 @@ export class PostgresStoreAdmin implements StoreAdmin {
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
       await this.applyVersionedWrite(
-        () => this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)),
+        () =>
+          this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration), MIGRATION_WRITE),
         migration.version,
       )
     }
@@ -108,15 +114,9 @@ export class PostgresStoreAdmin implements StoreAdmin {
 
 function fencedBatch(migration: PostgresMigration): SqlStatement[] {
   return [
-    // One migrator at a time, and the second one waits. This lock conflicts with itself and
-    // with the row-exclusive lock a sentinel insert takes, so a second migrator stops here
-    // holding nothing, and when the first has committed it loses to that sentinel. Without
-    // it the second blocks on the first one's uncommitted sentinel while it holds its own
-    // row-exclusive lock on meta, and a version that then locks the table deadlocks with
-    // it, which PostgreSQL ends only after its deadlock timeout. A read does not conflict
-    // with this lock, so it stops no statement's clock read. A version that locks meta
-    // itself, as version 7 does, stops every statement from its own lock until it commits.
-    { sql: 'LOCK TABLE meta IN SHARE ROW EXCLUSIVE MODE', args: [] },
+    // The batch's control names the migration lock, which the executor takes ahead of this
+    // sentinel, so a second migrator waits there holding nothing.
+    //
     // Plain INSERT is the transaction fence. A stale or concurrent re-apply
     // raises unique_violation and rolls back its DDL with it.
     {

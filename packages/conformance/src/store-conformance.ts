@@ -2,6 +2,7 @@ import { SAGA_PHASE_CHECKPOINT } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { childTaskConformance } from './child-tasks.js'
+import { executorErrorConformance } from './executor-errors.js'
 import {
   MATRIX_PRE_STATES,
   MATRIX_READ_LABELS,
@@ -228,10 +229,10 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       )
       expect(unknownCoveredConditionIds()).toEqual([])
       expect(duplicatePoisonWitnessIds()).toEqual([])
-      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(115)
-      expect(POISON_WITNESS_COUNT).toBe(146)
+      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(116)
+      expect(POISON_WITNESS_COUNT).toBe(147)
       expect(POISON_WRITE_LABELS).toHaveLength(21)
-      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_066)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_087)
       expect(POISON_TARGET_CASES).toHaveLength(98)
       expect(POISON_UNREACHABLE_TARGETS).toHaveLength(83)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
@@ -1407,4 +1408,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'schema-admin', run: schemaAdminConformance },
   { id: 'self-concurrency', run: selfConcurrencyConformance },
   { id: 'stale-token', run: staleTokenConformance },
+  { id: 'executor-errors', run: executorErrorConformance },
 ] as const)

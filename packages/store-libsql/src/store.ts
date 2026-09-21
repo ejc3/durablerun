@@ -11,6 +11,7 @@ import {
   type FailOutcome,
   type FailedRollback,
   FencedBatch,
+  HeldPort,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
   LOST_LEASE,
@@ -86,9 +87,7 @@ import {
   registerWaitCas,
   reopenLostLaunchCas,
   requireDerivedInteger,
-  requireDurableString,
   requireFailedRollback,
-  requireIdentifiersFit,
   requireSagaStepFits,
   requireEpochMs,
   requirePositiveClaimGeneration,
@@ -490,12 +489,14 @@ const NEXT_WAKE = prepareRead({ queue: 'string' }, (binds: { queue: string }) =>
  * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
  * timestamps come from NOW_MS (rule 3).
  */
-export class LibsqlSchedulerStore implements SchedulerStore {
+export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
     private readonly buggify: Buggify = neverBuggify,
-  ) {}
+  ) {
+    super()
+  }
 
   private readonly runTasks = new RunTaskMemo()
   private taskDoneFacts: TaskDoneDialect | undefined
@@ -513,10 +514,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
-    requireIdentifiersFit({ queue })
-    // The queue becomes durable here, so it is held to the domain every store keeps.
-    requireDurableString('queue', queue)
-    const durableTaskName = requireDurableString('taskName', taskName)
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
     const taskId = this.ids.uuidv7()
@@ -568,7 +565,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       spawnTaskCas({
         taskId,
         queue,
-        taskName: durableTaskName,
+        taskName,
         paramsJson,
         headersJson,
         retryStrategyJson: retry,
@@ -671,7 +668,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    requireIdentifiersFit({ queue, claimToken })
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
@@ -834,7 +830,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<ClaimedRun | null> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('activate.claimGen', claimGen)
     // Buggify: a lost activation is always legal — the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
@@ -919,7 +914,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     extendLeaseSeconds: number,
   ): Promise<LeaseState> {
-    requireIdentifiersFit({ queue, runId })
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return LOST_LEASE
@@ -967,7 +961,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * sequentially (the reviewed RTT pileup).
    */
   async sweep(queue: string, limit: number): Promise<SweptRun[]> {
-    requireIdentifiersFit({ queue })
     const budget = clampLimit(limit)
     if (budget === 0) return []
     const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
@@ -1330,7 +1323,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * sole authority and advisory signals never revoke it.
    */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
-    requireIdentifiersFit({ queue, runId })
     const unexpired = runClaimUnexpired('runs', NOW_MS)
     const owner = runOwnedByTask('runs', 't')
     const [expired] = await this.db.batch('expire-lease-now', [
@@ -1354,7 +1346,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * Replay-safe: re-applying the same beat is the same row.
    */
   async driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void> {
-    requireIdentifiersFit({ queue, driverId })
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
@@ -1371,7 +1362,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     taskId: string,
   ): Promise<{ runId: string; attempt: number } | null> {
-    requireIdentifiersFit({ queue, taskId })
     const runId = this.ids.uuidv7()
     const top = (task: string) =>
       `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
@@ -1439,7 +1429,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    requireIdentifiersFit({ queue, taskId })
     const batch = new FencedBatch('cancel-task', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -1538,7 +1527,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<string | null> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('claimedTaskName.claimGen', claimGen)
     // The launch carries only ids, so the worker learns the claimed task's name
     // here. The name is immutable, so an unfenced read is safe; the claim
@@ -1563,7 +1551,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimGen: number,
     inSeconds: number,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
     const wakePlan = prepareWake({ inSeconds }, true)
     // The rolling-deploy deferral, decided before activation.
@@ -1609,7 +1596,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     wake: WakeSpec,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
     // The task must be ELIGIBLE, not merely live — the same predicate
@@ -1663,7 +1649,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     wake: WakeSpec,
     checkpoint: CheckpointWrite,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId, 'checkpoint.key': checkpoint?.key })
     requireSagaStepFits('checkpoint.key', checkpoint?.key)
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
@@ -1722,7 +1707,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, runId })
     const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
@@ -1844,7 +1828,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     failureJson: string,
     retry: { delaySeconds: number } | null,
   ): Promise<FailOutcome> {
-    requireIdentifiersFit({ queue, runId })
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
@@ -1878,7 +1861,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     rollback: FailedRollback,
   ): Promise<FailOutcome> {
     const failed = requireFailedRollback(rollback)
-    requireIdentifiersFit({ queue, runId })
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
@@ -2116,7 +2098,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
-    requireIdentifiersFit({ queue, taskId })
     const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
     const b = new FencedBatch('get-checkpoints', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('checkpoints', CHECKPOINTS, { queue, taskId, visibleThrough })
@@ -2163,7 +2144,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     stateJson: string,
     extendLeaseSeconds: number,
   ): Promise<void> {
-    requireIdentifiersFit({ queue, taskId, runId, checkpointName })
     requireSagaStepFits('checkpointName', checkpointName)
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     const b = new FencedBatch('set-checkpoint', this.ids.token(), {
@@ -2213,7 +2193,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
-    requireIdentifiersFit({ queue, taskId })
     const b = new FencedBatch('task-result', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('result', TASK_RESULT, { queue, taskId })
     const rows = await this.rows(b, 'result')
@@ -2225,7 +2204,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
-    requireIdentifiersFit({ queue })
     const b = new FencedBatch('next-wake', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
     b.readPrepared('wake', NEXT_WAKE, { queue })
     const rows = await this.rows(b, 'wake')
@@ -2247,7 +2225,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    requireIdentifiersFit({ queue, eventName })
     const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
@@ -2511,7 +2488,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     eventName: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    requireIdentifiersFit({ queue, taskId, runId, stepName, eventName })
     const answer = await this.awaitNamedEvent(
       queue,
       taskId,
@@ -2535,7 +2511,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    requireIdentifiersFit({ queue, taskId, runId, stepName })
     return awaitTaskDone(this.taskDoneDialect(), {
       queue,
       taskId,

@@ -313,6 +313,31 @@ jobs:
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a store's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
+              def span(text):
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -326,16 +351,54 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'f1466c1488287895fa3cba88092958163f246032d618a436b02d1381e4e27785':
-              # A claim reaches the runs its token holds through an index of the token.
-              # The plan pins that hold the token term of its follow-ons and libSQL's
-              # receipt read, and the conformance case that holds the receipt's lease
-              # expiry to its range, register mutations the base predates, so their
-              # verdict markers are exempted. No base entry is re-aimed.
-              repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:claim-followons-name-the-token",
-                  "mutation-verdict:behavior:postgres-claim-followons-name-the-token",
-                  "mutation-verdict:behavior:claim-receipt-requires-lease-expiry-range",
+          if digest == '542dda82478873b84428dc4e889e932f51859b95b6c253e6e141deb3b27b9054':
+              # Four base entries name lines this tree deleted. Each store checked its own
+              # entries, and the driver loop held its two names to the width alone. One check
+              # in core now stands in front of every entry, built from one table of the port's
+              # strings, so each mutant moved to what holds its property now: the spawn queue's
+              # to the table's first place, the emitted name's to the width half of the check's
+              # rule, the loop's to the line that asks the port's check of its driver id, and
+              # the claim token's, which named the first line of `claim` in the libSQL store,
+              # to the table's place for the token at `claim`. Each keeps its owner but the
+              # last, which the width case cannot own: that case draws its places from the
+              # table and asks nothing of a place the table stopped holding, so the written
+              # list of places owns it. Each owner still fails under its mutant. Three more
+              # named a second copy of a check that stood behind the one check in core, where
+              # no mutant of it could be seen through the port once the one check answered
+              # first. The copies are deleted, and each of the three moved to the table's place
+              # for its string: an emitted event name, a parent's queue and a parent's run id.
+              # One more names the line that refuses a reserved key, which reads the caller's
+              # key under another local now that the key's own checks are gone from beside it.
+              # Eight entries moved in all. One base verdict moved with no entry re-aimed: the
+              # reader of a failed rollback's argument refuses another shape behind the one
+              # check now, so the mutation that stops it refusing answers to core's own case
+              # of the reader. Fourteen mutations are new, four of them for what the review of
+              # the one check found at the mechanism and three more at the same mechanism, and
+              # with that verdict they answer to ten verdict markers that are newer than the
+              # base. No entry was retired.
+              repaired = previous
+              for name in (
+                  'spawn-queue-is-a-durable-string',
+                  'libsql-emitted-name-held-at-the-entry',
+                  'driver-identifiers-held-at-construction',
+                  'event-name-is-a-durable-string',
+                  'parent-queue-held-to-the-width',
+                  'parent-run-id-held-to-the-width',
+                  'spawn-refuses-reserved-idempotency-key',
+                  'claim-token-held-to-the-width',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place',
+                  'mutation-verdict:construction:places-that-are-not-identifiers-are-written-down',
+                  'mutation-verdict:behavior:port-entry-looked-up-when-called',
+                  'mutation-verdict:behavior:port-check-cannot-be-defined-away',
+                  'mutation-verdict:behavior:port-constructor-loops-by-index',
+                  'mutation-verdict:behavior:required-string-left-out-refused-at-every-place',
+                  'mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing',
+                  'mutation-verdict:construction:port-table-frozen-throughout',
+                  'mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused',
+                  'mutation-verdict:behavior:saga-failed-rollback-shape-is-checked',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

@@ -5,7 +5,7 @@ import {
   type Launcher,
   type SchedulerStore,
   durationToMs,
-  requireIdentifiersFit,
+  requirePortString,
   requirePositiveInt,
 } from '@durablerun/core'
 import { type TickOptions, type TickResult, tick } from './tick.js'
@@ -148,10 +148,12 @@ export class DriverLoop {
     if (typeof this.driverId !== 'string' || this.driverId.length === 0) {
       throw new RangeError('driverId must be a non-empty string')
     }
-    // Every store refuses a queue or a driver id past the width of a durable identifier.
-    // A refused tick reads as an outage and a refused beat is swallowed, so a loop
-    // configured with one would run forever and do nothing.
-    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })
+    // Every store refuses a queue or a driver id that is past the width of a durable
+    // identifier or outside the durable string domain. A refused tick reads as an outage
+    // and a refused beat is swallowed, so a loop configured with one would run forever and
+    // do nothing. The port's own check of the two names is asked here, once.
+    requirePortString('queue', opts.queue)
+    requirePortString('driverId', this.driverId)
     // A hanging transport call must never stall the loop: race it against
     // the clock and hand a timeout to the reconciler as a failed launch.
     this.launcher =

@@ -106,6 +106,46 @@ export function createIndexIfMissing(table: string, index: string, columns: stri
   ]
 }
 
+/**
+ * `ALTER TABLE … MODIFY … NOT NULL` in a form that does nothing once the catalog calls the
+ * column NOT NULL. MySQL commits each DDL statement on its own, so a migrator that died
+ * after the change and before the version runs the version again, and a migrator that planned
+ * from a stale read replays it. MODIFY restates the whole column, so a replay of the bare
+ * statement would put this declaration back over whatever a later version made of the
+ * column. Guarded by the catalog, a replay finds the column not nullable and does nothing.
+ * The statement is chosen by what the catalog holds and then prepared, as an index is. It
+ * does nothing ONLY on the catalog's word that the column is NOT NULL: a column the catalog
+ * does not hold is a caller's mistake, and the form then attempts the change, which fails
+ * loudly, where doing nothing would let the caller's version be recorded over a column that
+ * never changed. So "while nullable" says what it does for every column the catalog holds,
+ * and for one it does not hold the server refuses the attempt with error 1054.
+ *
+ * The change is asked for in place and with no lock, and that clause carries the refusal of
+ * a NULL. Under a strict `sql_mode` it is how InnoDB makes the change anyway, and a row that
+ * holds NULL refuses it with error 1138. Outside a strict mode MySQL makes the bare change
+ * by storing an empty string where a NULL was. It cannot do that in place, so with the clause
+ * it refuses with error 1846 whatever the rows hold. The executor sets a strict mode on every
+ * connection it takes, but that is session state kept in another file, and a port in another
+ * language replays this text and not that setup. The clause also stops the server from
+ * falling back in silence to a copying change that blocks writes.
+ */
+export function setNotNullWhileNullable(
+  table: string,
+  column: string,
+  declaration: string,
+): string[] {
+  return [
+    `SET @durablerun_ddl = IF(
+       (SELECT is_nullable FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = '${table}' AND column_name = '${column}') = 'NO',
+       'DO 0',
+       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,
+    'PREPARE durablerun_ddl FROM @durablerun_ddl',
+    'EXECUTE durablerun_ddl',
+    'DEALLOCATE PREPARE durablerun_ddl',
+  ]
+}
+
 export const MIGRATIONS: readonly MysqlMigration[] = [
   {
     version: 1,
@@ -270,6 +310,19 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
       'runs_held',
       `(queue, claimed_by(${HELD_INDEX_PREFIX}), state)`,
     ),
+  },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the column refuses it too, for every writer
+    // there is, a port in another language included. This is the first version that alters
+    // a table, and it goes through the guarded form above. A row that holds NULL makes the
+    // change fail with error 1138, which leaves the column nullable, the version at 9 and
+    // the row as it was. A session with no strict mode is refused with error 1846 whatever
+    // the rows hold. The rows are found with
+    // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: setNotNullWhileNullable('events', 'payload', BODY),
   },
 ]
 
