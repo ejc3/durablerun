@@ -15653,6 +15653,9 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "port-required-string-left-out-is-refused": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
+    ),
     "tree-read-state-stops-at-a-subquery": (
         "replacement removes a TypeScript default operator, not a SQL bind"
     ),
