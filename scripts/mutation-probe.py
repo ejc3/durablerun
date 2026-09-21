@@ -2678,16 +2678,17 @@ MUTATION_SPECS = [
     (
         # The same walk in the SELECT of an INSERT. Six labels send the checkpoint write,
         # and an older pin, over the batches a saga touches, plans it under three of them
-        # and fails when all six are bent. So only the write under a worker's lease is
-        # bent, the one `set-checkpoint` sends, which no older test of the plan file
-        # reads: it finds its fenced run by a comparison no index serves. Before the
-        # refusal of a walk, every test of that file that reads a plan passed with this in
-        # place, and the one failure was the inventory's tie to the corpus.
+        # and fails when all six are bent. So only the lease-fenced write is bent, the one
+        # `set-checkpoint` sends, which no older test of the plan file judges: the saga pin
+        # plans it and exempts its label. It finds its fenced run by a comparison no index
+        # serves. Before the refusal of a walk, every test of that file that reads a plan
+        # passed with this in place, and the one failure was the inventory's tie to the
+        # corpus.
         "checkpoint-write-seeks-its-source-run",
         "packages/core/src/statements/checkpoint.ts",
         "          .where('f.run_id', '=', binds.runId)\n",
         "          .where('f.run_id', (binds.fence === 'lease' && 'like') || '=', binds.runId)\n",
-        "every checkpoint a worker writes scans every run to find the run that writes it",
+        "every lease-fenced checkpoint write scans every run to find the run that writes it",
     ),
     (
         "emit-wake-event-correlation",
