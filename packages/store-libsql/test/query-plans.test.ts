@@ -1177,12 +1177,55 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(underAWith.faults).toContain(
       'cannot tell which table a write that begins with WITH writes',
     )
-    // What is no such write: a DELETE by its key, an UPDATE whose OR finds its table through
-    // two keys, and an INSERT of values, which also plans as no rows and writes one.
+    // An UPDATE under a WITH is refused as a DELETE under one is.
+    const updateUnderAWith = await read(
+      `with x as (select 1) update runs set wake_event = null
+       where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+    )
+    expect(updateUnderAWith.faults).toContain(
+      'cannot tell which table a write that begins with WITH writes',
+    )
+    // Every leg of an OR is a step of the write's own select, and a due range in any leg is
+    // refused. A conflict clause and a schema hide no due range over the table either.
+    const dueOverRuns = (line: string) =>
+      `${line} :: is a due range over runs, the table the statement writes, and a write carries no LIMIT`
+    for (const [sql, line] of [
+      [
+        `update runs set wake_event = null
+         where run_id = ? or (queue = ? and state = 'running' and claim_expires_at_ms < ?)`,
+        expired,
+      ],
+      [
+        `update or ignore runs set wake_event = null
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+        expired,
+      ],
+      [
+        `update main.runs set wake_event = null
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+        expired.replace('SEARCH runs', 'SEARCH main.runs'),
+      ],
+    ] as const) {
+      expect((await read(sql)).faults, sql).toEqual([dueOverRuns(line)])
+    }
+    // No UPDATE found plans with no step over its table once its name is read, so the line
+    // that refuses one is held on a plan written by hand, as the lines that fail closed are.
+    expect(
+      readNests(
+        [{ id: 1, parent: 0, detail: 'SEARCH tasks USING PRIMARY KEY (task_id=?)' }],
+        'update runs set wake_event = null where run_id = ?',
+      ).faults,
+    ).toEqual(['no step of the plan is over runs, the table the statement writes'])
+    // What is no such write: a DELETE by its key, an UPDATE by its key under an alias, an
+    // UPDATE whose OR finds its table through two keys, and an INSERT of values, which plans
+    // as no rows for one row and as rows that read no table for several.
     for (const sql of [
       'delete from waits where run_id = ?',
+      'update runs as r set wake_event = null where r.run_id = ?',
       'update runs set wake_event = null where run_id = ? or task_id = ?',
       'insert into events (queue, event_name, payload, emitted_at_ms) values (?, ?, ?, ?)',
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       values (?, ?, ?, ?), (?, ?, ?, ?)`,
     ]) {
       expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
     }
@@ -1210,23 +1253,41 @@ describe('every statement a store ships, by the nests of its plan', () => {
 
   it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
     // A step is judged by its constrained columns, whatever table it names, so an equality on
-    // a column named `key` reads as keyed on any table. It is true of `meta`, whose key is
-    // that column. A second table with a column of that name would make it a guess.
+    // a column named `key` reads as keyed on any table. It is true of `meta`, whose primary
+    // key is that column alone. A second table with a column of that name, or a wider key of
+    // `meta`, would make it a guess.
     const holders = await raw.execute(
       `select m.name as name from sqlite_master m, pragma_table_info(m.name) p
        where m.type = 'table' and p.name = 'key' order by m.name`,
     )
     expect(holders.rows.map((row) => String(row.name))).toEqual(['meta'])
+    const key = await raw.execute(
+      `select name from pragma_table_info('meta') where pk > 0 order by pk`,
+    )
+    expect(key.rows.map((row) => String(row.name))).toEqual(['key'])
   })
 
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
-    // In a read, a due range that stands alone is no walk, and the list of due ranges names
-    // only one that drives another step. Under no LIMIT it reads everything due at once, and
-    // pointed the other way, as here, it reads the backlog. Over a written table it is refused.
+    // A due range that stands alone is no walk, and the list of due ranges names only one
+    // that drives another step. Under no LIMIT it reads everything due at once, and pointed
+    // the other way, as here, it reads the backlog.
     const everyRunNotYetDue = await read(
       `select run_id from runs where queue = ? and state = 'pending' and available_at_ms > ?`,
     )
     expect(everyRunNotYetDue).toEqual({ faults: [], dueDrivers: [] })
+    // Among the steps of a write's own select, over the table it writes, one is refused.
+    // Anywhere else in a write it is not: this UPDATE counts every expired lease of its
+    // queue in its SET, and this INSERT copies them.
+    for (const sql of [
+      `update runs set attempt = (select count(*) from runs
+         where queue = ? and state = 'running' and claim_expires_at_ms < ?)
+       where run_id = ?`,
+      `insert into events (queue, event_name, payload, emitted_at_ms)
+       select queue, run_id, null, 0 from runs
+       where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
     // A write that reaches its table by another entity's key passes: it is bounded by that
     // entity's rows, the waiters of one event or the checkpoints of one task, as a keyed
     // read is. One of the two pins this check replaced refused both, because it held each
@@ -1243,6 +1304,12 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `select run_id from runs where queue = ? and state = 'running' and claimed_by is null`,
     )
     expect(heldByNoClaim).toEqual({ faults: [], dueDrivers: [] })
+    // The same test in a write, which fails every such run, reads as keyed too.
+    const failsTheUnheld = await read(
+      `update runs set state = 'failed'
+       where queue = ? and state = 'running' and claimed_by is null`,
+    )
+    expect(failsTheUnheld).toEqual({ faults: [], dueDrivers: [] })
     // A table aliased to the name of a body of the same select reads as a read of that body,
     // so its scan is never judged. Under any other alias it is refused.
     const beside = (alias: string) =>
@@ -1252,6 +1319,42 @@ describe('every statement a store ships, by the nests of its plan', () => {
       )
     expect((await beside('d')).faults).toEqual([])
     expect((await beside('e')).faults).toContain(`SCAN e :: ${walkOf('tasks')}`)
+    // In a write, a FROM item that shares the written table's name or alias makes the step
+    // over the table read as that item's rows, and it stands as the step over the table, so
+    // neither line over a write judges it. Each writes or walks the whole of its table, and
+    // under another name each is refused twice, as a walk and in its nest.
+    for (const [shared, apart] of [
+      [
+        'update tasks as d set max_attempts = 7 from (values (1)) as d',
+        'update tasks as d set max_attempts = 7 from (values (1)) as e',
+      ],
+      [
+        `update runs set state = 'failed'
+         from (select task_id from tasks where task_id = ? limit 1) as runs`,
+        `update runs set state = 'failed'
+         from (select task_id from tasks where task_id = ? limit 1) as x`,
+      ],
+      [
+        `update tasks set state = 'failed'
+         from (select task_id from runs where run_id = ? limit 1) as d, runs as d
+         where tasks.task_id = ? and d.queue = ? and d.state = ?`,
+        `update tasks set state = 'failed'
+         from (select task_id from runs where run_id = ? limit 1) as d, runs as e
+         where tasks.task_id = ? and e.queue = ? and e.state = ?`,
+      ],
+    ] as const) {
+      expect((await read(shared)).faults, shared).toEqual([])
+      expect((await read(apart)).faults, apart).toHaveLength(2)
+    }
+    // A table aliased to what a plan prints for the rows of a VALUES reads as those rows,
+    // which read no table, and in a write that step stands as the step over the table the
+    // write writes, so its scan is never judged. It is contrived.
+    for (const sql of [
+      'delete from waits as "2 CONSTANT ROWS" where status = ?',
+      'select 1 from waits as "2 CONSTANT ROWS" where status = ?',
+    ]) {
+      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+    }
     // A statement is planned under the binds its sends carried, and SQLite plans from bound
     // values. Sent with a state the history never sends it with, this one walks.
     expect((await nestsOf(leasesUnder('running'))).faults).toEqual([])

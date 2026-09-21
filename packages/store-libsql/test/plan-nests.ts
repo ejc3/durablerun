@@ -17,9 +17,10 @@
  *
  * A plan carries no row counts, so a step's bound is what its constrained columns mean,
  * which the two lists below declare, whatever table or alias the step names. A step is
- * keyed, or it is a due range, or it is a walk: a SCAN line, with an index or without one,
- * a SEARCH through an automatic index, and a SEARCH whose constraint list holds no
- * equality on a column of the first list and no range on a column of the second.
+ * keyed, or it is a due range, or it is a walk: a SCAN of a table, with an index or
+ * without one, a SEARCH through an automatic index, and a SEARCH whose constraint list
+ * holds no equality on a column of the first list and no range on a column of the second.
+ * The rows of a VALUES are no table's, and a SCAN of them is no walk.
  *
  * The rule is three lines. Over every step that reads a table: a walk is refused where it
  * stands, in a statement of any kind, whether or not anything drives it or it drives
@@ -28,12 +29,14 @@
  * keyed, and the step it runs once for each row of must be keyed or due.
  *
  * An UPDATE or a DELETE is held to two lines more, over the table it writes, which its
- * text names. Its plan must have a step over that table: a DELETE with no WHERE takes
- * SQLite's truncate path and plans as no rows at all, so no line above has a step to judge.
- * And that step may not be a due range, because a write carries no LIMIT, so a range over
- * what is due takes all of it at once. An INSERT of values also plans as no rows, which is
- * why the two lines go by the statement's kind. Its first word says the kind, and a
- * statement whose first word does not, or a write whose table cannot be named, is refused.
+ * text names. Among the steps of its own select its plan must have a step over that table:
+ * a DELETE with no WHERE takes SQLite's truncate path and plans as no rows at all, so no
+ * line above has a step to judge. And that step may not be a due range, because a write
+ * carries no LIMIT, so a range over what is due takes all of it at once. A due range in a
+ * subquery of the write is not a step of its own select, and is not held by that line. An
+ * INSERT of one row of values also plans as no rows, which is why the two lines go by the
+ * statement's kind. Its first word says the kind, and a statement whose first word does
+ * not, or a write whose table cannot be named, is refused.
  *
  * No table is excused, so there is no list of tables to keep. `meta`, which holds the
  * clock, is read by its key, and `key` stands in the first list. A step that reads no
@@ -147,7 +150,9 @@ export interface NestReading {
  * for the table an INSERT writes. A name the text gives to no table is the table's own.
  * The name is a best effort, because the text is read with no scope: an alias inside a
  * subquery that is another table's own name words that table's step with the subquery's
- * table. A wrong name sends its reader to the wrong table, and it passes nothing.
+ * table. The comma of a join also matches a select-list alias written without AS, so
+ * `select r.queue t from runs r, tasks t` words the step of `t` as a walk of queue or
+ * tasks. A wrong name sends its reader to the wrong table, and it passes nothing.
  */
 function tableCalled(name: string, sql: string): string {
   const called = new RegExp(
