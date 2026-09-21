@@ -432,6 +432,21 @@ a last docs PR gives a live owner to every open bullet that is left.
     registered mutation against the executor's own case, and the
     self-concurrency surface books a permanent store error with the outages, so
     a port call that breaks a constraint fails its contest.
+27. PR3.15: on a libSQL database FILE, after a write batch fails with
+    SQLITE_BUSY at the busy timeout beside a connection that holds the write
+    lock, the same executor answers the next read while the lock is still
+    held, the next write once it is free, and a read that was made in the same
+    tick and was waiting behind the failed write, and on all three dialects an
+    executor answers a read and a write after twelve write batches in a row
+    failed inside. This is met. Three cases of
+    `packages/store-libsql/test/failed-batch-recovery.test.ts` were committed
+    failing by name with `cannot commit transaction - SQL statements in
+    progress`, on a real file through the executor as production opens it,
+    beside a fourth that holds a third executor unaffected. The executor now
+    asks a suspect connection the question a COMMIT is asked, replaces one
+    that refuses, and runs a file's batches one at a time. The shared case is
+    in `packages/conformance/src/executor-errors.ts`, and run by hand against
+    an executor that fails the call after a failed batch it fails by name.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1060,6 +1075,113 @@ these three things; nothing else in the system does I/O, time, or randomness.
     three holds of the column that could not fail, and two sentences that said
     more than was held. All six are folded. The fold's own unfiltered audit
     caught one defect that a fix had introduced, before anything was pushed.
+- **PR3.15 a libSQL write that fails busy fails the calls that follow it on
+  its connection**: DONE. Older than any version here, met twice on
+  2026-09-20 while PR3.1d was measured and reviewed. What it was, from the
+  client library's own source and three one-file reproductions (DESIGN.md §3.2
+  has the argument line by line): when a write batch on a file database fails
+  with SQLITE_BUSY, once the executor's five second busy timeout runs out, the
+  batch's own `BEGIN IMMEDIATE` is left in progress on its connection. SQLite
+  leaves a statement whose step failed busy unfinished, so that it can be
+  stepped again. The native binding (`libsql` 0.5.29) resets a statement only
+  before it runs it again, and the client (`@libsql/client` 0.15.15) prepares a
+  new statement for every call, so only the garbage collector ever finishes
+  it. Until then SQLite refuses every COMMIT on that connection with
+  `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`. Two
+  things the first reports had not isolated: a WRITE that follows, sent after
+  the lock is free, fails the same way, and a third executor on the same file
+  is not affected. A reviewer of another pull request measured the same
+  pattern independently, in a process of its own, and the first success came
+  72 ms after the lock's release. By that pattern most of the calls that
+  failed beside PR3.1d's cold scan were this defect and not the busy timeout.
+  - Red first, on a real file with the executor as production opens it and a
+    second connection holding the write lock. The next read while the lock is
+    held, the next write once it is free, and a read made in the same tick and
+    queued behind the failed write each failed by name with that message, and a
+    read on a third executor passed as the control. A case lowers the five
+    second wait on its own connection with a PRAGMA sent through the batch
+    port, which no store statement does, so it runs in about a tenth of a
+    second. Run once at the full five seconds, the first case failed the same
+    way after 5.0 s.
+  - The fix is in the libSQL executor alone. A failed batch of a database file
+    marks its connection suspect. The next batch first asks the connection the
+    question a COMMIT is asked, an empty read transaction sent as SQL text,
+    keeps a connection that answers, and replaces one that refuses through the
+    client's `reconnect()`, with the two PRAGMAs applied again. A recovery
+    that fails is an outage once and is owed by the next call. A file's
+    batches run one at a time, so a batch that was waiting behind a failed one
+    runs after the mark and not before it. An in-memory database keeps its one
+    connection, a closed executor stays closed, and a hosted client is
+    untouched. Eleven cases on a real file hold this and one holds an
+    in-memory database through a failed batch. Each guard of the executor,
+    removed by hand, fails named cases among them, but for one, whose removal
+    ends the test process, as the next bullet says.
+  - A second defect of the binding was met on the way. It is avoided and not
+    fixed: reading the transaction state of a closed connection ends the
+    process with a panic, and the client reads it whenever a batch fails after
+    a `reconnect()` that could not open the database. The executor sends
+    nothing to a client whose new connection did not open. It was not found
+    reported upstream on 2026-09-20, and by reading it is gone on the binding's
+    main branch.
+  - The class. The layer that should have caught this is a check with real
+    drivers that a failed batch leaves its executor able to serve the next
+    one, and the fault matrix cannot be that layer, because it injects faults
+    above the driver. One shared conformance case now fails twelve write
+    batches in a row INSIDE, on all three dialects, then requires a read and a
+    write on the same executor. The lock-wait form is libSQL's cases above.
+  - Two registered mutations, which bring the registry to 1071, show that the
+    fix can fail, each caught by name by its own case: a question that always
+    answers that the connection is whole fails the case of the next write, and
+    a file executor whose batches overlap fails the case of the read queued
+    behind the failed write. Each was run by hand alone before it was
+    registered.
+  - The two servers' lock-wait form was provoked once, on servers of our own
+    and not in the suite: PostgreSQL's `lock_timeout` (55P03) and MySQL's
+    `innodb_lock_wait_timeout` (1205) refused a write inside a batch twelve
+    times in a row, more than either pool holds connections, and each executor
+    then answered a read while the lock was held and a write once it was free,
+    with every failed batch's first write undone.
+  - What a replaced connection costs is measured and stated in DESIGN.md §3.2
+    with its conditions: about a third of a millisecond, paid only after a
+    failure that really broke the connection, and two descriptors and about
+    0.2 MB until a collection and then a turn of the event loop release them,
+    a peak of 237 descriptors across 20,000 failures in a row when the event
+    loop turns.
+  - WHEN TO DELETE THE WORKAROUND. The canary case of
+    `packages/store-libsql/test/failed-batch-recovery.test.ts` sends the defect
+    to the RAW client and requires that it is still there. It fails, with a
+    message that says so, when a release of the library finishes a statement
+    whose step failed busy. Upstream: tursodatabase/libsql-client-ts#352, which
+    points at tursodatabase/libsql-js#228. Delete then, from the executor, the
+    question, the reconnect and the memory of a connection that did not open,
+    and the canary with them, and the queue unless something else has come to
+    rely on it. Keep the other cases, which must stay green without them.
+  - An option, not built: the servers' lock-wait form as a committed case. It
+    needs a lock wait limit on the executor's own sessions, PostgreSQL's
+    through its connection options and MySQL's through a session setting the
+    executor does not send today, because a global limit reaches every other
+    session of the server. Trigger: a change to how either server executor ends
+    a failed batch, its rollback, its release or its discard.
+  - An option, not built: a lock probe. While a lock outage lasts, a write
+    first takes and gives back the write lock with SQL text sent through
+    `executeMultiple`, which finalizes its statements even when it fails, so a
+    refusal there leaves nothing in progress and replaces nothing. Measured in
+    a loop that never yields to the event loop, 3,000 busy failures in a row
+    held 7 descriptors where the shipped shape held 6,003. Its two costs fall
+    on the write path during a real outage: one more lock take for every write
+    attempt, and a worst case of twice the busy timeout in one wait that blocks
+    the process. Production cannot reach the storm it bounds, as DESIGN.md
+    says. Trigger: a deployment observed to accumulate descriptors during a
+    lock outage.
+  - An option, not built, and the root-level alternative the probe rests on:
+    for a file database the executor frames the transaction itself. It sends
+    `BEGIN IMMEDIATE` and `COMMIT` through `executeMultiple` and the batch's
+    statements one by one in between, under the one-at-a-time queue, so that
+    `BEGIN` never runs as a prepared statement and nothing is ever left in
+    progress. It would delete the question, the reconnect and the canary's
+    reason to exist, at the price of a second write path beside the hosted
+    one. Trigger: upstream still unfixed when the trigger above is observed,
+    or the recovery found to misbehave in use.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

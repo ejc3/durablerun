@@ -613,11 +613,16 @@ One invocation executes one claimed run to its next suspension point:
   included, and it covers the driver beneath the executor: what a driver
   leaves behind on a connection after a failure is the executor's to clear.
   The two server executors meet it by how they run a batch, as one transaction
-  on a pooled connection that is rolled back and given back when it fails, and
-  discarded when the rollback fails too. A shared conformance case holds all
-  three dialects to it with a real driver and a real failure INSIDE a write
-  batch (§3.4), because a fault injected above the driver, which is all the
-  fault matrix can inject, cannot see what a driver leaves behind.
+  on a pooled connection that is rolled back and given back to the pool when it
+  fails, and discarded instead when the rollback fails or the connection itself
+  was lost. Provoked once on servers of our own, a write that the server's lock
+  wait limit refused inside a batch, PostgreSQL's `lock_timeout` (55P03) and
+  MySQL's `innodb_lock_wait_timeout` (1205), twelve times in a row, left each
+  executor answering a read while the lock was still held and a write once it
+  was free, with every failed batch's first write undone. A shared conformance
+  case holds all three dialects to it with a real driver and a real failure
+  INSIDE a write batch (§3.4), because a fault injected above the driver, which
+  is all the fault matrix can inject, cannot see what a driver leaves behind.
 
   libSQL's local client does not meet it on a database FILE, and the executor
   makes up the difference. What is left behind is the failed batch's own
