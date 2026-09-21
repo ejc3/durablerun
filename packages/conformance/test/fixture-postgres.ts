@@ -81,8 +81,9 @@ export async function makePostgresFixture(
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   const { raw, admin, ids } = opened
+  const store = new PostgresSchedulerStore(raw, ids)
   return {
-    store: new PostgresSchedulerStore(raw, ids),
+    store,
     admin,
     adminOver: (db: SqlExecutor) => new PostgresStoreAdmin(db),
     raw,
@@ -100,6 +101,16 @@ export async function makePostgresFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
     deadlocks: () => raw.deadlocks,
+    lockWait: async () => ({
+      store,
+      raw,
+      holdWriteLock: (taskId: string, during: () => Promise<void>) =>
+        opened.holdTaskRowLock(taskId, during),
+      shortenFirst: [],
+      // PostgreSQL waits at the locked row, inside the batch, until its lock_timeout.
+      shortenInside: [{ sql: "SET LOCAL lock_timeout = '100ms'", args: [] }],
+      close: async () => {},
+    }),
     close: opened.close,
   }
 }

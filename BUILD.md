@@ -48,9 +48,8 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left. Two lines
-are left. Line 18 is held for the maintainer's choice, and line 27 is PR3.15's,
-whose branch is in review.
+a last docs PR gives a live owner to every open bullet that is left. One line
+is left: line 18, held for the maintainer's choice.
 
 **Exit test:**
 
@@ -535,6 +534,25 @@ whose branch is in review.
     serves, fail it by name, and before the clause every test of the plan file
     that reads a plan passed with either in place.
 
+27. PR3.15: on a libSQL database FILE, after a write batch fails with
+    SQLITE_BUSY at the busy timeout beside a connection that holds the write
+    lock, the same executor answers the next read while the lock is still held,
+    the next write once it is free, and a read that was made in the same tick
+    and was waiting behind the failed write, and a new connection it opens
+    reaches only the file it opened. On all three dialects an executor answers a
+    read and a write after twelve write batches in a row failed inside, and a
+    read while a lock is held and a write once it is free after a write batch
+    gave up waiting for that lock. This is met. Three cases of
+    `packages/store-libsql/test/failed-batch-recovery.test.ts` were committed
+    failing by name with `cannot commit transaction - SQL statements in
+    progress`, and four of `reconnect-file-identity.test.ts` were committed
+    failing by name when a reconnect landed on another database, on real files
+    through the executor as production opens it. Both shared cases are in
+    `packages/conformance/src/executor-errors.ts`: the lock-wait case fails by
+    name on libSQL against the base executor and passes on the two servers
+    there, and the other fails by name against an executor that fails the call
+    after a failed batch.
+
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
 none of them. What the SDK does about durable calls made at the same time: pull
@@ -555,13 +573,19 @@ way is to bound the index and not the token (the PR3.14b entry). PR2.5a answers
 a permanent store error 500 at the hosted routes, where the same failure
 answered 503, and the other way is to keep 503 (the PR2.5a entry). PR3.3c
 answers 400 at the inspect route for a task id with a NUL in it, where it
-answered 404, and the other way is to keep 404 (the PR3.3c entry). Two design
-questions are recorded as the maintainer's, each an option with its trigger: a
-way for a batch of reads to say it needs a current answer (under PR3.4), and
-what ends a run whose store call fails permanently (under PR2.5a). The
-generated surface for the plan reader, whose trigger has been met, waits for
-the maintainer's decision (an option under PR3.14c, met by the reviews of
-PR3.14d). A comment for the client library's open issue upstream,
+answered 404, and the other way is to keep 404 (the PR3.3c entry). PR3.15
+decided the shape of its fix without the maintainer: after a failed batch a
+libSQL file executor asks its connection with an empty read transaction,
+reconnects only a connection that refuses, and runs a file's batches one at a
+time, and the two other shapes, a probe of the write lock while a lock outage
+lasts and the executor framing a file's transaction itself, are recorded as
+options with their triggers (the PR3.15 entry). Two design questions are
+recorded as the maintainer's, each an option with its trigger: a way for a
+batch of reads to say it needs a current answer (under PR3.4), and what ends a
+run whose store call fails permanently (under PR2.5a). The generated surface
+for the plan reader, whose trigger has been met, waits for the maintainer's
+decision (an option under PR3.14c, met by the reviews of PR3.14d). A comment
+for the client library's open issue upstream,
 tursodatabase/libsql-client-ts#352, which points at
 tursodatabase/libsql-js#228, is prepared with reproductions and not posted, and
 posting it is the maintainer's (the PR3.15 entry names the bug). A stated
@@ -1319,15 +1343,174 @@ these three things; nothing else in the system does I/O, time, or randomness.
     three versions under the present runner, and it does not remove the queue
     behind an older transaction. Trigger: a deployment where the scan under
     ACCESS EXCLUSIVE is measured to matter.
-- **PR3.15 a libSQL write that fails busy fails the calls that follow it on its
-  connection**: IN PROGRESS as its own pull request, which rewrites this entry
-  when it merges. Older than any version here, and met while PR3.1d was measured
-  and reviewed. After a write batch on a file database fails with SQLITE_BUSY,
-  calls that follow it on the same `LibsqlExecutor`, writes among them, fail
-  with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`,
-  and they keep failing for about 70 ms after the lock is free. The cause is a
-  statement the client library leaves in progress after a busy failure, which is
-  an open bug upstream. Not built in PR3.1d, which changes no executor.
+- **PR3.15 a libSQL write that fails busy fails the calls that follow it on
+  its connection**: DONE. Older than any version here, met twice on
+  2026-09-20 while PR3.1d was measured and reviewed. What it was, from the
+  client library's own source and three one-file reproductions (DESIGN.md §3.2
+  has the argument line by line): when a write batch on a file database fails
+  with SQLITE_BUSY, once the executor's five second busy timeout runs out, the
+  batch's own `BEGIN IMMEDIATE` is left in progress on its connection. SQLite
+  leaves a statement whose step failed busy unfinished, so that it can be
+  stepped again. The native binding (`libsql` 0.5.29) resets a statement only
+  before it runs it again, and the client (`@libsql/client` 0.15.15) prepares a
+  new statement for every call, so only the garbage collector ever finishes
+  it. Until then SQLite refuses every COMMIT on that connection with
+  `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`. Two
+  things the first reports had not isolated: a WRITE that follows, sent after
+  the lock is free, fails the same way, and a third executor on the same file
+  is not affected. A reviewer of another pull request measured the same
+  pattern independently, in a process of its own, and the first success came
+  72 ms after the lock's release. By that pattern most of the calls that
+  failed beside PR3.1d's cold scan were this defect and not the busy timeout.
+  - Red first, on a real file with the executor as production opens it and a
+    second connection holding the write lock. The next read while the lock is
+    held, the next write once it is free, and a read made in the same tick and
+    queued behind the failed write each failed by name with that message, and a
+    read on a third executor passed as the control. A case lowers the five
+    second wait on its own connection with a PRAGMA sent through the batch
+    port, which no store statement does, so its wait is 10 ms. Run once at
+    the full five seconds, the first case failed the same way after 5.0 s.
+  - The fix is in the libSQL executor alone. A failed batch of a database file
+    marks its connection suspect. The next batch first asks the connection the
+    question a COMMIT is asked, an empty read transaction sent as SQL text,
+    keeps a connection that answers, and replaces one that refuses by closing
+    the client and reconnecting it, with the two PRAGMAs applied again. A
+    recovery that fails is an outage once and is owed by the next call. A file's
+    batches run one at a time, so a batch that was waiting behind a failed one
+    runs after the mark and not before it. A new connection must reach the file
+    the executor fixed when it was made: `open()` resolves a relative path and,
+    right after its client opens the file, fixes the path the client reopens,
+    the file that path names with symbolic links resolved, and that file's
+    device and inode; a client handed to the constructor is fixed at
+    construction from the URL it was made with, and without that URL is never
+    reconnected; an empty path and a `file::memory:` path are treated as
+    `:memory:` is. The path the client will reopen is checked before a
+    reconnect, and SQLite's name for the new connection's file and the path
+    after it, so a file that is gone or was replaced, or a path that now leads
+    elsewhere, is refused and never switched to. After a refused reconnect the
+    executor keeps the connection it had, and once its failed statement is
+    collected that connection serves the file it opened again, as the base does.
+    A client its owner closed is not reopened, a batch's arguments are copied at
+    the call, a `FILE:` scheme is a file, an in-memory database keeps its one
+    connection, a closed executor stays closed, and a hosted client is
+    untouched. Twenty cases on a real file hold the recovery, one holds an
+    in-memory database through a failed batch, eight hold a reconnect to the
+    file the executor fixed, two hold the databases it never reconnects, an
+    empty path and a `file::memory:` path, and two unit cases hold the
+    comparator of two files and the file fixed at open. Each guard of the
+    executor, removed by hand alone, fails the cases named here: the question,
+    the mark of a failure and the file fixed at open fail the cases of the next
+    read and the next write among many; the question that answers broken fails
+    the connection kept after a broken constraint; the queue fails the queued
+    read and the queue of five; the closed check after the question fails the
+    close during the question; the PRAGMAs marked only after they run fail the
+    PRAGMAs applied again; the mark cleared after a recovery fails the question
+    asked once; an owner's close fails the two owner's-close cases, and the mark
+    cleared after a reconnect that threw fails the one after a reconnect that
+    threw; the executor's own client and the PRAGMAs owed by a new connection
+    fail the recovery that can fail; the check at the path before a reconnect
+    fails the removed file, the relative handed client and the symlink; the
+    check after the reconnect, its mark and its close fail the new connection
+    that opened another file; the handed client's URL fails the handed cases;
+    the relative path resolved fails the change of directory; the empty path,
+    the `file::memory:` path, the percent decoding and the case of the scheme
+    each fail their own case; the comparator's four comparisons and the file
+    fixed despite a change during the open fail the two unit cases; and the
+    arguments copied at the call fail their case, and the bytes copied at the
+    call their two, a Uint8Array's and a Buffer's. Removing the close before a
+    reconnect ends the test process, as the next bullet says.
+  - A second defect of the binding was met on the way. It is avoided and not
+    fixed: reading the transaction state of a closed connection ends the process
+    with a panic, and the client reads it whenever a batch fails after a
+    `reconnect()` that could not open the database. The executor closes the
+    client before it reconnects, so a client whose new connection did not open
+    is closed itself and refuses every call before anything reaches the binding.
+    Upstream knows it: `@libsql/client` 0.18.0's own source comments that
+    reading `inTransaction` on a closed database aborts the process, and by
+    reading the binding's main branch answers false there.
+  - The class. The layer that should have caught this is a check with real
+    drivers that a failed batch leaves its executor able to serve the next one,
+    and the fault matrix cannot be that layer, because it injects faults above
+    the driver. Two shared conformance cases, the same on all three dialects,
+    now hold it. One fails twelve write batches in a row INSIDE, on a broken
+    constraint, which halts its statement and so cannot fail for this defect.
+    The other makes a write batch give up waiting for a lock another connection
+    holds on the task's row, which can, and against the base executor it fails
+    by name on libSQL and passes on the two servers. Each fixture offers it a
+    surface: an executor a second connection can reach, a database file of its
+    own on libSQL, a hold on the row's write lock, and the dialect's statements
+    that shorten the wait.
+  - Three registered mutations, three more than main's 1091 and 1094 in all,
+    show that the fix can fail, each caught by name by its own case: a question
+    that always answers that the connection is whole fails the case of the next
+    write, a file executor whose batches overlap fails the case of the read
+    queued behind the failed write, and a reconnect that does not check the file
+    at the path fails the case of a removed file, which the reconnect then
+    creates again. Each was run by hand alone before it was registered, and each
+    is a program tsc accepts.
+  - Before the shared case held it, the two servers' lock-wait form was provoked
+    by hand on servers of our own: PostgreSQL's `lock_timeout` (55P03) and
+    MySQL's `innodb_lock_wait_timeout` (1205) refused a write inside a batch
+    twelve times in a row, more than either pool holds connections, and each
+    executor then answered a read while the lock was held and a write once it
+    was free, with every failed batch's first write undone.
+  - What a replaced connection costs is measured and stated in DESIGN.md §3.2
+    with its conditions: about a quarter of a millisecond, paid only after a
+    failure that really broke the connection, and two descriptors and about 0.2
+    MB until a collection and then a turn of the event loop release them, a peak
+    of 255 descriptors across 20,000 failures in a row when the event loop
+    turns. Until it is collected an abandoned connection is still a connection
+    to the file and keeps its shared lock (libsql-js#228), and the descriptor on
+    the database file stays open while any connection in the process holds the
+    file.
+  - WHEN TO DELETE THE WORKAROUND. The canary case of
+    `packages/store-libsql/test/failed-batch-recovery.test.ts` sends the defect
+    to the RAW client and requires that it is still there. It fails, with a
+    message that says so, when a release of the library finishes a statement
+    whose step failed busy. Upstream: tursodatabase/libsql-client-ts#352, which
+    points at tursodatabase/libsql-js#228. Delete then, from the executor, the
+    question, the close and the reconnect, the recorded file and its two checks,
+    and the canary with them, and the queue unless something else has come to
+    rely on it, with the registered mutations of the question and of the check
+    at the path, and the queue's registered mutation if the queue goes. Delete
+    with them the cases that test the replacement itself: "gets a new connection
+    with the five second wait and write-ahead logging on it", "abandons a
+    connection that holds no write lock", "is followed by a recovery that can
+    fail too", "is not reconnected when it is closed while its question after a
+    failed batch runs", "asks its connection once after a failed batch",
+    "honours an owner closing its client after a reconnect that threw", and the
+    reconnect cases of `reconnect-file-identity.test.ts`. Keep the cases of
+    which URLs name a file, the empty path, `file::memory:` and the upper-case
+    `FILE:` scheme, and the other cases, which must stay green without them.
+  - An option, not built: the rest of the shared conformance suite on a libSQL
+    database FILE. It would not have caught this defect by itself: a broken
+    constraint halts its statement on a file as in memory, and what breaks a
+    connection is a lock wait, which the lock-wait case provokes on a file of
+    its own. Trigger: a second defect found on libSQL that only a file database
+    shows.
+  - An option, not built: a lock probe. While a lock outage lasts, a write
+    first takes and gives back the write lock with SQL text sent through
+    `executeMultiple`, which finalizes its statements even when it fails, so a
+    refusal there leaves nothing in progress and replaces nothing. Measured in
+    a loop that never yields to the event loop, 3,000 busy failures in a row
+    held 7 descriptors where the shipped shape held 6,003. Its two costs fall
+    on the write path during a real outage: one more lock take for every write
+    attempt, and a worst case of twice the busy timeout in one wait that blocks
+    the process. Production cannot reach the storm it bounds, as DESIGN.md
+    says. Trigger: a deployment observed to accumulate descriptors during a
+    lock outage.
+  - An option, not built, and the root-level alternative the probe rests on: for
+    a file database the executor frames the transaction itself. The client's
+    `executeMultiple` rolls back any transaction still open when it returns, so
+    it cannot send the `BEGIN` on its own: the working form drives the native
+    binding's `Database` directly, below the client, with `BEGIN IMMEDIATE` and
+    `COMMIT` through its `exec` and the batch's statements one by one in
+    between, under the one-at-a-time queue, so that `BEGIN` never runs as a
+    prepared statement and nothing is ever left in progress. It would delete the
+    question, the reconnect and the canary's reason to exist, at the price of a
+    second write path beside the hosted one. Trigger: upstream still unfixed
+    when the trigger above is observed, or the recovery found to misbehave in
+    use.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through

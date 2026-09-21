@@ -1,5 +1,6 @@
 import type { IdSource } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
+import { createClient } from '@libsql/client'
 import { LibsqlStoreAdmin } from './admin.js'
 import { LibsqlExecutor } from './executor.js'
 
@@ -45,4 +46,23 @@ export async function openTestDb(
   if (opts.migrate !== false) await admin.migrate()
   if (opts.nowMs !== undefined) await admin.setFakeNowEpochMs(opts.nowMs)
   return { raw, admin, ids, close: () => raw.close() }
+}
+
+/**
+ * Holds a database file's write lock from a connection of its own until `during` settles, for
+ * a case that makes an executor wait for the lock and give up. The lock is taken and given
+ * back by statements on one connection, which close() then closes.
+ */
+export async function holdLibsqlWriteLock(url: string, during: () => Promise<void>): Promise<void> {
+  const holder = createClient({ url })
+  try {
+    await holder.execute('BEGIN IMMEDIATE')
+    try {
+      await during()
+    } finally {
+      await holder.execute('ROLLBACK')
+    }
+  } finally {
+    holder.close()
+  }
 }

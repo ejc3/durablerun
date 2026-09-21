@@ -4,6 +4,7 @@ export type {
   StorageCorruptionDoor,
   StorageCorruptionDisposition,
   PersistedNumericTable,
+  LockWaitSurface,
   StoreFixture,
   StoreFixtureFactory,
   StoreFixtureOptions,

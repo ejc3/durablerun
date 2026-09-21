@@ -269,8 +269,8 @@ export const MIGRATIONS: Migration[] = [
     // it, and costs a copy of every stored byte inside one write transaction: measured on a
     // million events of 1 KB, 48 and 56 seconds, a 4.5 GB file doubled, and a fifth to a third
     // of another connection's calls failing. Few of those waited out its busy timeout: after a
-    // first write fails busy, the calls that follow it on its connection fail by a defect of
-    // their own, which BUILD.md names PR3.15. Two triggers refuse
+    // first write failed busy, the calls that followed it on its connection failed by a defect
+    // of their own, which PR3.15 fixed (BUILD.md). Two triggers refuse
     // the same writes, by an insert, an update or either arm of an upsert, under any
     // conflict clause, and cost nothing to install. They read no table. What they do not
     // give: the catalog still calls the column nullable, so on this dialect nothing can hold

@@ -252,6 +252,25 @@ export interface StorageCorruptionDoor {
 }
 
 /**
+ * What the executor error surface's lock-wait case needs from a dialect (§3.4): an executor
+ * on a database a second connection can reach, a way to hold the write lock on a task's row
+ * from that second connection, and the dialect's own statements that shorten how long its
+ * executor waits for a lock. The servers use the fixture's own database. libSQL opens a
+ * database FILE of its own, because an in-memory database has no second connection.
+ */
+export interface LockWaitSurface {
+  readonly store: HeldSchedulerStore
+  readonly raw: SqlExecutor
+  /** Holds the write lock on the task's row until `during` settles. */
+  holdWriteLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /** Sent as a batch of its own before the write, for a dialect that waits for its lock at BEGIN. */
+  readonly shortenFirst: readonly SqlStatement[]
+  /** Sent first inside the write batch, for a dialect that waits at the locked row. */
+  readonly shortenInside: readonly SqlStatement[]
+  close(): Promise<void>
+}
+
+/**
  * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
  * factory passes the identical suite — scheduler plane today, run-bookkeeping
  * (RunStateStore) when it lands. store-libsql implements this now;
@@ -314,6 +333,8 @@ export interface StoreFixture {
    * victim answers zero.
    */
   deadlocks(): number
+  /** The surface of the lock-wait case, which the case closes. */
+  lockWait(): Promise<LockWaitSurface>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

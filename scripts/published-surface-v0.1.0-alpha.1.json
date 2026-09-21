@@ -115,6 +115,10 @@
     },
     "@durablerun/store-libsql": {
       ".": {
+        "LibsqlExecutor": {
+          "reason": "The constructor takes an optional third argument, databaseUrl, the URL a client handed to it was created with (PR3.15): a file-backed executor fixes its database file from that URL, so that a connection it replaces after a failed batch reaches the same file, and a file-backed executor made without it never replaces a connection. A consumer that calls open(), or hands it a client with no fileBacked flag, changes nothing; one that hands it a file-backed client passes that client's URL too.",
+          "declarationSha256": "1f5e19e8dab2168b846fdff86b196a62cb16a05fcdaf995a3a3ce3d0a711ce90"
+        },
         "LibsqlSchedulerStore": {
           "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, failRollback takes a FailedRollback (PR #79), and reschedule lost wakeDisposition. It extends HeldPort, the class in core that checks every string the port takes, where each store checked its own (PR #86). A consumer stops passing wakeDisposition and otherwise changes nothing.",
           "declarationSha256": "eb05d12fcd35f8fac7cea07c862093e8aacbfdb0096951b80db9c879f0224bf0"

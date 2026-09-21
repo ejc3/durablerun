@@ -47,6 +47,8 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   admin: MysqlStoreAdmin
   ids: IdSource
   databaseName: string
+  /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
+  holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_MYSQL_URL
@@ -86,6 +88,25 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     if (firstError !== undefined) throw firstError
   }
 
+  const holdTaskRowLock = async (taskId: string, during: () => Promise<void>): Promise<void> => {
+    const holder = await control.getConnection()
+    try {
+      await holder.query('START TRANSACTION')
+      try {
+        // databaseName contains only the lowercase identifier alphabet, as above.
+        await holder.query(
+          `SELECT task_id FROM ${databaseName}.tasks WHERE task_id = ? FOR UPDATE`,
+          [taskId],
+        )
+        await during()
+      } finally {
+        await holder.query('ROLLBACK')
+      }
+    } finally {
+      holder.release()
+    }
+  }
+
   try {
     await control.query(
       `CREATE DATABASE ${databaseName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`,
@@ -95,7 +116,7 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, databaseName, close: cleanup }
+    return { raw, admin, ids, databaseName, holdTaskRowLock, close: cleanup }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

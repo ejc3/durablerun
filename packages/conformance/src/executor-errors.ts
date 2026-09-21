@@ -1,4 +1,4 @@
-import { PermanentStoreError, type SqlStatement } from '@durablerun/core'
+import { PermanentStoreError, type SqlExecutor, type SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { refusalName, warmConnections, withFixture } from './scenario.js'
@@ -27,6 +27,41 @@ async function taskRows(f: StoreFixture) {
   return read?.rows ?? []
 }
 
+/** A read of one task's attempts. */
+const attemptsStatement = (taskId: string): SqlStatement => ({
+  sql: 'SELECT attempts FROM tasks WHERE task_id = ?',
+  args: [taskId],
+})
+
+/** The attempts of one task, read through the executor a case makes wait. */
+async function attemptsOf(raw: SqlExecutor, taskId: string): Promise<number> {
+  const [read] = await raw.batch(
+    'executor-errors:read-attempts',
+    [attemptsStatement(taskId)],
+    'read',
+  )
+  return Number(read?.rows[0]?.attempts)
+}
+
+/** One more attempt on a task's row: a write every dialect reads alike, and one a read can see. */
+const bump = (taskId: string): SqlStatement => ({
+  sql: 'UPDATE tasks SET attempts = attempts + 1 WHERE task_id = ?',
+  args: [taskId],
+})
+
+/**
+ * More write batches fail in a row than a server executor's pool holds connections, which
+ * is ten on both, so an executor that lost a connection to every failed batch would stop
+ * answering inside the case.
+ */
+const FAILED_BATCHES_IN_A_ROW = 12
+
+/** The row inserted again under its own key: one statement, no column list. */
+const duplicateRow = (taskId: string): SqlStatement => ({
+  sql: 'INSERT INTO tasks SELECT * FROM tasks WHERE task_id = ?',
+  args: [taskId],
+})
+
 /**
  * One refused write for each kind of constraint the `tasks` table declares on every
  * dialect, as plain SQL that all three read alike.
@@ -34,11 +69,7 @@ async function taskRows(f: StoreFixture) {
 const BROKEN_CONSTRAINTS: Readonly<
   Record<string, (first: string, second: string) => SqlStatement>
 > = {
-  'primary key': (first) => ({
-    // The row inserted again under its own key: one statement, no column list.
-    sql: 'INSERT INTO tasks SELECT * FROM tasks WHERE task_id = ?',
-    args: [first],
-  }),
+  'primary key': (first) => duplicateRow(first),
   unique: (_first, second) => ({
     // The second task under the first one's idempotency key, in the same queue.
     sql: 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?',
@@ -91,6 +122,91 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
         }))
     }
 
+    /**
+     * A failed batch is reported once, and its executor serves the next call (DESIGN.md
+     * §3.2). The failure is a real one from the real driver, INSIDE a write batch: the first
+     * statement writes and the second breaks a constraint. A fault injected above the driver
+     * cannot show what a driver leaves behind on its connection, which is where this class
+     * of defect lives, so the fault matrix cannot stand in for this case.
+     */
+    it('answers a read and a write on the same executor after write batches that failed inside', () =>
+      withFixture(makeFixture, 'executor-errors-next-call', async (f) => {
+        const [first] = await twoTasks(f)
+        const before = await taskRows(f)
+        for (let failed = 0; failed < FAILED_BATCHES_IN_A_ROW; failed++) {
+          expect(
+            await refusalName(
+              f.raw.batch('executor-errors:fail-inside', [bump(first), duplicateRow(first)]),
+            ),
+            `failed batch ${failed + 1}`,
+          ).toBe('PermanentStoreError')
+        }
+        // The read: every failed batch was undone whole, its first statement included.
+        expect(await taskRows(f)).toEqual(before)
+        // The write, and a read of what it wrote.
+        expect(await refusalName(f.raw.batch('executor-errors:write-after', [bump(first)]))).toBe(
+          'accepted',
+        )
+        expect((await taskRows(f)).map((row) => Number(row.attempts))).toEqual(
+          before.map((row) => Number(row.attempts) + (row.task_id === first ? 1 : 0)),
+        )
+      }))
+
+    /**
+     * The failure production meets on libSQL, which a broken constraint cannot show because it
+     * halts its statement: a write batch that waits for a lock another connection holds until
+     * the executor's wait runs out (§3.2). Each dialect shortens that wait with a statement of
+     * its own, libSQL before the batch, because it waits for its lock at the batch's BEGIN, and
+     * the servers inside the batch's transaction. The read comes while the lock is still held,
+     * because a read takes no write lock and must be answered, and the write once it is free.
+     */
+    it(
+      'answers a read while the lock is held and a write once it is free, on the same executor, after a write batch gave up waiting for a lock',
+      () =>
+        withFixture(makeFixture, 'executor-errors-lock-wait', async (f) => {
+          const surface = await f.lockWait()
+          try {
+            const { taskId } = await surface.store.spawn(Q, 'waits-for-a-lock', '{}')
+            if (surface.shortenFirst.length > 0) {
+              await surface.raw.batch(
+                'executor-errors:shorten-the-lock-wait',
+                surface.shortenFirst,
+                'read',
+              )
+            }
+            await surface.holdWriteLock(taskId, async () => {
+              expect(
+                await refusalName(
+                  surface.raw.batch('executor-errors:wait-for-the-lock', [
+                    ...surface.shortenInside,
+                    bump(taskId),
+                  ]),
+                ),
+                'the write waits for the held lock and gives up',
+              ).toBe('StoreUnavailableError')
+              expect(
+                await refusalName(
+                  surface.raw.batch(
+                    'executor-errors:read-while-the-lock-is-held',
+                    [attemptsStatement(taskId)],
+                    'read',
+                  ),
+                ),
+              ).toBe('accepted')
+            })
+            expect(
+              await refusalName(
+                surface.raw.batch('executor-errors:write-once-the-lock-is-free', [bump(taskId)]),
+              ),
+            ).toBe('accepted')
+            expect(await attemptsOf(surface.raw, taskId)).toBe(1)
+          } finally {
+            await surface.close()
+          }
+        }),
+      60_000,
+    )
+
     it('types a batch sent after the executor closed an outage', async () => {
       const f = await makeFixture('executor-errors-closed', { migrate: false })
       await f.close()
@@ -118,10 +234,6 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
       () =>
         withFixture(makeFixture, 'executor-errors-deadlock', async (f) => {
           const [first, second] = await twoTasks(f)
-          const bump = (taskId: string): SqlStatement => ({
-            sql: 'UPDATE tasks SET attempts = attempts + 1 WHERE task_id = ?',
-            args: [taskId],
-          })
           const between: SqlStatement[] = Array.from({ length: 20 }, () => ({
             sql: 'SELECT 1',
             args: [],
