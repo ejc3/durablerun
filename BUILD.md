@@ -48,10 +48,11 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left. Two lines
-are left when the last docs PR merges: line 18, which is held for the
-maintainer's choice, and line 16, which is PR3.5d's and arrives with its pull
-request, #71, the last to merge.
+a last docs PR gives a live owner to every open bullet that is left. Three
+lines are left when the last docs PR merges. Line 18 is held for the
+maintainer's choice. Line 16 is PR3.5d's and arrives with its pull request,
+#71, and line 27 is PR3.15's and arrives with its own, which is in review.
+Both merge after the last docs PR.
 
 **Exit test:**
 
@@ -528,29 +529,41 @@ request, #71, the last to merge.
 
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
-none of them. What the SDK does about durable calls made at the same time:
-pull request #75 is held on it, it blocks exit test line 18, and the PR3.4d
-entry has the measured options, the two defects main has until then, and an
-open question the same choice settles. Three pull requests of this milestone
-each decided a change to a published surface without the maintainer, and each
+none of them. What the SDK does about durable calls made at the same time: pull
+request #75 is held on it, it blocks exit test line 18, and the PR3.4d entry
+has the measured options, the two defects main has until then, and an open
+question the same choice settles. Three flow programs that turn #75 red by
+design are written and not pushed, and pushing them is the maintainer's call
+(the PR3.4d entry). Five pull requests of this milestone each decided, without
+the maintainer, a change that a caller of a published package can see, and each
 blocks nothing. PR3.3d changed `error.name` at the port's bare refusals from
 `RangeError` to `PortRefusalError`, and the other way is to leave the name as
 it was (the PR3.3d entry). PR3.4c changed the signature of `failRollback` in
 one step, and the other way is to accept both shapes for one release (the
-PR3.4c entry). PR3.14b holds a claim token to an identifier's width at
-`claim`, and the other way is to bound the index and not the token (the
-PR3.14b entry). A way for a batch of reads to say it needs a current answer is
-recorded as the maintainer's design question, an option under PR3.4 with its
-trigger. A stated oldest supported build, which dropping the row lock of a
-caller's event waits for, is under PR3.3 and in the non-goals below. One base
-class for the whole refusal family is under PR3.3d. The PlanetScale smoke job
-is in the non-goals below and in the PR4.3 entry. The five cleanups of the
-published API that the simplification sweep turned down, the unimplemented
-`WakeSignals` port among them, are the bullets marked Rejected under PR3.5 that
-would change a published export. Review configuration owned outside the
-repository is PR0.2. A drive of the real flow on a preview deployment is what
-the standing verification discipline at the end of this plan asks of every
-phase.
+PR3.4c entry). PR3.14b held a claim token to an identifier's width, which
+PR3.3c's one check now does at every entry that takes a token, and the other
+way is to bound the index and not the token (the PR3.14b entry). PR2.5a answers
+a permanent store error 500 at the hosted routes, where the same failure
+answered 503, and the other way is to keep 503 (the PR2.5a entry). PR3.3c
+answers 400 at the inspect route for a task id with a NUL in it, where it
+answered 404, and the other way is to keep 404 (the PR3.3c entry). Two design
+questions are recorded as the maintainer's, each an option with its trigger: a
+way for a batch of reads to say it needs a current answer (under PR3.4), and
+what ends a run whose store call fails permanently (under PR2.5a). The
+generated surface for the plan reader, whose trigger has been met, waits for
+the maintainer's decision (an option under PR3.14c, met by the reviews of
+PR3.14d). A comment for the client library's open issue upstream, with
+reproductions, is prepared and not posted, and posting it is the maintainer's
+(the PR3.15 entry names the bug). A stated oldest supported build, which
+dropping the row lock of a caller's event waits for, is under PR3.3 and in the
+non-goals below. One base class for the whole refusal family is under PR3.3d.
+The PlanetScale smoke job is in the non-goals below and in the PR4.3 entry. The
+five cleanups of the published API that the simplification sweep turned down,
+the unimplemented `WakeSignals` port among them, are the bullets marked
+Rejected under PR3.5 that would change a published export. Review configuration
+owned outside the repository is PR0.2. A drive of the real flow on a preview
+deployment is what the standing verification discipline at the end of this plan
+asks of every phase.
 
 **Non-goals:** the PlanetScale smoke job, which needs an account and a secret;
 dropping the row lock of a caller's event, which needs a stated oldest build;
@@ -1140,10 +1153,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   A second review round against the final head found six more bugs (see
   postmortems/pr11-codex-final-review.md), leaving two deferrals of its own.
   One is DONE as PR3.1d below: a schema guarantee that an event payload is
-  never SQL NULL. The other stays:
+  never SQL NULL. The other is built too:
   canonicalize-and-classify a handler result at the source so a
   non-serializable result is a permanent user failure, not a silent completion
-  with NULL. The second is built: the worker serializes a handler's result
+  with NULL. The worker serializes a handler's result
   inside its user-failure classifier (`serializeTaskValue`, called in
   `packages/sdk/src/run-worker.ts`), and a value with no JSON form is a
   `FatalTaskError`, which fails the task for good. The case `owns task
@@ -2239,6 +2252,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that no role is read out of a sentence. It would close both ways above
     and the honest phrasings that are still refused. Trigger: a third class
     of misread.
+  - An option, not built: a test that holds each count DESIGN.md states to the
+    constant the code pins for it. A count in prose is true when it is
+    written and goes stale when a later change moves the code, and nothing
+    compares the two. The review of PR3.1d found DESIGN.md's counts of the
+    poison matrix behind what the code pins, and the review of PR3.3c found
+    five stale counts. The test would find each count by a marker beside it
+    and compare it with the value a test already asserts. A count in BUILD.md
+    or in a pull request's body stays outside it. Trigger: the next review
+    that finds a count DESIGN.md states contradicted by a constant the code
+    pins.
 
 - **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
   postmortem cites its red tests and its fixes by commit id, and an id does
@@ -2633,10 +2656,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   a type, `TaskDoneEventName`, which the recording statement takes. Five
   registered mutations hold the five guards this entry added. Not built
   here, each with its reason:
-  - A number, a retry strategy, or a saga step name that a port refuses stays
-    a bare `RangeError`. It is not a member of the refusal family, so the
-    hosted mapping leaves it at 500, and it can take the class when a
-    caller's value of one reaches a route.
+  - A number or a retry strategy that a port refuses stays a bare
+    `RangeError`. It is not a member of the refusal family, so the hosted
+    mapping leaves it at 500, and it can take the class when a caller's value
+    of one reaches a route. A saga step name left this list with PR3.3c: it
+    is a string the port takes, and the one check refuses it inside the
+    family before the entry runs.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.
@@ -2701,7 +2726,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - An entry called from a store class's prototype is reached with nothing in
     front of it. Two libSQL cases do that on purpose. A test that lists every
     such call in the repository would keep it to them, and is not built. A
-    patch of the prototype is reached through the check.
+    patch of the prototype is reached through the check. Trigger: a pull
+    request that adds a call of an entry from a store class's prototype, seen
+    in its diff.
   - An option, not built: the wrapper hands the entry a copy of each options
     object it read. Today the check reads a member once and the entry reads it
     again, so an object whose getter answers a clean string and then another
@@ -2731,9 +2758,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     answers every request 400, as it did for a queue past the width before
     this. Its trigger is a hosted deployment whose queue comes from outside
     its own configuration.
-  - `requireSagaStepFits` is still called by the three entries that carry a
-    checkpoint name. It is a rule about a derived name, and PR3.4c rewrites the
-    entry that carries one of them.
+  - `requireSagaStepFits` is still called by the two entries that carry a
+    checkpoint name, `suspendRun` and `setCheckpoint`. It is a rule about a
+    derived name. A third entry, `failRollback`, carried one until PR3.4c,
+    which merged first, made it take the step. Trigger: a store entry found
+    to take a checkpoint name with no call of it.
 - **PR3.4 saga / step rollbacks**: PR #47 modeled it and PR #56 built it,
   and its residual is listed below, per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
@@ -3707,8 +3736,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     VALUES, and a select-list alias read as a table's name. Building it waits
     for the maintainer's decision.
   - Recorded, and not planned: a statement inside a trigger is never planned.
-    libSQL has one trigger, the driver heartbeat's, and the DELETE inside it
-    scans `drivers`, a table of one row for each live driver.
+    libSQL has three triggers. The DELETE inside the driver heartbeat's scans
+    `drivers`, a table of one row for each live driver, and the two that hold
+    an event's payload from schema version 10 on read no table.
 - **PR3.14d the plan check refuses a walk in any statement**: the nest rule
   judges a step against the steps that drive it and the steps it drives, so a
   step that walks a table alone was no fault. A read, or the SELECT of an
@@ -3798,8 +3828,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     session took 1.619 s at a load near 20. About a quarter of a second of it is
     CPU time, and the rest is time it spends waiting, so if only its CPU time
     doubled it would take about 1.35 s. In this branch's gate list it tripped,
-    at a load average of 36 to 47 while three other builders' lists ran, and the
-    self-test passed when it was run again alone. The child can also fail on its
+    at a load average of 36 to 47 while three other gate runs shared the
+    machine, and the self-test passed when it was run again alone. The child
+    can also fail on its
     verifiers' 0.1 s deadline: the SIGTERM sent at that deadline can land before
     the descendant's first act, which is to ignore SIGTERM, and so before it
     writes the process id record the child checks. CI's verify job runs it on
@@ -4042,6 +4073,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
       conformance case, so a port in another language can pass the suite
       without it. libSQL ignores every lock by design, so a shared case needs
       the fixture contract to say whether a dialect implements locks.
+      The trigger is a fourth dialect, or a port in another language that
+      proves itself against the scenarios.
     - Option, not a deferral of this PR: `versionBatch(migration)` keeps the
       text the batch lint names, so a list is called `migration`. The base
       gate runs the base's copy of the lint, so an honest rename cannot land
