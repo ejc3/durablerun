@@ -16207,6 +16207,44 @@ MUTATION_SPECS.extend(
         ),
     )
 )
+# A failed batch is reported once, and its executor serves the next call. On a database
+# file the libSQL executor asks a suspect connection before it trusts it, and runs the
+# file's batches one at a time, so a batch already waiting behind a failed one runs after
+# the failure has marked the connection.
+MUTATION_SPECS.extend(
+    (
+        (
+            "libsql-suspect-connection-is-asked",
+            "packages/store-libsql/src/executor.ts",
+            "    } catch {\n      return false\n    }\n",
+            "    } catch {\n      return true // MUTATION: every connection answers whole\n    }\n",
+            "a connection whose failed batch left its BEGIN in progress is kept, and every batch after the failure fails at its COMMIT",
+        ),
+        (
+            "libsql-file-batches-run-one-at-a-time",
+            "packages/store-libsql/src/executor.ts",
+            "    if (!this.fileBacked) return send()\n",
+            "    if (true) return send() // MUTATION: a file's batches overlap\n",
+            "a batch already waiting when another fails runs on the broken connection before the failure marks it, and one outage is reported twice",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "libsql-suspect-connection-is-asked": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/failed-batch-recovery.test.ts",
+            "a write batch that fails busy on a file database is an outage, and the next write on its executor is answered once the lock is free",
+            "mutation-verdict:behavior:libsql-suspect-connection-is-asked",
+        ),
+        "libsql-file-batches-run-one-at-a-time": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/failed-batch-recovery.test.ts",
+            "a write batch that fails busy on a file database is an outage for that call alone: a read made in the same tick, queued behind it, is answered",
+            "mutation-verdict:behavior:libsql-file-batches-run-one-at-a-time",
+        ),
+    }
+)
 for _verdict, _names in (
     (VERDICTS["libsql-permanent-result-code-is-typed"], ("libsql-constraint-code-is-permanent", "libsql-mismatch-code-is-permanent",)),
     (VERDICTS["postgres-permanent-sqlstate-class-is-typed"], ("postgres-sqlstate-class-22-is-permanent", "postgres-sqlstate-class-23-is-permanent", "postgres-sqlstate-class-42-is-permanent",)),
@@ -20209,7 +20247,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1069:
+        if len(MUTATIONS) != 1071:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

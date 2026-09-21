@@ -103,7 +103,10 @@ describe('a write batch that fails busy on a file database', () => {
   it('is an outage, and the next write on its executor is answered once the lock is free', async () => {
     expect(await outcome(victim.batch('write', [insert(1)]))).toMatchObject(BUSY)
     await holder.rollback()
-    expect(await outcome(victim.batch('write', [insert(2)]))).toBe('answered')
+    expect(
+      await outcome(victim.batch('write', [insert(2)])),
+      'mutation-verdict:behavior:libsql-suspect-connection-is-asked',
+    ).toBe('answered')
     expect(await ids(victim)).toEqual([2])
   })
 
@@ -115,7 +118,7 @@ describe('a write batch that fails busy on a file database', () => {
       outcome(victim.batch('read', [count], 'read')),
     ])
     expect(write).toMatchObject(BUSY)
-    expect(read).toBe('answered')
+    expect(read, 'mutation-verdict:behavior:libsql-file-batches-run-one-at-a-time').toBe('answered')
   })
 
   it('leaves a third executor answering reads, while the lock is held and after it is free', async () => {
