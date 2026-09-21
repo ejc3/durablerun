@@ -1,6 +1,6 @@
 {
   "release": "v0.1.0-alpha.1",
-  "source": "declaration exports of the published release assets, read with the TypeScript compiler API",
+  "source": "declarations of the published release assets, read and printed with the TypeScript compiler API by scripts/package-surface.mjs --write",
   "assets": {
     "durablerun-core-0.1.0-alpha.1.tgz": "a342d4f4323496b55a58cc21b872fccdea9e4b60be9222334aabbd5879b053ed",
     "durablerun-driver-0.1.0-alpha.1.tgz": "181e096a96c0b4fdf2f8cded26adc94b84c61b6391ecf542947e1892d08dbbea",
@@ -24,207 +24,1577 @@
       }
     }
   },
-  "surface": {
+  "changed": {
     "@durablerun/core": {
-      ".": [
-        "BoundedIntegerDecode",
-        "BrandedIntegerBounds",
-        "Buggify",
-        "CancellationPolicy",
-        "Checkpoint",
-        "ClaimedRun",
-        "Clock",
-        "DERIVED_INTEGER_BOUNDS",
-        "DERIVED_WRITABLE_COLUMNS",
-        "DerivedIntegerBounds",
-        "DerivedWritableColumn",
-        "Ending",
-        "EventTimeoutError",
-        "EventWake",
-        "FENCED_TABLES",
-        "FENCE_COLS",
-        "FENCE_RELATIONS",
-        "FENCE_SET",
-        "FENCE_STATEMENT_NAME_SOURCE",
-        "FENCE_VALS",
-        "FatalTaskError",
-        "FenceRelation",
-        "FenceStampParseResult",
-        "FenceTable",
-        "FencedBatch",
-        "FencedResult",
-        "GeneratedUpdateTarget",
-        "INFRA_BACKOFF_SECONDS",
-        "INFRA_RETRY_CAP",
-        "IdSource",
-        "IntegerBounds",
-        "InvalidDurableStringError",
-        "LIVE_STATES",
-        "LaunchIdentity",
-        "LaunchInvocation",
-        "LaunchOutcome",
-        "Launcher",
-        "LeaseLostError",
-        "LeaseState",
-        "LiveState",
-        "MAX_COUNT",
-        "MAX_DURATION_MS",
-        "MAX_EPOCH_MS",
-        "MAX_RUN_ORDINAL",
-        "NOW",
-        "NormalizedRetryStrategy",
-        "PERSISTED_COUNTER_FIELDS",
-        "PERSISTED_INTEGER_BOUNDS",
-        "PERSISTED_TEMPORAL_FIELDS",
-        "POSITIVE_CLAIM_GENERATION_BOUNDS",
-        "PRESERVED_FENCE_INSTANTS",
-        "PersistedCounterFieldDescriptor",
-        "PersistedCounterFieldId",
-        "PersistedCounterFieldRecord",
-        "PersistedIntegerBounds",
-        "PersistedIntegerBoundsExceptClaimGeneration",
-        "PersistedTemporalFieldDescriptor",
-        "PersistedTemporalFieldId",
-        "PersistedTemporalTable",
-        "PreservedFenceTable",
-        "REASON_CANCELLED",
-        "REASON_CLAIM_TIMEOUT",
-        "REASON_INFRA_CAP",
-        "REASON_RELAUNCH_CAP",
-        "RELAUNCH_BACKOFF_BASE_SECONDS",
-        "RELAUNCH_BACKOFF_MAX_SECONDS",
-        "RELAUNCH_CAP",
-        "RetryDecision",
-        "RetryStrategy",
-        "RowBound",
-        "RunCancelledError",
-        "RunState",
-        "STAMP",
-        "SchedulerStore",
-        "SchemaMismatchError",
-        "SchemaNotInitializedError",
-        "SelfFenceRelation",
-        "SpawnOptions",
-        "SpawnResult",
-        "SqlBatchControl",
-        "SqlBatchMode",
-        "SqlClaimLockCoordinates",
-        "SqlEventLockCoordinates",
-        "SqlExecutor",
-        "SqlLockedBatch",
-        "SqlResult",
-        "SqlRow",
-        "SqlStatement",
-        "SqlTransactionLock",
-        "StoreAdmin",
-        "StoreUnavailableError",
-        "SuspendSignal",
-        "SweptRun",
-        "TERMINAL_STATES",
-        "TaskResult",
-        "TaskState",
-        "TaskThrowableSnapshot",
-        "TerminalState",
-        "UNINSPECTABLE_TASK_FAILURE_JSON",
-        "UserName",
-        "WakeSignals",
-        "decideRetry",
-        "decodeBoundedInteger",
-        "durationToMs",
-        "fenceSetAt",
-        "isFenceStatementName",
-        "isFencedBatchBindError",
-        "isLiveState",
-        "isTerminalState",
-        "neverBuggify",
-        "normalizeRetryStrategy",
-        "parseFenceStamp",
-        "parseTaskValueJson",
-        "requireDerivedInteger",
-        "requireDurableString",
-        "requireEpochMs",
-        "requirePositiveClaimGeneration",
-        "requirePositiveInt",
-        "requireRunOrdinal",
-        "retryDelaySeconds",
-        "serializeTaskHeaders",
-        "serializeTaskValue",
-        "snapshotTaskThrowable",
-        "sqlBatchMode",
-        "sqlTransactionLock",
-        "storageValueKind",
-        "systemClock",
-        "systemIdSource",
-        "userDurationToMs",
-        "userEpochMs",
-        "userJsonValue"
-      ],
-      "./testing": [
-        "ExpectedError",
-        "MutationVerdict",
-        "MutationVerdictKind",
-        "ReplacedFailureExpectation",
-        "attributeExpectedFailure",
-        "attributeReplacedFailure",
-        "requireExpectedFailure"
-      ]
+      ".": {
+        "Clock": {
+          "reason": "elapsedMs() was added (PR #35): the driver loop measures its waits on a monotonic reading, so a step of the host clock moves none of them. A consumer that implements Clock adds the method, for example from performance.now(); one that passes systemClock changes nothing.",
+          "declarationSha256": "f112ee6e6016e1766bc4b4e908a8549d68c3a77db766a57ef5fbed71b26f7660"
+        },
+        "DERIVED_WRITABLE_COLUMNS": {
+          "reason": "max_attempts joined the task columns a generated follow-on may write (PR #56): a rollback pass runs after the user budget is spent, and the batch that places one raises the budget to the pass's ordinal. A consumer that reads the list changes nothing.",
+          "declarationSha256": "cdeb0ddb9988c44ac713fdae6325292886cc824be3250413b75816115162ae74"
+        },
+        "EventTimeoutError": {
+          "reason": "TaskTimeoutError became a subclass (PR #49), so that one catch covers an event await and a child await: name widened from the literal to string, and the constructor takes an optional message. A consumer that catches the error or reads eventName changes nothing.",
+          "declarationSha256": "2e474af2c619896655affe78b5e0f98184016a63ed880d1b5d5f35772472d9d8"
+        },
+        "FencedBatch": {
+          "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent is gone: a statement's definition names the event it is serialized on, which DefinedStatement carries as eventLock, and the batch takes that lock (PR #68). A consumer that called lockEvent names the event as defineStatement's third argument. A generated follow-on may bind its queue (PR #49), a generated set value may be an expression as well as text (PR #43), and one that writes a task's state gives it as an expression (PR #68).",
+          "declarationSha256": "611ce5ee61e07a8c29c42b111839742ad5957cd85c3b32fa64178442bfb0af4d"
+        },
+        "LeaseState": {
+          "reason": "A refused heartbeat names why (PR #32): the interface became a union, and a lease that is not held carries reason, cancelled or lease-lost. A consumer that reads held and remainingMs changes nothing; a store that answers a heartbeat returns the reason with a refusal.",
+          "declarationSha256": "5fa9839ef7ae07c1759aa4c8607282574bb0013a7b8f0acc153a795cbd842a2d"
+        },
+        "SchedulerStore": {
+          "reason": "The port grew with the engine. PR #28 added claimedTaskName and deferLaunch and removed reschedule's wakeDisposition; PR #29 added retryTask; PR #49 added awaitTaskDone; PR #56 added failRollback and made fail answer FailOutcome; PR #79 made failRollback take the step and the failure of the rollback, FailedRollback, in place of the attempt record, which the store now names and counts; PR #25 named the wake and checkpoint shapes WakeSpec and CheckpointWrite, with the same members, and renamed heartbeat's last parameter. A consumer that calls a published store stops passing wakeDisposition and otherwise changes nothing. A consumer that implements the port adds the five methods, answers FailOutcome from fail, and takes a FailedRollback in failRollback.",
+          "declarationSha256": "f234ab0a8f9dd5db539073b8ffb0a3585a4aa3cdc96d358dcd9d60cb9b5b06e7"
+        },
+        "SpawnOptions": {
+          "reason": "The optional childOf was added (PR #49): the parent and call site from which the store builds a child task's idempotency key. A consumer changes nothing; ctx.spawn sets it, and it is refused together with idempotencyKey.",
+          "declarationSha256": "44dbf4ff8efff6866999e934c83ee8724f848905094a1d1b5ccf12c99e9232e2"
+        },
+        "SqlStatement": {
+          "reason": "The optional skipUnlessWrote was added (PR #49): the earlier statement of the batch that gates this one, so an executor that pays a round trip for each statement can leave out one that cannot match. A consumer changes nothing, and an executor may ignore the field.",
+          "declarationSha256": "2109d952aaa04647b8a0086eca6d93d43e80d90e337b5e7f88f164d9226c99dd"
+        },
+        "SuspendSignal": {
+          "reason": "The wake and checkpoint shapes that were written inline are named WakeSpec and CheckpointWrite (PR #25). Their members are the same, so a consumer changes nothing.",
+          "declarationSha256": "32ada176d23d1a38be3d776907d235af43c4659f65a325d7bd799e618a83d3bd"
+        },
+        "SweptRun": {
+          "reason": "The rollback-started arm was added (PR #56): a sweep cap that decides a task's failure places a rollback pass when a registered step is owed its rollback. A consumer that switches over kind exhaustively adds the arm.",
+          "declarationSha256": "eb065c6798a8c623040b5630e52c451a41fad5bf4b97bb52b8fe1a8f048c0d6c"
+        },
+        "TaskResult": {
+          "reason": "The optional rollback was added (PR #56): how a saga's rollback ended. A consumer changes nothing.",
+          "declarationSha256": "73da8a5f97a046e7af06911f4a46c7f04d40197c68125f053985ad7679f2e7fb"
+        },
+        "Launcher": {
+          "reason": "launch takes an optional second argument, LaunchOptions, whose one field is an abort signal: the resident driver fires it when the launch deadline passes, and the HTTP launcher ends its request with it (PR #73). A consumer that calls launch changes nothing, and one that implements Launcher still compiles; it reads the signal to end a launch the driver has stopped waiting for.",
+          "declarationSha256": "7b504c669ac70752abf0664737efb967c89beb510625316a9483a6df90c99350"
+        },
+        "SqlTransactionLock": {
+          "reason": "It gained the arm { kind: 'migration' }: a migration write carries the migration lock in the batch control as a lock coordinate, where the MySQL executor chose it from the batch label, and that executor refuses a migration write that names none (PR #83). A consumer that builds a transaction lock changes nothing, and one that switches over kind exhaustively adds the arm.",
+          "declarationSha256": "9fa0ca234533585187cd20fa55f1f97de04fa4345eea7605d0f435ed74ff81ad"
+        }
+      }
     },
     "@durablerun/driver": {
-      ".": [
-        "DriverLoop",
-        "DriverLoopOptions",
-        "DriverLoopStats",
-        "HOSTED_REQUEST_BODY_MAX_BYTES",
-        "HostedAuthorizationDecision",
-        "HostedAuthorizationFacts",
-        "HostedAuthorizationOperation",
-        "HostedAuthorizationPlugin",
-        "HostedRouter",
-        "HostedRouterDependencies",
-        "InlineLauncherOptions",
-        "InlineTickOptions",
-        "InlineTickResult",
-        "TickOptions",
-        "TickResult",
-        "WakeRequest",
-        "WakeScheduler",
-        "allowAuthorization",
-        "bearerAuthorization",
-        "createHostedRouter",
-        "createWakeServer",
-        "createWorkerServer",
-        "denyAuthorization",
-        "httpLauncher",
-        "inlineLauncher",
-        "inlineTick",
-        "signBody",
-        "tick"
-      ]
+      ".": {
+        "DriverLoopOptions": {
+          "reason": "The optional wakeFloorMs was added (PR #28): wake() calls inside the floor coalesce into one look. A consumer changes nothing.",
+          "declarationSha256": "1b52e78a6b0eddf4f2baf65536024aa632fd293e356ae351e410a8a3d1258e2a"
+        },
+        "createWakeServer": {
+          "reason": "The parameter narrowed to the one method the server calls, Pick<DriverLoop, 'wake'> (PR #25). A DriverLoop still fits, so a consumer changes nothing.",
+          "declarationSha256": "f01a38b03c1e77f16dbab47d48b78a92c2af7f64911ff23b35892e4cda95cc09"
+        }
+      }
     },
     "@durablerun/sdk": {
-      ".": [
-        "ReplayContext",
-        "RunInvocation",
-        "TaskContext",
-        "TaskHandler",
-        "TaskRegistry",
-        "WorkerOutcome",
-        "runClaimedRun"
-      ]
+      ".": {
+        "ReplayContext": {
+          "reason": "The worker's context class. Its constructor takes the decoded WorkerClaimedRun (PR #36) and a lease-end latch in place of the lease-lost AbortSignal, and the issuer's leaseLost became leaseEnded, which carries the reason (PR #32). spawn and awaitTask were added (PR #49). Step rollback added StepOptions, rollingBack, nextRollback, runRollback, rollbackFailure and the issuer's rollbackPhase (PR #56), and rollbackFailure and a halting nextRollback answer the failed rollback, FailedRollback, where they answered its attempt record (PR #79). A task function receives the context as TaskContext and changes nothing. A consumer that constructs a ReplayContext passes a latch object, and one that supplies its own issuer implements leaseEnded and rollbackPhase.",
+          "declarationSha256": "43ea4f284c0f626af1d58ee42e3f2fd3a8818586e74f00f1a71bda75343d8195"
+        },
+        "RunInvocation": {
+          "reason": "The interface became a pick of LaunchInvocation's four claim ids in place of a hand copy of them (PR #28). The members are the same, so a consumer changes nothing.",
+          "declarationSha256": "ee736894b29d586014f78dbaa839b1a3ffd0380ff8eb4156710978c3ab493034"
+        },
+        "TaskContext": {
+          "reason": "spawn and awaitTask were added (PR #49), and step takes an optional third argument that registers a rollback (PR #56). A task function changes nothing; a consumer that implements TaskContext, a test double for example, adds the two methods.",
+          "declarationSha256": "966d6a5c87a53cb6aa65bc14238b8790e73d2c0a8094a2039b70e451788c60de"
+        },
+        "WorkerOutcome": {
+          "reason": "New arms: cancelled (PR #28), incompatible-store (PR #36), and rolling-back, rolled-back and rollback-failed (PR #56). A consumer that switches over kind exhaustively adds the arms.",
+          "declarationSha256": "836b8f6a4c793f6e3d7dfec7e14e14fe7492189985281958ba3df2d49bc89af0"
+        }
+      }
     },
     "@durablerun/store-libsql": {
-      ".": [
-        "CURRENT_SCHEMA_VERSION",
-        "LibsqlExecutor",
-        "LibsqlSchedulerStore",
-        "LibsqlStoreAdmin",
-        "MIGRATIONS",
-        "NEXT_WAKE_SQL",
-        "NOW_MS",
-        "SWEEP_SCAN_CANCELS_SQL",
-        "SWEEP_SCAN_EXPIRED_SQL"
-      ],
-      "./testing": ["openTestDb", "testIdSource"]
+      ".": {
+        "LibsqlExecutor": {
+          "reason": "The constructor takes an optional third argument, databaseUrl, the URL a client handed to it was created with (PR3.15): a file-backed executor fixes its database file from that URL, so that a connection it replaces after a failed batch reaches the same file, and a file-backed executor made without it never replaces a connection. A consumer that calls open(), or hands it a client with no fileBacked flag, changes nothing; one that hands it a file-backed client passes that client's URL too.",
+          "declarationSha256": "1f5e19e8dab2168b846fdff86b196a62cb16a05fcdaf995a3a3ce3d0a711ce90"
+        },
+        "LibsqlSchedulerStore": {
+          "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, failRollback takes a FailedRollback (PR #79), and reschedule lost wakeDisposition. It extends HeldPort, the class in core that checks every string the port takes, where each store checked its own (PR #86). A consumer stops passing wakeDisposition and otherwise changes nothing.",
+          "declarationSha256": "eb05d12fcd35f8fac7cea07c862093e8aacbfdb0096951b80db9c879f0224bf0"
+        }
+      },
+      "./testing": {
+        "openTestDb": {
+          "reason": "The optional url was added (PR #25), so a test can open a database it names. A consumer changes nothing.",
+          "declarationSha256": "abb5079c7129702be029d0c43fe5a7cd8c5427e0b52b2328feb3dfb6e9c83ffb"
+        }
+      }
+    }
+  },
+  "surface": {
+    "@durablerun/core": {
+      ".": {
+        "BoundedIntegerDecode": [
+          "type BoundedIntegerDecode = {",
+          "    readonly ok: true;",
+          "    readonly value: number;",
+          "    readonly exact: bigint;",
+          "} | {",
+          "    readonly ok: false;",
+          "    readonly reason: 'not-an-exact-integer' | 'out-of-range';",
+          "    readonly exact?: bigint;",
+          "};"
+        ],
+        "BrandedIntegerBounds": [
+          "type BrandedIntegerBounds<Domain extends string> = IntegerBoundsDescriptor<Domain>;",
+          "class IntegerBoundsDescriptor<Domain extends string> implements IntegerBounds {",
+          "    readonly min: number;",
+          "    readonly max: number;",
+          "    constructor(domain: Domain, min: number, max: number);",
+          "    get field(): Domain;",
+          "    (private members)",
+          "}"
+        ],
+        "Buggify": ["type Buggify = (site: string) => boolean;"],
+        "CancellationPolicy": [
+          "interface CancellationPolicy {",
+          "    maxDelaySeconds?: number;",
+          "    maxDurationSeconds?: number;",
+          "}"
+        ],
+        "Checkpoint": [
+          "interface Checkpoint {",
+          "    checkpointName: string;",
+          "    stateJson: string;",
+          "    ownerRunId: string;",
+          "    ownerAttempt: number;",
+          "}"
+        ],
+        "ClaimedRun": [
+          "interface ClaimedRun extends LaunchIdentity {",
+          "    taskId: string;",
+          "    taskName: string;",
+          "    attempt: number;",
+          "    infraRetries: number;",
+          "    claimGen: number;",
+          "    claimExpiresAtEpochMs: number;",
+          "    leaseSeconds: number;",
+          "    paramsJson: string;",
+          "    retryStrategy: NormalizedRetryStrategy;",
+          "    maxAttempts: number;",
+          "    headers: Record<string, string>;",
+          "    wake?: EventWake;",
+          "}"
+        ],
+        "Clock": [
+          "interface Clock {",
+          "    nowEpochMs(): number;",
+          "    sleep(ms: number, interrupt?: AbortSignal): Promise<void>;",
+          "    yieldTurn(): Promise<void>;",
+          "}"
+        ],
+        "DERIVED_INTEGER_BOUNDS": [
+          "const DERIVED_INTEGER_BOUNDS: Readonly<{",
+          "    epoch_ms: BrandedIntegerBounds<\"derived.epoch_ms\">;",
+          "    duration_ms: BrandedIntegerBounds<\"derived.duration_ms\">;",
+          "}>;"
+        ],
+        "DERIVED_WRITABLE_COLUMNS": [
+          "const DERIVED_WRITABLE_COLUMNS: Readonly<{",
+          "    readonly tasks: readonly [",
+          "        \"state\",",
+          "        \"last_attempt_run\",",
+          "        \"first_started_at_ms\",",
+          "        \"cancel_at_ms\",",
+          "        \"failure_reason\",",
+          "        \"infra_retries\",",
+          "        \"completed_payload\",",
+          "        \"attempts\"",
+          "    ];",
+          "    readonly runs: readonly [",
+          "        \"state\",",
+          "        \"claimed_by\",",
+          "        \"claim_expires_at_ms\",",
+          "        \"available_at_ms\",",
+          "        \"wake_event\",",
+          "        \"event_payload\",",
+          "        \"wake_step\",",
+          "        \"heartbeat_at_ms\"",
+          "    ];",
+          "    readonly waits: readonly [",
+          "    ];",
+          "    readonly events: readonly [",
+          "    ];",
+          "}>;"
+        ],
+        "DerivedIntegerBounds": [
+          "type DerivedIntegerBounds = (typeof DERIVED_INTEGER_BOUNDS)[keyof typeof DERIVED_INTEGER_BOUNDS];"
+        ],
+        "DerivedWritableColumn": [
+          "type DerivedWritableColumn<T extends FenceTable> = (typeof DERIVED_WRITABLE_COLUMNS)[T][number];"
+        ],
+        "Ending": [
+          "interface Ending extends LaunchIdentity {",
+          "    kind: 'completed' | 'failed' | 'crashed' | 'timeout' | 'unknown';",
+          "}"
+        ],
+        "EventTimeoutError": [
+          "class EventTimeoutError extends Error {",
+          "    readonly eventName: string;",
+          "    readonly name = \"EventTimeoutError\";",
+          "    constructor(eventName: string);",
+          "}"
+        ],
+        "EventWake": [
+          "type EventWake = {",
+          "    event: string;",
+          "    step: string;",
+          "    payloadJson: string;",
+          "} | {",
+          "    event: string;",
+          "    step: string;",
+          "    timedOut: true;",
+          "};"
+        ],
+        "FENCED_TABLES": [
+          "const FENCED_TABLES: readonly [",
+          "    \"tasks\",",
+          "    \"runs\",",
+          "    \"waits\",",
+          "    \"events\"",
+          "];"
+        ],
+        "FENCE_COLS": ["const FENCE_COLS = \"fence_stamp, fence_at_ms\";"],
+        "FENCE_RELATIONS": [
+          "const FENCE_RELATIONS: Readonly<{",
+          "    readonly 'runs-to-tasks': Readonly<{",
+          "        target: \"tasks\";",
+          "        key: \"task_id\";",
+          "        from: \"runs\";",
+          "        column: \"task_id\";",
+          "        queueScoped: true;",
+          "    }>;",
+          "    readonly 'runs-to-waits': Readonly<{",
+          "        target: \"waits\";",
+          "        key: \"run_id\";",
+          "        from: \"runs\";",
+          "        column: \"run_id\";",
+          "        queueScoped: false;",
+          "    }>;",
+          "    readonly 'tasks-to-runs': Readonly<{",
+          "        target: \"runs\";",
+          "        key: \"task_id\";",
+          "        from: \"tasks\";",
+          "        column: \"task_id\";",
+          "        queueScoped: true;",
+          "    }>;",
+          "    readonly 'waits-to-runs': Readonly<{",
+          "        target: \"runs\";",
+          "        key: \"run_id\";",
+          "        from: \"waits\";",
+          "        column: \"run_id\";",
+          "        queueScoped: true;",
+          "    }>;",
+          "    readonly 'runs-to-runs': Readonly<{",
+          "        target: \"runs\";",
+          "        key: \"run_id\";",
+          "        from: \"runs\";",
+          "        column: \"run_id\";",
+          "        queueScoped: false;",
+          "    }>;",
+          "}>;"
+        ],
+        "FENCE_SET": ["const FENCE_SET = \"fence_stamp = $STAMP$, fence_at_ms = $NOW$\";"],
+        "FENCE_STATEMENT_NAME_SOURCE": ["const FENCE_STATEMENT_NAME_SOURCE: string;"],
+        "FENCE_VALS": ["const FENCE_VALS = \"$STAMP$, $NOW$\";"],
+        "FatalTaskError": [
+          "class FatalTaskError extends Error {",
+          "    readonly name = \"FatalTaskError\";",
+          "    constructor(message?: string, options?: ErrorOptions);",
+          "}"
+        ],
+        "FenceRelation": ["type FenceRelation = keyof typeof FENCE_RELATIONS;"],
+        "FenceStampParseResult": [
+          "type FenceStampParseResult = {",
+          "    ok: true;",
+          "    seed: string;",
+          "    statement: string;",
+          "} | {",
+          "    ok: false;",
+          "    reason: 'no-separator' | 'empty-seed' | 'empty-statement' | 'statement-name-invalid';",
+          "};"
+        ],
+        "FenceTable": ["type FenceTable = (typeof FENCED_TABLES)[number];"],
+        "FencedBatch": [
+          "class FencedBatch {",
+          "    readonly label: string;",
+          "    readonly seed: string;",
+          "    constructor(label: string, seed: string, opts: {",
+          "        now: string;",
+          "    });",
+          "    lockEvent(coordinates: SqlEventLockCoordinates): this;",
+          "    lockClaim(coordinates: SqlClaimLockCoordinates): this;",
+          "    cas(name: string, target: FenceTable, sql: string, args?: SqlStatement['args']): this;",
+          "    casMany(name: string, target: FenceTable, max: number, sql: string, args?: SqlStatement['args']): this;",
+          "    fence(name: string): string;",
+          "    followOn(name: string, sql: string, args: SqlStatement['args'], rows: RowBound): this;",
+          "    followOn(name: string, target: FenceTable, sql: string, args: SqlStatement['args'], rows: RowBound): this;",
+          "    derived<R extends FenceRelation>(name: string, spec: DerivedSpec<R>): this;",
+          "    seal(name: string, spec: Omit<DerivedSelection<SelfFenceRelation>, 'relation'> & {",
+          "        relation: SelfFenceRelation;",
+          "    }): this;",
+          "    tail(name: string, sql: string, args?: SqlStatement['args']): this;",
+          "    openTail(name: string, reason: string, sql: string, args?: SqlStatement['args']): this;",
+          "    run(db: SqlExecutor, mode?: SqlBatchMode): Promise<FencedResult>;",
+          "    (private members)",
+          "}",
+          "interface DerivedSelection<R extends FenceRelation = FenceRelation> {",
+          "    relation: R;",
+          "    fence: string;",
+          "    where?: string;",
+          "    whereArgs?: SqlStatement['args'];",
+          "    narrow?: string;",
+          "    narrowArgs?: SqlStatement['args'];",
+          "    rows: 'one' | 'source-keys';",
+          "}",
+          "type DerivedSet<R extends FenceRelation> = Partial<Record<DerivedWritableColumn<RelationTarget<R>>, string>>;",
+          "type DerivedSpec<R extends FenceRelation = FenceRelation> = (DerivedSelection<R> & {",
+          "    set?: undefined;",
+          "    setArgs?: never;",
+          "}) | (DerivedSelection<R> & {",
+          "    set: DerivedSet<R>;",
+          "    setArgs?: SqlStatement['args'];",
+          "});",
+          "type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['target'];"
+        ],
+        "FencedResult": [
+          "interface FencedResult {",
+          "    won: string | null;",
+          "    count: number;",
+          "    results: Record<string, SqlResult>;",
+          "}"
+        ],
+        "GeneratedUpdateTarget": [
+          "type GeneratedUpdateTarget = RelationTarget<FenceRelation>;",
+          "type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['target'];"
+        ],
+        "INFRA_BACKOFF_SECONDS": ["const INFRA_BACKOFF_SECONDS = 5;"],
+        "INFRA_RETRY_CAP": ["const INFRA_RETRY_CAP = 20;"],
+        "IdSource": ["interface IdSource {", "    uuidv7(): string;", "    token(): string;", "}"],
+        "IntegerBounds": [
+          "interface IntegerBounds {",
+          "    readonly min: number;",
+          "    readonly max: number;",
+          "}"
+        ],
+        "InvalidDurableStringError": [
+          "class InvalidDurableStringError extends TypeError {",
+          "    readonly name = \"InvalidDurableStringError\";",
+          "}"
+        ],
+        "LIVE_STATES": [
+          "const LIVE_STATES: readonly [",
+          "    \"pending\",",
+          "    \"running\",",
+          "    \"sleeping\"",
+          "];"
+        ],
+        "LaunchIdentity": [
+          "interface LaunchIdentity {",
+          "    runId: string;",
+          "    claimToken: string;",
+          "}"
+        ],
+        "LaunchInvocation": [
+          "interface LaunchInvocation extends LaunchIdentity {",
+          "    queue: string;",
+          "    attempt: number;",
+          "    claimGen: number;",
+          "    deadlineHintEpochMs: number;",
+          "}"
+        ],
+        "LaunchOutcome": [
+          "class LaunchOutcome {",
+          "    private constructor();",
+          "    static accepted(): LaunchOutcome;",
+          "    static ended(ending: Ending): LaunchOutcome;",
+          "    static launchFailed(): LaunchOutcome;",
+          "    static reconcile(store: SchedulerStore, queue: string, run: LaunchIdentity, value: unknown): Promise<'accepted' | 'ended' | 'launch-failed'>;",
+          "}"
+        ],
+        "Launcher": [
+          "interface Launcher {",
+          "    launch(invocation: LaunchInvocation): Promise<LaunchOutcome>;",
+          "}"
+        ],
+        "LeaseLostError": [
+          "class LeaseLostError extends Error {",
+          "    readonly name = \"LeaseLostError\";",
+          "}"
+        ],
+        "LeaseState": [
+          "interface LeaseState {",
+          "    held: boolean;",
+          "    remainingMs: number;",
+          "}"
+        ],
+        "LiveState": ["type LiveState = (typeof LIVE_STATES)[number];"],
+        "MAX_COUNT": ["const MAX_COUNT = 1000000;"],
+        "MAX_DURATION_MS": ["const MAX_DURATION_MS = 3155760000000;"],
+        "MAX_EPOCH_MS": ["const MAX_EPOCH_MS = 253402300799000;"],
+        "MAX_RUN_ORDINAL": ["const MAX_RUN_ORDINAL: number;"],
+        "NOW": ["const NOW = \"$NOW$\";"],
+        "NormalizedRetryStrategy": [
+          "type NormalizedRetryStrategy = RetryStrategy & NormalizedRetryStrategyIdentity;",
+          "class NormalizedRetryStrategyIdentity {",
+          "    (private members)",
+          "}"
+        ],
+        "PERSISTED_COUNTER_FIELDS": [
+          "const PERSISTED_COUNTER_FIELDS: readonly PersistedCounterFieldContract[];",
+          "type PersistedCounterFieldContract = Readonly<{",
+          "    id: 'task-attempts';",
+          "    table: 'tasks';",
+          "    column: 'attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-max-attempts';",
+          "    table: 'tasks';",
+          "    column: 'max_attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.max_attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-infra-retries';",
+          "    table: 'tasks';",
+          "    column: 'infra_retries';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.infra_retries;",
+          "}> | Readonly<{",
+          "    id: 'run-attempt';",
+          "    table: 'runs';",
+          "    column: 'attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.attempt;",
+          "}> | Readonly<{",
+          "    id: 'run-claim-gen';",
+          "    table: 'runs';",
+          "    column: 'claim_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-activated-gen';",
+          "    table: 'runs';",
+          "    column: 'activated_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.activated_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-relaunch-count';",
+          "    table: 'runs';",
+          "    column: 'relaunch_count';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.relaunch_count;",
+          "}> | Readonly<{",
+          "    id: 'checkpoint-owner-attempt';",
+          "    table: 'checkpoints';",
+          "    column: 'owner_attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt;",
+          "}>;"
+        ],
+        "PERSISTED_INTEGER_BOUNDS": [
+          "const PERSISTED_INTEGER_BOUNDS: Readonly<{",
+          "    tasks: Readonly<{",
+          "        attempts: BrandedIntegerBounds<\"tasks.attempts\">;",
+          "        max_attempts: BrandedIntegerBounds<\"tasks.max_attempts\">;",
+          "        infra_retries: BrandedIntegerBounds<\"tasks.infra_retries\">;",
+          "        enqueue_at_ms: BrandedIntegerBounds<\"tasks.enqueue_at_ms\">;",
+          "        first_started_at_ms: BrandedIntegerBounds<\"tasks.first_started_at_ms\">;",
+          "        cancel_at_ms: BrandedIntegerBounds<\"tasks.cancel_at_ms\">;",
+          "        cancelled_at_ms: BrandedIntegerBounds<\"tasks.cancelled_at_ms\">;",
+          "        created_at_ms: BrandedIntegerBounds<\"tasks.created_at_ms\">;",
+          "        fence_at_ms: BrandedIntegerBounds<\"tasks.fence_at_ms\">;",
+          "    }>;",
+          "    runs: Readonly<{",
+          "        attempt: BrandedIntegerBounds<\"runs.attempt\">;",
+          "        claim_gen: BrandedIntegerBounds<\"runs.claim_gen\">;",
+          "        activated_gen: BrandedIntegerBounds<\"runs.activated_gen\">;",
+          "        relaunch_count: BrandedIntegerBounds<\"runs.relaunch_count\">;",
+          "        lease_ms: BrandedIntegerBounds<\"runs.lease_ms\">;",
+          "        available_at_ms: BrandedIntegerBounds<\"runs.available_at_ms\">;",
+          "        claim_expires_at_ms: BrandedIntegerBounds<\"runs.claim_expires_at_ms\">;",
+          "        heartbeat_at_ms: BrandedIntegerBounds<\"runs.heartbeat_at_ms\">;",
+          "        started_at_ms: BrandedIntegerBounds<\"runs.started_at_ms\">;",
+          "        completed_at_ms: BrandedIntegerBounds<\"runs.completed_at_ms\">;",
+          "        failed_at_ms: BrandedIntegerBounds<\"runs.failed_at_ms\">;",
+          "        created_at_ms: BrandedIntegerBounds<\"runs.created_at_ms\">;",
+          "        fence_at_ms: BrandedIntegerBounds<\"runs.fence_at_ms\">;",
+          "    }>;",
+          "    checkpoints: Readonly<{",
+          "        owner_attempt: BrandedIntegerBounds<\"checkpoints.owner_attempt\">;",
+          "        updated_at_ms: BrandedIntegerBounds<\"checkpoints.updated_at_ms\">;",
+          "    }>;",
+          "    events: Readonly<{",
+          "        emitted_at_ms: BrandedIntegerBounds<\"events.emitted_at_ms\">;",
+          "        fence_at_ms: BrandedIntegerBounds<\"events.fence_at_ms\">;",
+          "    }>;",
+          "    waits: Readonly<{",
+          "        timeout_at_ms: BrandedIntegerBounds<\"waits.timeout_at_ms\">;",
+          "        created_at_ms: BrandedIntegerBounds<\"waits.created_at_ms\">;",
+          "        fence_at_ms: BrandedIntegerBounds<\"waits.fence_at_ms\">;",
+          "    }>;",
+          "    drivers: Readonly<{",
+          "        last_beat_ms: BrandedIntegerBounds<\"drivers.last_beat_ms\">;",
+          "        expires_at_ms: BrandedIntegerBounds<\"drivers.expires_at_ms\">;",
+          "    }>;",
+          "}>;"
+        ],
+        "PERSISTED_TEMPORAL_FIELDS": [
+          "const PERSISTED_TEMPORAL_FIELDS: readonly [",
+          "    Readonly<{",
+          "        id: \"tasks.enqueue_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"enqueue_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.enqueue_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"tasks.first_started_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"first_started_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.first_started_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"tasks.cancel_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"cancel_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.cancel_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"tasks.cancelled_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"cancelled_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.cancelled_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"tasks.created_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"created_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.created_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"tasks.fence_at_ms\";",
+          "        table: \"tasks\";",
+          "        column: \"fence_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"tasks.fence_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.lease_ms\";",
+          "        table: \"runs\";",
+          "        column: \"lease_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.lease_ms\">;",
+          "        kind: \"duration-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.claim_expires_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"claim_expires_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.claim_expires_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.heartbeat_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"heartbeat_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.heartbeat_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.available_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"available_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.available_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.started_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"started_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.started_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.completed_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"completed_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.completed_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.failed_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"failed_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.failed_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.created_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"created_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.created_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"runs.fence_at_ms\";",
+          "        table: \"runs\";",
+          "        column: \"fence_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"runs.fence_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"checkpoints.updated_at_ms\";",
+          "        table: \"checkpoints\";",
+          "        column: \"updated_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"checkpoints.updated_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"events.emitted_at_ms\";",
+          "        table: \"events\";",
+          "        column: \"emitted_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"events.emitted_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"events.fence_at_ms\";",
+          "        table: \"events\";",
+          "        column: \"fence_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"events.fence_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"waits.timeout_at_ms\";",
+          "        table: \"waits\";",
+          "        column: \"timeout_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"waits.timeout_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"waits.created_at_ms\";",
+          "        table: \"waits\";",
+          "        column: \"created_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"waits.created_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"waits.fence_at_ms\";",
+          "        table: \"waits\";",
+          "        column: \"fence_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"waits.fence_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: true;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"drivers.last_beat_ms\";",
+          "        table: \"drivers\";",
+          "        column: \"last_beat_ms\";",
+          "        bounds: BrandedIntegerBounds<\"drivers.last_beat_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>,",
+          "    Readonly<{",
+          "        id: \"drivers.expires_at_ms\";",
+          "        table: \"drivers\";",
+          "        column: \"expires_at_ms\";",
+          "        bounds: BrandedIntegerBounds<\"drivers.expires_at_ms\">;",
+          "        kind: \"epoch-ms\";",
+          "        nullable: false;",
+          "    }>",
+          "];"
+        ],
+        "POSITIVE_CLAIM_GENERATION_BOUNDS": [
+          "const POSITIVE_CLAIM_GENERATION_BOUNDS: BrandedIntegerBounds<\"runs.claim_gen\">;"
+        ],
+        "PRESERVED_FENCE_INSTANTS": [
+          "const PRESERVED_FENCE_INSTANTS: {",
+          "    readonly events: \"emitted_at_ms\";",
+          "};"
+        ],
+        "PersistedCounterFieldDescriptor": [
+          "type PersistedCounterFieldDescriptor = PersistedCounterFieldContract;",
+          "type PersistedCounterFieldContract = Readonly<{",
+          "    id: 'task-attempts';",
+          "    table: 'tasks';",
+          "    column: 'attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-max-attempts';",
+          "    table: 'tasks';",
+          "    column: 'max_attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.max_attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-infra-retries';",
+          "    table: 'tasks';",
+          "    column: 'infra_retries';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.infra_retries;",
+          "}> | Readonly<{",
+          "    id: 'run-attempt';",
+          "    table: 'runs';",
+          "    column: 'attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.attempt;",
+          "}> | Readonly<{",
+          "    id: 'run-claim-gen';",
+          "    table: 'runs';",
+          "    column: 'claim_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-activated-gen';",
+          "    table: 'runs';",
+          "    column: 'activated_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.activated_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-relaunch-count';",
+          "    table: 'runs';",
+          "    column: 'relaunch_count';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.relaunch_count;",
+          "}> | Readonly<{",
+          "    id: 'checkpoint-owner-attempt';",
+          "    table: 'checkpoints';",
+          "    column: 'owner_attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt;",
+          "}>;"
+        ],
+        "PersistedCounterFieldId": [
+          "type PersistedCounterFieldId = PersistedCounterFieldDescriptor['id'];"
+        ],
+        "PersistedCounterFieldRecord": [
+          "type PersistedCounterFieldRecord = Readonly<{",
+          "    'task-attempts': PersistedCounterFieldFor<'task-attempts'>;",
+          "    'task-max-attempts': PersistedCounterFieldFor<'task-max-attempts'>;",
+          "    'task-infra-retries': PersistedCounterFieldFor<'task-infra-retries'>;",
+          "    'run-attempt': PersistedCounterFieldFor<'run-attempt'>;",
+          "    'run-claim-gen': PersistedCounterFieldFor<'run-claim-gen'>;",
+          "    'run-activated-gen': PersistedCounterFieldFor<'run-activated-gen'>;",
+          "    'run-relaunch-count': PersistedCounterFieldFor<'run-relaunch-count'>;",
+          "    'checkpoint-owner-attempt': PersistedCounterFieldFor<'checkpoint-owner-attempt'>;",
+          "}>;",
+          "type PersistedCounterFieldContract = Readonly<{",
+          "    id: 'task-attempts';",
+          "    table: 'tasks';",
+          "    column: 'attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-max-attempts';",
+          "    table: 'tasks';",
+          "    column: 'max_attempts';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.max_attempts;",
+          "}> | Readonly<{",
+          "    id: 'task-infra-retries';",
+          "    table: 'tasks';",
+          "    column: 'infra_retries';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.infra_retries;",
+          "}> | Readonly<{",
+          "    id: 'run-attempt';",
+          "    table: 'runs';",
+          "    column: 'attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.attempt;",
+          "}> | Readonly<{",
+          "    id: 'run-claim-gen';",
+          "    table: 'runs';",
+          "    column: 'claim_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-activated-gen';",
+          "    table: 'runs';",
+          "    column: 'activated_gen';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.activated_gen;",
+          "}> | Readonly<{",
+          "    id: 'run-relaunch-count';",
+          "    table: 'runs';",
+          "    column: 'relaunch_count';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.relaunch_count;",
+          "}> | Readonly<{",
+          "    id: 'checkpoint-owner-attempt';",
+          "    table: 'checkpoints';",
+          "    column: 'owner_attempt';",
+          "    bounds: typeof PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt;",
+          "}>;",
+          "type PersistedCounterFieldFor<Id extends PersistedCounterFieldContract['id']> = Extract<PersistedCounterFieldContract, {",
+          "    readonly id: Id;",
+          "}>;"
+        ],
+        "PersistedIntegerBounds": [
+          "type PersistedIntegerBounds = NestedValues<NestedValues<typeof PERSISTED_INTEGER_BOUNDS>>;",
+          "type NestedValues<T> = T extends unknown ? T[keyof T] : never;"
+        ],
+        "PersistedIntegerBoundsExceptClaimGeneration": [
+          "type PersistedIntegerBoundsExceptClaimGeneration = Exclude<PersistedIntegerBounds, typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen>;"
+        ],
+        "PersistedTemporalFieldDescriptor": [
+          "type PersistedTemporalFieldDescriptor = (typeof PERSISTED_TEMPORAL_FIELDS)[number];"
+        ],
+        "PersistedTemporalFieldId": [
+          "type PersistedTemporalFieldId = PersistedTemporalFieldDescriptor['id'];"
+        ],
+        "PersistedTemporalTable": [
+          "type PersistedTemporalTable = PersistedTemporalFieldDescriptor['table'];"
+        ],
+        "PreservedFenceTable": [
+          "type PreservedFenceTable = keyof typeof PRESERVED_FENCE_INSTANTS;"
+        ],
+        "REASON_CANCELLED": ["const REASON_CANCELLED = \"{\\\"name\\\":\\\"$Cancelled\\\"}\";"],
+        "REASON_CLAIM_TIMEOUT": [
+          "const REASON_CLAIM_TIMEOUT = \"{\\\"name\\\":\\\"$ClaimTimeout\\\"}\";"
+        ],
+        "REASON_INFRA_CAP": [
+          "const REASON_INFRA_CAP = \"{\\\"name\\\":\\\"$InfraRetriesExhausted\\\"}\";"
+        ],
+        "REASON_RELAUNCH_CAP": [
+          "const REASON_RELAUNCH_CAP = \"{\\\"name\\\":\\\"$RelaunchCapExhausted\\\"}\";"
+        ],
+        "RELAUNCH_BACKOFF_BASE_SECONDS": ["const RELAUNCH_BACKOFF_BASE_SECONDS = 5;"],
+        "RELAUNCH_BACKOFF_MAX_SECONDS": ["const RELAUNCH_BACKOFF_MAX_SECONDS = 60;"],
+        "RELAUNCH_CAP": ["const RELAUNCH_CAP = 5;"],
+        "RetryDecision": [
+          "type RetryDecision = {",
+          "    retry: true;",
+          "    delaySeconds: number;",
+          "} | {",
+          "    retry: false;",
+          "};"
+        ],
+        "RetryStrategy": [
+          "type RetryStrategy = {",
+          "    readonly kind: 'none';",
+          "} | {",
+          "    readonly kind: 'fixed';",
+          "    readonly baseSeconds: number;",
+          "} | {",
+          "    readonly kind: 'exponential';",
+          "    readonly baseSeconds: number;",
+          "    readonly factor: number;",
+          "    readonly maxSeconds: number;",
+          "};"
+        ],
+        "RowBound": ["type RowBound = 'one' | {", "    many: string;", "};"],
+        "RunCancelledError": [
+          "class RunCancelledError extends Error {",
+          "    readonly name = \"RunCancelledError\";",
+          "}"
+        ],
+        "RunState": ["type RunState = TaskState;"],
+        "STAMP": ["const STAMP = \"$STAMP$\";"],
+        "SchedulerStore": [
+          "interface SchedulerStore {",
+          "    spawn(queue: string, taskName: string, paramsJson: string, opts?: SpawnOptions): Promise<SpawnResult>;",
+          "    claim(queue: string, claimToken: string, opts: {",
+          "        leaseSeconds: number;",
+          "        limit: number;",
+          "    }): Promise<ClaimedRun[]>;",
+          "    activate(queue: string, runId: string, claimToken: string, claimGen: number): Promise<ClaimedRun | null>;",
+          "    heartbeat(queue: string, runId: string, claimToken: string, extendSeconds: number): Promise<LeaseState>;",
+          "    reschedule(queue: string, runId: string, claimToken: string, wake: {",
+          "        inSeconds: number;",
+          "    } | {",
+          "        atEpochMs: number;",
+          "    }, wakeDisposition?: 'consume' | 'preserve'): Promise<void>;",
+          "    complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>;",
+          "    suspendRun(queue: string, runId: string, claimToken: string, wake: {",
+          "        inSeconds: number;",
+          "    } | {",
+          "        atEpochMs: number;",
+          "    }, checkpoint: {",
+          "        key: string;",
+          "        stateJson: string;",
+          "    }): Promise<void>;",
+          "    fail(queue: string, runId: string, claimToken: string, failureJson: string, retry: {",
+          "        delaySeconds: number;",
+          "    } | null): Promise<void>;",
+          "    sweep(queue: string, limit: number): Promise<SweptRun[]>;",
+          "    expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean>;",
+          "    getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]>;",
+          "    setCheckpoint(queue: string, taskId: string, runId: string, claimToken: string, checkpointName: string, stateJson: string, extendLeaseSeconds: number): Promise<void>;",
+          "    emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void>;",
+          "    awaitEvent(queue: string, taskId: string, runId: string, claimToken: string, stepName: string, eventName: string, timeoutSeconds: number | null): Promise<{",
+          "        emitted: true;",
+          "        payloadJson: string;",
+          "    } | {",
+          "        emitted: false;",
+          "    }>;",
+          "    getTaskResult(queue: string, taskId: string): Promise<TaskResult | null>;",
+          "    nextWakeAtEpochMs(queue: string): Promise<number | null>;",
+          "    driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void>;",
+          "    cancelTask(queue: string, taskId: string): Promise<boolean>;",
+          "}"
+        ],
+        "SchemaMismatchError": [
+          "class SchemaMismatchError extends Error {",
+          "    readonly name = \"SchemaMismatchError\";",
+          "}"
+        ],
+        "SchemaNotInitializedError": [
+          "class SchemaNotInitializedError extends Error {",
+          "    readonly name = \"SchemaNotInitializedError\";",
+          "}"
+        ],
+        "SelfFenceRelation": [
+          "type SelfFenceRelation = {",
+          "    [R in FenceRelation]: (typeof FENCE_RELATIONS)[R]['from'] extends (typeof FENCE_RELATIONS)[R]['target'] ? (typeof FENCE_RELATIONS)[R]['target'] extends (typeof FENCE_RELATIONS)[R]['from'] ? (typeof FENCE_RELATIONS)[R]['key'] extends (typeof FENCE_RELATIONS)[R]['column'] ? (typeof FENCE_RELATIONS)[R]['column'] extends (typeof FENCE_RELATIONS)[R]['key'] ? R : never : never : never : never;",
+          "}[FenceRelation];"
+        ],
+        "SpawnOptions": [
+          "interface SpawnOptions {",
+          "    idempotencyKey?: string;",
+          "    retryStrategy?: RetryStrategy;",
+          "    maxAttempts?: number;",
+          "    cancellation?: CancellationPolicy;",
+          "    headers?: Record<string, string>;",
+          "    startDelaySeconds?: number;",
+          "}"
+        ],
+        "SpawnResult": [
+          "interface SpawnResult {",
+          "    taskId: string;",
+          "    runId: string | null;",
+          "    created: boolean;",
+          "}"
+        ],
+        "SqlBatchControl": ["type SqlBatchControl = SqlBatchMode | SqlLockedBatch;"],
+        "SqlBatchMode": ["type SqlBatchMode = 'read' | 'write';"],
+        "SqlClaimLockCoordinates": [
+          "type SqlClaimLockCoordinates = Omit<Extract<SqlTransactionLock, {",
+          "    readonly kind: 'claim';",
+          "}>, 'kind'>;"
+        ],
+        "SqlEventLockCoordinates": [
+          "type SqlEventLockCoordinates = Omit<Extract<SqlTransactionLock, {",
+          "    readonly kind: 'event';",
+          "}>, 'kind'>;"
+        ],
+        "SqlExecutor": [
+          "interface SqlExecutor {",
+          "    batch(label: string, statements: readonly SqlStatement[], control?: SqlBatchControl): Promise<SqlResult[]>;",
+          "}"
+        ],
+        "SqlLockedBatch": [
+          "interface SqlLockedBatch {",
+          "    readonly mode: 'write';",
+          "    readonly transactionLock: SqlTransactionLock;",
+          "}"
+        ],
+        "SqlResult": [
+          "interface SqlResult {",
+          "    rows: SqlRow[];",
+          "    rowsAffected: number;",
+          "}"
+        ],
+        "SqlRow": [
+          "interface SqlRow {",
+          "    [column: string]: string | number | bigint | Uint8Array | null;",
+          "}"
+        ],
+        "SqlStatement": [
+          "interface SqlStatement {",
+          "    readonly sql: string;",
+          "    readonly args: ReadonlyArray<string | number | bigint | Uint8Array | null>;",
+          "}"
+        ],
+        "SqlTransactionLock": [
+          "type SqlTransactionLock = {",
+          "    readonly kind: 'event';",
+          "    readonly queue: string;",
+          "    readonly eventName: string;",
+          "} | {",
+          "    readonly kind: 'claim';",
+          "    readonly queue: string;",
+          "    readonly claimToken: string;",
+          "};"
+        ],
+        "StoreAdmin": [
+          "interface StoreAdmin {",
+          "    migrate(): Promise<void>;",
+          "    schemaVersion(): Promise<number>;",
+          "    setFakeNowEpochMs(epochMs: number | null): Promise<void>;",
+          "    nowEpochMs(): Promise<number>;",
+          "}"
+        ],
+        "StoreUnavailableError": [
+          "class StoreUnavailableError extends Error {",
+          "    readonly name = \"StoreUnavailableError\";",
+          "}"
+        ],
+        "SuspendSignal": [
+          "class SuspendSignal extends Error {",
+          "    readonly reason: 'sleep' | 'await-event' | 'chain';",
+          "    readonly wake?: {",
+          "        inSeconds: number;",
+          "    } | {",
+          "        atEpochMs: number;",
+          "    } | undefined;",
+          "    readonly checkpoint?: {",
+          "        key: string;",
+          "        stateJson: string;",
+          "    } | undefined;",
+          "    readonly name = \"SuspendSignal\";",
+          "    constructor(reason: 'sleep' | 'await-event' | 'chain', wake?: {",
+          "        inSeconds: number;",
+          "    } | {",
+          "        atEpochMs: number;",
+          "    } | undefined, checkpoint?: {",
+          "        key: string;",
+          "        stateJson: string;",
+          "    } | undefined);",
+          "}"
+        ],
+        "SweptRun": [
+          "type SweptRun = {",
+          "    kind: 'lost-launch';",
+          "    runId: string;",
+          "    taskId: string;",
+          "    relaunchCount: number;",
+          "} | {",
+          "    kind: 'claim-timeout';",
+          "    runId: string;",
+          "    taskId: string;",
+          "    successorRunId: string;",
+          "} | {",
+          "    kind: 'relaunch-cap-exhausted';",
+          "    runId: string;",
+          "    taskId: string;",
+          "} | {",
+          "    kind: 'infra-cap-exhausted';",
+          "    runId: string;",
+          "    taskId: string;",
+          "} | {",
+          "    kind: 'cancelled';",
+          "    runId: string | null;",
+          "    taskId: string;",
+          "};"
+        ],
+        "TERMINAL_STATES": [
+          "const TERMINAL_STATES: readonly [",
+          "    \"completed\",",
+          "    \"failed\",",
+          "    \"cancelled\"",
+          "];"
+        ],
+        "TaskResult": [
+          "interface TaskResult {",
+          "    state: TaskState;",
+          "    completedPayloadJson?: string;",
+          "    failureReasonJson?: string;",
+          "}"
+        ],
+        "TaskState": ["type TaskState = LiveState | TerminalState;"],
+        "TaskThrowableSnapshot": [
+          "type TaskThrowableSnapshot = Readonly<{",
+          "    kind: 'failure';",
+          "    fatal: boolean;",
+          "    failureJson: string;",
+          "}>;"
+        ],
+        "TerminalState": ["type TerminalState = (typeof TERMINAL_STATES)[number];"],
+        "UNINSPECTABLE_TASK_FAILURE_JSON": ["const UNINSPECTABLE_TASK_FAILURE_JSON: string;"],
+        "UserName": [
+          "class UserName {",
+          "    readonly value: string;",
+          "    private constructor();",
+          "    static parse(what: string, raw: string): UserName;",
+          "    (private members)",
+          "}"
+        ],
+        "WakeSignals": [
+          "interface WakeSignals {",
+          "    ping(queue: string): void;",
+          "    alarmAt?(queue: string, epochMs: number): void;",
+          "}"
+        ],
+        "decideRetry": [
+          "function decideRetry(strategy: RetryStrategy, failedAttempt: number, maxAttempts: number): RetryDecision;"
+        ],
+        "decodeBoundedInteger": [
+          "function decodeBoundedInteger(value: unknown, bounds: IntegerBounds): BoundedIntegerDecode;"
+        ],
+        "durationToMs": [
+          "function durationToMs(name: string, seconds: number, opts?: {",
+          "    positive?: boolean;",
+          "}): number;"
+        ],
+        "fenceSetAt": ["function fenceSetAt(target: PreservedFenceTable): string;"],
+        "isFenceStatementName": ["function isFenceStatementName(value: string): boolean;"],
+        "isFencedBatchBindError": [
+          "function isFencedBatchBindError(value: unknown): value is TypeError;"
+        ],
+        "isLiveState": ["function isLiveState(value: unknown): value is LiveState;"],
+        "isTerminalState": ["function isTerminalState(value: unknown): value is TerminalState;"],
+        "neverBuggify": ["const neverBuggify: Buggify;"],
+        "normalizeRetryStrategy": [
+          "function normalizeRetryStrategy(value: unknown): NormalizedRetryStrategy;"
+        ],
+        "parseFenceStamp": ["function parseFenceStamp(stamp: string): FenceStampParseResult;"],
+        "parseTaskValueJson": ["function parseTaskValueJson(json: string): unknown;"],
+        "requireDerivedInteger": [
+          "function requireDerivedInteger(name: string, value: unknown, bounds: DerivedIntegerBounds): number;"
+        ],
+        "requireDurableString": [
+          "function requireDurableString(what: string, raw: unknown): string;"
+        ],
+        "requireEpochMs": ["function requireEpochMs(name: string, epochMs: number): number;"],
+        "requirePositiveClaimGeneration": [
+          "function requirePositiveClaimGeneration(name: string, value: unknown): number;"
+        ],
+        "requirePositiveInt": [
+          "function requirePositiveInt(name: string, value: number, min?: number): number;"
+        ],
+        "requireRunOrdinal": ["function requireRunOrdinal(name: string, value: unknown): number;"],
+        "retryDelaySeconds": [
+          "function retryDelaySeconds(strategy: Exclude<RetryStrategy, {",
+          "    kind: 'none';",
+          "}>, failedAttempt: number): number;"
+        ],
+        "serializeTaskHeaders": [
+          "function serializeTaskHeaders(what: 'task headers', value: unknown): string;"
+        ],
+        "serializeTaskValue": [
+          "function serializeTaskValue(what: string, value: unknown): string;"
+        ],
+        "snapshotTaskThrowable": [
+          "function snapshotTaskThrowable(value: unknown): TaskThrowableSnapshot;"
+        ],
+        "sqlBatchMode": [
+          "function sqlBatchMode(control: SqlBatchControl | undefined): SqlBatchMode;"
+        ],
+        "sqlTransactionLock": [
+          "function sqlTransactionLock(control: SqlBatchControl | undefined): SqlTransactionLock | undefined;"
+        ],
+        "storageValueKind": ["function storageValueKind(value: unknown): string;"],
+        "systemClock": ["function systemClock(): Clock;"],
+        "systemIdSource": ["function systemIdSource(): IdSource;"],
+        "userDurationToMs": [
+          "function userDurationToMs(name: string, seconds: number, opts?: {",
+          "    positive?: boolean;",
+          "}): number;"
+        ],
+        "userEpochMs": ["function userEpochMs(name: string, epochMs: number): number;"],
+        "userJsonValue": ["function userJsonValue(what: string, json: string): string;"]
+      },
+      "./testing": {
+        "ExpectedError": ["type ExpectedError = RegExp | ((error: unknown) => boolean);"],
+        "MutationVerdict": [
+          "interface MutationVerdict {",
+          "    readonly kind: MutationVerdictKind;",
+          "    readonly mutation: string;",
+          "}"
+        ],
+        "MutationVerdictKind": ["type MutationVerdictKind = 'behavior' | 'construction';"],
+        "ReplacedFailureExpectation": [
+          "interface ReplacedFailureExpectation {",
+          "    readonly expectedError: ExpectedError;",
+          "    readonly replacementError: ExpectedError;",
+          "}"
+        ],
+        "attributeExpectedFailure": [
+          "function attributeExpectedFailure<T>(verdict: MutationVerdict, expectedError: ExpectedError, action: () => Promise<T>): Promise<T>;"
+        ],
+        "attributeReplacedFailure": [
+          "function attributeReplacedFailure(verdict: MutationVerdict, expectation: ReplacedFailureExpectation, action: () => Promise<unknown>): Promise<void>;"
+        ],
+        "requireExpectedFailure": [
+          "function requireExpectedFailure(verdict: MutationVerdict, expectedError: ExpectedError, action: () => Promise<unknown>): Promise<void>;"
+        ]
+      }
+    },
+    "@durablerun/driver": {
+      ".": {
+        "DriverLoop": [
+          "class DriverLoop {",
+          "    readonly stats: DriverLoopStats;",
+          "    constructor(deps: {",
+          "        store: SchedulerStore;",
+          "        launcher: Launcher;",
+          "        ids: IdSource;",
+          "        clock: Clock;",
+          "    }, opts: DriverLoopOptions);",
+          "    run(): Promise<void>;",
+          "    wake(): void;",
+          "    stop(): Promise<void>;",
+          "    (private members)",
+          "}"
+        ],
+        "DriverLoopOptions": [
+          "interface DriverLoopOptions extends TickOptions {",
+          "    busyCeilingMs?: number;",
+          "    idleCeilingMs?: number;",
+          "    idleAfterTicks?: number;",
+          "    launchTimeoutSeconds?: number | null;",
+          "    registryIntervalSeconds?: number;",
+          "    driverId?: string;",
+          "}"
+        ],
+        "DriverLoopStats": [
+          "interface DriverLoopStats {",
+          "    ticks: number;",
+          "    tickErrors: number;",
+          "    launched: number;",
+          "    launchFailed: number;",
+          "    ended: number;",
+          "    lastResult: TickResult | null;",
+          "}"
+        ],
+        "HOSTED_REQUEST_BODY_MAX_BYTES": ["const HOSTED_REQUEST_BODY_MAX_BYTES: number;"],
+        "HostedAuthorizationDecision": [
+          "type HostedAuthorizationDecision = Readonly<{",
+          "    kind: 'allow';",
+          "}> | Readonly<{",
+          "    kind: 'deny';",
+          "    reason: 'unauthenticated' | 'forbidden';",
+          "}>;"
+        ],
+        "HostedAuthorizationFacts": [
+          "interface HostedAuthorizationFacts {",
+          "    readonly operation: HostedAuthorizationOperation;",
+          "    readonly method: string;",
+          "    readonly url: string;",
+          "    readonly headers: Headers;",
+          "    readonly bodyText: string;",
+          "}"
+        ],
+        "HostedAuthorizationOperation": [
+          "type HostedAuthorizationOperation = (typeof hostedAuthorizationOperations)[number];",
+          "const hostedAuthorizationOperations: readonly [",
+          "    \"task.enqueue\",",
+          "    \"event.emit\",",
+          "    \"tick.run\",",
+          "    \"task.inspect\"",
+          "];"
+        ],
+        "HostedAuthorizationPlugin": [
+          "type HostedAuthorizationPlugin = (facts: HostedAuthorizationFacts) => HostedAuthorizationDecision | Promise<HostedAuthorizationDecision>;"
+        ],
+        "HostedRouter": [
+          "interface HostedRouter {",
+          "    readonly handle: (request: Request) => Promise<Response>;",
+          "    readonly runTick: () => Promise<InlineTickResult>;",
+          "}"
+        ],
+        "HostedRouterDependencies": [
+          "interface HostedRouterDependencies {",
+          "    readonly store: SchedulerStore;",
+          "    readonly ids: IdSource;",
+          "    readonly clock: Clock;",
+          "    readonly registry: TaskRegistry;",
+          "    readonly authorization: HostedAuthorizationPlugin;",
+          "    readonly queue: string;",
+          "    readonly sweepLimit: number;",
+          "    readonly leaseSeconds: number;",
+          "    readonly onWorkAvailable?: () => void | Promise<void>;",
+          "    readonly scheduleWake?: WakeScheduler;",
+          "}"
+        ],
+        "InlineLauncherOptions": [
+          "interface InlineLauncherOptions {",
+          "    onOutcome?(outcome: WorkerOutcome, invocation: LaunchInvocation): void;",
+          "}"
+        ],
+        "InlineTickOptions": ["type InlineTickOptions = Omit<TickOptions, 'claimLimit'>;"],
+        "InlineTickResult": [
+          "interface InlineTickResult extends TickResult {",
+          "    workerOutcome: WorkerOutcome | null;",
+          "}"
+        ],
+        "TickOptions": [
+          "interface TickOptions {",
+          "    queue: string;",
+          "    claimLimit: number;",
+          "    sweepLimit: number;",
+          "    leaseSeconds: number;",
+          "}"
+        ],
+        "TickResult": [
+          "interface TickResult {",
+          "    swept: SweptRun[];",
+          "    claimed: number;",
+          "    launched: number;",
+          "    launchFailed: number;",
+          "    ended: number;",
+          "    nextWakeAtEpochMs: number | null;",
+          "    backlog: boolean;",
+          "}"
+        ],
+        "WakeRequest": [
+          "type WakeRequest = Readonly<{",
+          "    queue: string;",
+          "} & ({",
+          "    kind: 'immediate';",
+          "} | {",
+          "    kind: 'scheduled';",
+          "    atEpochMs: number;",
+          "})>;"
+        ],
+        "WakeScheduler": ["type WakeScheduler = (wake: WakeRequest) => Promise<void>;"],
+        "allowAuthorization": ["function allowAuthorization(): HostedAuthorizationDecision;"],
+        "bearerAuthorization": [
+          "function bearerAuthorization(options: {",
+          "    readonly token: string;",
+          "}): HostedAuthorizationPlugin;"
+        ],
+        "createHostedRouter": [
+          "function createHostedRouter(deps: HostedRouterDependencies): HostedRouter;"
+        ],
+        "createWakeServer": [
+          "function createWakeServer(loop: DriverLoop): WorkerServer;",
+          "interface WorkerServer {",
+          "    server: Server;",
+          "    listen(port?: number): Promise<number>;",
+          "    close(): Promise<void>;",
+          "}"
+        ],
+        "createWorkerServer": [
+          "function createWorkerServer(deps: {",
+          "    store: SchedulerStore;",
+          "    clock: Clock;",
+          "    registry: TaskRegistry;",
+          "    secret: string;",
+          "    driverUrl?: string;",
+          "}): WorkerServer;",
+          "interface WorkerServer {",
+          "    server: Server;",
+          "    listen(port?: number): Promise<number>;",
+          "    close(): Promise<void>;",
+          "}"
+        ],
+        "denyAuthorization": [
+          "function denyAuthorization(reason?: 'unauthenticated' | 'forbidden'): HostedAuthorizationDecision;"
+        ],
+        "httpLauncher": [
+          "function httpLauncher(opts: {",
+          "    url: string;",
+          "    secret: string;",
+          "}): Launcher;"
+        ],
+        "inlineLauncher": [
+          "function inlineLauncher(deps: {",
+          "    store: SchedulerStore;",
+          "    clock: Clock;",
+          "    registry: TaskRegistry;",
+          "}, options?: InlineLauncherOptions): Launcher;"
+        ],
+        "inlineTick": [
+          "function inlineTick(deps: {",
+          "    store: SchedulerStore;",
+          "    ids: IdSource;",
+          "    clock: Clock;",
+          "    registry: TaskRegistry;",
+          "}, options: InlineTickOptions): Promise<InlineTickResult>;"
+        ],
+        "signBody": ["function signBody(secret: string, body: string): string;"],
+        "tick": [
+          "function tick(deps: {",
+          "    store: SchedulerStore;",
+          "    launcher: Launcher;",
+          "    ids: IdSource;",
+          "}, opts: TickOptions): Promise<TickResult>;"
+        ]
+      }
+    },
+    "@durablerun/sdk": {
+      ".": {
+        "ReplayContext": [
+          "class ReplayContext implements TaskContext {",
+          "    readonly taskName: string;",
+          "    constructor(store: SchedulerStore, queue: string, run: ClaimedRun, checkpoints: Checkpoint[], leaseLost?: AbortSignal, controls?: TaskControlIssuer, attempt?: number);",
+          "    get attempt(): number;",
+          "    step<T>(name: string, fn: () => Promise<T> | T): Promise<T>;",
+          "    sleepFor(seconds: number): Promise<void>;",
+          "    sleepUntil(epochMs: number): Promise<void>;",
+          "    emitEvent(name: string, payloadJson: string): Promise<void>;",
+          "    awaitEvent(name: string, opts?: {",
+          "        timeoutSeconds?: number;",
+          "    }): Promise<string>;",
+          "    (private members)",
+          "}",
+          "interface TaskControlIssuer {",
+          "    sleep(wake: {",
+          "        inSeconds: number;",
+          "    } | {",
+          "        atEpochMs: number;",
+          "    }, checkpoint: {",
+          "        key: string;",
+          "        stateJson: string;",
+          "    }): never;",
+          "    awaitEvent(): never;",
+          "    leaseLost(message: string): never;",
+          "    storeCall<T>(operation: () => Promise<T>): Promise<T>;",
+          "}"
+        ],
+        "RunInvocation": [
+          "interface RunInvocation {",
+          "    queue: string;",
+          "    runId: string;",
+          "    claimToken: string;",
+          "    claimGen: number;",
+          "}"
+        ],
+        "TaskContext": [
+          "interface TaskContext {",
+          "    step<T>(name: string, fn: () => Promise<T> | T): Promise<T>;",
+          "    sleepFor(seconds: number): Promise<void>;",
+          "    sleepUntil(epochMs: number): Promise<void>;",
+          "    awaitEvent(name: string, opts?: {",
+          "        timeoutSeconds?: number;",
+          "    }): Promise<string>;",
+          "    emitEvent(name: string, payloadJson: string): Promise<void>;",
+          "    readonly attempt: number;",
+          "    readonly taskName: string;",
+          "}"
+        ],
+        "TaskHandler": [
+          "type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>;"
+        ],
+        "TaskRegistry": ["type TaskRegistry = ReadonlyMap<string, TaskHandler>;"],
+        "WorkerOutcome": [
+          "type WorkerOutcome = {",
+          "    kind: 'completed';",
+          "} | {",
+          "    kind: 'suspended';",
+          "} | {",
+          "    kind: 'retry-scheduled';",
+          "} | {",
+          "    kind: 'failed';",
+          "} | {",
+          "    kind: 'superseded';",
+          "} | {",
+          "    kind: 'lease-lost';",
+          "} | {",
+          "    kind: 'aborted';",
+          "} | {",
+          "    kind: 'deferred';",
+          "};"
+        ],
+        "runClaimedRun": [
+          "function runClaimedRun(deps: {",
+          "    store: SchedulerStore;",
+          "    clock: Clock;",
+          "    registry: TaskRegistry;",
+          "}, invocation: RunInvocation): Promise<WorkerOutcome>;"
+        ]
+      }
+    },
+    "@durablerun/store-libsql": {
+      ".": {
+        "CURRENT_SCHEMA_VERSION": ["const CURRENT_SCHEMA_VERSION: number;"],
+        "LibsqlExecutor": [
+          "class LibsqlExecutor implements SqlExecutor {",
+          "    constructor(client: Client, fileBacked?: boolean);",
+          "    static open(url: string, authToken?: string): LibsqlExecutor;",
+          "    batch(_label: string, statements: readonly SqlStatement[], control?: SqlBatchControl): Promise<SqlResult[]>;",
+          "    close(): void;",
+          "    (private members)",
+          "}"
+        ],
+        "LibsqlSchedulerStore": [
+          "class LibsqlSchedulerStore implements SchedulerStore {",
+          "    constructor(db: SqlExecutor, ids: IdSource, buggify?: Buggify);",
+          "    spawn(queue: string, taskName: string, paramsJson: string, opts?: SpawnOptions): Promise<SpawnResult>;",
+          "    claim(queue: string, claimToken: string, opts: {",
+          "        leaseSeconds: number;",
+          "        limit: number;",
+          "    }): Promise<ClaimedRun[]>;",
+          "    activate(queue: string, runId: string, claimToken: string, claimGen: number): Promise<ClaimedRun | null>;",
+          "    heartbeat(queue: string, runId: string, claimToken: string, extendSeconds: number): Promise<LeaseState>;",
+          "    sweep(queue: string, limit: number): Promise<SweptRun[]>;",
+          "    expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean>;",
+          "    driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void>;",
+          "    cancelTask(queue: string, taskId: string): Promise<boolean>;",
+          "    reschedule(queue: string, runId: string, claimToken: string, wake: Wake, wakeDisposition?: 'consume' | 'preserve'): Promise<void>;",
+          "    suspendRun(queue: string, runId: string, claimToken: string, wake: Wake, checkpoint: {",
+          "        key: string;",
+          "        stateJson: string;",
+          "    }): Promise<void>;",
+          "    complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>;",
+          "    fail(queue: string, runId: string, claimToken: string, failureJson: string, retry: {",
+          "        delaySeconds: number;",
+          "    } | null): Promise<void>;",
+          "    getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]>;",
+          "    setCheckpoint(queue: string, taskId: string, runId: string, claimToken: string, checkpointName: string, stateJson: string, extendLeaseSeconds: number): Promise<void>;",
+          "    getTaskResult(queue: string, taskId: string): Promise<TaskResult | null>;",
+          "    nextWakeAtEpochMs(queue: string): Promise<number | null>;",
+          "    emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void>;",
+          "    awaitEvent(queue: string, taskId: string, runId: string, claimToken: string, stepName: string, eventName: string, timeoutSeconds: number | null): Promise<{",
+          "        emitted: true;",
+          "        payloadJson: string;",
+          "    } | {",
+          "        emitted: false;",
+          "    }>;",
+          "    (private members)",
+          "}",
+          "type Wake = {",
+          "    inSeconds: number;",
+          "} | {",
+          "    atEpochMs: number;",
+          "};"
+        ],
+        "LibsqlStoreAdmin": [
+          "class LibsqlStoreAdmin implements StoreAdmin {",
+          "    constructor(db: SqlExecutor);",
+          "    migrate(): Promise<void>;",
+          "    schemaVersion(): Promise<number>;",
+          "    setFakeNowEpochMs(epochMs: number | null): Promise<void>;",
+          "    nowEpochMs(): Promise<number>;",
+          "    (private members)",
+          "}"
+        ],
+        "MIGRATIONS": [
+          "const MIGRATIONS: Migration[];",
+          "interface Migration {",
+          "    version: number;",
+          "    statements: string[];",
+          "}"
+        ],
+        "NEXT_WAKE_SQL": ["const NEXT_WAKE_SQL: string;"],
+        "NOW_MS": [
+          "const NOW_MS = \"COALESCE(\\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\\n)\";"
+        ],
+        "SWEEP_SCAN_CANCELS_SQL": ["const SWEEP_SCAN_CANCELS_SQL: string;"],
+        "SWEEP_SCAN_EXPIRED_SQL": ["const SWEEP_SCAN_EXPIRED_SQL: string;"]
+      },
+      "./testing": {
+        "openTestDb": [
+          "function openTestDb(opts?: {",
+          "    nowMs?: number;",
+          "    idNamespace?: string;",
+          "    migrate?: boolean;",
+          "}): Promise<{",
+          "    raw: LibsqlExecutor;",
+          "    admin: LibsqlStoreAdmin;",
+          "    ids: IdSource;",
+          "    close: () => void;",
+          "}>;"
+        ],
+        "testIdSource": [
+          "function testIdSource(namespace?: string, options?: {",
+          "    readonly nextTokenSerial?: (previous: number) => number;",
+          "}): IdSource;"
+        ]
+      }
     }
   }
 }

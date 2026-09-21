@@ -9,7 +9,13 @@ import {
   StoreUnavailableError,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import type { PersistedNumericTable, StoreFixture, StoreFixtureFactory } from './fixture.js'
+import {
+  type PersistedNumericTable,
+  type StoreFixture,
+  type StoreFixtureFactory,
+  executeStorageCorruption,
+  nullEventPayload,
+} from './fixture.js'
 import { describeFailure } from './scenario.js'
 
 type PersistedIntegerObservation = Readonly<{
@@ -432,6 +438,37 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
           SchemaMismatchError,
         )
         expect(suppressedMigrationWrites).toBeGreaterThan(0)
+      } finally {
+        await fixture.close()
+      }
+    })
+
+    it('refuses a raw write of SQL NULL over the payload of an event', async () => {
+      // An await that timed out answers with no payload and an emitted event answers with
+      // its payload, so a stored NULL would read as a timeout. The port refuses to write
+      // one. This write goes past the port, through the fixture's raw executor, and the
+      // dialect's own schema has to refuse it, for every writer there will ever be.
+      const fixture = await makeFixture('schema-admin-null-payload')
+      try {
+        await fixture.store.emitEvent('q', 'held', '{"kept":1}')
+        const disposition = await executeStorageCorruption(fixture, nullEventPayload('q', 'held'))
+        const [stored] = await fixture.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: 'SELECT payload FROM events WHERE queue = ? AND event_name = ?',
+              args: ['q', 'held'],
+            },
+          ],
+          'read',
+        )
+        expect(
+          { disposition, payload: stored?.rows[0]?.payload },
+          'mutation-verdict:behavior:schema-refuses-a-null-event-payload',
+        ).toEqual({
+          disposition: 'structurally-rejected',
+          payload: '{"kept":1}',
+        })
       } finally {
         await fixture.close()
       }

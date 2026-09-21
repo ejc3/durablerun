@@ -821,9 +821,9 @@ export function fitsCharacters(raw: string, width: number): boolean {
 
 /**
  * Hold every identifier a port call carries to the width of a durable identifier
- * (`IDENTIFIER_CHARACTERS`), before any statement is sent. Every entry of every store
- * calls this first, so the same name is refused by the same call on every dialect, and
- * the conformance suite holds that for each method of the port. Each identifier is keyed
+ * (`IDENTIFIER_CHARACTERS`), before any statement is sent. The port's one check asks it of
+ * every identifier a call carries, and core asks it of the names it derives from one, so
+ * the same name is refused by the same call on every dialect. Each identifier is keyed
  * by what the caller passed, so a name the engine derives from an identifier is refused
  * in the caller's own terms. A value that is not a string is left to the validation that
  * already owns it.

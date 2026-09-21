@@ -11,8 +11,10 @@ import {
   type StoreFixture,
   type StoreFixtureOptions,
   corruptionTarget,
+  nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
+import { firstInCauseChain, isString } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 function sqlStringLiteral(value: string): string {
@@ -33,9 +35,20 @@ function persistedIntegerCatalogStatements(tables: readonly PersistedNumericTabl
   })
 }
 
+/** The code SQLite gave a refusal, through whatever the executor wrapped it in. */
+const sqliteCode = (error: unknown) => firstInCauseChain(error, 'code', isString)
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   if (corruption.invalidRepresentation === 'over-width') {
     return unboundedOverWidthAttempt(corruption)
+  }
+  if (corruption.invalidRepresentation === 'null') {
+    // SQLite cannot add NOT NULL to a column that exists, so the schema holds the payload
+    // with two triggers, and a trigger's refusal carries this code.
+    return nullPayloadAttempt(
+      corruption,
+      (error) => sqliteCode(error) === 'SQLITE_CONSTRAINT_TRIGGER',
+    )
   }
   const fractionalValue =
     corruption.column === 'max_attempts' ||

@@ -2661,6 +2661,36 @@ MUTATION_SPECS = [
         "every sweep scans tasks once for each expired lease it reads",
     ),
     (
+        # A walk that stands alone. Nothing drives this read and it drives nothing, so
+        # the nest rule has nothing to judge, and no pin of a chosen statement plans it.
+        # Compared with LIKE, which no index serves under the column's collation, it
+        # returns the row it returned and scans every run to find it. Only the refusal
+        # of a walk in every shipped statement's plan sees it: before that refusal, every
+        # test of the plan file that reads a plan passed with this in place, and the one
+        # failure was the inventory's tie to the corpus, which fails for any change to a
+        # shipped statement's text and reads no plan.
+        "refused-run-state-read-seeks-its-run",
+        "packages/core/src/statements/reads.ts",
+        "  treeBuilder.selectFrom('runs').select('state').where('run_id', '=', binds.runId),\n",
+        "  treeBuilder.selectFrom('runs').select('state').where('run_id', 'like', binds.runId),\n",
+        "every refused write or heartbeat scans every run to read one run's state",
+    ),
+    (
+        # The same walk in the SELECT of an INSERT. Six labels send the checkpoint write,
+        # and an older pin, over the batches a saga touches, plans it under three of them
+        # and fails when all six are bent. So only the lease-fenced write is bent, the one
+        # `set-checkpoint` sends, which no older test of the plan file judges: the saga pin
+        # plans it and exempts its label. It finds its fenced run by a comparison no index
+        # serves. Before the refusal of a walk, every test of that file that reads a plan
+        # passed with this in place, and the one failure was the inventory's tie to the
+        # corpus.
+        "checkpoint-write-seeks-its-source-run",
+        "packages/core/src/statements/checkpoint.ts",
+        "          .where('f.run_id', '=', binds.runId)\n",
+        "          .where('f.run_id', (binds.fence === 'lease' && 'like') || '=', binds.runId)\n",
+        "every lease-fenced checkpoint write scans every run to find the run that writes it",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
@@ -4297,6 +4327,57 @@ MUTATION_SPECS = [
         "          `1 = 1\n"
         "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
         "emit launders a stored SQL NULL payload into an emitted timeout wake",
+    ),
+    (
+        "postgres-payload-is-not-null",
+        "packages/store-postgres/src/schema.ts",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],\n",
+        "    statements: ['ALTER TABLE events ALTER COLUMN payload DROP NOT NULL'],\n",
+        "PostgreSQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        "mysql-payload-is-not-null",
+        "packages/store-mysql/src/schema.ts",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        "       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        "MySQL's schema accepts SQL NULL as an event's payload, which a waiter reads as a timeout",
+    ),
+    (
+        # MODIFY restates the whole column, and a migrator that planned from a stale read replays
+        # every version that was pending when it read. The mutant alters whatever the catalog says.
+        "mysql-column-form-acts-only-while-nullable",
+        "packages/store-mysql/src/schema.ts",
+        "AND column_name = '${column}') = 'NO',\n",
+        "AND column_name = '${column}') = 'never',\n",
+        "a replayed version 10 restates the payload column over what a later version made of it",
+    ),
+    (
+        # The refusal of a NULL has to travel in the version's text, which a port in another
+        # language replays, and not in the executor's session setup. Without the clause a
+        # session with no strict mode makes the change and stores an empty string.
+        "mysql-column-change-refuses-outside-a-strict-mode",
+        "packages/store-mysql/src/schema.ts",
+        " NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,\n",
+        " NOT NULL')`,\n",
+        "a MySQL session with no strict mode makes the payload NOT NULL over a NULL and stores an empty string there",
+    ),
+    (
+        "event-payload-null-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "    if (event.payload === null) {\n",
+        "    if (event.payload === undefined) {\n",
+        "no sim, scenario or fuzz walk reports an event row that holds SQL NULL",
+    ),
+    (
+        # The older condition of a stored NULL: a woken run carries a payload, and its event's
+        # stored payload is NULL. Every dialect's schema now refuses that state, so the poison
+        # matrix credits its witness as refused and no cell sees the arm fire. The mutant makes
+        # it unreachable, and the next arm then reports a different condition under the same name.
+        "stored-null-payload-under-a-wake-is-an-invariant-violation",
+        "packages/conformance/src/invariants.ts",
+        "      else if (stored.payload === null) add('payload/stored-payload-null', runId)\n",
+        "      else if (stored.payload === undefined) add('payload/stored-payload-null', runId)\n",
+        "no checker reports a woken run that carries the payload of an event whose stored payload is SQL NULL",
     ),
     (
         "sdk-owned-retry-attempt",
@@ -6825,9 +6906,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "spawn-queue-is-a-durable-string",
-            "packages/store-libsql/src/store.ts",
-            "    requireDurableString('queue', queue)\n",
-            "    // MUTATION: any queue name\n",
+            "packages/core/src/port-strings.ts",
+            "  spawn: [\n    'queue',\n",
+            "  spawn: [\n    'paramsJson',\n",
             "a queue name with a NUL or a lone surrogate is stored as a different string on one dialect and aborts the statement on another",
         ),
         (
@@ -6868,7 +6949,7 @@ MUTATION_SPECS.extend(
         (
             "spawn-refuses-reserved-idempotency-key",
             "packages/core/src/child-tasks.ts",
-            "  refuseReservedIdempotencyKey('spawn', key)\n",
+            "  refuseReservedIdempotencyKey('spawn', callerKey)\n",
             "  // MUTATION: a caller may take any key\n",
             "a caller places its own task under the key a parent's spawn will use, and the parent adopts it and its result",
         ),
@@ -7252,9 +7333,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "event-name-is-a-durable-string",
-            "packages/core/src/child-tasks.ts",
-            "    return new EventName(requireDurableString(`${operation} eventName`, raw), null)\n",
-            "    return new EventName(raw, null) // MUTATION\n",
+            "packages/core/src/port-strings.ts",
+            "  emitEvent: ['queue', 'eventName', 'payloadJson'],\n",
+            "  emitEvent: ['queue', 'resultJson', 'payloadJson'],\n",
             "an emit or an await with a NUL in its event name is stored as a shorter name on one dialect and reported as an outage on another",
         ),
         (
@@ -9643,6 +9724,18 @@ VERDICTS = {
         "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
         "mutation-verdict:behavior:plan-nests",
     ),
+    "refused-run-state-read-seeks-its-run": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
+    "checkpoint-write-seeks-its-source-run": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+        "mutation-verdict:behavior:plan-nests",
+    ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -10748,6 +10841,44 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance a stored SQL NULL event payload is never delivered as a timeout",
         "mutation-verdict:behavior:null-event-payload-never-becomes-timeout",
+    ),
+    "postgres-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [postgres] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-payload-is-not-null": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [mysql] refuses a raw write of SQL NULL over the payload of an event",
+        "mutation-verdict:behavior:schema-refuses-a-null-event-payload",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "mysql-column-form-acts-only-while-nullable": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/real-server.test.ts",
+        "MysqlExecutor against a real server makes a column NOT NULL only while the catalog calls it nullable, and leaves a later declaration alone",
+        "mutation-verdict:behavior:mysql-column-form-acts-only-while-nullable",
+    ),
+    "mysql-column-change-refuses-outside-a-strict-mode": ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/migration.test.ts",
+        "a MySQL database where an event already holds SQL NULL is refused by the version itself in a session with no strict mode, with the row as it was",
+        "mutation-verdict:behavior:mysql-column-change-refuses-outside-a-strict-mode",
+    ),
+    "event-payload-null-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
+    ),
+    "stored-null-payload-under-a-wake-is-an-invariant-violation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance an event row that holds SQL NULL is an invariant violation, whoever wrote it",
+        "mutation-verdict:behavior:event-payload-null-is-an-invariant-violation",
     ),
     "sdk-owned-retry-attempt": ExpectedVerdict(
         "behavior",
@@ -14061,6 +14192,19 @@ for _verdict, _names in (
         ),
         (
             "saga-store-names-the-attempt-record",
+        ),
+    ),
+    (
+        # Through a store the port's one check refuses a failed rollback of another shape
+        # first, as a step that was left out, so no case that goes through a store can see
+        # this reader stop refusing. Core's own case of the reader calls it directly.
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/saga-names.test.ts",
+            "a rollback's attempt record, as the store names it and counts it takes the step and the failure, each read once, and refuses anything else by saying what the port takes",
+            "mutation-verdict:behavior:saga-failed-rollback-shape-is-checked",
+        ),
+        (
             "saga-failed-rollback-shape-is-checked",
         ),
     ),
@@ -14253,16 +14397,16 @@ MUTATION_SPECS.extend(
         ),
         (
             "parent-queue-held-to-the-width",
-            "packages/core/src/child-tasks.ts",
-            "      'childOf.parentQueue': childOf.parentQueue,\n",
-            "      // MUTATION: the parent's queue is not held\n",
+            "packages/core/src/port-strings.ts",
+            "        parentQueue: 'childOf.parentQueue',\n",
+            "        parentQueue: 'resultJson',\n",
             "a child spawn is accepted with a parent queue past the width, so an identifier is refused at every entry of the port but this one",
         ),
         (
             "parent-run-id-held-to-the-width",
-            "packages/core/src/child-tasks.ts",
-            "      'childOf.runId': childOf.runId,\n",
-            "      // MUTATION: the parent's run id is not held\n",
+            "packages/core/src/port-strings.ts",
+            "        runId: 'childOf.runId',\n",
+            "        runId: 'resultJson',\n",
             "a child spawn is accepted with a parent run id past the width, so an identifier is refused at every entry of the port but this one",
         ),
         (
@@ -14295,17 +14439,17 @@ MUTATION_SPECS.extend(
         ),
         (
             "claim-token-held-to-the-width",
-            "packages/store-libsql/src/store.ts",
-            "    requireIdentifiersFit({ queue, claimToken })\n",
-            "    requireIdentifiersFit({ queue }) // MUTATION: the claim token is not held\n",
+            "packages/core/src/port-strings.ts",
+            "  claim: ['queue', 'claimToken', null],\n",
+            "  claim: ['queue', 'paramsJson', null],\n",
             "a claim under a token too long for PostgreSQL's index of it answers as an outage there and takes its run on the other two dialects",
         ),
         (
             "driver-identifiers-held-at-construction",
             "packages/driver/src/loop.ts",
-            "    requireIdentifiersFit({ queue: opts.queue, driverId: this.driverId })\n",
+            "    requirePortString('driverId', this.driverId)\n",
             "    // MUTATION: not held at construction\n",
-            "a driver configured with a queue or an id past the width runs forever and does nothing: every tick reads as an outage and every registry beat is swallowed",
+            "a driver configured with an id past the width or outside the domain runs forever and does nothing: every registry beat under that id is refused, and a refused beat is swallowed",
         ),
     )
 )
@@ -14320,9 +14464,6 @@ for _verdict, _names in (
         ),
         (
             "identifier-past-the-width-refused",
-            "parent-queue-held-to-the-width",
-            "parent-run-id-held-to-the-width",
-            "claim-token-held-to-the-width",
         ),
     ),
     (
@@ -14448,10 +14589,10 @@ MUTATION_SPECS.extend(
         ),
         (
             "libsql-emitted-name-held-at-the-entry",
-            "packages/store-libsql/src/store.ts",
-            "    requireIdentifiersFit({ queue, eventName })\n",
-            "    // MUTATION: an emitted name is not held at this entry\n",
-            "the libSQL store stores an event name past the width, which the port admits on no dialect and no emit can reach again, and no walk fails for it",
+            "packages/core/src/port-strings.ts",
+            "  if (rule === 'identifier') requireIdentifiersFit({ [name]: raw })\n",
+            "  // MUTATION: an identifier is not held to the width\n",
+            "every store stores a name past the width at every place an identifier enters the port, and no walk fails for it",
         ),
     )
 )
@@ -14494,6 +14635,279 @@ for _verdict, _names in (
             "mutation-verdict:behavior:a-walk-fails-when-a-store-entry-lets-a-name-past-the-width",
         ),
         ("libsql-emitted-name-held-at-the-entry",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
+# every string once, and every store is reached only through the check built from that
+# table. The first two bend the check: the rule of an identifier, and the wrapper that
+# puts the check in front of an entry. Four bend the table, one for each kind of string,
+# a queue, a step key, an event name, and a claim token, and a fifth bends the rules, the
+# claim token's put back to no width. The identifier
+# surface draws its places from the same table, so a place the table stops holding is
+# asked nothing by the refusal cases. What fails is the surface's written list of the
+# places that are not identifiers, by the name of the place.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-identifier-held-to-the-domain",
+            "packages/core/src/port-strings.ts",
+            "  requireDurableString(name, raw)\n",
+            "  if (rule !== 'identifier') requireDurableString(name, raw) // MUTATION\n",
+            "a queue, a task id, a run id, a step name or a checkpoint name with a NUL or a lone surrogate reaches every store, where a NUL ends it on one dialect and is an outage on another, and two names that differ in a lone surrogate are one row",
+        ),
+        (
+            "port-check-runs-before-the-entry",
+            "packages/core/src/port-strings.ts",
+            "          requirePortStrings(method, args)\n",
+            "          // MUTATION: the entry is reached with nothing checked\n",
+            "no store holds any string of any call: every entry of every dialect is reached with whatever its caller passed",
+        ),
+        (
+            "port-table-holds-a-queue",
+            "packages/core/src/port-strings.ts",
+            "  sweep: ['queue', null],\n",
+            "  sweep: ['paramsJson', null],\n",
+            "a sweep runs on a queue no store keeps: PostgreSQL reports a NUL as an outage that a driver retries for ever, and libSQL sweeps nothing",
+        ),
+        (
+            "port-table-holds-a-step-key",
+            "packages/core/src/port-strings.ts",
+            "  setCheckpoint: ['queue', 'taskId', 'runId', 'claimToken', 'checkpointName', 'stateJson', null],\n",
+            "  setCheckpoint: ['queue', 'taskId', 'runId', 'claimToken', 'stateJson', 'stateJson', null],\n",
+            "two checkpoint names that differ only in a lone surrogate are stored as one row on every dialect, so one step's memo is replaced by another's result",
+        ),
+        (
+            "port-table-holds-an-event-name",
+            "packages/core/src/port-strings.ts",
+            "  awaitEvent: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'eventName', null],\n",
+            "  awaitEvent: ['queue', 'taskId', 'runId', 'claimToken', 'stepName', 'resultJson', null],\n",
+            "a run parks on an event name past the width or outside the domain, which no emit can name, so it sleeps until its timeout",
+        ),
+        (
+            "port-table-holds-a-claim-token",
+            "packages/core/src/port-strings.ts",
+            "  heartbeat: ['queue', 'runId', 'claimToken', null],\n",
+            "  heartbeat: ['queue', 'runId', 'paramsJson', null],\n",
+            "a heartbeat under a token that differs from the claim's only in a lone surrogate holds the claim, so two workers hold one run",
+        ),
+        (
+            "port-rules-hold-a-claim-token-to-the-width",
+            "packages/core/src/port-strings.ts",
+            "  claimToken: 'identifier',\n",
+            "  claimToken: 'durable',\n",
+            "a claim is made under a token of a few thousand characters, which one dialect cannot index, so the claim fails on that dialect alone",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses a name outside the durable string domain at every entry of the port, before anything is sent",
+            "mutation-verdict:behavior:name-outside-the-domain-refused-at-every-place",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-identifier-held-to-the-domain",
+            "port-check-runs-before-the-entry",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] leaves a payload to its serializer, at exactly the places that are written here",
+            "mutation-verdict:construction:places-that-are-not-identifiers-are-written-down",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-table-holds-a-queue",
+            "port-table-holds-a-step-key",
+            "port-table-holds-an-event-name",
+            "port-table-holds-a-claim-token",
+            "port-rules-hold-a-claim-token-to-the-width",
+            "parent-queue-held-to-the-width",
+            "parent-run-id-held-to-the-width",
+            "claim-token-held-to-the-width",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# What the review of the one check found at the mechanism. An entry is looked up when it is
+# called, so a method patched onto a store class after a store exists is reached. The
+# checked entry is an accessor that cannot be defined again, so a class field cannot replace
+# it. The constructor loops by index, so a store built while the array iterator answers
+# nothing still holds every entry. And a string the port requires is refused when it is
+# left out, by the one check of a string place, which the identifier surface asks of every
+# place left out.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-entry-looked-up-when-called",
+            "packages/core/src/port-strings.ts",
+            "        const called: unknown = reflectGet(getPrototypeOf(this) as object, method, this)\n",
+            "        const called: unknown = entry // MUTATION: the entry as it was at construction\n",
+            "a test double patched onto a store class after the store under test exists is never reached, so the real entry runs and the double counts no call",
+        ),
+        (
+            "port-check-cannot-be-defined-away",
+            "packages/core/src/port-strings.ts",
+            "  descriptor.configurable = false\n",
+            "  descriptor.configurable = true\n",
+            "a subclass written with an arrow field for an entry constructs without a word, and the field is handed a queue with a NUL in it",
+        ),
+        (
+            "port-constructor-loops-by-index",
+            "packages/core/src/port-strings.ts",
+            "    for (let index = 0; index < PORT_METHODS.length; index++) {\n      const method = PORT_METHODS[index]\n      if (method === undefined) continue\n",
+            "    for (const method of PORT_METHODS) {\n",
+            "a store built while the array iterator answers nothing constructs without a word, holds no entry, and accepts a NUL",
+        ),
+        (
+            "port-required-string-left-out-is-refused",
+            "packages/core/src/port-strings.ts",
+            "  if (typeof raw !== 'string') {\n    const what = raw === undefined ? 'was left out, and the port requires it' : 'must be a string'\n    throw new InvalidDurableStringError(`${name} ${what}`)\n  }\n",
+            "  // MUTATION: a value that is not a string is handed to its rule\n",
+            "a payload or a checkpoint's state that was left out, or passed as null or a number, reaches the entry: one left out is a TypeError from a bind, null is reported as an outage, and a number is stored",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port reaches a method patched onto the prototype after the store was constructed, with the check still in front",
+            "mutation-verdict:behavior:port-entry-looked-up-when-called",
+        ),
+        (
+            "port-entry-looked-up-when-called",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port refuses to construct a store whose class field replaces an entry, and the check with it",
+            "mutation-verdict:behavior:port-check-cannot-be-defined-away",
+        ),
+        (
+            "port-check-cannot-be-defined-away",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port puts the check in front of every entry of a store built while the array iterator answers nothing",
+            "mutation-verdict:behavior:port-constructor-loops-by-index",
+        ),
+        (
+            "port-constructor-loops-by-index",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses a string the port requires when it is left out, at every place, and passes one the caller may leave out",
+            "mutation-verdict:behavior:required-string-left-out-refused-at-every-place",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+        (
+            "port-required-string-left-out-is-refused",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# What the accessor and the table hold against the realm they are built in. The checked
+# entry's descriptor is built on an object with no prototype, so a store constructed while
+# Object.prototype names the fields of a descriptor still cannot have its check defined away.
+# The table is frozen throughout, so no caller can write over a name in it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-accessor-descriptor-inherits-nothing",
+            "packages/core/src/port-strings.ts",
+            "  const descriptor = createObject(null) as PropertyDescriptor\n",
+            "  const descriptor = {} as PropertyDescriptor\n",
+            "a store built while a library has assigned set or configurable on Object.prototype holds entries that an assignment replaces without a word, and the replacement is handed a queue with a NUL in it",
+        ),
+        (
+            "port-table-frozen-throughout",
+            "packages/core/src/port-strings.ts",
+            "export const PORT_STRINGS = frozenThroughout({\n",
+            "export const PORT_STRINGS = freeze({\n",
+            "any code in the process writes null over a name in the table, and every store then passes a queue with a NUL in it at that place",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a store that extends the held port cannot have its check defined away when the store was built while Object.prototype named the fields of a descriptor",
+            "mutation-verdict:behavior:port-accessor-descriptor-inherits-nothing",
+        ),
+        (
+            "port-accessor-descriptor-inherits-nothing",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "construction",
+            "packages/core/test/port-strings.test.ts",
+            "the strings a port call carries is frozen throughout, so no caller can write over a name and switch the check off at that place",
+            "mutation-verdict:construction:port-table-frozen-throughout",
+        ),
+        (
+            "port-table-frozen-throughout",
+        ),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
+
+# What the one check holds besides a string's domain. A value where an options object
+# belongs is an object: read as one, null, a number, a string and an array have no member,
+# and a spawn went on as if empty options had been passed. A payload that is not a string
+# is refused by the one check of a string place, the check whose mutation is
+# port-required-string-left-out-is-refused.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-options-value-that-is-not-an-object-is-refused",
+            "packages/core/src/port-strings.ts",
+            "  if (value !== undefined && (typeof value !== 'object' || value === null || isArray(value))) {\n    throw new InvalidDurableStringError(`${where} must be an object`)\n  }\n",
+            "  // MUTATION: a value that is not an object is read as one\n",
+            "a spawn whose options are a number, a string or an array writes a task as if empty options had been passed, and one whose options are null is a TypeError from inside the entry",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/port-strings.test.ts",
+            "a value where an options object belongs refuses null, a number, a string and an array where a spawn takes its options, and the same inside them",
+            "mutation-verdict:behavior:port-options-value-that-is-not-an-object-is-refused",
+        ),
+        (
+            "port-options-value-that-is-not-an-object-is-refused",
+        ),
     ),
 ):
     for _name in _names:
@@ -15370,6 +15784,9 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "port-required-string-left-out-is-refused": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
+    ),
     "tree-read-state-stops-at-a-subquery": (
         "replacement removes a TypeScript default operator, not a SQL bind"
     ),
@@ -20260,7 +20677,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1072:
+        if len(MUTATIONS) != 1094:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

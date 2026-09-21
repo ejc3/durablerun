@@ -3,7 +3,7 @@ import {
   IDENTIFIER_CHARACTERS,
   type PersistedCounterFieldDescriptor,
   type PersistedTemporalFieldDescriptor,
-  type SchedulerStore,
+  type HeldSchedulerStore,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -78,6 +78,13 @@ export type StorageCorruption =
       column: 'idempotency_key'
       invalidRepresentation: 'over-width'
     }
+  | {
+      table: 'events'
+      queue: string
+      eventName: string
+      column: 'payload'
+      invalidRepresentation: 'null'
+    }
 
 type OverWidthCorruption = Extract<StorageCorruption, { invalidRepresentation: 'over-width' }>
 
@@ -113,6 +120,63 @@ export function unboundedOverWidthAttempt(
         )
       }
     },
+  }
+}
+
+type NullPayloadCorruption = Extract<StorageCorruption, { invalidRepresentation: 'null' }>
+
+/** SQL NULL over the stored payload of one event, as a kind the storage-corruption door takes. */
+export function nullEventPayload(queue: string, eventName: string): NullPayloadCorruption {
+  return { table: 'events', queue, eventName, column: 'payload', invalidRepresentation: 'null' }
+}
+
+/**
+ * SQL NULL as an event's stored payload, by both kinds of write that can put it there: an
+ * UPDATE of the stored event, and an INSERT of a fresh one. Each is the same SQL on every
+ * dialect, with the read that proves it landed where a schema accepts it. An await that timed
+ * out answers with no payload, so a stored NULL would read as a timeout. A declared NOT NULL
+ * refuses every write form by construction. A schema that holds the column some other way, as
+ * SQLite must with a trigger for each kind of write, holds it only if no form gets past, so a
+ * refusal is credited only when both are refused. How a dialect's schema refuses a write is
+ * that dialect's to say.
+ */
+export function nullPayloadAttempt(
+  corruption: NullPayloadCorruption,
+  isStructuralRejection: (error: unknown) => boolean,
+): StorageCorruptionAttempt {
+  const { where, identityArgs } = corruptionTarget(corruption)
+  const fresh = [corruption.queue, `${corruption.eventName}:inserted-null`]
+  const holdsNull = (results: readonly SqlResult[]) => {
+    if (Number(results[1]?.rows[0]?.held) !== 1) {
+      throw new Error('the NULL payload was not stored: no row of events holds it')
+    }
+  }
+  return {
+    statements: [
+      { sql: `UPDATE events SET payload = NULL WHERE ${where}`, args: identityArgs },
+      {
+        sql: `SELECT COUNT(*) AS held FROM events WHERE ${where} AND payload IS NULL`,
+        args: identityArgs,
+      },
+    ],
+    isStructuralRejection,
+    verify: holdsNull,
+    otherDoors: [
+      {
+        statements: [
+          {
+            sql: 'INSERT INTO events (queue, event_name, payload) VALUES (?, ?, NULL)',
+            args: fresh,
+          },
+          {
+            sql: `SELECT COUNT(*) AS held FROM events
+                  WHERE queue = ? AND event_name = ? AND payload IS NULL`,
+            args: fresh,
+          },
+        ],
+        verify: holdsNull,
+      },
+    ],
   }
 }
 
@@ -172,6 +236,19 @@ export interface StorageCorruptionAttempt {
   readonly statements: readonly SqlStatement[]
   readonly verify: (results: readonly SqlResult[]) => void | Promise<void>
   readonly isStructuralRejection: (error: unknown) => boolean
+  /**
+   * Other write forms that reach the same stored value. Each is sent as a batch of its own
+   * once the forms before it were refused, and a refusal is credited only when every form is
+   * refused: one refused write says nothing of a schema that holds a column by something
+   * narrower than a declaration.
+   */
+  readonly otherDoors?: readonly StorageCorruptionDoor[]
+}
+
+/** One more write form of an attempt, with the read that proves it landed. */
+export interface StorageCorruptionDoor {
+  readonly statements: readonly SqlStatement[]
+  readonly verify: (results: readonly SqlResult[]) => void | Promise<void>
 }
 
 /**
@@ -182,7 +259,7 @@ export interface StorageCorruptionAttempt {
  * database FILE of its own, because an in-memory database has no second connection.
  */
 export interface LockWaitSurface {
-  readonly store: SchedulerStore
+  readonly store: HeldSchedulerStore
   readonly raw: SqlExecutor
   /** Holds the write lock on the task's row until `during` settles. */
   holdWriteLock(taskId: string, during: () => Promise<void>): Promise<void>
@@ -203,7 +280,13 @@ export interface LockWaitSurface {
  * spec).
  */
 export interface StoreFixture {
-  store: SchedulerStore
+  /**
+   * A store that extends core's held port, where every string a call carries is checked
+   * before the entry runs. The type is nominal, so a class that implements the port on
+   * its own does not type as a fixture's store: a dialect reaches the suite, and so is
+   * done, only through the one check.
+   */
+  store: HeldSchedulerStore
   admin: StoreAdmin
   /** Construct the dialect's real admin over an injected executor. */
   adminOver(db: SqlExecutor): StoreAdmin
@@ -241,7 +324,7 @@ export interface StoreFixture {
    * this fixture's database and id stream — how sims run N concurrent
    * actors against one database.
    */
-  storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
+  storeOver(db: SqlExecutor, buggify?: Buggify): HeldSchedulerStore
   /**
    * How many times the server has chosen one of this fixture's batches as a deadlock
    * victim, read from the fixture's own executor. The executor runs a victim again, which
@@ -308,8 +391,30 @@ export async function executeStorageCorruption(
     results = await fixture.raw.batch('fixture:storage-corrupt', attempt.statements, 'write')
   } catch (error) {
     if (!attempt.isStructuralRejection(error)) throw error
-    return 'structurally-rejected'
+    return everyOtherDoorRefuses(fixture, attempt)
   }
   await attempt.verify(results)
   return 'injected'
+}
+
+/** The first form was refused. The refusal stands only if every other form is refused too. */
+async function everyOtherDoorRefuses(
+  fixture: StoreFixture,
+  attempt: StorageCorruptionAttempt,
+): Promise<StorageCorruptionDisposition> {
+  for (const door of attempt.otherDoors ?? []) {
+    if (door.statements.length === 0) {
+      throw new Error('every door of a storage corruption attempt must hold an SQL statement')
+    }
+    let landed: SqlResult[]
+    try {
+      landed = await fixture.raw.batch('fixture:storage-corrupt', door.statements, 'write')
+    } catch (error) {
+      if (!attempt.isStructuralRejection(error)) throw error
+      continue
+    }
+    await door.verify(landed)
+    return 'injected'
+  }
+  return 'structurally-rejected'
 }

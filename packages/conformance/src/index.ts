@@ -1,6 +1,7 @@
 export type {
   StorageCorruption,
   StorageCorruptionAttempt,
+  StorageCorruptionDoor,
   StorageCorruptionDisposition,
   PersistedNumericTable,
   LockWaitSurface,
@@ -12,6 +13,8 @@ export {
   corruptionTarget,
   executeStorageCorruption,
   overWidthWrite,
+  nullEventPayload,
+  nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from './fixture.js'
 export {

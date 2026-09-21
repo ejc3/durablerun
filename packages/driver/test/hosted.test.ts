@@ -318,6 +318,29 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  it('answers a task id no store keeps as invalid, and never as another task', async () => {
+    const f = await fixture('hosted-inspect-undurable-id')
+    try {
+      const spawned = await f.store.spawn(Q, 'real-task', '{}')
+      // The store refuses a task id with a NUL before it reads anything, as it refuses one
+      // past the width, and the route answers the refusal as the caller's mistake. With a
+      // real task present, its id followed by a NUL names no task.
+      expect({
+        exact: (await inspected(f, spawned.taskId)).status,
+        withANul: await inspected(f, `${spawned.taskId}\u0000anything-after`),
+        pastTheWidth: await inspected(f, 'x'.repeat(256)),
+        absent: await inspected(f, 'no-such-task'),
+      }).toEqual({
+        exact: 200,
+        withANul: { status: 400, body: { error: 'invalid_request' } },
+        pastTheWidth: { status: 400, body: { error: 'invalid_request' } },
+        absent: { status: 404, body: { error: 'task_not_found' } },
+      })
+    } finally {
+      await f.close()
+    }
+  })
+
   it('returns the stored failure reason when inspecting a cancelled task', async () => {
     const f = await fixture('hosted-inspect-cancelled')
     try {

@@ -104,20 +104,26 @@ describe("a rollback's attempt record, as the store names it and counts it", () 
       errorJson: '{}',
     }
     const taken = answer(counting)
-    expect({
-      taken,
-      reads,
-      // A count a caller adds is not read: the answer holds the two fields and nothing else.
-      withACount: answer({ stepKey: 'a', errorJson: '{}', tries: 7 }),
-      refused: [
-        { key: '$rollback-tries:a', stateJson: '{"tries":1,"errorJson":"{}"}' },
-        { stepKey: 'a' },
-        { stepKey: 1, errorJson: '{}' },
-        null,
-        undefined,
-        'a',
-      ].map(answer),
-    }).toEqual({
+    // The verdict of the mutation that stops this reader refusing a shape. Through a store
+    // the port's one check answers such a call first, so only a direct call can see it.
+    const marker = 'mutation-verdict:behavior:saga-failed-rollback-shape-is-checked'
+    expect(
+      {
+        taken,
+        reads,
+        // A count a caller adds is not read: the answer holds the two fields and nothing else.
+        withACount: answer({ stepKey: 'a', errorJson: '{}', tries: 7 }),
+        refused: [
+          { key: '$rollback-tries:a', stateJson: '{"tries":1,"errorJson":"{}"}' },
+          { stepKey: 'a' },
+          { stepKey: 1, errorJson: '{}' },
+          null,
+          undefined,
+          'a',
+        ].map(answer),
+      },
+      marker,
+    ).toEqual({
       taken: { stepKey: 'a', errorJson: '{}' },
       reads: 1,
       withACount: { stepKey: 'a', errorJson: '{}' },

@@ -10,8 +10,10 @@ import {
   type StoreFixture,
   type StoreFixtureOptions,
   corruptionTarget,
+  nullPayloadAttempt,
   overWidthWrite,
 } from '../src/index.js'
+import { firstInCauseChain, isNumber } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 /** MySQL errors that mean a column's type refused the value, under the strict mode every session sets. */
@@ -22,16 +24,7 @@ const STRUCTURAL_VALUE_ERRNOS = new Set([
   1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
 ])
 
-function mysqlErrno(error: unknown): number | undefined {
-  let current = error
-  for (let depth = 0; depth < 6; depth++) {
-    if (typeof current !== 'object' || current === null) return undefined
-    const candidate = current as { readonly errno?: unknown; readonly cause?: unknown }
-    if (typeof candidate.errno === 'number') return candidate.errno
-    current = candidate.cause
-  }
-  return undefined
-}
+const mysqlErrno = (error: unknown) => firstInCauseChain(error, 'errno', isNumber)
 
 /** A scalar subquery that returns two rows: MySQL refuses it only when it is evaluated. */
 const ER_SUBQUERY_NO_1_ROW = 1242
@@ -39,7 +32,13 @@ const ER_SUBQUERY_NO_1_ROW = 1242
 /** A string longer than its column holds, which strict mode refuses and does not cut. */
 const ER_DATA_TOO_LONG = 1406
 
+/** `Column cannot be null`, which is an error under the strict mode every session sets. */
+const ER_BAD_NULL_ERROR = 1048
+
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
+  if (corruption.invalidRepresentation === 'null') {
+    return nullPayloadAttempt(corruption, (error) => mysqlErrno(error) === ER_BAD_NULL_ERROR)
+  }
   if (corruption.invalidRepresentation === 'over-width') {
     return {
       statements: [overWidthWrite(corruption)],
