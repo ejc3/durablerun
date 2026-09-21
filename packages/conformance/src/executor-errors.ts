@@ -40,6 +40,12 @@ const bump = (taskId: string): SqlStatement => ({
  */
 const FAILED_BATCHES_IN_A_ROW = 12
 
+/** The row inserted again under its own key: one statement, no column list. */
+const duplicateRow = (taskId: string): SqlStatement => ({
+  sql: 'INSERT INTO tasks SELECT * FROM tasks WHERE task_id = ?',
+  args: [taskId],
+})
+
 /**
  * One refused write for each kind of constraint the `tasks` table declares on every
  * dialect, as plain SQL that all three read alike.
@@ -47,11 +53,7 @@ const FAILED_BATCHES_IN_A_ROW = 12
 const BROKEN_CONSTRAINTS: Readonly<
   Record<string, (first: string, second: string) => SqlStatement>
 > = {
-  'primary key': (first) => ({
-    // The row inserted again under its own key: one statement, no column list.
-    sql: 'INSERT INTO tasks SELECT * FROM tasks WHERE task_id = ?',
-    args: [first],
-  }),
+  'primary key': (first) => duplicateRow(first),
   unique: (_first, second) => ({
     // The second task under the first one's idempotency key, in the same queue.
     sql: 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?',
@@ -113,14 +115,12 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
      */
     it('answers a read and a write on the same executor after write batches that failed inside', () =>
       withFixture(makeFixture, 'executor-errors-next-call', async (f) => {
-        const [first, second] = await twoTasks(f)
+        const [first] = await twoTasks(f)
         const before = await taskRows(f)
-        const duplicate = BROKEN_CONSTRAINTS['primary key']
-        if (duplicate === undefined) throw new Error('the primary key case is gone')
         for (let failed = 0; failed < FAILED_BATCHES_IN_A_ROW; failed++) {
           expect(
             await refusalName(
-              f.raw.batch('executor-errors:fail-inside', [bump(first), duplicate(first, second)]),
+              f.raw.batch('executor-errors:fail-inside', [bump(first), duplicateRow(first)]),
             ),
             `failed batch ${failed + 1}`,
           ).toBe('PermanentStoreError')
