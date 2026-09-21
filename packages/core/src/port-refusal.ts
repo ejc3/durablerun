@@ -8,10 +8,11 @@ import { InvalidDurableStringError, PortRefusalError } from './errors.js'
  * name or key and for options that contradict each other, `InvalidDurableStringError`,
  * for a string no store can keep and for an identifier wider than one holds, and
  * `ChildAwaitRefusedError`, for a child that can never end the await. They share no
- * parent, because `InvalidDurableStringError` was released as a TypeError. A number, a
- * retry strategy, or a saga step name that a port refuses is still a bare RangeError,
- * which this does not admit: a bare RangeError is also what a stored row the engine
- * cannot read raises, and that is never the caller's mistake.
+ * parent, because `InvalidDurableStringError` was released as a TypeError. A number or a
+ * retry strategy that a port refuses is still a bare RangeError, which this does not
+ * admit: a bare RangeError is also what a stored row the engine cannot read raises, and
+ * that is never the caller's mistake. A saga step name is refused inside the family, by a
+ * width check that throws `InvalidDurableStringError`.
  */
 export function isPortRefusal(
   error: unknown,
