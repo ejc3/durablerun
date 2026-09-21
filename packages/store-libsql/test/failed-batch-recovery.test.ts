@@ -1,4 +1,12 @@
-import { mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync } from 'node:fs'
+import {
+  constants,
+  accessSync,
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { systemClock } from '@durablerun/core'
@@ -198,9 +206,14 @@ describe('a write batch that fails busy on a file database', () => {
     const again = await holderClient.transaction('write')
     try {
       expect(await outcome(victim.batch('write', [insert(3)]))).toMatchObject(BUSY)
-      // The new connection cannot be opened while the directory is gone.
-      renameSync(dir, `${dir}-gone`)
+      // The file is still the one the executor opened, so a new connection is asked for,
+      // and this process may not open it.
+      chmodSync(file, 0)
       try {
+        expect(
+          () => accessSync(file, constants.R_OK),
+          'this process cannot open the file',
+        ).toThrow()
         // Two calls. The first finds the connection broken and cannot open another, and the
         // second meets the client that the failed open left closed, which must refuse the call
         // itself and not end the process, as a closed connection used through the native
@@ -211,7 +224,7 @@ describe('a write batch that fails busy on a file database', () => {
           expect(unopened, attempt).not.toMatchObject(BUSY)
         }
       } finally {
-        renameSync(`${dir}-gone`, dir)
+        chmodSync(file, 0o644)
       }
       expect(await outcome(victim.batch('read', [count], 'read'))).toBe('answered')
       expect({ ...(await connectionPragmas(victim)), ids: await ids(victim) }).toEqual({
