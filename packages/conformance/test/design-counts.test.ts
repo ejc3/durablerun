@@ -15,8 +15,9 @@ const repoRoot = resolve(import.meta.dirname, '../../..')
 
 // A count DESIGN.md states for a property the code pins carries a marker straight after
 // the number, `116<!-- count: engine-invariant-conditions -->`, and the test holds it to
-// the constant, table or list the code pins. Every count is a value the code exports, so a
-// change that moves the code and leaves the sentence fails here by the count's name.
+// the constant, table or list the code pins. A count that is a product or a multiple of
+// exported values is computed here from them. A change that moves the code and leaves the
+// sentence fails here by the count's name.
 const PINNED: Readonly<Record<string, number>> = {
   'engine-invariant-conditions': ENGINE_INVARIANT_CONDITIONS.length,
   'poison-write-labels': POISON_WRITE_LABELS.length,
@@ -49,27 +50,30 @@ const WORDS = [
   'twelve',
 ]
 
-/** The number written just before a marker: digits, with or without commas, or a word. */
-function statedCounts(design: string): { key: string; stated: number; text: string }[] {
-  const found: { key: string; stated: number; text: string }[] = []
-  for (const match of design.matchAll(/(\S+)<!-- count: ([a-z0-9-]+) -->/g)) {
-    const text = match[1] as string
-    const stated = /^[0-9][0-9,]*$/.test(text)
-      ? Number(text.replace(/,/g, ''))
-      : WORDS.indexOf(text)
-    found.push({ key: match[2] as string, stated, text })
-  }
-  return found
+/** The number written just before each marker: digits, with commas or not, or a word. Null when it is neither. */
+function statedCounts(design: string): { key: string; stated: number | null; text: string }[] {
+  return [...design.matchAll(/(?<![\w,])(\d[\d,]*|[a-z]+)<!-- count: ([a-z0-9-]+) -->/g)].map(
+    ([, text, key]) => {
+      const word = WORDS.indexOf(text as string)
+      const stated = /^\d/.test(text as string)
+        ? Number((text as string).replace(/,/g, ''))
+        : word < 0
+          ? null
+          : word
+      return { key: key as string, stated, text: text as string }
+    },
+  )
 }
 
+const design = await readFile(join(repoRoot, 'DESIGN.md'), 'utf8')
+const stated = statedCounts(design)
+
 describe('DESIGN.md counts held to the code', () => {
-  it('every count with a marker equals the value the code pins', async () => {
-    const design = await readFile(join(repoRoot, 'DESIGN.md'), 'utf8')
-    const stated = statedCounts(design)
+  it('every count with a marker equals the value the code pins', () => {
     expect(stated.length).toBeGreaterThan(0)
     const unknown = stated.filter(({ key }) => !(key in PINNED)).map(({ key }) => key)
     expect(unknown, 'a marker names no pinned count').toEqual([])
-    const unreadable = stated.filter(({ stated: n }) => n < 0 || Number.isNaN(n))
+    const unreadable = stated.filter(({ stated: n }) => n === null).map(({ text }) => text)
     expect(unreadable, 'the text before a marker is not a number').toEqual([])
     const wrong = stated
       .filter(({ key, stated: n }) => PINNED[key] !== n)
@@ -77,21 +81,20 @@ describe('DESIGN.md counts held to the code', () => {
     expect(wrong).toEqual([])
   })
 
-  it('every pinned count is stated at least once, so a deleted marker fails', async () => {
-    const design = await readFile(join(repoRoot, 'DESIGN.md'), 'utf8')
-    const present = new Set(statedCounts(design).map(({ key }) => key))
+  it('every pinned count is stated at least once, so a deleted marker fails', () => {
+    const present = new Set(stated.map(({ key }) => key))
     expect(Object.keys(PINNED).filter((key) => !present.has(key))).toEqual([])
   })
 
-  it('reads digits with commas and words, and refuses text that is neither', () => {
+  it('reads digits with commas and words, and reports text that is neither', () => {
     expect(
       statedCounts(
-        'a 3,087<!-- count: poison-cells --> b eight<!-- count: temporal-fields --> c x<!-- count: k -->',
+        'a 3,087<!-- count: poison-cells --> b eight<!-- count: temporal-fields --> c x<!-- count: j -->',
       ),
     ).toEqual([
       { key: 'poison-cells', stated: 3087, text: '3,087' },
       { key: 'temporal-fields', stated: 8, text: 'eight' },
-      { key: 'k', stated: -1, text: 'x' },
+      { key: 'j', stated: null, text: 'x' },
     ])
   })
 })
