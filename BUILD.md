@@ -1536,7 +1536,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   needs no `changed` entry. `storeOverRecorder` in the identifier surface is
   not a copy: it never calls the real executor, so that a refusal shows as no
   batch reached. No statement, corpus file, or assertion changed.
-
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
