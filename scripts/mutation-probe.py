@@ -18329,19 +18329,19 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
         "one test is generated for each program, and its title carries the shape the program was generated for"
     ),
     "sdk-durable-call-is-counted-as-pending": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
+        "one test is generated for each program of a table, and its title carries the program's own description"
     ),
     "sdk-pending-durable-call-is-counted-until-it-settles": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
+        "one test is generated for each program of a table, and its title carries the program's own description"
     ),
     "sdk-step-name-used-beside-another-call-is-marked": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
+        "one test is generated for each program of a table, and its title carries the program's own description"
     ),
     "sdk-first-use-of-a-step-name-is-refused": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
+        "one test is generated for each program of a table, and its title carries the program's own description"
     ),
     "sdk-step-name-refusal-ignores-the-mark": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
+        "one test is generated for each program of a table, and its title carries the program's own description"
     ),
     "sdk-durable-key-held-before-the-body-runs": (
         "the suite runs once for each dialect, and its describe title carries the dialect"

@@ -278,7 +278,7 @@ export class ReplayContext implements TaskContext {
    */
   private pendingCalls = 0
   /** The step names a call was made under while another durable call was pending. */
-  private readonly besideAnotherCall = new TaskMap<string, boolean>()
+  private readonly besideAnotherCall = new TaskMap<string, true>()
   /**
    * The saga as its checkpoints tell it (core `sagas.ts`, specs/Sagas.tla): the start
    * index of every registered step that started, which rollbacks ran, each rollback's
