@@ -13550,21 +13550,13 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 # The SDK's replay-equivalence harness draws durable calls started together and a step named
-# after the attempt (DESIGN.md S3.2 and S3.10), and three programs it generates each own a
-# mutation. The first drops the guard a replayed step holds, which is what makes the engine
-# refuse such a group on every pass. The other two keep the audit checking that the generated
-# programs can see two defects a review found where the old grammar could not look: a second
-# registered step that starts while the first writes its start marker, and a rollback pass
-# that does not replay as the run that failed.
+# after the attempt (DESIGN.md S3.2 and S3.10), and two programs it generates each own a
+# mutation. They keep the audit checking that the generated programs can see two defects a
+# review found where the old grammar could not look: a second registered step that starts while
+# the first writes its start marker, and a rollback pass that does not replay as the run that
+# failed.
 MUTATION_SPECS.extend(
     (
-        (
-            "sdk-replayed-step-holds-the-nesting-guard",
-            "packages/sdk/src/context.ts",
-            "    if (taskMapHas(this.seen, key)) await this.replayedStepSettles()\n",
-            "    // MUTATION: a replayed step holds no guard\n",
-            "a pass that replays a step admits the durable call started beside it, which the pass that ran the step refused, so a crash after the step's checkpoint turns a task that fails for good into one that completes",
-        ),
         (
             "saga-start-marker-is-written-with-the-guard-up",
             "packages/sdk/src/context.ts",
@@ -13582,15 +13574,6 @@ MUTATION_SPECS.extend(
     )
 )
 for _verdict, _names in (
-    (
-        ExpectedVerdict(
-            "behavior",
-            "packages/sdk/test/replay-equivalence.test.ts",
-            "replay equivalence (generated programs x fault points x adversarial values) a step and then a step, which the engine refuses: every fault point yields the reference outcome",
-            "mutation-verdict:behavior:replay-harness-refuses-a-group-on-every-pass",
-        ),
-        ("sdk-replayed-step-holds-the-nesting-guard",),
-    ),
     (
         ExpectedVerdict(
             "behavior",
@@ -15996,9 +15979,6 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "sdk-repeated-name-key-held-with-its-counter": (
         "one test is generated for each member of the name-length axis, and its title carries the member"
     ),
-    "sdk-replayed-step-holds-the-nesting-guard": (
-        "one test is generated for each program, and its title carries the shape the program was generated for"
-    ),
     "saga-start-marker-is-written-with-the-guard-up": (
         "one test is generated for each program, and its title carries the shape the program was generated for"
     ),
@@ -18360,7 +18340,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 955:
+        if len(MUTATIONS) != 954:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

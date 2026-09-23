@@ -594,24 +594,10 @@ One invocation executes one claimed run to its next suspension point:
   schedule. The order the calls are answered in, how often a step's body ran,
   and the order the rows were written are no part of that.
   - A durable call made while a step is pending is refused, and the refusal
-    fails the task for good: a `FatalTaskError` that names the call and says a
-    step was pending. A step is pending while its body runs, while a
-    registered step writes its start marker, and, on a pass that replays the
-    step from its memo, until the replayed step settles one turn of the
-    microtask queue after it was called. So a group that starts a step ahead of
-    another durable call is refused on EVERY pass, the one that runs the step
-    and any that replays it. The replayed step's guard is what makes that true.
-    Without it the pass that ran the step refused the later call, a crash after
-    the step's checkpoint and before the failure was recorded let the next pass
-    replay the step and admit the call, and one program failed for good on one
-    schedule and completed on another. `emitEvent` takes no key and may be
-    called inside a step, so it is never refused this way.
-  - The refusal ends the pass while the first step's own write may still be in
-    flight: its checkpoint, or a registered step's start marker. That row lands
-    or not by schedule. One that lands holds what it would have held. A saga
-    rolls the step back when and only when its start marker landed, and hands
-    the rollback the step's output when and only when its result landed. The
-    refused call leaves nothing on any schedule.
+    fails the task for good: a `FatalTaskError` that names the call. A step is
+    pending while its body runs and while a registered step writes its start
+    marker. `emitEvent` takes no key and may be called inside a step, so it is
+    never refused this way.
   - Every other group is admitted, and replays the same on every schedule: two
     awaits of one event, two spawns, two awaits of children, two sleeps, and a
     sleep or an await with a step started AFTER it.
@@ -623,6 +609,32 @@ One invocation executes one claimed run to its next suspension point:
   - The members of a group must not depend on one another. A task that awaits,
     in a group, the event the same group emits can park before its emit lands,
     and then nothing wakes it.
+  - **Known gap: the refusal is made by the pass that runs a step, and a pass
+    that replays the step raises nothing.** A group that starts a step ahead of
+    another durable call is refused on the pass that ran the step, and fails
+    the task for good. If the outage or crash takes the failing pass's own
+    `fail` call, after the step's checkpoint landed, the next pass replays the
+    step from its memo and admits the later call, so the task completes, and a
+    saga starts the later step and rolls it back. The same program ends two
+    ways depending on which store call an outage took. The engine does not
+    close this. A guard held while a replayed step settles closes it and
+    refuses, on every replay, an ordinary fan-out written as concurrent flows,
+    which is a worse change: it fails such a task for good the first time it
+    replays, and a task in flight of that shape fails at its next replay.
+  - **Known gap: one flag cannot tell a call nested in a step from a call that
+    a sibling flow makes while the step runs.** A flow is an async function of
+    the task's own that awaits and then makes a call. Two flows started
+    together, each awaiting something and then calling a step under a name of
+    its own, are an ordinary program with no call inside a step. Whether it
+    completes depends on the moment each flow reaches its call: a call that
+    lands while the other flow's step body runs is refused as nested, and a
+    fan-out of two flows over two spawned children fails for good at 3 of the 30
+    store calls an outage can take, and completes at the other 27. Two flows
+    over events the program has already emitted fail for good on the run with no
+    fault. Telling the two apart needs the call's async context, which an SDK
+    with no import from the runtime does not have, and admitting the calls of
+    sibling flows reverses the refusal above. It is an option in BUILD.md
+    (PR3.4d), with its trigger.
   - A call made later than the step's own synchronous run, after the task
     awaited something that is not durable and while the step is still pending,
     races the step's body on the pass that runs it. No guard makes that the same
@@ -636,47 +648,37 @@ One invocation executes one claimed run to its next suspension point:
     admitted group is held to the whole comparison every program is held to:
     the same ending, result, failure, checkpoint table and task counts as the
     run with no fault, and for a saga the same rollback order and the same
-    output handed to each rollback. A program with a refused group is held to
-    the same failure at every fault point, to the refused call having run no
-    body and left no row, to the saga's row checkers, and to a checkpoint table
-    equal to the reference's but for the first step's own rows, each of which
-    is either missing or exactly what the program says it holds. That trusts
-    neither run for those rows. Its false negative is a row of the first step
-    that is wrongly MISSING from a run where it should have landed, which
-    nothing sees. That is tolerable here: the task has failed for good, and the
-    only later reader of those rows is the rollback, which is held to being run
-    when and only when the start marker landed and to being handed the output
-    when and only when the result landed. When that member was rolled back its
-    place in the order is asserted too: it started last of all, so it is rolled
-    back first. One case
-    reverses the order two spawns are answered in and shows each child still
-    under the key of its own call, and shows that the comparison fails when the
-    children are swapped. Each shape heads a short program of its own, so every
-    shape runs at every fault point whatever the random programs draw. The
-    file's self-tests fail when a generator stops drawing a shape, when a shape
-    is taken out of its table (one self-test names every shape), when a
-    generated method does not say whether a group holds it, when a shape is in
-    no program the file runs, and when a kind of call is made only inside a
-    group. Three registered mutations keep the audit
-    checking that these programs can fail: one drops the replayed step's guard,
-    one lowers the guard while a registered step writes its start marker, and
-    one lets a rollback pass keep its own ordinal.
-  - **Known cost for a task in flight when the build changes.** The way in is
-    narrow. It takes task code that starts a durable call beside a step, which
-    every ordinary pass refuses; an older build; a crash or an outage at that
-    pass's own `fail` call, after the first step's checkpoint landed, so that
-    the next pass replayed the step and admitted the later call; and a deploy
-    of this build while that task is still in flight. With both members
-    memoized, the first pass of the new build that replays the group refuses
-    it, and the task fails for good. Its failure reason is the refusal, naming
-    the later call, which is how an operator tells. A saga that was already
-    rolling back halts instead, with nothing compensated: the refusal ends the
-    pass's replay at the group, no step after it registers its rollback, and
-    the rollback outcome is `failed` with `$RollbackNotRegistered` naming the
-    step that started last. An operator reads both on the task's result and
-    through the inspect route, and compensating the steps that ran is left to
-    them, by hand. It is fail-stop: nothing completes silently. The cost is
-    accepted, because the alternative keeps two histories for one program.
+    output handed to each rollback. A program with a refused group is held, at
+    every fault point but the known gap's, to the same failure, to the refused
+    call having run no body and left no row, to the saga's row checkers, and to
+    a checkpoint table equal to the reference's but for the first step's own
+    rows, each of which is either missing or exactly what the program says it
+    holds. That trusts neither run for those rows. Its false negative is a row
+    of the first step that is wrongly MISSING from a run where it should have
+    landed, which nothing sees. That is tolerable here: the task has failed for
+    good, and the only later reader of those rows is the rollback, which is held
+    to being run when and only when the start marker landed and to being handed
+    the output when and only when the result landed. When that member was rolled
+    back its place in the order is asserted too: it started last of all, so it
+    is rolled back first. At the known gap's call the test pins what the engine
+    does: the group is admitted and the task completes, or the saga's later
+    member starts. Each known gap is a witness rather than a comparison: a
+    program of concurrent flows (`FLOW_PROGRAMS` in the harness) says how many
+    store calls the run with no fault makes, how it ends, and the store calls
+    at which an outage ends it the other way, and the test runs an outage at
+    every store call and fails on any other ending. A gap that is closed by
+    accident, or that gets worse, fails the witness until it is changed on
+    purpose. One case reverses the order two spawns are answered in and shows
+    each child still under the key of its own call, and shows that the
+    comparison fails when the children are swapped. Each shape heads a short
+    program of its own, so every shape runs at every fault point whatever the
+    random programs draw. The file's self-tests fail when a generator stops
+    drawing a shape, when a shape is taken out of its table (one self-test names
+    every shape), when a generated method does not say whether a group holds it,
+    when a shape is in no program the file runs, and when a kind of call is made
+    only inside a group. Two registered mutations keep the audit checking that
+    these programs can fail: one lowers the guard while a registered step writes
+    its start marker, and one lets a rollback pass keep its own ordinal.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no
@@ -3436,16 +3438,14 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     SDK writes it only when the step has none, only the lease holder writes
     checkpoints, and the next index is one past the highest handed out. So a
     step retried by a later attempt keeps its place, and no two started steps
-    share one. Steps do not start concurrently: a durable call made while a
+    share one. Steps do not start concurrently on the pass that runs them: a durable call made while a
     registered step is still writing its start marker is refused as a nested
     call, exactly as one made while a step's body runs, so two registered
-    steps under `Promise.all` fail the task as two unregistered ones do. That
-    holds on every pass: a pass that replays the first step from its memo holds
-    the same guard until the replayed step settles, so a pass that follows a
-    crash does not admit the group (section 3.2, "Durable calls started
-    together", which also says what a task in flight pays). At most one member
-    of such a group ever starts, so a group never owes an order between two of
-    its members. The
+    steps under `Promise.all` fail the task as two unregistered ones do. The
+    pass that runs the first step refuses the group; a pass that replays the
+    step from its memo raises nothing, so an outage on the failing pass's own
+    `fail` call lets the next pass admit it and start both (section 3.2, "Durable
+    calls started together", which names the gap). The
     model keys the index by saga generation because a fresh
     revival would forget it. Under the decision below no revival follows a
     saga, so a task has one generation and the key is not needed.

@@ -273,14 +273,6 @@ export class ReplayContext implements TaskContext {
   private readonly nameUses = new TaskMap<string, number>()
   private inStep = false
   /**
-   * Up while a step that replays its memo has not yet settled. A pass that runs a step
-   * refuses every durable call made before the step's body returns, and a pass that replays
-   * the step has to refuse the same calls. Otherwise calls started together, as under
-   * `Promise.all`, are refused by one pass and admitted by the next, and how the task ends
-   * depends on which pass ran.
-   */
-  private replayingStep = false
-  /**
    * The saga as its checkpoints tell it (core `sagas.ts`, specs/Sagas.tla): the start
    * index of every registered step that started, which rollbacks ran, each rollback's
    * failed attempts, and the failure that began the rolling-back phase. Nothing else
@@ -434,16 +426,12 @@ export class ReplayContext implements TaskContext {
    * replaying pass (which skips the memoized step body) never sees, so a
    * later same-named op replays the wrong checkpoint or consumes the wrong
    * wake. Reentrancy-proof by construction, not by remembering to check.
-   *
-   * It refuses the same way a call made beside a step that has not settled, as under
-   * `Promise.all`: on the pass that runs the step, and on a pass that replays it
-   * (`replayingStep`), so that such a group ends the same whichever pass meets it.
    */
   private enterDurableOp(what: string): void {
     this.assertLeaseHeld()
-    if (this.inStep || this.replayingStep) {
+    if (this.inStep) {
       throw new FatalTaskError(
-        `${what} called while a step is pending: a durable call cannot be made inside a step, or beside one that has not settled`,
+        `${what} called inside a step — durable operations cannot nest inside a step`,
       )
     }
   }
@@ -471,8 +459,6 @@ export class ReplayContext implements TaskContext {
     if (registration !== undefined && taskMapHas(this.seen, key)) {
       this.register(key, name, registration, taskMapGet(this.seen, key))
     }
-    // A step that replays holds the guard a running step holds, until it settles.
-    if (taskMapHas(this.seen, key)) await this.replayedStepSettles()
     if (taskMapHas(this.seen, key)) {
       return taskMapGet(this.seen, key) as T
     }
@@ -511,20 +497,6 @@ export class ReplayContext implements TaskContext {
     const value = await this.commitCheckpoint(key, `step '${name}' result`, raw)
     if (registration !== undefined) this.register(key, name, registration, value)
     return value as T
-  }
-
-  /**
-   * A replayed step settles one turn of the microtask queue after it is called, with the
-   * guard up until then. That covers the calls a running step refuses whatever its body
-   * does: the ones made in the same synchronous run, which is what a task starts beside the
-   * step under `Promise.all`. A call made later, after the task awaited something that is
-   * not durable, races the step's body on the pass that runs it, and no guard can make that
-   * the same on two passes.
-   */
-  private async replayedStepSettles(): Promise<void> {
-    this.replayingStep = true
-    await null
-    this.replayingStep = false
   }
 
   /**

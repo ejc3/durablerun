@@ -915,20 +915,38 @@ const inAFlow = (op: Omit<ProgramOp, 'valueIndex' | 'nameIndex'>, valueIndex = 0
 })
 
 /**
+ * What the engine does today with a program that it does not run the same at every fault
+ * point: how many store calls the run with no fault makes, how it ends, and the store calls
+ * at which an outage makes it end the other way. Every store call is tried.
+ */
+interface KnownGap {
+  readonly calls: number
+  readonly reference: 'completed' | 'refused'
+  readonly otherwiseAt: readonly number[]
+}
+
+/**
  * The programs no generator draws: concurrent FLOWS. The calls of a group are all made before
  * the first of them is answered. A flow is a function of its own that awaits and then makes a
  * durable call, so two flows started together reach their calls at moments that a store call
  * or a timer decides, and on a pass that replays every await from its memo they reach them in
- * lockstep. Each program says how it must end. The first two are ordinary programs in which
- * no call is made inside a step, so they complete. The last one ends as the engine decides,
- * and like every program it ends the same way whichever store call an outage takes. A flow
- * program is short, and the call that tells is not always one the sample takes, so it runs
- * with an outage at EVERY store call.
+ * lockstep. A flow program is short, and the call that tells is not always one the sample
+ * takes, so each runs with an outage at EVERY store call.
+ *
+ * A program with a `gap` is a KNOWN GAP, and the test says exactly what the engine does with
+ * it (`theEngineDoesWhatTheGapSays`). Each is an ordinary program in which no call is made
+ * inside a step, and each is refused as if a call had been made inside one, because the
+ * engine's refusal is one flag that cannot tell a call nested in a step from a call that a
+ * sibling flow makes while the step runs. Whether a program of this shape completes depends
+ * on which store call an outage takes. Closing the gap means admitting concurrency, which
+ * reverses DESIGN.md section 3.10 (BUILD.md's PR3.4d entry names the option and its
+ * trigger). Until then the witness fails if a program ends another way at any call, so a gap
+ * that is closed by accident, or that gets worse, is seen.
  */
-const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; ends: 'completed' | 'either' }> = {
+const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap?: KnownGap }> = {
   'flows that each await a child and then record it in a step under its own name, and then a sleep':
     {
-      ends: 'completed',
+      gap: { calls: 30, reference: 'completed', otherwiseAt: [6, 7, 24] },
       ops: [
         group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
         flowsOf(
@@ -946,7 +964,7 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; ends: 'completed' | 'eit
     },
   'flows that each await an event the program has emitted and then record it in a step, and then a sleep':
     {
-      ends: 'completed',
+      gap: { calls: 11, reference: 'refused', otherwiseAt: [6, 7, 8, 9, 11] },
       ops: [
         inAFlow({ kind: 'emit', eventName: 'e1' }),
         inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
@@ -964,7 +982,7 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; ends: 'completed' | 'eit
       ],
     },
   'flows that each wait on a timer of its own length and then run a step whose body takes time': {
-    ends: 'either',
+    gap: { calls: 5, reference: 'refused', otherwiseAt: [4] },
     ops: [
       flowsOf(
         [
@@ -1037,11 +1055,29 @@ const storedValue = (valueIndex: number): string => JSON.stringify(VALUES[valueI
 const refusedCallOf = (op: ProgramOp): string =>
   op.kind === 'step' ? `ctx.step('${op.name}')` : `ctx.${KIND_TO_METHOD[op.kind as CallKind]}`
 
+/** The store call that is a run's first `fail`: the failing pass's own record of its failure. */
+function firstFailCall(trace: readonly string[]): number {
+  const calls = trace.filter(
+    (entry) => entry !== 'attempt' && entry !== INJECTED_OUTAGE && !/^op \d+$/.test(entry),
+  )
+  const at = calls.indexOf('fail')
+  if (at < 0) throw new Error('the run made no `fail` call')
+  return at + 1
+}
+
 /**
- * A program whose group the engine refuses is held to this on every schedule: the task fails
- * for good with the same refusal, which names the later call; the later member left nothing,
- * no body and no row; and the checkpoint table is the reference's, but for the first member's
- * own row, which the refusal may leave out.
+ * A program whose group the engine refuses is held to this at every fault point but one: the
+ * task fails for good with the same refusal, which names the later call; the later member
+ * left nothing, no body and no row; and the checkpoint table is the reference's, but for the
+ * first member's own row, which the refusal may leave out.
+ *
+ * The one is a KNOWN GAP, and the test says what the engine does at it. When the outage takes
+ * the failing pass's own `fail` call, the next pass replays the first member from its memo,
+ * which raises nothing, so the pass admits the later call and the task completes. Closing it
+ * means making a replayed step refuse calls beside it, which also refuses an ordinary fan-out
+ * written as concurrent flows (BUILD.md's PR3.4d entry names the options). The run with the
+ * outage on that call must complete, so a change that closes the gap, or that admits the group
+ * at any other call, fails here until this test is changed on purpose.
  */
 async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): Promise<void> {
   const refused = refusedGroupOf(ops)
@@ -1050,22 +1086,36 @@ async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): 
     throw new Error('the program holds no refused group')
   const inFlight = new Map([[String(first.name), storedValue(first.valueIndex)]])
   const laterBody = `${ops.indexOf(refused)}.1`
-  const reference = await everyFaultPointYieldsTheReference(label, async (seed, failAtCall) => {
-    const watch: Watch = { trace: [], bodies: [], members: [] }
-    const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
-    expect(watch.members, `fault at call ${failAtCall}`).not.toContain(laterBody)
-    return {
-      ...record,
-      checkpoints: withoutTheRowsInFlight(record.checkpoints, inFlight),
-      // The longest name is the first member's own when its row is there, so it is not compared.
-      longestCheckpointName: 0,
-    }
-  })
+  const measured: Watch = { trace: [], bodies: [] }
+  await runProgram(ops, `ref-${label}`, 0, { ends: 'failed', watch: measured })
+  const admittedAt = firstFailCall(measured.trace)
+  const reference = await everyFaultPointYieldsTheReference(
+    label,
+    async (seed, failAtCall) => {
+      const watch: Watch = { trace: [], bodies: [], members: [] }
+      const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+      expect(watch.members, `fault at call ${failAtCall}`).not.toContain(laterBody)
+      return {
+        ...record,
+        checkpoints: withoutTheRowsInFlight(record.checkpoints, inFlight),
+        // The longest name is the first member's own when its row is there, so it is not compared.
+        longestCheckpointName: 0,
+      }
+    },
+    (measuredCalls) => faultPoints(measuredCalls).filter((call) => call !== admittedAt),
+  )
   const failure = JSON.parse(reference.failure ?? 'null') as { name?: string; message?: string }
   expect({
     name: failure?.name,
-    refuses: failure?.message?.split(' called while a step is pending')[0],
+    refuses: failure?.message?.split(' called inside a step')[0],
   }).toEqual({ name: 'FatalTaskError', refuses: refusedCallOf(later) })
+  const admitted = await runProgram(ops, `fault-${label}-${admittedAt}`, admittedAt, {
+    ends: 'either',
+  })
+  expect(
+    { state: admitted.state, failure: admitted.failure },
+    `known gap: the outage on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+  ).toEqual({ state: 'completed', failure: undefined })
 }
 
 describe('context-method enrollment (the inventory gate)', () => {
@@ -1281,37 +1331,60 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (const [title, ops] of RUN_PROGRAMS) {
     it(`${title}: every fault point yields the reference outcome`, async () => {
-      // The registered mutant that the program generated for a shape is the owner of.
-      const verdict = (
-        {
-          'a step and then a step, which the engine refuses':
-            'mutation-verdict:behavior:replay-harness-refuses-a-group-on-every-pass',
-        } as Record<string, string | undefined>
-      )[title]
-      await owning(verdict, async () => {
-        if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
-        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
-          runProgram(ops, runSeed, failAtCall),
-        )
-      })
+      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
+      await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
+        runProgram(ops, runSeed, failAtCall),
+      )
     }, 60_000)
   }
 
   for (const [title, program] of Object.entries(FLOW_PROGRAMS)) {
-    it(`${title}: an outage at every store call yields the reference outcome`, async () => {
+    it(`${title}: an outage at every store call ${program.gap === undefined ? 'yields the reference outcome' : 'ends as the known gap says'}`, async () => {
+      if (program.gap !== undefined) return theEngineDoesWhatTheGapSays(program.ops, program.gap)
       await everyFaultPointYieldsTheReference(
         title,
-        async (runSeed, failAtCall) => {
-          const record = await runProgram(program.ops, runSeed, failAtCall, { ends: 'either' })
-          if (failAtCall === 0 && program.ends !== 'either')
-            expect(record.state, 'how the program says it ends, with no fault').toBe(program.ends)
-          return record
-        },
+        (runSeed, failAtCall) => runProgram(program.ops, runSeed, failAtCall, { ends: 'either' }),
         everyCall,
       )
     }, 120_000)
   }
 })
+
+/** How a run ended: what it completed with, or the call the engine refused. */
+function endingOf(run: Awaited<ReturnType<typeof runProgram>>): string {
+  if (run.state === 'completed') return `completed ${run.result}`
+  const message = (JSON.parse(run.failure ?? 'null') as { message?: string } | null)?.message
+  const refused = message?.split(' called inside a step')[0]
+  return message !== undefined && message !== refused
+    ? `refused ${refused}`
+    : `${run.state} ${message}`
+}
+
+/**
+ * The witness of a known gap. The run with no fault ends as the gap says. An outage at each
+ * store call ends the same way, except at the calls the gap names, where the program ends the
+ * other way: refused where the reference completed, and completed with the reference's
+ * result where the reference was refused.
+ */
+async function theEngineDoesWhatTheGapSays(ops: ProgramOp[], gap: KnownGap): Promise<void> {
+  const reference = await runProgram(ops, 'gap-ref', 0, { ends: 'either' })
+  const referenceEnding = endingOf(reference)
+  expect(
+    { calls: reference.calls, ending: referenceEnding.split(' ')[0] },
+    'the run with no fault',
+  ).toEqual({ calls: gap.calls, ending: gap.reference })
+  const otherwise: { call: number; ending: string }[] = []
+  for (const call of everyCall(reference.calls)) {
+    const ending = endingOf(await runProgram(ops, `gap-${call}`, call, { ends: 'either' }))
+    if (ending !== referenceEnding) otherwise.push({ call, ending })
+  }
+  expect(
+    otherwise.map((run) => run.call),
+    'the store calls at which an outage ends it the other way',
+  ).toEqual([...gap.otherwiseAt])
+  // Every one of them ends the same one other way.
+  expect(new Set(otherwise.map((run) => run.ending)).size).toBeLessThanOrEqual(1)
+}
 
 /**
  * The name-length axis. A durable identifier holds 255 characters (DESIGN.md §3.4 rule 10),
@@ -1867,12 +1940,14 @@ async function runSagaProgram(
     await admin.migrate()
     const real = new LibsqlSchedulerStore(raw, seededIdSource(new Rng(seed)))
     let calls = 0
+    const methods: string[] = []
     const store = new Proxy(tamper(real), {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver)
         if (typeof value !== 'function' || prop === 'constructor') return value
         return (...args: unknown[]) => {
           calls++
+          methods.push(String(prop))
           if (calls === failAtCall)
             return Promise.reject(new StoreUnavailableError('injected outage'))
           return (value as (...a: unknown[]) => unknown).apply(target, args)
@@ -1929,6 +2004,8 @@ async function runSagaProgram(
     const undos = effects.log.filter((line) => line.startsWith('undo:'))
     return {
       calls,
+      /** The SDK's store calls, by method, in the order they were made. */
+      methods,
       state: result?.state,
       failure: result?.failureReasonJson,
       outcome: result?.rollback?.outcome,
@@ -1967,7 +2044,11 @@ async function sagaReplaysAsItsReference(title: string, program: SagaProgram): P
   })
   const inFlight = rowsARefusalMayLeaveOut(program)
   const comparedTo = comparable(reference, inFlight)
-  for (const call of faultPoints(reference.calls)) {
+  // A refused group is admitted, as a plain program's is, when the outage takes the failing
+  // pass's own `fail` call (see everyFaultPointRefusesTheGroup): both members start and the
+  // task ends with the program's own failure. That call is run apart and pinned.
+  const admittedAt = inFlight === undefined ? undefined : reference.methods.indexOf('fail') + 1
+  for (const call of faultPoints(reference.calls).filter((point) => point !== admittedAt)) {
     const faulted = await runSagaProgram(program, `saga-fault-${title}-${call}`, call)
     expect(comparable(faulted, inFlight), `fault at call ${call} of ${reference.calls}`).toEqual(
       comparedTo,
@@ -1976,6 +2057,23 @@ async function sagaReplaysAsItsReference(title: string, program: SagaProgram): P
     // least once, and a second run needs a fault between the handler and its record.
     const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
     expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(true)
+  }
+  if (admittedAt !== undefined) {
+    const admitted = await runSagaProgram(program, `saga-fault-${title}-${admittedAt}`, admittedAt)
+    const sites = flat(program.ops)
+    const [, later] = (refusedGroupOf(program.ops)?.members ?? []).map((op) => sites.indexOf(op))
+    expect(
+      {
+        state: admitted.state,
+        failure: (JSON.parse(admitted.failure ?? 'null') as { message?: string } | null)?.message,
+        laterMemberStarted: admitted.undone.includes(later ?? -1),
+      },
+      `known gap: the outage on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+    ).toEqual({
+      state: 'failed',
+      failure: 'the program failed for good',
+      laterMemberStarted: true,
+    })
   }
 }
 
