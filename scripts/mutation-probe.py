@@ -14689,7 +14689,7 @@ MUTATION_SPECS.extend(
             "sdk-first-use-of-a-step-name-is-refused",
             "packages/sdk/src/context.ts",
             "(taskMapGet(this.nameUses, name) ?? 0) > 1 && taskMapHas(this.besideAnotherCall, name)",
-            "taskMapHas(this.besideAnotherCall, name)",
+            "(taskMapGet(this.nameUses, name) ?? 0) > 0 && taskMapHas(this.besideAnotherCall, name)",
             "the first use of a step name made beside another call is refused too, so each flow of a fan-out that gives its step a name of its own fails",
         ),
         (
