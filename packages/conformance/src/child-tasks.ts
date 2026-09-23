@@ -11,6 +11,7 @@ import {
   encodeTaskOutcome,
   taskDoneEventName,
 } from '@durablerun/core'
+import { RecordingExecutor } from '@durablerun/core/testing'
 import { SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { childTaskViolations } from './child-task-rows.js'
@@ -32,18 +33,6 @@ import {
 const Q = 'q'
 const START_MS = 1_000_000
 const STEP = '$await-task'
-
-/** A store over the fixture's real executor that records every batch label, in order. */
-function recordingLabels(f: StoreFixture): { store: StoreFixture['store']; labels: string[] } {
-  const labels: string[] = []
-  const store = f.storeOver({
-    batch: (label, statements, control) => {
-      labels.push(label)
-      return f.raw.batch(label, statements, control)
-    },
-  })
-  return { store, labels }
-}
 
 function awaitChild(
   store: StoreFixture['store'],
@@ -300,11 +289,12 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
         await withFixture(makeFixture, `child-terminal-${batch.label}`, async (fx) => {
           await fx.admin.setFakeNowEpochMs(START_MS)
           const parent = await claimedParent(fx)
-          const recorded = recordingLabels(fx)
+          const recorded = new RecordingExecutor(fx.raw)
+          const store = fx.storeOver(recorded)
           const ready = await batch.prepare(fx, Q)
           const { childTaskId, outcome } = ready
           await parkedParent(fx, parent, childTaskId)
-          await endChild(fx, ready, recorded.store)
+          await endChild(fx, ready, store)
           const payloadJson = encodeTaskOutcome(outcome)
           const eventName = taskDoneEventName(childTaskId)
           const parentRun = await readOne(
@@ -508,20 +498,21 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     // use, and the store lets it go: asked to end the same run again, it reads the run's
     // task (`run-task`) like a store that never knew it.
     it('forgets the task of a run once its terminal batch has ended the run', async () => {
-      const recorded = recordingLabels(f)
+      const recorded = new RecordingExecutor(f.raw)
+      const store = f.storeOver(recorded)
       const failure = '{"name":"Boom"}'
       const endings = {
-        complete: (run: ClaimedRun) => recorded.store.complete(Q, run.runId, run.claimToken, '{}'),
-        fail: (run: ClaimedRun) => recorded.store.fail(Q, run.runId, run.claimToken, failure, null),
+        complete: (run: ClaimedRun) => store.complete(Q, run.runId, run.claimToken, '{}'),
+        fail: (run: ClaimedRun) => store.fail(Q, run.runId, run.claimToken, failure, null),
         'fail with a retry': (run: ClaimedRun) =>
-          recorded.store.fail(Q, run.runId, run.claimToken, failure, { delaySeconds: 60 }),
+          store.fail(Q, run.runId, run.claimToken, failure, { delaySeconds: 60 }),
       }
       const askedAgain: Record<string, { refusal: string; labels: string[] }> = {}
       for (const [name, end] of Object.entries(endings)) {
-        await recorded.store.spawn(Q, name, '{}')
-        const run = await claimActivated(recorded.store, Q, `w-${name}`)
+        await store.spawn(Q, name, '{}')
+        const run = await claimActivated(store, Q, `w-${name}`)
         await end(run)
-        recorded.labels.length = 0
+        recorded.batches.length = 0
         askedAgain[name] = { refusal: await refusalName(end(run)), labels: [...recorded.labels] }
       }
       expect(askedAgain, 'mutation-verdict:behavior:a-won-terminal-write-forgets-its-run').toEqual({
@@ -541,8 +532,9 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     it('refuses to await a child in another queue, and registers nothing', async () => {
       const parent = await claimedParent(f)
       const child = await f.store.spawn('other', 'child', '{}')
-      const recorded = recordingLabels(f)
-      const refusal = await childRefusal(awaitChild(recorded.store, Q, parent, child.taskId, 30))
+      const recorded = new RecordingExecutor(f.raw)
+      const store = f.storeOver(recorded)
+      const refusal = await childRefusal(awaitChild(store, Q, parent, child.taskId, 30))
       expect(
         {
           refusal,
@@ -585,8 +577,9 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     it('never refuses a same-queue child', async () => {
       const parent = await claimedParent(f)
       const child = await f.store.spawn(Q, 'child', '{}')
-      const recorded = recordingLabels(f)
-      const parked = await childRefusal(awaitChild(recorded.store, Q, parent, child.taskId, null))
+      const recorded = new RecordingExecutor(f.raw)
+      const store = f.storeOver(recorded)
+      const parked = await childRefusal(awaitChild(store, Q, parent, child.taskId, null))
       expect(
         { parked, waits: await waitCount(f) },
         'mutation-verdict:behavior:child-await-allows-the-same-queue',

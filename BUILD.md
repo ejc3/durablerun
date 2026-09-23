@@ -357,7 +357,7 @@ is left: line 18, held for the maintainer's choice.
     records every completion event under another task's name, committed
     failing, is now rejected, and the matrix with every checker is green on
     three dialects. Of the copies, the SDK tests' `expectCleanRows` exists
-    once, and the label recorders are an option under the PR3.3d entry.
+    once, and the label recorders exist once (PR3.3e).
 18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
     together and a step named after the attempt, in its plain and its saga
     generator, and each shape runs at every fault point in a program of its
@@ -553,6 +553,15 @@ is left: line 18, held for the maintainer's choice.
     there, and the other fails by name against an executor that fails the call
     after a failed batch.
 
+28. PR3.3e: a test helper that records the batch labels an executor was sent
+    exists once, `RecordingExecutor` in `@durablerun/core/testing`, and the
+    child-task surface, the poison matrix, and the two libSQL tests that had a
+    copy each import it. This is met. Behaviour is unchanged: with the memo's
+    remember at activate deleted, `run-task-read.test.ts` fails by name; with
+    the forget after a won terminal write deleted, `refusal-read.test.ts` and
+    the child-task case "forgets the task of a run once its terminal batch has
+    ended the run" fail by name; with the poison subclass's state note removed,
+    the poison matrix fails on libSQL. No statement or corpus file moved.
 29. PR3.10b: a count DESIGN.md states for a pinned property equals the
     constant, table or list the code pins for it. A number that differs, a
     marker that names no pinned count, and a pinned count whose marker is gone
@@ -1521,6 +1530,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     second write path beside the hosted one. Trigger: upstream still unfixed
     when the trigger above is observed, or the recovery found to misbehave in
     use.
+- **PR3.3e the label recorders exist once**: DONE. The test executor that
+  records the batch labels it is sent had four copies: `recordingLabels` in the
+  child-task surface, `RecordingExecutor` in the poison matrix and in the
+  libSQL refusal-read test, and `LabelRecorder` in the libSQL run-task-read
+  test. One `RecordingExecutor` is exported from `@durablerun/core/testing`,
+  where a fourth dialect's tests inherit it. It records each batch's label,
+  statement text, and mode before the batch runs, so a batch that fails is
+  recorded too. The poison matrix keeps a subclass that also notes whether each
+  write batch changed durable state. The helper is in core's testing entry
+  point and not in the conformance package because a store's own tests import
+  core and do not depend on the conformance package. The entry point is
+  released, and a new export of a released entry point is an addition that
+  needs no `changed` entry. `storeOverRecorder` in the identifier surface is
+  not a copy: it never calls the real executor, so that a refusal shows as no
+  batch reached. No statement, corpus file, or assertion changed.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -2890,15 +2914,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.
-  - An option, not built: one recorder of batch labels. The copies are
-    `LabelRecorder` in the libSQL store's `run-task-read.test.ts`,
-    `RecordingExecutor` in its `refusal-read.test.ts`, and `recordingLabels` in
-    the child-task surface, and the poison matrix has a fourth recorder,
-    another `RecordingExecutor`, which also records whether a call changed
-    state. This bullet left them with PR4.4d, which merged without them: its
-    exit test names four kinds of copy, and a recorder of labels is none of
-    them. Trigger: the next test that needs a recorder of labels, which would
-    be a fifth.
   - The matrix's judge tells the older build's ending from the state of the
     row. A cancel of that same child by the current build that lost its
     completion event would be excused too. No batch of the workload does
