@@ -3427,7 +3427,7 @@ not depend on careful reading:
   inside the server, under a registered mutation. Other pairs of different
   calls stay with the fuzz and the fault matrix. On libSQL two calls interleave
   only between batches, because one connection runs a batch to its end.
-  Measured there: in 24 of the 37<!-- count: self-concurrency-contests --> contests every copy sends one batch, so both
+  Measured there: in 25 of the 38<!-- count: self-concurrency-contests --> contests every copy sends one batch, so both
   orders send the same batches in the same order, and on libSQL those contests
   can fail only on an invariant, an outage or the idle floor, and never on a
   race. In 10 the only second batch is a loser's read of why it was refused.
