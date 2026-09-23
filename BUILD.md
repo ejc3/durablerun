@@ -360,16 +360,17 @@ is left: line 18, held for the maintainer's choice.
     once, and the label recorders are an option under the PR3.3d entry.
 18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
     together and a step named after the attempt, in its plain and its saga
-    generator, and each shape runs at every fault point in a program of its
-    own. It also draws flows that run side by side, each with an await before
-    its step, and every program it draws ends the same way at every fault
-    point. This is NOT MET, and pull request #75 is held for the maintainer. It
-    built the harness and a fix for what the harness found, and its one review
-    showed that the fix fails an ordinary fan-out written as concurrent flows,
-    on a run with no fault. Five options for the guard were measured side by
-    side. Each sound one changes what the SDK promises a task's author, so the
-    maintainer chooses. The PR3.4d entry names the two defects main has until
-    then.
+    generator, with each shape in a program of its own that runs at every fault
+    point, and it runs two flows that share a step name with an outage at every
+    store call, none of which may complete. This is met. Two such programs,
+    over two spawned children and over two emitted events, were committed
+    failing by name: on the SDK as it was, an outage at 3 of 30 store calls and
+    at 2 of 11 completed the task with the two flows' values swapped. The SDK now
+    refuses a step name that concurrent flows share, and both programs are
+    refused at every store call. Five registered mutations that hold the
+    refusal are each caught by name. Three flow programs that the SDK refuses
+    as if a call were nested in a step are witnesses of what it does, each
+    failing on any other ending at any store call.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -555,44 +556,35 @@ is left: line 18, held for the maintainer's choice.
 
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
-none of them. What the SDK does about durable calls made at the same time: pull
-request #75 is held on it, it blocks exit test line 18, and the PR3.4d entry
-has the measured options, the two defects main has until then, and an open
-question the same choice settles. Three flow programs that turn #75 red by
-design are written and not pushed, and pushing them is the maintainer's call
-(the PR3.4d entry). Five pull requests of this milestone each decided, without
-the maintainer, a change that a caller of a published package can see, and each
-blocks nothing. Each entry named below records the change, and the other way is
-written only here. PR3.3d changed `error.name` at the port's bare refusals from
-`RangeError` to `PortRefusalError`, and the other way is to leave the name as
-it was (the PR3.3d entry). PR3.4c changed the signature of `failRollback` in
-one step, and the other way is to accept both shapes for one release (the
-PR3.4c entry). PR3.14b held a claim token to an identifier's width, which
-PR3.3c's one check now does at every entry that takes a token, and the other
-way is to bound the index and not the token (the PR3.14b entry). PR2.5a answers
-a permanent store error 500 at the hosted routes, where the same failure
-answered 503, and the other way is to keep 503 (the PR2.5a entry). PR3.3c
-answers 400 at the inspect route for a task id with a NUL in it, where it
-answered 404, and the other way is to keep 404 (the PR3.3c entry). PR3.15
-decided the shape of its fix without the maintainer: after a failed batch a
-libSQL file executor asks its connection with an empty read transaction,
-reconnects only a connection that refuses, and runs a file's batches one at a
-time, and the two other shapes, a probe of the write lock while a lock outage
-lasts and the executor framing a file's transaction itself, are recorded as
-options with their triggers (the PR3.15 entry). Two design questions are
-recorded as the maintainer's, each an option with its trigger: a way for a
-batch of reads to say it needs a current answer (under PR3.4), and what ends a
-run whose store call fails permanently (under PR2.5a). The generated surface
-for the plan reader, whose trigger has been met, waits for the maintainer's
-decision (an option under PR3.14c, met by the reviews of PR3.14d). A comment
-for the client library's open issue upstream,
-tursodatabase/libsql-client-ts#352, which points at
-tursodatabase/libsql-js#228, is prepared with reproductions and not posted, and
-posting it is the maintainer's (the PR3.15 entry names the bug). A stated
-oldest supported build, which dropping the row lock of a caller's event waits
-for, is under PR3.3 and in the non-goals below. One base class for the whole
-refusal family is under PR3.3d. The PlanetScale smoke job is in the non-goals
-below and in the PR4.3 entry. The five cleanups of the published API that the
+none of them. Whether the SDK admits the concurrency of sibling flows, which
+would end the refusal that fails an ordinary fan-out written as flows at some
+store calls and would reverse DESIGN.md section 3.10, is an option with its
+trigger under PR3.4d. Five changes that a caller of a published package can
+see were approved by the maintainer on 2026-09-21, and each is recorded in its
+entry: PR3.3d changed `error.name` at the port's bare refusals from
+`RangeError` to `PortRefusalError`, PR3.4c changed the signature of
+`failRollback` in one step, PR3.14b held a claim token to an identifier's
+width, which PR3.3c's one check now does at every entry that takes a token,
+PR2.5a answers a permanent store error 500 at the hosted routes, where the
+same failure answered 503, and PR3.3c answers 400 at the inspect route for a
+task id with a NUL in it, where it answered 404. PR3.15 decided the shape of
+its fix without the maintainer: after a failed batch a libSQL file executor
+asks its connection with an empty read transaction, reconnects only a
+connection that refuses, and runs a file's batches one at a time, and the two
+other shapes, a probe of the write lock while a lock outage lasts and the
+executor framing a file's transaction itself, are recorded as options with
+their triggers (the PR3.15 entry). Two design questions are recorded as the
+maintainer's, each an option with its trigger: a way for a batch of reads to
+say it needs a current answer (under PR3.4), and what ends a run whose store
+call fails permanently (under PR2.5a). The generated surface for the plan
+reader, whose trigger has been met, waits for the maintainer's decision (an
+option under PR3.14c, met by the reviews of PR3.14d). The client library's open
+issue upstream, tursodatabase/libsql-client-ts#352, has the comment posted, and
+a fix is proposed upstream (the PR3.15 entry names the bug). A stated oldest
+supported build, which dropping the row lock of a caller's event waits for, is
+under PR3.3 and in the non-goals below. One base class for the whole refusal
+family is under PR3.3d. The PlanetScale smoke job is in the non-goals below and
+in the PR4.3 entry. The five cleanups of the published API that the
 simplification sweep turned down, the unimplemented `WakeSignals` port among
 them, are the bullets marked Rejected under PR3.5 that would change a published
 export. Review configuration owned outside the repository is PR0.2. A drive of
@@ -3123,11 +3115,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     named for the dialect, with the store's own tests beside them, none failed
     or skipped. A task spawned with a budget of 1,000,000 attempts rolls back
     there as any other does.
-  - The replay-equivalence harness generates sequential programs only. It has
+  - The replay-equivalence harness generated sequential programs only. It had
     no concurrent durable calls and no step named after the attempt, which is
     where two of the review's findings were. The third was an emit, and both
-    generators emit on main. PR3.4d below owns the other two, and it is held
-    for the maintainer.
+    generators emit on main. PR3.4d below built the other two.
   - An option, not built: executable-twin markers for the side models.
     `scripts/spec-ledger.py` demands a `fenceTwin('Action')` marker, on a test
     that shows a refusal, for every action a `[cas-fenced]` line of the main
@@ -3441,54 +3432,107 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The registry gains eleven mutations and retires one. The base gate's arm
     retires that entry of the base registry and exempts seven markers.
 - **PR3.4d the replay-equivalence harness draws concurrent durable calls and a
-  step named after the attempt**: HELD for the maintainer's choice. Pull
-  request #75 built it and is not merged. It owns the two open halves of the
+  step named after the attempt**: DONE. It owns the two open halves of the
   harness bullet under PR3.4: durable calls started together, and a step named
   after the attempt, in the plain and the saga generator, each shape in a
-  program of its own that runs at every fault point.
-  - What it found, before any review: the SDK refuses a durable call made
-    while a step RUNS and raises nothing while a step REPLAYS from its memo, so
-    a group of calls that one pass refuses is admitted by a pass that replays
-    the group's first step. With an outage on the refusing pass's own `fail`
-    call, a task that fails for good on a run with no fault completes.
-  - Why it is held: the fix it built makes a replayed step hold the same guard,
-    and its one review showed that this fails an ordinary fan-out written as
+  program of its own that runs at every fault point. DESIGN.md section 3.2
+  says what the harness holds a group to.
+  - **What the wider grammar found, and what changed.** The harness found that
+    the engine refuses a durable call made while a step RUNS and raises nothing
+    while a step REPLAYS from its memo, so a group that one pass refuses is
+    admitted by a pass that replays its first step. The first version of this
+    entry closed that with a guard held while a replayed step settles. Its one
+    review showed that the guard also refuses an ordinary fan-out written as
     concurrent flows (spawn two children, then in a flow for each await the
-    child and record it in a step under its own name) on a run with no fault.
-    The harness could not see that, because it called every member of a group
-    before its first await. Five options for the guard were then measured side
-    by side over one set of programs: main as it is, the fix as built, a latch
-    that stops a pass from storing anything after a refused call, that latch
-    narrowed to the one step, and telling a nested call from a sibling flow's
-    by the async context. Each sound one changes what the SDK promises a
-    task's author, either what a swallowed refusal does or which concurrency
-    the SDK admits, so the choice is the maintainer's.
-  - Two defects are on main until then, whatever is chosen. (i) The same-name
-    swap: two flows that each await something and then call a step under one
-    name complete with their two values swapped at 3 of 30 fault points,
-    because a repeated name's index goes to the flow that arrives first, and
-    that order can differ on a replay. No measured option fixes it, and the
-    fix as built only hides it, by refusing the program. A measurement shows
-    it, and no committed program does. (ii) A sibling flow is refused as if its
-    call were nested in a step, because one flag cannot tell the two apart.
-    Three flow programs show it. They are written for the SDK's
-    replay-equivalence test (`packages/sdk/test/replay-equivalence.test.ts`),
-    in commits on top of pull request #75 that are not pushed yet: they turn
-    the held pull request red by design, so they go up with the maintainer's
-    choice. By title: `flows that each await a child and then record it in a
-    step under its own name, and then a sleep`, which fails for good at 3 of 30
-    fault points on main, `flows that each await an event the program has
-    emitted and then record it in a step, and then a sleep`, which fails with
-    no fault on main, and `flows that each wait on a timer of its own length
-    and then run a step whose body takes time`, which fails at 4 of 5 fault
-    points on main.
-  - Open question, which the same choice settles: a handler that swallows
-    every rejection, with an empty `catch` or with `Promise.allSettled`, can
-    observe an injected store outage and complete with it in its result.
-    DESIGN.md says task code cannot forge a control, and says nothing of a
-    handler that swallows a real one. Trigger: a handler in use that catches
-    every error around a durable call, or a decision that a swallowed control
-    ends the pass anyway.
+    child and record it in a step under its own name) on every replay, where
+    it completes on main, and a task in flight of that shape would fail at its
+    next replay. The guard is withdrawn. Five options for it were measured side
+    by side over one set of programs (main as it is, the guard, a latch that
+    stops a pass from storing anything after a refused call, that latch
+    narrowed to one step, and telling a nested call from a sibling flow's by
+    the async context), and the maintainer chose on 2026-09-23 to leave the
+    nesting refusal as main has it and to make one change: the SDK refuses a
+    step name that concurrent flows share.
+  - **The change.** Two flows that each await something and then call a step
+    under one name are numbered in the order their calls arrive (`record`,
+    then `record#2`), and a replay from memos can reach the two calls in the
+    other order, so each flow is handed the other's value and the task
+    completes with two values swapped. On the SDK as it was, an outage at 3 of
+    30 store calls did that for two flows over two spawned children, and at 2
+    of 11 for two flows over two emitted events. The engine cannot tell two
+    flows from one, so it refuses on what it can see. It counts the durable
+    calls that are pending, keeps a settled call counted until one turn of the
+    microtask queue after it settles, and marks a step name that a call was
+    made under while another was pending. The second and every later use of a
+    marked name fails the task for good, naming the step. The first use is
+    never refused, and a name used one call after another is never marked. Both
+    programs are refused at every store call, and so are two programs of one
+    flow that the SDK completed before: a step beside a sleep followed by the
+    same name, and a poll loop beside an await. The harness pins both. Two
+    narrower rules were measured over the same programs and rejected. Counting
+    only the calls made in an earlier turn of the microtask queue, which spares
+    the step beside a sleep, completes both swap programs at the last store
+    call. Refusing a repeated name only when the call itself is made beside
+    another spares the step beside a sleep, and fails the poll loop beside an
+    await at 6 of 8 store calls and completes it at 2, so an outage decides
+    which. A swap is the same sequence of durable calls as an ordinary program,
+    and only the async context of each call tells them apart.
+    DESIGN.md section 3.2 says what a task in flight pays. It fails for good
+    on its next replay with the refusal as its failure reason, which an
+    operator reads on the task's result and through the inspect route, and
+    nothing completes silently.
+  - **Known gaps, pinned and not closed.** Each is a program the harness runs
+    with an outage at every store call and a test that says exactly what the
+    engine does, so a gap closed by accident or made worse fails the test.
+    (i) A group that starts a step ahead of another durable call is refused,
+    except that an outage on the failing pass's own `fail` call lets the next
+    pass replay the step and admit the group, so the task completes; the three
+    plain programs and the saga program of this kind are each pinned at that
+    call, with both kinds of store fault. (ii) A sibling flow is refused as if
+    its call were nested in a step, because one flag cannot tell the two apart:
+    a fan-out of two flows over two spawned children fails for good at 3 of 30
+    store calls, two flows over two emitted events fail on the run with no
+    fault and complete at 5 of 11 store calls, and two flows that each wait on
+    a timer and then run a step whose body takes time fail at 4 of 5 and
+    complete at one. The three flow programs pin those numbers.
+  - An option, not scheduled: admit the concurrency of sibling flows. A call
+    would be refused only when it is made inside a step's own async context,
+    which needs Node's `AsyncLocalStorage` in an SDK that imports nothing from
+    Node, and it would end gap (ii) and let a step name be shared. It reverses
+    DESIGN.md section 3.10, needs a rule for the order two registered steps
+    started together are rolled back in, and rewrites six registered mutations
+    and the four refused-group programs. Trigger: a task in use whose flows
+    each call a step, or a decision that the SDK admits sibling flows.
+  - An option, not scheduled: close gap (i) with a guard held while a replayed
+    step settles. It refuses an ordinary fan-out written as flows on every
+    replay, so it waits for the option above. Trigger: the same decision.
+  - Open question: a handler that swallows every rejection, with an empty
+    `catch` or with `Promise.allSettled`, can observe an injected store outage
+    and complete with it in its result. DESIGN.md says task code cannot forge a
+    control, and says nothing of a handler that swallows a real one. Trigger: a
+    handler in use that catches every error around a durable call, or a
+    decision that a swallowed control ends the pass anyway.
+  - Both generators draw a step named after `ctx.attempt`. The plain one also
+    draws a first attempt that fails, so that such a step runs under two names.
+    The saga one draws a rollback that fails once, so that a second rollback
+    pass follows the first. That rollback asks the store whether it has failed
+    before, so a pass that an outage repeats does what the pass it repeats did.
+    Two registered mutations bring back defects the PR3.4 review found where
+    the old grammar could not look: a second registered step that starts while
+    the first writes its start marker, and a rollback pass that keeps its own
+    ordinal.
+  - Not built: `emitEvent` as a member of a group, because it takes no key and
+    the order rule says nothing of it, and a group of three or more calls.
+  - Every shape heads a short program of its own, and the file's self-tests
+    fail when a generator stops drawing a shape, when a generated method does
+    not say whether a group holds it, and when a shape is in no program the
+    file runs.
+  - The registry gains seven mutations: the two above, and five that hold the
+    refusal of a shared step name (the counting of pending calls, the turn that
+    keeps a settled call counted, the mark a name takes, the refusal of a marked
+    name's second use and of nothing else). Each is owned by a generated
+    program. The base gate's arm is keyed on main's registry and exempts their
+    five verdict markers, which the base predates.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
