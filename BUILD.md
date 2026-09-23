@@ -553,6 +553,16 @@ is left: line 18, held for the maintainer's choice.
     there, and the other fails by name against an executor that fails the call
     after a failed batch.
 
+29. PR3.10b: a count DESIGN.md states for a pinned property equals the
+    constant, table or list the code pins for it. A number that differs, a
+    marker that names no pinned count, and a pinned count whose marker is gone
+    each fail `packages/conformance/test/design-counts.test.ts` by the count's
+    name. This is met. The test was committed failing by name on the
+    self-concurrency contests, `DESIGN.md says 37, the code pins 38`, a real
+    stale count, and one edit of DESIGN.md per kind of count fails it by name:
+    a length (116 conditions to 117), a constant (255 to 256), a product
+    (3,087 to 3,088), a word (eight counters to nine), and a deleted marker.
+
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
 none of them. What the SDK does about durable calls made at the same time: pull
@@ -2443,17 +2453,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that no role is read out of a sentence. It would close both ways above
     and the honest phrasings that are still refused. Trigger: a third class
     of misread.
-  - An option, not built: a test that holds each count DESIGN.md states to the
-    constant the code pins for it. A count in prose is true when it is
-    written and goes stale when a later change moves the code, and nothing
-    compares the two. The review of PR3.1d found DESIGN.md's counts of the
-    poison matrix behind what the code pins, and the review of PR3.3c found
-    five stale counts, in DESIGN.md, BUILD.md, two comments and the pull
-    request's body. The test would find each count by a marker beside it
-    and compare it with the value a test already asserts. A count in BUILD.md
-    or in a pull request's body stays outside it. Trigger: the next review
-    that finds a count DESIGN.md states contradicted by a constant the code
-    pins.
+  - Built as PR3.10b below: a test that holds the counts DESIGN.md states for
+    a property the code pins. What stays open is a count outside DESIGN.md, in
+    BUILD.md or in a pull request's body. Trigger: a review finds a count of
+    BUILD.md that a constant the code pins contradicts.
 
 - **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
   postmortem cites its red tests and its fixes by commit id, and an id does
@@ -2542,6 +2545,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `lint-selftest.py` holds 55 cases over a git history that git builds with a
   real rebase in it, through both entry points, and each of 53 deletions of a
   condition of the new code fails a named case.
+
+- **PR3.10b DESIGN.md's counts are held to the code**: DONE. A count in prose
+  is true when it is written and goes stale when a later change moves the
+  code, and it had recurred in nearly every review of the follow-ups
+  milestone. A count DESIGN.md states for a property the code pins now has a
+  marker straight after the number, such as
+  `116<!-- count: engine-invariant-conditions -->`, and
+  `packages/conformance/test/design-counts.test.ts` compares it with the value
+  the code exports: the condition, write label, witness and cell counts of the
+  poison matrix, the eight counter fields and 23 temporal fields, the 82
+  string places of the port, the contests of the self-concurrency surface, and
+  the identifier width with the units and bytes it implies. It fails by the
+  count's name when a number differs, when a marker names no pinned count, and
+  when a pinned count has no marker left. Its first run found one stale count:
+  DESIGN.md said 37 contests, and a contest added on 2026-09-19 made it 38.
+  The sentence beside it, the split of the contests by how many batches a
+  copy sends on libSQL, is corrected to 25 of 38 after a measurement of the
+  added contest's claim: one batch. That split and its neighbours (the 10 and
+  the three) are prose the test does not hold, only the total is. Four keys are
+  arithmetic over their factors (the cells, the durable integers, and the
+  units and bytes of the identifier width), so they hold the prose to the
+  arithmetic and not to one exported number. Nothing lower was replaced, because no
+  earlier check compared a count with its constant. A count that no constant
+  pins stays unmarked: measurements (1,776 MySQL error numbers at one server
+  version), counts of another project's tables, the case counts of the
+  verifier's own self-tests, and `82 shipped writes` in a tried experiment,
+  which no test asserts. A new count that a constant pins takes a marker and
+  an entry in the test's table.
 
 - **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
   other entry owned.
