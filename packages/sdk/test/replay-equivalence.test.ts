@@ -998,6 +998,54 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap?: KnownGap }> = {
   },
 }
 
+/**
+ * Programs in which one step name is used by two flows. The engine numbers the uses of a name
+ * in the order the calls arrive (`record`, then `record#2`), and two flows reach their calls
+ * in an order that a store call decides on one pass and that a replay from memos decides
+ * again, in lockstep. The flow that arrived second on the pass that ran the steps can arrive
+ * first on the pass that replays them, and then each flow is handed the other's value: a task
+ * completes with two values swapped, and nothing says so. The engine refuses the repeated
+ * name instead, at every store call an outage can take, so no schedule completes the program.
+ */
+const SHARED_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> = {
+  'flows that each await a child and then record it in a step under one name, and then a sleep': {
+    name: 'record',
+    ops: [
+      group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-child', childIndex: 0 }),
+          inAFlow({ kind: 'step', name: 'record' }),
+        ],
+        [
+          inAFlow({ kind: 'await-child', childIndex: 1 }),
+          inAFlow({ kind: 'step', name: 'record' }, 1),
+        ],
+      ),
+      inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+    ],
+  },
+  'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep':
+    {
+      name: 'record',
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+}
+
 /** Every store call of a run, where the sample of `faultPoints` takes every other one. */
 const everyCall = (measuredCalls: number): number[] =>
   Array.from({ length: measuredCalls }, (_, at) => at + 1)
@@ -1159,6 +1207,7 @@ describe('context-method enrollment (the inventory gate)', () => {
       plain: PROGRAM_SHAPE_NAMES,
       saga: SAGA_SHAPE_NAMES,
       flows: Object.keys(FLOW_PROGRAMS),
+      sharedName: Object.keys(SHARED_NAME_PROGRAMS),
     }).toEqual({
       plain: [
         'two awaits of one event, which park the run',
@@ -1182,6 +1231,10 @@ describe('context-method enrollment (the inventory gate)', () => {
         'flows that each await a child and then record it in a step under its own name, and then a sleep',
         'flows that each await an event the program has emitted and then record it in a step, and then a sleep',
         'flows that each wait on a timer of its own length and then run a step whose body takes time',
+      ],
+      sharedName: [
+        'flows that each await a child and then record it in a step under one name, and then a sleep',
+        'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
       ],
     })
   })
@@ -1348,16 +1401,19 @@ describe('replay equivalence (generated programs x fault points x adversarial va
       )
     }, 120_000)
   }
+  for (const [title, program] of Object.entries(SHARED_NAME_PROGRAMS)) {
+    it(`${title}: an outage at every store call refuses the repeated name`, async () => {
+      await theEngineRefusesTheSharedName(program.ops, program.name)
+    }, 120_000)
+  }
 })
 
 /** How a run ended: what it completed with, or the call the engine refused. */
 function endingOf(run: Awaited<ReturnType<typeof runProgram>>): string {
   if (run.state === 'completed') return `completed ${run.result}`
   const message = (JSON.parse(run.failure ?? 'null') as { message?: string } | null)?.message
-  const refused = message?.split(' called inside a step')[0]
-  return message !== undefined && message !== refused
-    ? `refused ${refused}`
-    : `${run.state} ${message}`
+  const refused = message?.match(/^(ctx\.\S+) (?:called inside a step|is a repeated step name)/)
+  return refused?.[1] !== undefined ? `refused ${refused[1]}` : `${run.state} ${message}`
 }
 
 /**
@@ -1384,6 +1440,23 @@ async function theEngineDoesWhatTheGapSays(ops: ProgramOp[], gap: KnownGap): Pro
   ).toEqual([...gap.otherwiseAt])
   // Every one of them ends the same one other way.
   expect(new Set(otherwise.map((run) => run.ending)).size).toBeLessThanOrEqual(1)
+}
+
+/**
+ * The engine refuses the repeated step name whichever store call an outage takes, and the run
+ * with no fault refuses it too: no run completes, and none is handed another flow's value.
+ */
+async function theEngineRefusesTheSharedName(ops: ProgramOp[], name: string): Promise<void> {
+  const refused = `refused ctx.step('${name}')`
+  const reference = await runProgram(ops, 'shared-ref', 0, { ends: 'either' })
+  const otherwise: string[] = []
+  for (const call of [0, ...everyCall(reference.calls)]) {
+    const run =
+      call === 0 ? reference : await runProgram(ops, `shared-${call}`, call, { ends: 'either' })
+    if (endingOf(run) !== refused)
+      otherwise.push(`call ${call} of ${reference.calls}: ${endingOf(run)}`)
+  }
+  expect(otherwise, 'the runs that were not refused, by the store call the outage took').toEqual([])
 }
 
 /**
