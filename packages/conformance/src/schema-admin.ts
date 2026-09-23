@@ -1,4 +1,5 @@
 import {
+  MIGRATION_WRITE,
   PERSISTED_COUNTER_FIELDS,
   PERSISTED_TEMPORAL_FIELDS,
   SchemaMismatchError,
@@ -8,7 +9,13 @@ import {
   StoreUnavailableError,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import type { PersistedNumericTable, StoreFixture, StoreFixtureFactory } from './fixture.js'
+import {
+  type PersistedNumericTable,
+  type StoreFixture,
+  type StoreFixtureFactory,
+  executeStorageCorruption,
+  nullEventPayload,
+} from './fixture.js'
 import { describeFailure } from './scenario.js'
 
 type PersistedIntegerObservation = Readonly<{
@@ -161,6 +168,28 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
 
         await fixture.admin.migrate()
         expect(await fixture.admin.schemaVersion()).toBe(current)
+      } finally {
+        await fixture.close()
+      }
+    })
+
+    it("names the migration lock in the control of every version's batch", async () => {
+      // The lock travels in the batch control, where a wrapper that forwards the control
+      // cannot drop it, and no executor chooses it from a label. Every version's batch
+      // carries it, on every dialect. A bootstrap carries it only where the dialect's lock
+      // does not live in the version table, so each store holds its own bootstrap to that.
+      const fixture = await makeFixture('schema-admin-migration-lock', { migrate: false })
+      try {
+        const controls: unknown[] = []
+        const recording: SqlExecutor = {
+          batch: (label, statements, control) => {
+            if (/^migrate:v[0-9]+$/.test(label)) controls.push(control)
+            return fixture.raw.batch(label, statements, control)
+          },
+        }
+        await fixture.adminOver(recording).migrate()
+        expect(controls.length).toBeGreaterThan(0)
+        expect(controls).toEqual(controls.map(() => MIGRATION_WRITE))
       } finally {
         await fixture.close()
       }
@@ -384,12 +413,20 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       const fixture = await makeFixture('schema-admin-missed-version', { migrate: false })
       try {
         let suppressedMigrationWrites = 0
+        const suppressed = new Set<string>()
         const stalledMigration: SqlExecutor = {
           batch: (label, statements, mode) => {
             if (label === 'migrate:version') {
               return fixture.raw.batch(label, statements, mode)
             }
             if (label === 'migrate:bootstrap' || label.startsWith('migrate:v')) {
+              // Nothing moves here, so a label that comes a second time is a migrator that
+              // plans again for ever. It is refused, so that such a migrator fails this case
+              // and does not hang it.
+              if (suppressed.has(label)) {
+                return Promise.reject(new Error(`${label} was sent again, and nothing had moved`))
+              }
+              suppressed.add(label)
               suppressedMigrationWrites += 1
               return Promise.resolve(statements.map(() => ({ rows: [], rowsAffected: 0 })))
             }
@@ -401,6 +438,37 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
           SchemaMismatchError,
         )
         expect(suppressedMigrationWrites).toBeGreaterThan(0)
+      } finally {
+        await fixture.close()
+      }
+    })
+
+    it('refuses a raw write of SQL NULL over the payload of an event', async () => {
+      // An await that timed out answers with no payload and an emitted event answers with
+      // its payload, so a stored NULL would read as a timeout. The port refuses to write
+      // one. This write goes past the port, through the fixture's raw executor, and the
+      // dialect's own schema has to refuse it, for every writer there will ever be.
+      const fixture = await makeFixture('schema-admin-null-payload')
+      try {
+        await fixture.store.emitEvent('q', 'held', '{"kept":1}')
+        const disposition = await executeStorageCorruption(fixture, nullEventPayload('q', 'held'))
+        const [stored] = await fixture.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: 'SELECT payload FROM events WHERE queue = ? AND event_name = ?',
+              args: ['q', 'held'],
+            },
+          ],
+          'read',
+        )
+        expect(
+          { disposition, payload: stored?.rows[0]?.payload },
+          'mutation-verdict:behavior:schema-refuses-a-null-event-payload',
+        ).toEqual({
+          disposition: 'structurally-rejected',
+          payload: '{"kept":1}',
+        })
       } finally {
         await fixture.close()
       }

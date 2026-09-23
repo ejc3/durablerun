@@ -39,8 +39,13 @@ export const spawnTaskCas = defineStatement(
     identityFree: SqlFragment
     enqueueFits: SqlFragment
     cancelFits: SqlFragment
-    /** The parent's live claim, for a child task, or null for any other spawn. */
-    parent: (AwaitingClaim & { liveTask: SqlFragment }) | null
+    /**
+     * The parent's live claim, for a child task, or null for any other spawn. `phase` is
+     * what the saga phase requires of a child spawn (DESIGN.md §3.10): a child is forward
+     * progress, and the forward phase is frozen once a saga began. It is a predicate and
+     * never `'open'`: no store may answer that the phase asks nothing of a child spawn.
+     */
+    parent: (AwaitingClaim & { liveTask: SqlFragment; phase: SqlFragment }) | null
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
     const task = {
@@ -66,7 +71,8 @@ export const spawnTaskCas = defineStatement(
       .where(rawSql<boolean>(binds.enqueueFits, 'predicate'))
       .where(rawSql<boolean>(binds.cancelFits, 'predicate'))
     // ChildTasks.tla's SpawnAuthority: a child is created only under its parent's live
-    // claim. The conflict arm below still finds a child that exists, claim or none.
+    // claim, and only while the saga phase admits one. The conflict arm below still finds
+    // a child that exists, claim or none, in either phase.
     const parent = binds.parent
     return treeBuilder
       .insertInto('tasks')
@@ -74,7 +80,9 @@ export const spawnTaskCas = defineStatement(
       .expression(
         parent === null
           ? admitted
-          : admitted.where((where) => where.exists(stillClaimed(parent, parent.liveTask))),
+          : admitted
+              .where((where) => where.exists(stillClaimed(parent, parent.liveTask)))
+              .where(rawSql<boolean>(parent.phase, 'predicate')),
       )
       .onConflict((conflict) =>
         conflict

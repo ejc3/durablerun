@@ -1,12 +1,9 @@
-import {
-  childTaskViolations,
-  engineInvariantViolations,
-  sagaViolations,
-} from '@durablerun/conformance'
+import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   FatalTaskError,
   type IdSource,
+  PermanentStoreError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -648,6 +645,47 @@ interface Watch {
 /** The trace's mark for the store call the harness failed. */
 const INJECTED_OUTAGE = 'injected outage'
 
+/**
+ * The kinds of store fault a run can inject. A permanent answer of the store must end a pass
+ * exactly as an outage does, so every sampled fault point is run once with each kind. The
+ * sample is `faultPoints`: the odd calls from the third, and the last call. It is not every
+ * call.
+ */
+const FAULT_KINDS = ['outage', 'permanent'] as const
+type FaultKind = (typeof FAULT_KINDS)[number]
+const injectedFault = (kind: FaultKind): Error =>
+  kind === 'permanent'
+    ? new PermanentStoreError('injected permanent answer')
+    : new StoreUnavailableError('injected outage')
+/** The outage's run keeps the seed it has always had, and the other kind's run names its kind. */
+const faultSeed = (seed: string, kind: FaultKind): string =>
+  kind === 'outage' ? seed : `${seed}-${kind}`
+
+/**
+ * Which kinds of fault each store method has met, over every run of this file. A sweep is
+ * only evidence about a method for the kinds of fault that landed on it, and the last case
+ * of the file holds the sweeps to that: every method they failed met both kinds.
+ */
+const faultsMet = new Map<string, Set<string>>()
+/** The fault that landed last, so a sweep can hold each run to the kind it asked for. */
+let faultLanded: string | undefined
+const meetsFault = (method: string, fault: Error): Error => {
+  const kinds = faultsMet.get(method) ?? new Set<string>()
+  kinds.add(fault.name)
+  faultsMet.set(method, kinds)
+  faultLanded = fault.name
+  return fault
+}
+/** Run one faulted run of a sweep, and require that the kind it asked for is the kind that landed. */
+async function landing<T>(fault: FaultKind, run: () => Promise<T>): Promise<T> {
+  faultLanded = undefined
+  const faulted = await run()
+  expect(faultLanded, `the fault that landed, where the sweep asked for ${fault}`).toBe(
+    injectedFault(fault).name,
+  )
+  return faulted
+}
+
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
   /**
@@ -656,6 +694,8 @@ interface RunOptions {
    */
   readonly ends?: 'completed' | 'failed' | 'either'
   readonly watch?: Watch
+  /** The kind of fault the failed call meets. An outage, unless a sweep says otherwise. */
+  readonly fault?: FaultKind
 }
 
 /**
@@ -683,7 +723,12 @@ async function runProgram(
   calls: number
   state: string | undefined
 }> {
-  const { tamper = (store: SchedulerStore) => store, ends = 'completed', watch } = options
+  const {
+    tamper = (store: SchedulerStore) => store,
+    ends = 'completed',
+    watch,
+    fault = 'outage',
+  } = options
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
@@ -721,7 +766,7 @@ async function runProgram(
           watch?.trace.push(String(prop))
           if (calls === failAtCall) {
             watch?.trace.push(INJECTED_OUTAGE)
-            return Promise.reject(new StoreUnavailableError('injected outage'))
+            return Promise.reject(meetsFault(String(prop), injectedFault(fault)))
           }
           if (prop === 'spawn') padNextIdTo = longChildren.get(String(args[1]))
           try {
@@ -802,8 +847,7 @@ async function runProgram(
       ],
       'read',
     )
-    expect(await engineInvariantViolations(raw)).toEqual([])
-    expect(await childTaskViolations(raw)).toEqual([])
+    expect(await engineHistoryViolations(raw)).toEqual([])
     const [counted, measured, named] = await raw.batch(
       't',
       [
@@ -877,14 +921,18 @@ async function owning(verdict: string | undefined, body: () => Promise<unknown>)
  */
 async function everyFaultPointYieldsTheReference(
   label: string,
-  run: (seed: string, failAtCall: number) => ReturnType<typeof runProgram>,
+  run: (seed: string, failAtCall: number, fault: FaultKind) => ReturnType<typeof runProgram>,
   points: (measuredCalls: number) => number[] = faultPoints,
 ): ReturnType<typeof runProgram> {
-  const reference = await run(`ref-${label}`, 0)
+  const reference = await run(`ref-${label}`, 0, 'outage')
   for (const call of points(reference.calls)) {
-    const faulted = await run(`fault-${label}-${call}`, call)
-    // Everything a run reports, but for how many store calls it took, which a fault changes.
-    expect({ ...faulted, calls: reference.calls }, `fault at call ${call}`).toEqual(reference)
+    for (const fault of FAULT_KINDS) {
+      const faulted = await landing(fault, () =>
+        run(faultSeed(`fault-${label}-${call}`, fault), call, fault),
+      )
+      // Everything a run reports, but for how many store calls it took, which a fault changes.
+      expect({ ...faulted, calls: reference.calls }, `${fault} at call ${call}`).toEqual(reference)
+    }
   }
   return reference
 }
@@ -1182,9 +1230,9 @@ async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): 
   const admittedAt = firstFailCall(measured.trace)
   const reference = await everyFaultPointYieldsTheReference(
     label,
-    async (seed, failAtCall) => {
+    async (seed, failAtCall, fault) => {
       const watch: Watch = { trace: [], bodies: [], members: [] }
-      const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+      const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch, fault })
       expect(watch.members, `fault at call ${failAtCall}`).not.toContain(laterBody)
       return {
         ...record,
@@ -1200,13 +1248,18 @@ async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): 
     name: failure?.name,
     refuses: failure?.message?.split(' called inside a step')[0],
   }).toEqual({ name: 'FatalTaskError', refuses: refusedCallOf(later) })
-  const admitted = await runProgram(ops, `fault-${label}-${admittedAt}`, admittedAt, {
-    ends: 'either',
-  })
-  expect(
-    { state: admitted.state, failure: admitted.failure },
-    `known gap: the outage on the failing pass's own fail call (call ${admittedAt}) admits the group`,
-  ).toEqual({ state: 'completed', failure: undefined })
+  for (const fault of FAULT_KINDS) {
+    const admitted = await landing(fault, () =>
+      runProgram(ops, faultSeed(`fault-${label}-${admittedAt}`, fault), admittedAt, {
+        ends: 'either',
+        fault,
+      }),
+    )
+    expect(
+      { state: admitted.state, failure: admitted.failure },
+      `known gap: the ${fault} on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+    ).toEqual({ state: 'completed', failure: undefined })
+  }
 }
 
 describe('context-method enrollment (the inventory gate)', () => {
@@ -1441,8 +1494,8 @@ describe('replay equivalence (generated programs x fault points x adversarial va
       )[title]
       await owning(verdict, async () => {
         if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
-        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
-          runProgram(ops, runSeed, failAtCall),
+        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall, fault) =>
+          runProgram(ops, runSeed, failAtCall, { fault }),
         )
       })
     }, 60_000)
@@ -1695,7 +1748,8 @@ describe('the name-length axis (every call that passes a name: under its room, a
         const name = 'n'.repeat(length)
         const reference = await everyFaultPointYieldsTheReference(
           `${call.id}-${length}`,
-          (seed, failAtCall) => runProgram([...call.ops(name), PLAIN_STEP], seed, failAtCall),
+          (seed, failAtCall, fault) =>
+            runProgram([...call.ops(name), PLAIN_STEP], seed, failAtCall, { fault }),
         )
         // The run really left what the member says it leaves, at the length it says.
         if (call.stored !== undefined) {
@@ -1718,9 +1772,9 @@ describe('the name-length axis (every call that passes a name: under its room, a
       const refusedAt = ops.length - 2
       const reference = await everyFaultPointYieldsTheReference(
         `${call.id}-past`,
-        async (seed, failAtCall) => {
+        async (seed, failAtCall, fault) => {
           const watch: Watch = { trace: [], bodies: [] }
-          const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch })
+          const run = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch, fault })
           // On every schedule: no body at or after the refused call ran. Every attempt that
           // started the refused call then made the store calls the member names and recorded
           // the failure, and nothing else. The one attempt the injected outage cut short made
@@ -2075,6 +2129,7 @@ async function runSagaProgram(
   program: SagaProgram,
   seed: string,
   failAtCall: number,
+  fault: FaultKind = 'outage',
   tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
 ) {
   const raw = LibsqlExecutor.open(':memory:')
@@ -2091,8 +2146,9 @@ async function runSagaProgram(
         return (...args: unknown[]) => {
           calls++
           methods.push(String(prop))
-          if (calls === failAtCall)
-            return Promise.reject(new StoreUnavailableError('injected outage'))
+          if (calls === failAtCall) {
+            return Promise.reject(meetsFault(String(prop), injectedFault(fault)))
+          }
           return (value as (...a: unknown[]) => unknown).apply(target, args)
         }
       },
@@ -2141,9 +2197,7 @@ async function runSagaProgram(
       ],
       'read',
     )
-    expect(await engineInvariantViolations(raw)).toEqual([])
-    expect(await childTaskViolations(raw)).toEqual([])
-    expect(await sagaViolations(raw)).toEqual([])
+    expect(await engineHistoryViolations(raw)).toEqual([])
     const undos = effects.log.filter((line) => line.startsWith('undo:'))
     return {
       calls,
@@ -2192,31 +2246,47 @@ async function sagaReplaysAsItsReference(title: string, program: SagaProgram): P
   // task ends with the program's own failure. That call is run apart and pinned.
   const admittedAt = inFlight === undefined ? undefined : reference.methods.indexOf('fail') + 1
   for (const call of faultPoints(reference.calls).filter((point) => point !== admittedAt)) {
-    const faulted = await runSagaProgram(program, `saga-fault-${title}-${call}`, call)
-    expect(comparable(faulted, inFlight), `fault at call ${call} of ${reference.calls}`).toEqual(
-      comparedTo,
-    )
-    // The record is exactly once, which the checkpoint table holds. The effect is at
-    // least once, and a second run needs a fault between the handler and its record.
-    const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
-    expect(repeats.every((n) => n === 2) && repeats.length <= 1, `fault at call ${call}`).toBe(true)
+    for (const fault of FAULT_KINDS) {
+      const faulted = await landing(fault, () =>
+        runSagaProgram(program, faultSeed(`saga-fault-${title}-${call}`, fault), call, fault),
+      )
+      expect(
+        comparable(faulted, inFlight),
+        `${fault} at call ${call} of ${reference.calls}`,
+      ).toEqual(comparedTo)
+      // The record is exactly once, which the checkpoint table holds. The effect is at
+      // least once, and a second run needs a fault between the handler and its record.
+      const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
+      expect(repeats.every((n) => n === 2) && repeats.length <= 1, `${fault} at call ${call}`).toBe(
+        true,
+      )
+    }
   }
   if (admittedAt !== undefined) {
-    const admitted = await runSagaProgram(program, `saga-fault-${title}-${admittedAt}`, admittedAt)
     const sites = flat(program.ops)
     const [, later] = (refusedGroupOf(program.ops)?.members ?? []).map((op) => sites.indexOf(op))
-    expect(
-      {
-        state: admitted.state,
-        failure: (JSON.parse(admitted.failure ?? 'null') as { message?: string } | null)?.message,
-        laterMemberStarted: admitted.undone.includes(later ?? -1),
-      },
-      `known gap: the outage on the failing pass's own fail call (call ${admittedAt}) admits the group`,
-    ).toEqual({
-      state: 'failed',
-      failure: 'the program failed for good',
-      laterMemberStarted: true,
-    })
+    for (const fault of FAULT_KINDS) {
+      const admitted = await landing(fault, () =>
+        runSagaProgram(
+          program,
+          faultSeed(`saga-fault-${title}-${admittedAt}`, fault),
+          admittedAt,
+          fault,
+        ),
+      )
+      expect(
+        {
+          state: admitted.state,
+          failure: (JSON.parse(admitted.failure ?? 'null') as { message?: string } | null)?.message,
+          laterMemberStarted: admitted.undone.includes(later ?? -1),
+        },
+        `known gap: the ${fault} on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+      ).toEqual({
+        state: 'failed',
+        failure: 'the program failed for good',
+        laterMemberStarted: true,
+      })
+    }
   }
 }
 
@@ -2312,4 +2382,19 @@ describe('saga replay equivalence (generated programs x fault points across the 
       await owning(verdict, () => sagaReplaysAsItsReference(title, program))
     }, 120_000)
   }
+})
+
+describe('the fault sweeps of this file, taken together (a fault that never lands proves nothing)', () => {
+  it('failed every store method they failed at all with an outage and with a permanent answer', () => {
+    // This case reads what the cases above did, so it is the last one, and a run that
+    // filters them out fails it: a floor met by nothing is not met.
+    const lacking = [...faultsMet]
+      .filter(([, kinds]) => kinds.size < 2)
+      .map(([method, kinds]) => `${method} met only ${[...kinds].sort().join(', ')}`)
+      .sort()
+    expect({ methodsFailed: faultsMet.size >= 12, lacking }).toEqual({
+      methodsFailed: true,
+      lacking: [],
+    })
+  })
 })

@@ -62,6 +62,31 @@ export const META_TABLE_SQL = `CREATE TABLE IF NOT EXISTS meta (
 export const META_BOOTSTRAP_SQL = `${META_TABLE_SQL} AS SELECT 'schema_version' AS \`key\`, '0' AS value`
 
 /**
+ * How much of a statement stamp `runs_stamp` holds, which is all an InnoDB index can: 768
+ * characters of `utf8mb4`. A search of the index for one call's stamp touches every entry
+ * that shares the prefix, so the prefix has to hold what tells two calls apart. A call's
+ * stamp opens with its token. The production token is 32 characters, and a test's id source
+ * draws longer ones that differ only at their end: at 64 the claimers of one conformance
+ * fixture shared every entry and deadlocked on each other's rows. An entry is as long as
+ * its stamp, so the width costs a short stamp nothing.
+ */
+const STAMP_INDEX_PREFIX = 768
+
+/**
+ * The indexes this package's statements name. The schema declares them, and the compiler
+ * and the plan tests read their names from here, so a rename moves a frozen schema hash
+ * before it can reach a server.
+ */
+export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
+export const RUNS_STAMP_INDEX = 'runs_stamp'
+
+/**
+ * How much of a claim token `runs_held` holds. A key of `(queue, claimed_by, state)` is 255
+ * and 16 characters of four bytes beside this prefix, 2,104 bytes of the 3,072 InnoDB allows.
+ */
+const HELD_INDEX_PREFIX = 255
+
+/**
  * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
  * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
  * index and before the version would fail its rerun on a duplicate key name. The
@@ -75,6 +100,46 @@ export function createIndexIfMissing(table: string, index: string, columns: stri
         WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') = 0,
        'CREATE INDEX ${index} ON ${table} ${columns}',
        'DO 0')`,
+    'PREPARE durablerun_ddl FROM @durablerun_ddl',
+    'EXECUTE durablerun_ddl',
+    'DEALLOCATE PREPARE durablerun_ddl',
+  ]
+}
+
+/**
+ * `ALTER TABLE … MODIFY … NOT NULL` in a form that does nothing once the catalog calls the
+ * column NOT NULL. MySQL commits each DDL statement on its own, so a migrator that died
+ * after the change and before the version runs the version again, and a migrator that planned
+ * from a stale read replays it. MODIFY restates the whole column, so a replay of the bare
+ * statement would put this declaration back over whatever a later version made of the
+ * column. Guarded by the catalog, a replay finds the column not nullable and does nothing.
+ * The statement is chosen by what the catalog holds and then prepared, as an index is. It
+ * does nothing ONLY on the catalog's word that the column is NOT NULL: a column the catalog
+ * does not hold is a caller's mistake, and the form then attempts the change, which fails
+ * loudly, where doing nothing would let the caller's version be recorded over a column that
+ * never changed. So "while nullable" says what it does for every column the catalog holds,
+ * and for one it does not hold the server refuses the attempt with error 1054.
+ *
+ * The change is asked for in place and with no lock, and that clause carries the refusal of
+ * a NULL. Under a strict `sql_mode` it is how InnoDB makes the change anyway, and a row that
+ * holds NULL refuses it with error 1138. Outside a strict mode MySQL makes the bare change
+ * by storing an empty string where a NULL was. It cannot do that in place, so with the clause
+ * it refuses with error 1846 whatever the rows hold. The executor sets a strict mode on every
+ * connection it takes, but that is session state kept in another file, and a port in another
+ * language replays this text and not that setup. The clause also stops the server from
+ * falling back in silence to a copying change that blocks writes.
+ */
+export function setNotNullWhileNullable(
+  table: string,
+  column: string,
+  declaration: string,
+): string[] {
+  return [
+    `SET @durablerun_ddl = IF(
+       (SELECT is_nullable FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = '${table}' AND column_name = '${column}') = 'NO',
+       'DO 0',
+       'ALTER TABLE ${table} MODIFY ${column} ${declaration} NOT NULL, ALGORITHM=INPLACE, LOCK=NONE')`,
     'PREPARE durablerun_ddl FROM @durablerun_ddl',
     'EXECUTE durablerun_ddl',
     'DEALLOCATE PREPARE durablerun_ddl',
@@ -142,7 +207,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         CONSTRAINT runs_state CHECK (state IN ${LIVE_OR_TERMINAL}),
         KEY runs_poll (queue, state, available_at_ms),
         KEY runs_lease (queue, state, claim_expires_at_ms),
-        UNIQUE KEY runs_task_attempt (task_id, attempt)
+        UNIQUE KEY ${RUNS_TASK_ATTEMPT_INDEX} (task_id, attempt)
       )`,
 
       `CREATE TABLE IF NOT EXISTS checkpoints (
@@ -211,6 +276,54 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
   // PostgreSQL's version 7 declares a byte collation on every text column. Version 1
   // above already declares one on every string column.
   { version: 7, statements: [] },
+  {
+    // A DELETE reads its subquery's table with shared locks, even under READ COMMITTED,
+    // where a single-table UPDATE reads it with none. A batch that deletes the waits of
+    // the runs it stamped finds those runs by their stamp, and through an index of the
+    // queue and the state that search covers other transactions' runs, waits for each one
+    // still held, and two such batches deadlock. Every stamping write changes the stamp, so
+    // a stamped run's entry in this index is its own transaction's, and a search of it for
+    // one batch's stamp touches no other entry. The stamp is a LONGTEXT, so the index is a
+    // prefix, as wide as InnoDB allows. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 8,
+    statements: createIndexIfMissing(
+      'runs',
+      RUNS_STAMP_INDEX,
+      `(fence_stamp(${STAMP_INDEX_PREFIX}))`,
+    ),
+  },
+  {
+    // A claim finds what ONE token holds: its held guard asks whether the token holds a run
+    // already, and its receipt read returns the runs it holds. By queue and state alone the
+    // only index was `runs_poll`, so both walked every running run of the queue, on every
+    // tick, the idle ones included: one claim measured 33 ms beside 10,000 running runs and
+    // 638 ms beside 40,000 under the server's default buffer pool, against 4 ms. MySQL has
+    // no partial index, so the state is the last column, as in `runs_woken`. The token is a
+    // LONGTEXT, so the index holds a prefix of it: the engine's own tokens are 32
+    // characters, and a caller's longer one still seeks by its first 255 and is then
+    // compared whole on the row. It is an index and nothing else: a build that predates it
+    // runs against this schema unchanged.
+    version: 9,
+    statements: createIndexIfMissing(
+      'runs',
+      'runs_held',
+      `(queue, claimed_by(${HELD_INDEX_PREFIX}), state)`,
+    ),
+  },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the column refuses it too, for every writer
+    // there is, a port in another language included. This is the first version that alters
+    // a table, and it goes through the guarded form above. A row that holds NULL makes the
+    // change fail with error 1138, which leaves the column nullable, the version at 9 and
+    // the row as it was. A session with no strict mode is refused with error 1846 whatever
+    // the rows hold. The rows are found with
+    // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: setNotNullWhileNullable('events', 'payload', BODY),
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

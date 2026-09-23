@@ -55,8 +55,9 @@ export type SqlBatchMode = 'read' | 'write'
 
 /**
  * A closed transaction prelude for dialects whose ordinary write batches do
- * not serialize event delivery against wait registration or concurrent claim
- * retries carrying the same durable receipt token.
+ * not serialize event delivery against wait registration, concurrent claim
+ * retries carrying the same durable receipt token, or one migrator against
+ * another.
  *
  * This is deliberately control data, not a `SqlStatement`: the executor owns
  * the dialect SQL that acquires the lock, executes it before every supplied
@@ -65,6 +66,16 @@ export type SqlBatchMode = 'read' | 'write'
  * the name "lock". Matching coordinates of the same kind must be mutually
  * exclusive until the transaction commits or rolls back.
  * Coordinate values are data and must be bound, never spliced into lock SQL.
+ *
+ * The migration lock has no coordinates of its own. There is one for each
+ * database, and every migration write that names it excludes every other.
+ *
+ * An executor REFUSES a lock of a kind it does not implement, before it sends
+ * anything. It never ignores one and never takes it for a kind it knows: a
+ * batch that asked for a lock and ran without it has reopened the race that
+ * lock closes. An executor over a database with one writer implements every
+ * kind, a kind of a later build included, by taking nothing, because that
+ * writer already keeps two write batches apart, which is all a lock here asks.
  */
 export type SqlTransactionLock =
   | {
@@ -76,6 +87,9 @@ export type SqlTransactionLock =
       readonly kind: 'claim'
       readonly queue: string
       readonly claimToken: string
+    }
+  | {
+      readonly kind: 'migration'
     }
 
 /**
@@ -116,6 +130,20 @@ export function sqlTransactionLock(
   control: SqlBatchControl | undefined,
 ): SqlTransactionLock | undefined {
   return typeof control === 'object' ? control.transactionLock : undefined
+}
+
+/**
+ * What an executor answers a lock of a kind it does not implement, which it reaches in the
+ * `default` of its switch over the kinds: there the compiler has narrowed the lock to
+ * `never`, and a later build of core that adds a kind stops that switch compiling. At
+ * runtime an executor of this build can still meet such a kind. Taken for a kind it knows,
+ * the batch would run under the wrong lock, and ignored it would run under none, so it is
+ * refused, and an executor decides the kind before it sends anything.
+ */
+export function refuseUnknownLockKind(lock: never): never {
+  throw new TypeError(
+    `this executor does not implement a transaction lock of kind ${String((lock as { kind?: unknown }).kind)}, and a lock is never ignored`,
+  )
 }
 
 export interface SqlExecutor {

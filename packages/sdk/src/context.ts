@@ -1,10 +1,10 @@
 import {
   type Checkpoint,
-  type CheckpointWrite,
   ChildAwaitRefusedError,
   type ClaimedRun,
   EventTimeoutError,
   type EventWake,
+  type FailedRollback,
   FatalTaskError,
   IDENTIFIER_CHARACTERS,
   InvalidDurableStringError,
@@ -28,7 +28,6 @@ import {
   decideRetry,
   decodeRollbackTry,
   decodeTaskOutcome,
-  encodeRollbackTry,
   fitsCharacters,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -139,8 +138,8 @@ type RollbackRegistration = Omit<RegisteredRollback, 'name' | 'output'>
 export type NextRollback =
   | { readonly kind: 'none' }
   | { readonly kind: 'run'; readonly stepKey: string }
-  /** The saga cannot go on, for good: the record says why, and it lands with the halt. */
-  | { readonly kind: 'halt'; readonly record: CheckpointWrite }
+  /** The saga cannot go on, for good: `failed` says why, and its record lands with the halt. */
+  | { readonly kind: 'halt'; readonly failed: FailedRollback }
 
 /** A task this task spawned, as `ctx.spawn` returns it and `ctx.awaitTask` takes it. */
 export interface ChildTask {
@@ -654,7 +653,7 @@ export class ReplayContext implements TaskContext {
     if (corrupt !== undefined) {
       return {
         kind: 'halt',
-        record: this.haltRecord(corrupt.stepKey, '$SagaStateCorrupt', corrupt.message),
+        failed: this.haltFailure(corrupt.stepKey, '$SagaStateCorrupt', corrupt.message),
       }
     }
     let stepKey: string | undefined
@@ -676,7 +675,7 @@ export class ReplayContext implements TaskContext {
       const cutEarlier = cutAt !== undefined && (taskMapGet(this.startIndexes, cutAt) ?? 0) < top
       return {
         kind: 'halt',
-        record: this.haltRecord(
+        failed: this.haltFailure(
           stepKey,
           '$RollbackNotRegistered',
           cutEarlier
@@ -713,14 +712,14 @@ export class ReplayContext implements TaskContext {
   }
 
   /**
-   * What a failed rollback owes the store: its attempt record, one past the attempts
-   * already recorded, and whether its own budget admits another pass. A fatal error and
-   * a spent budget both fail the rollback for good.
+   * What a failed rollback owes the store: the step and this attempt's failure, from which
+   * the store names and counts the attempt record, and whether the rollback's own budget
+   * admits another pass. A fatal error and a spent budget both fail the rollback for good.
    */
   rollbackFailure(
     stepKey: string,
     thrown: TaskThrowableSnapshot,
-  ): { readonly record: CheckpointWrite; readonly retry: { delaySeconds: number } | null } {
+  ): { readonly failed: FailedRollback; readonly retry: { delaySeconds: number } | null } {
     const registered = taskMapGet(this.registered, stepKey)
     const tries = this.nextTry(stepKey)
     const decision =
@@ -728,31 +727,23 @@ export class ReplayContext implements TaskContext {
         ? ({ retry: false } as const)
         : decideRetry(registered.retryStrategy, tries, registered.maxAttempts)
     return {
-      record: {
-        key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-        stateJson: encodeRollbackTry({ tries, errorJson: thrown.failureJson }),
-      },
+      failed: { stepKey, errorJson: thrown.failureJson },
       retry: decision.retry ? { delaySeconds: decision.delaySeconds } : null,
     }
   }
 
   /**
    * The attempt a failure of this rollback is: one past those already recorded. A
-   * rollback's spent attempts are durable with it, and are never given back.
+   * rollback's spent attempts are durable with it, and are never given back. The store
+   * counts the same way from the same record when it writes the next one, so this count
+   * decides only whether the rollback's budget admits another pass.
    */
   private nextTry(stepKey: string): number {
     return (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
   }
 
-  private haltRecord(stepKey: string, name: string, message: string): CheckpointWrite {
-    const tries = this.nextTry(stepKey)
-    return {
-      key: `${SAGA_TRIES_PREFIX}${stepKey}`,
-      stateJson: encodeRollbackTry({
-        tries,
-        errorJson: serializeTaskValue('rollback failure', { name, message }),
-      }),
-    }
+  private haltFailure(stepKey: string, name: string, message: string): FailedRollback {
+    return { stepKey, errorJson: serializeTaskValue('rollback failure', { name, message }) }
   }
 
   /** Every durable call with no memo ends a pass's replay: the forward phase is frozen. */

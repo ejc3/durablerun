@@ -9,8 +9,11 @@ import {
   type StorageCorruptionAttempt,
   type StoreFixture,
   type StoreFixtureOptions,
+  corruptionTarget,
+  nullPayloadAttempt,
   unboundedOverWidthAttempt,
 } from '../src/index.js'
+import { firstInCauseChain, isString } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
 
 const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
@@ -21,20 +24,16 @@ const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
   '42846', // cannot_coerce
 ])
 
-function sqlState(error: unknown): string | undefined {
-  let current = error
-  for (let depth = 0; depth < 6; depth++) {
-    if (typeof current !== 'object' || current === null) return undefined
-    const candidate = current as { readonly code?: unknown; readonly cause?: unknown }
-    if (typeof candidate.code === 'string') return candidate.code
-    current = candidate.cause
-  }
-  return undefined
-}
+const sqlState = (error: unknown) => firstInCauseChain(error, 'code', isString)
+
+const NOT_NULL_VIOLATION = '23502'
 
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   if (corruption.invalidRepresentation === 'over-width') {
     return unboundedOverWidthAttempt(corruption)
+  }
+  if (corruption.invalidRepresentation === 'null') {
+    return nullPayloadAttempt(corruption, (error) => sqlState(error) === NOT_NULL_VIOLATION)
   }
   const fractionalValue =
     corruption.column === 'max_attempts' ||
@@ -52,41 +51,7 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
   const assignment =
     corruption.invalidRepresentation === 'non-text' ? "convert_from(CAST(? AS BYTEA), 'UTF8')" : '?'
 
-  let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
-  let where: string
-  let identityArgs: string[]
-  switch (corruption.table) {
-    case 'tasks':
-      table = 'tasks'
-      where = 'task_id = ?'
-      identityArgs = [corruption.taskId]
-      break
-    case 'runs':
-      table = 'runs'
-      where = 'run_id = ?'
-      identityArgs = [corruption.runId]
-      break
-    case 'checkpoints':
-      table = 'checkpoints'
-      where = 'task_id = ? AND checkpoint_name = ?'
-      identityArgs = [corruption.taskId, corruption.checkpointName]
-      break
-    case 'events':
-      table = 'events'
-      where = 'queue = ? AND event_name = ?'
-      identityArgs = [corruption.queue, corruption.eventName]
-      break
-    case 'waits':
-      table = 'waits'
-      where = 'run_id = ? AND step_name = ?'
-      identityArgs = [corruption.runId, corruption.stepName]
-      break
-    case 'drivers':
-      table = 'drivers'
-      where = 'queue = ? AND driver_id = ?'
-      identityArgs = [corruption.queue, corruption.driverId]
-      break
-  }
+  const { table, where, identityArgs } = corruptionTarget(corruption)
 
   return {
     statements: [
@@ -116,8 +81,9 @@ export async function makePostgresFixture(
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   const { raw, admin, ids } = opened
+  const store = new PostgresSchedulerStore(raw, ids)
   return {
-    store: new PostgresSchedulerStore(raw, ids),
+    store,
     admin,
     adminOver: (db: SqlExecutor) => new PostgresStoreAdmin(db),
     raw,
@@ -135,7 +101,16 @@ export async function makePostgresFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
     deadlocks: () => raw.deadlocks,
-    selfRaceDeadlocksExcused: {},
+    lockWait: async () => ({
+      store,
+      raw,
+      holdWriteLock: (taskId: string, during: () => Promise<void>) =>
+        opened.holdTaskRowLock(taskId, during),
+      shortenFirst: [],
+      // PostgreSQL waits at the locked row, inside the batch, until its lock_timeout.
+      shortenInside: [{ sql: "SET LOCAL lock_timeout = '100ms'", args: [] }],
+      close: async () => {},
+    }),
     close: opened.close,
   }
 }

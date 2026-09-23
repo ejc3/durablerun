@@ -91,7 +91,9 @@ export const STORE_TABLE_COLUMNS = {
   events: {
     queue: text,
     event_name: text,
-    payload: nullableText,
+    // Never NULL: an await that timed out answers with no payload, so a stored NULL would
+    // read as a timeout. Every dialect's schema refuses it from version 10.
+    payload: text,
     emitted_at_ms: nullableInteger,
     fence_stamp: nullableText,
     fence_at_ms: nullableInteger,

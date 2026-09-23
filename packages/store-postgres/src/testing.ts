@@ -1,43 +1,10 @@
 import { createHash } from 'node:crypto'
 import type { IdSource, SqlStatement } from '@durablerun/core'
+import { testIdSource } from '@durablerun/core/testing'
 import { PostgresStoreAdmin } from './admin.js'
 import { PgExecutor, createOwnedPostgresPool } from './executor.js'
 
 let fixtureSerial = 0
-
-const nextMonotoneSerial = (previous: number): number => previous + 1
-
-/** Deterministic IDs for stores built over one isolated PostgreSQL fixture. */
-export function postgresTestIdSource(
-  namespace = 'test',
-  options: { readonly nextTokenSerial?: (previous: number) => number } = {},
-): IdSource {
-  if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
-    throw new Error(
-      `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
-    )
-  }
-  let ids = 0
-  let tokens = 0
-  const proposeTokenSerial = options.nextTokenSerial ?? nextMonotoneSerial
-  const serial = (value: number) => String(value).padStart(6, '0')
-  return {
-    uuidv7: () => `${namespace}-id-${serial(++ids)}`,
-    token: () => {
-      const proposed = proposeTokenSerial(tokens)
-      if (!Number.isSafeInteger(proposed)) {
-        throw new RangeError(`test token serial must be a safe integer: ${proposed}`)
-      }
-      if (proposed <= tokens) {
-        throw new RangeError(
-          `test token serial must strictly increase: proposed ${proposed} after ${tokens}`,
-        )
-      }
-      tokens = proposed
-      return `${namespace}-token-${serial(tokens)}`
-    },
-  }
-}
 
 /**
  * PostgreSQL catalog projection consumed by the shared schema/admin surface.
@@ -85,6 +52,8 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   admin: PostgresStoreAdmin
   ids: IdSource
   schemaName: string
+  /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
+  holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_POSTGRES_URL
@@ -124,6 +93,24 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     if (firstError !== undefined) throw firstError
   }
 
+  const holdTaskRowLock = async (taskId: string, during: () => Promise<void>): Promise<void> => {
+    const holder = await control.connect()
+    try {
+      await holder.query('BEGIN')
+      try {
+        // schemaName contains only the lowercase identifier alphabet, as above.
+        await holder.query(`SELECT 1 FROM ${schemaName}.tasks WHERE task_id = $1 FOR UPDATE`, [
+          taskId,
+        ])
+        await during()
+      } finally {
+        await holder.query('ROLLBACK')
+      }
+    } finally {
+      holder.release()
+    }
+  }
+
   try {
     await control.query(`CREATE SCHEMA ${schemaName}`)
     raw = PgExecutor.open({
@@ -131,10 +118,10 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
       options: `-c search_path=${schemaName}`,
     })
     const admin = new PostgresStoreAdmin(raw)
-    const ids = postgresTestIdSource(idNamespace)
+    const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, schemaName, close: cleanup }
+    return { raw, admin, ids, schemaName, holdTaskRowLock, close: cleanup }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

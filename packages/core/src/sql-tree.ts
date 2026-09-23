@@ -1151,16 +1151,25 @@ const CLOCK_FUNCTIONS = [
   'curdate',
   'curtime',
   'unix_timestamp',
+  'age',
 ]
 
 /**
- * A database clock spelled out in raw SQL text. This is a spelling list, the one
- * `scripts/clock-lint.py` applies to store sources and one spelling more, because raw text
- * is the one place a tree cannot be read. A date function with no argument is on it, because SQLite reads
- * `datetime()` as the current time, and so is the literal 'now', whatever function takes it.
- * The test clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read
- * the clock by a door no function names. The only clock a tree may hold is the clock token, and
- * a clock called as a function node is outside the grammar, which lists no clock.
+ * A database clock spelled out in raw SQL text. This is a spelling list, because raw text
+ * is the one place a tree cannot be read, and it is the one definition of the spellings:
+ * `scripts/clock-lint.py` reads these two lists from this file and applies them to store
+ * sources, all but the one arm named below. Each line here is one entry or one arm, which
+ * is the shape that lint reads and the shape a registered mutation deletes.
+ *
+ * A date function with no argument is on it, because SQLite reads `datetime()` as the
+ * current time, and so is the literal 'now', whatever function takes it. PostgreSQL's `age`
+ * is on it whatever it is given: with one argument it measures from the current date, no
+ * statement calls it with two, and telling them apart would mean reading SQL. The test
+ * clock's row in `meta` is on it too: a fragment that reads `fake_now_ms` has read the clock
+ * by a door no function names. That arm is the tree's alone, because a store's admin
+ * statements write the row by name, so the lint refuses a read of it with a pattern of its
+ * own. The only clock a tree may hold is the clock token, and a clock called as a function
+ * node is outside the grammar, which lists no clock.
  */
 export const CLOCK_SPELLING = new RegExp(
   [
@@ -1292,10 +1301,34 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
 const STATE_COLUMNS = ['state', 'status']
 const isBind = (node: OperationNode): boolean => ValueNode.is(node) && node.immediate !== true
 
-/** Whether a comparison holds a state column on its left and a bound value on its right, the way the builder writes one. */
+/**
+ * Whether an operand holds a bound value: the value itself, or parentheses, a list, a cast, a
+ * call, a CASE or a fragment around it, found the way `namesColumn` finds a column. The
+ * builder binds every member of a list of plain values. A subquery is its own statement, so a
+ * bind in its WHERE stands beside no state and is not read. What it selects is the value the
+ * state is compared with, so its selections are read.
+ */
+function holdsBind(node: OperationNode): boolean {
+  if (SelectQueryNode.is(node)) return (node.selections ?? []).some(holdsBind)
+  return isBind(node) || PrimitiveValueListNode.is(node) || children(node).some(holdsBind)
+}
+
+/** Whether one operand of a test holds a bound value and the other names a state column. */
+function bindsState(bound: OperationNode, named: OperationNode): boolean {
+  if (!holdsBind(bound)) return false
+  return STATE_COLUMNS.some((column) => namesColumn(named, column))
+}
+
+/**
+ * Whether a test compares a state column with a bound value, whichever side each stands on.
+ * The builder writes the column first unless it is told otherwise, and `? = state` reads the
+ * same to a partial index as `state = ?`.
+ */
 function comparesStateWithBind(node: BinaryOperationNode): boolean {
-  if (!isBind(node.rightOperand)) return false
-  return STATE_COLUMNS.some((column) => namesColumn(node.leftOperand, column))
+  return (
+    bindsState(node.rightOperand, node.leftOperand) ||
+    bindsState(node.leftOperand, node.rightOperand)
+  )
 }
 
 /** The one set operation the grammar lists. UNION, INTERSECT and EXCEPT compare whole rows, which no read here needs. */
@@ -1311,11 +1344,11 @@ const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union
  * the root, and no schema-qualified table. It lists one set operation, UNION ALL, and
  * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
  * write, so a set operation there is a form nobody considered. A read may not compare a
- * state or status column with a bound value, because a partial index is matched by the
- * literal. A transition finds its row by key, so it may. An INSERT takes one row of values or one
- * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
- * what is built from nodes. A store fragment is opaque text, reviewed through the
- * generated corpus.
+ * state or status column with a bound value, wherever it stands below the right side of the
+ * test, because a partial index is matched by the literal. A transition finds its row by key, so
+ * it may. An INSERT takes one row of values or one SELECT, with a conflict clause that names
+ * its columns (`insertShapeProblem`). It binds what is built from nodes. A store fragment is
+ * opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode, reading = false): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {

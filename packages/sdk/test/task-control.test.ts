@@ -1,4 +1,9 @@
-import { LeaseLostError, RunCancelledError, StoreUnavailableError } from '@durablerun/core'
+import {
+  LeaseLostError,
+  PermanentStoreError,
+  RunCancelledError,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import {
@@ -327,6 +332,16 @@ describe('task control scope', () => {
       ).toBeUndefined()
     } finally {
       Reflect.deleteProperty(StoreUnavailableError, Symbol.hasInstance)
+    }
+
+    Object.defineProperty(PermanentStoreError, Symbol.hasInstance, {
+      configurable: true,
+      value: () => true,
+    })
+    try {
+      expect(trustedStoreControl(new Error('ordinary'))).toBeUndefined()
+    } finally {
+      Reflect.deleteProperty(PermanentStoreError, Symbol.hasInstance)
     }
   })
 

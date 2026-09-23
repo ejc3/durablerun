@@ -1,5 +1,6 @@
 import {
   InvalidDurableStringError,
+  PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -11,6 +12,7 @@ import {
   type SqlTransactionLock,
   StoreUnavailableError,
   isTreeBuiltRead,
+  refuseUnknownLockKind,
   sqlBatchMode,
   sqlTransactionLock,
 } from '@durablerun/core'
@@ -39,6 +41,7 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
   1060, // ER_DUP_FIELDNAME
   1061, // ER_DUP_KEYNAME
   ER_NO_SUCH_TABLE,
+  1176, // ER_KEY_DOES_NOT_EXITS, as MySQL spells it: a statement forces an index that is not there
   1305, // ER_SP_DOES_NOT_EXIST
 ])
 /**
@@ -48,6 +51,45 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
  * budget was gone.
  */
 const ER_DATA_TOO_LONG = 1406
+
+/**
+ * SQLSTATE classes whose every code says the statement was refused for good, with these
+ * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
+ * access rule violation. MySQL sends the state beside its error number, and a class takes
+ * in every number MySQL files under it, 1064 among them, a statement the server will never
+ * accept. The PostgreSQL executor reads the same three classes, and nothing holds the two
+ * lists together: each is its own server's rule.
+ *
+ * The answers above keep a branch by number and are read first, because each has a type of
+ * its own: a missing `meta` on the version read, a value too long for its column, and the
+ * schema mismatch numbers. Every other state is an outage: a deadlock victim (1213, state
+ * 40001), which the executor runs again before it reports one, a lock wait timeout (1205,
+ * HY000), and an error with no state at all, as a lost connection or a closed pool is.
+ */
+const PERMANENT_SQLSTATE_CLASSES = new Set(['22', '23', '42'])
+
+/**
+ * Answers as permanent as the classes above that MySQL files outside them, so no class can
+ * name them: three under HY000, its general state, which also holds a lock wait timeout,
+ * and one under 01000, the state of a warning.
+ */
+const PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS = new Set([
+  1265, // WARN_DATA_TRUNCATED, as an error: text that is not a number, for a numeric column
+  1364, // ER_NO_DEFAULT_FOR_FIELD: a row that leaves out a column with no default
+  1366, // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: a value of the wrong type for its column
+  3819, // ER_CHECK_CONSTRAINT_VIOLATED: a broken CHECK constraint
+])
+
+/**
+ * Numbers MySQL files under one of the classes above that a retry cures, so they are read
+ * before the class: a limit on the server's or an account's connections, and on prepared
+ * statements. Another session's release lifts each of them.
+ */
+const OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS = new Set([
+  1203, // ER_TOO_MANY_USER_CONNECTIONS: the server's max_user_connections
+  1226, // ER_USER_LIMIT_REACHED: an account past one of its own limits
+  1461, // ER_MAX_PREPARED_STMT_COUNT_REACHED: the server's max_prepared_stmt_count
+])
 
 /** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
 const ER_LOCK_DEADLOCK = 1213
@@ -279,7 +321,12 @@ function normalizeResult(
   return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
-/** A read batch sees one consistent snapshot and cannot write, unless it is one read sent alone (`sentAlone`). */
+/**
+ * A read batch sees one consistent snapshot, unless it is one read sent alone (`sentAlone`),
+ * and its read-only transaction refuses DML. It does not refuse DDL: a DDL statement commits
+ * by itself, and that commit ends the transaction first. No store sends DDL as a read, and a
+ * `migrate:` batch sent as one is refused before it is sent (`refuseMigrationBatchWithoutItsLock`).
+ */
 const BEGIN_READ = [
   'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
   'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
@@ -292,9 +339,16 @@ const NAMED_UNLOCK_SQL = `SELECT RELEASE_LOCK(SHA2(JSON_ARRAY(DATABASE(), ?, ?, 
 type LockCoordinates = readonly [domain: string, first: string, second: string]
 
 function lockCoordinates(lock: SqlTransactionLock): LockCoordinates {
-  return lock.kind === 'event'
-    ? ['durablerun:event', lock.queue, lock.eventName]
-    : ['durablerun:claim', lock.queue, lock.claimToken]
+  switch (lock.kind) {
+    case 'event':
+      return ['durablerun:event', lock.queue, lock.eventName]
+    case 'claim':
+      return ['durablerun:claim', lock.queue, lock.claimToken]
+    case 'migration':
+      return [MIGRATION_LOCK, '', '']
+    default:
+      return refuseUnknownLockKind(lock)
+  }
 }
 
 /**
@@ -401,12 +455,44 @@ function isSchemaVersionRead(
   )
 }
 
-const isMigrationWrite = (label: string, mode: SqlBatchMode): boolean =>
-  mode === 'write' && (label === 'migrate:bootstrap' || /^migrate:v[0-9]+$/.test(label))
+/**
+ * A batch whose label begins with `migrate:` is a migration batch. It is a write that names
+ * the migration lock in its control, or it is the canonical version read, which is known by
+ * its whole text and takes no lock. Anything else under that label is refused: a write that
+ * names no lock, and a batch sent as a read, whose read-only transaction does not stop DDL.
+ * The label is read here only to REFUSE. The lock a batch
+ * runs under is the one its control names, and no label chooses one: chosen from a list of
+ * labels, a `migrate:` label the list does not know runs its DDL beside another migrator,
+ * and MySQL commits each DDL statement on its own, so nothing can undo it.
+ */
+function refuseMigrationBatchWithoutItsLock(
+  label: string,
+  mode: SqlBatchMode,
+  lock: SqlTransactionLock | undefined,
+  schemaVersionRead: boolean,
+): void {
+  if (!label.startsWith('migrate:') || schemaVersionRead) return
+  if (mode === 'read') {
+    throw new TypeError(
+      `batch(${label}) is a migration batch sent as a read: a read-only transaction does not stop DDL, and the one read under this label is the canonical version read`,
+    )
+  }
+  if (lock?.kind !== 'migration') {
+    throw new TypeError(
+      `batch(${label}) is a migration write that names no migration lock: pass core's MIGRATION_WRITE as its batch control`,
+    )
+  }
+}
 
 function errorNumber(error: unknown): number | undefined {
   const errno = (error as { errno?: unknown } | null)?.errno
   return typeof errno === 'number' ? errno : undefined
+}
+
+/** The class of the SQLSTATE a server error carries: its first two characters. */
+function sqlStateClass(error: unknown): string | undefined {
+  const state = (error as { sqlState?: unknown } | null)?.sqlState
+  return typeof state === 'string' ? state.slice(0, 2) : undefined
 }
 
 /** One definition of a deadlock victim, for the count and for the decision to run it again. */
@@ -418,7 +504,12 @@ function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
-function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
+/**
+ * The typed error a batch's failure becomes. Exported for the case that reads the server's
+ * own list of error numbers and asks this function about each: the package's index does not
+ * name it.
+ */
+export function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof MysqlResultContractError ||
     error instanceof InvalidDurableStringError ||
@@ -447,6 +538,20 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
         { cause: error },
       )
     }
+    // A limit that a retry cures is an outage whatever class MySQL files it under, so its
+    // class is not read.
+    const stateClass = OUTAGE_ERRNOS_UNDER_A_PERMANENT_CLASS.has(errno)
+      ? undefined
+      : sqlStateClass(error)
+    if (
+      (stateClass !== undefined && PERMANENT_SQLSTATE_CLASSES.has(stateClass)) ||
+      PERMANENT_ERRNOS_OUTSIDE_A_PERMANENT_CLASS.has(errno)
+    ) {
+      return new PermanentStoreError(
+        `batch(${label}) failed permanently (MySQL error ${errno}): ${errorDescription(error)}`,
+        { cause: error },
+      )
+    }
   }
   const state = errno === undefined ? '' : ` (MySQL error ${errno})`
   return new StoreUnavailableError(`batch(${label}) failed${state}: ${errorDescription(error)}`, {
@@ -465,7 +570,8 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
  * so a bind is data and never SQL text.
  *
  * A DDL statement commits on its own in MySQL. Only migration batches hold DDL, and they
- * run one at a time under the migration lock, with every statement safe to repeat. The
+ * run one at a time under the migration lock, which each names in its control
+ * (`refuseMigrationBatchWithoutItsLock`), with every statement safe to repeat. The
  * schema-version read takes no lock: the bootstrap is one statement, so there is no
  * state between "no version table" and "a version table with its row" to be kept from.
  */
@@ -534,19 +640,16 @@ export class MysqlExecutor implements SqlExecutor {
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
-    if (prepared.length === 0) return []
     const mode = sqlBatchMode(control)
     const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
+    // The refusals come before anything is sent, and before an empty batch is answered.
+    refuseMigrationBatchWithoutItsLock(label, mode, transactionLock, schemaVersionRead)
+    const lock = transactionLock === undefined ? null : lockCoordinates(transactionLock)
+    if (prepared.length === 0) return []
     // Decided here, beside the copy and before any wait: what the caller's array holds
     // after a wait is not what was copied. The brand is on the caller's own object.
     const alone = sentAlone(statements, mode, schemaVersionRead)
-    const lock: LockCoordinates | null =
-      transactionLock !== undefined
-        ? lockCoordinates(transactionLock)
-        : isMigrationWrite(label, mode)
-          ? [MIGRATION_LOCK, '', '']
-          : null
 
     let connection: PoolConnection
     try {

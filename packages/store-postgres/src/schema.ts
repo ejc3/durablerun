@@ -280,6 +280,49 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
         ALTER COLUMN driver_id TYPE TEXT COLLATE "C"`,
     ],
   },
+  // Version 8 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. PostgreSQL's DELETE takes no lock on the rows its subquery reads.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 8, statements: [] },
+  {
+    // A claim finds what ONE token holds three ways: its held guard asks whether the token
+    // holds a run already, its two follow-ons find the runs the batch just took, and its
+    // receipt read returns them. By queue and state alone the only index was `runs_poll`,
+    // so each of those read every running run of the queue, on every tick, the idle ones
+    // included: one claim measured 64 ms beside 100,000 running runs against 7 ms. This
+    // index holds only running runs, by their token. PostgreSQL matches it to a statement
+    // that binds the state only when it plans with the value, which it does for the
+    // unnamed statements the executor sends. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged. Like version 6, it is built under a
+    // lock that blocks writes to `runs` while it builds.
+    version: 9,
+    statements: [
+      `CREATE INDEX runs_held ON runs (queue, claimed_by)
+       WHERE state = 'running'`,
+    ],
+  },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the column refuses it too, for every writer
+    // there is, a port in another language included.
+    //
+    // The statement takes an ACCESS EXCLUSIVE lock on `events` as its first act and then
+    // reads every row once. It rewrites nothing, so a read batch's older snapshot sees the
+    // table as it was. It is one statement on one table, which is the rule above in its
+    // smallest form: the version never asks for a second store table, and a statement that
+    // holds `events` needs only a read of `meta`, which the runner's lock on `meta` does not
+    // block, so there is no cycle for a deadlock to close. Measured on a million events
+    // under the traffic of a build whose last version is 9: 85 to 129 ms with 64 B payloads
+    // and 390 ms with 1 KB, the longest call that overlapped it waited that long, and no call
+    // failed.
+    //
+    // A row that holds NULL makes the statement fail with SQLSTATE 23502, the transaction
+    // rolls back, and the database stays at version 9 with the row as it was. The rows are
+    // found with `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    version: 10,
+    statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

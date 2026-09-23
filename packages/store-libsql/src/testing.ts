@@ -1,46 +1,11 @@
 import type { IdSource } from '@durablerun/core'
+import { testIdSource } from '@durablerun/core/testing'
+import { createClient } from '@libsql/client'
 import { LibsqlStoreAdmin } from './admin.js'
 import { LibsqlExecutor } from './executor.js'
 
-const nextMonotoneSerial = (previous: number): number => previous + 1
-
-/**
- * A deterministic source for routine database tests.
- *
- * IDs and tokens have independent monotone counters: an operation that mints
- * no UUID still receives a fresh provenance token. Zero padding preserves the
- * ordering contract of UUIDv7 stand-ins once a fixture reaches two digits.
- */
-export function testIdSource(
-  namespace = 'test',
-  options: { readonly nextTokenSerial?: (previous: number) => number } = {},
-): IdSource {
-  if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
-    throw new Error(
-      `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
-    )
-  }
-  let ids = 0
-  let tokens = 0
-  const proposeTokenSerial = options.nextTokenSerial ?? nextMonotoneSerial
-  const serial = (value: number) => String(value).padStart(6, '0')
-  return {
-    uuidv7: () => `${namespace}-id-${serial(++ids)}`,
-    token: () => {
-      const proposed = proposeTokenSerial(tokens)
-      if (!Number.isSafeInteger(proposed)) {
-        throw new RangeError(`test token serial must be a safe integer: ${proposed}`)
-      }
-      if (proposed <= tokens) {
-        throw new RangeError(
-          `test token serial must strictly increase: proposed ${proposed} after ${tokens}`,
-        )
-      }
-      tokens = proposed
-      return `${namespace}-token-${serial(tokens)}`
-    },
-  }
-}
+/** Core's deterministic test id source, under the name this package released. */
+export { testIdSource }
 
 /**
  * A database migrated to the current schema by default, with the engine clock
@@ -81,4 +46,23 @@ export async function openTestDb(
   if (opts.migrate !== false) await admin.migrate()
   if (opts.nowMs !== undefined) await admin.setFakeNowEpochMs(opts.nowMs)
   return { raw, admin, ids, close: () => raw.close() }
+}
+
+/**
+ * Holds a database file's write lock from a connection of its own until `during` settles, for
+ * a case that makes an executor wait for the lock and give up. The lock is taken and given
+ * back by statements on one connection, which close() then closes.
+ */
+export async function holdLibsqlWriteLock(url: string, during: () => Promise<void>): Promise<void> {
+  const holder = createClient({ url })
+  try {
+    await holder.execute('BEGIN IMMEDIATE')
+    try {
+      await during()
+    } finally {
+      await holder.execute('ROLLBACK')
+    }
+  } finally {
+    holder.close()
+  }
 }

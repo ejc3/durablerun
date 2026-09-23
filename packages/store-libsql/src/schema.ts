@@ -240,6 +240,72 @@ export const MIGRATIONS: Migration[] = [
     version: 7,
     statements: [],
   },
+  // Version 8 gave MySQL an index of a run's statement stamp, which its keyed deletes read
+  // their keys through. SQLite runs one writer at a time, so a delete's read of its keys waits for
+  // no other transaction.
+  // This version holds nothing here, so the three dialects keep one numbering.
+  { version: 8, statements: [] },
+  {
+    // A claim finds what ONE token holds three ways: its held guard asks whether the token
+    // holds a run already, its two follow-ons find the runs the batch just took, and its
+    // receipt read returns them. By queue and state alone the only index was `runs_poll`,
+    // so each of those read every running run of the queue, on every tick, the idle ones
+    // included: one claim measured 200 ms beside 100,000 running runs. This index holds
+    // only running runs, by their token. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 9,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS runs_held ON runs (queue, claimed_by)
+       WHERE state = 'running'`,
+    ],
+  },
+  {
+    // An await that timed out answers with no payload, and an emitted event answers with
+    // its payload, so an event row that held SQL NULL would read as a timeout. The port
+    // refuses to write one. From this version the schema refuses it too, for every writer
+    // there is, a port in another language included.
+    //
+    // SQLite cannot add NOT NULL to a column that exists. Rebuilding the table would declare
+    // it, and costs a copy of every stored byte inside one write transaction: measured on a
+    // million events of 1 KB, 48 and 56 seconds, a 4.5 GB file doubled, and a fifth to a third
+    // of another connection's calls failing. Few of those waited out its busy timeout: after a
+    // first write failed busy, the calls that followed it on its connection failed by a defect
+    // of their own, which PR3.15 fixed (BUILD.md). Two triggers refuse
+    // the same writes, by an insert, an update or either arm of an upsert, under any
+    // conflict clause, and cost nothing to install. They read no table. What they do not
+    // give: the catalog still calls the column nullable, so on this dialect nothing can hold
+    // the rule by a catalog read, and a refusal carries SQLITE_CONSTRAINT_TRIGGER and not
+    // the code of a declared NOT NULL.
+    //
+    // The third statement is the constraint checking its own past. It touches only rows
+    // that hold NULL, so it writes nothing when there is none. When there is one, the update
+    // trigger installed two statements before refuses it, the batch fails, and the database
+    // stays at the version before with the row as it was. The rows are found with
+    // `SELECT queue, event_name FROM events WHERE payload IS NULL`.
+    //
+    // That statement is a scan inside the version's write transaction. On a table that is
+    // not in the page cache it holds the one writer lock while it reads from disk: measured
+    // on a cold 4.5 GB file, 14.9 seconds, in which 24 of another connection's calls failed,
+    // at most three by waiting out its busy timeout and the rest by that defect. The finding
+    // query above reads the same pages under no write lock, and run first it took the
+    // version to under half a second with no call failing.
+    version: 10,
+    statements: [
+      `CREATE TRIGGER events_payload_not_null_update
+       BEFORE UPDATE OF payload ON events
+       WHEN NEW.payload IS NULL
+       BEGIN
+         SELECT RAISE(ABORT, 'NOT NULL constraint failed: events.payload');
+       END`,
+      `CREATE TRIGGER events_payload_not_null_insert
+       BEFORE INSERT ON events
+       WHEN NEW.payload IS NULL
+       BEGIN
+         SELECT RAISE(ABORT, 'NOT NULL constraint failed: events.payload');
+       END`,
+      'UPDATE events SET payload = payload WHERE payload IS NULL',
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
