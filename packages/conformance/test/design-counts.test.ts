@@ -97,4 +97,10 @@ describe('DESIGN.md counts held to the code', () => {
       { key: 'j', stated: null, text: 'x' },
     ])
   })
+
+  it('reports a marker that no number touches, so a space before it cannot hide a wrong count', () => {
+    expect(statedCounts('the 99 <!-- count: temporal-fields --> fields')).toEqual([
+      { key: 'temporal-fields', stated: null, text: '' },
+    ])
+  })
 })
