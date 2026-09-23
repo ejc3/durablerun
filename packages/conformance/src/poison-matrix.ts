@@ -11,7 +11,6 @@ import {
   SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SqlBatchControl,
-  type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
   type SqlRow,
@@ -19,10 +18,10 @@ import {
   isLiveState,
   isTerminalState,
   parseFenceStamp,
-  sqlBatchMode,
   taskDoneEventName,
   taskIdOfDoneEvent,
 } from '@durablerun/core'
+import { type RecordedBatch, RecordingExecutor } from '@durablerun/core/testing'
 import { MATRIX_WRITE_LABELS, TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import {
   type StorageCorruption,
@@ -1633,39 +1632,25 @@ export function duplicatePoisonWitnessIds(): string[] {
   return [...duplicates].sort()
 }
 
-interface RecordedCall {
-  label: string
-  mode: SqlBatchMode
-  changedState: boolean
-}
+/** The shared recorder, which also notes whether each write batch changed durable state. */
+class StateWatchingExecutor extends RecordingExecutor {
+  private readonly changed = new Set<RecordedBatch>()
 
-class RecordingExecutor implements SqlExecutor {
-  readonly calls: RecordedCall[] = []
-  constructor(private readonly real: SqlExecutor) {}
-
-  get labels(): string[] {
-    return this.calls.map((call) => call.label)
-  }
-
-  async batch(
+  override async batch(
     label: string,
     statements: readonly SqlStatement[],
     control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
-    const mode = sqlBatchMode(control)
-    const call: RecordedCall = { label, mode, changedState: false }
-    this.calls.push(call)
-    const before = mode === 'write' ? await snapshot(this.real) : undefined
+    const call = this.record(label, statements, control)
+    const before = call.mode === 'write' ? await snapshot(this.real) : undefined
     const results = await this.real.batch(label, statements, control)
-    if (before !== undefined) {
-      call.changedState = !same(before, await snapshot(this.real))
-    }
+    if (before !== undefined && !same(before, await snapshot(this.real))) this.changed.add(call)
     return results
   }
 
   changedDurableState(label: string): boolean {
-    return this.calls.some(
-      (call) => call.label === label && call.mode === 'write' && call.changedState,
+    return this.batches.some(
+      (call) => call.label === label && call.mode === 'write' && this.changed.has(call),
     )
   }
 }
@@ -3798,7 +3783,7 @@ export async function runPoisonMatrixCase(
       }
     }
     const frozenAuthority = freezeAuthority(before)
-    const recorder = new RecordingExecutor(f.raw)
+    const recorder = new StateWatchingExecutor(f.raw)
     const store = f.storeOver(recorder)
     const outcomes: PoisonInvocationOutcome[] = []
     const call = async <Target extends PoisonInvocationTarget>(

@@ -1,21 +1,7 @@
-import type { SqlBatchControl, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
+import { RecordingExecutor } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { LibsqlSchedulerStore } from '../src/index.js'
 import { openTestDb } from '../src/testing.js'
-
-/** Passes every batch through and records its label. */
-class LabelRecorder implements SqlExecutor {
-  readonly labels: string[] = []
-  constructor(private readonly real: SqlExecutor) {}
-  batch(
-    label: string,
-    statements: readonly SqlStatement[],
-    control?: SqlBatchControl,
-  ): Promise<SqlResult[]> {
-    this.labels.push(label)
-    return this.real.batch(label, statements, control)
-  }
-}
 
 /**
  * A terminal batch names its task's completion event, and `complete` and `fail` are
@@ -26,7 +12,7 @@ describe("a terminal batch's read of its run's task", () => {
   it('costs the store that activated the run nothing, and any other store one read', async () => {
     const { raw, ids, close } = await openTestDb({ nowMs: 1_000_000 })
     try {
-      const recorder = new LabelRecorder(raw)
+      const recorder = new RecordingExecutor(raw)
       const worker = new LibsqlSchedulerStore(recorder, ids)
       const stranger = new LibsqlSchedulerStore(recorder, ids)
       const terminal: Record<string, string[]> = {}
@@ -39,9 +25,9 @@ describe("a terminal batch's read of its run's task", () => {
         const [claimed] = await worker.claim('q', 'w', { leaseSeconds: 60, limit: 1 })
         if (claimed === undefined) throw new Error('the spawned run was not claimed')
         await worker.activate('q', claimed.runId, 'w', claimed.claimGen)
-        recorder.labels.length = 0
+        recorder.batches.length = 0
         await ends(claimed.runId)
-        terminal[name] = recorder.labels.splice(0)
+        terminal[name] = recorder.batches.splice(0).map((batch) => batch.label)
       }
       expect(terminal, 'mutation-verdict:behavior:activate-remembers-the-run-task').toEqual({
         'worker completes': ['complete'],
