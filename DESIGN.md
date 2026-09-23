@@ -1308,7 +1308,7 @@ One invocation executes one claimed run to its next suspension point:
     claim under 3,000 characters that do not compress answered as an outage on
     PostgreSQL (SQLSTATE 54000) and took its run on the other two, where before
     the index every dialect took it. 255<!-- count: identifier-characters --> characters are at most 1,020<!-- count: identifier-utf8-bytes --> bytes, so
-    the row fits, and MySQL's prefix of 255 holds the whole token. The engine's
+    the row fits, and MySQL's prefix of 255<!-- count: identifier-characters --> holds the whole token. The engine's
     own tokens are 32 characters. With the index one claim costs 4 to 8 ms on
     every dialect at every size measured, up to 100,000 running runs on libSQL
     and PostgreSQL and 40,000 on MySQL, and no other write was measurably
@@ -2763,7 +2763,7 @@ are load-bearing):
    the sweep hands the run to a claim under another token, which is how the engine recovers
    any run whose holder went away. A caller that passes one now is refused where it
    was stored under another name, or reported as an outage. A caller whose own claim
-   tokens are wider than 255 characters is refused at every claim from now on.
+   tokens are wider than 255<!-- count: identifier-characters --> characters is refused at every claim from now on.
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,
@@ -3717,7 +3717,7 @@ not depend on careful reading:
   typed an outage.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
-  the 23-field inventory above is the sole persisted temporal representation.
+  the 23<!-- count: temporal-fields -->-field inventory above is the sole persisted temporal representation.
   Fixed-field fragments own due/not-due comparisons, and one
   `epochAdditionFits` constructor owns derived-epoch headroom. Each delta
   expression appears exactly once in the generated predicate, so an anonymous

@@ -50,17 +50,14 @@ const WORDS = [
   'twelve',
 ]
 
-/** The number written just before each marker: digits, with commas or not, or a word. Null when it is neither. */
+/** The number written just before each marker: digits, with commas or not, or a word. Null when it is neither, and for a marker that no number touches. */
 function statedCounts(design: string): { key: string; stated: number | null; text: string }[] {
-  return [...design.matchAll(/(?<![\w,])(\d[\d,]*|[a-z]+)<!-- count: ([a-z0-9-]+) -->/g)].map(
-    ([, text, key]) => {
-      const word = WORDS.indexOf(text as string)
-      const stated = /^\d/.test(text as string)
-        ? Number((text as string).replace(/,/g, ''))
-        : word < 0
-          ? null
-          : word
-      return { key: key as string, stated, text: text as string }
+  return [...design.matchAll(/(?:(?<![\w,])(\d[\d,]*|[a-z]+))?<!-- count: ([a-z0-9-]+) -->/g)].map(
+    ([, found, key]) => {
+      const text = found ?? ''
+      const word = WORDS.indexOf(text)
+      const stated = /^\d/.test(text) ? Number(text.replace(/,/g, '')) : word < 0 ? null : word
+      return { key: key as string, stated, text }
     },
   )
 }
