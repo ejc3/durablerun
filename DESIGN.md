@@ -929,9 +929,21 @@ One invocation executes one claimed run to its next suspension point:
     with the refusal as its failure reason, which an operator reads on the
     task's result and through the inspect route; nothing completes silently. A
     saga that was already rolling back replays its handler to register its
-    rollbacks, the refusal ends that replay at the second use, and a step that
-    started after it is not registered: the rollback halts, naming the step
-    that started last.
+    rollbacks, and the refusal ends that replay at the second use, as any error
+    a handler throws does. A step that started after that point is not
+    registered, and the rollback halts as section 3.10 says a rollback halts
+    at a step it cannot reach.
+  - **Known gap: a task name that concurrent flows share is not refused.** The
+    same arrival order numbers the uses of a task name (`$spawn:child`, then
+    `$spawn:child#2`). Two flows that each await something and then spawn a child
+    under one task name are handed each other's child by a replay that reaches
+    the two calls in the other order, and each then awaits the wrong one. The
+    harness measured it at 2 of 14 store calls for two flows over two emitted
+    events, and 3 of 28 for two flows over two spawned children. A refusal would
+    cost every flow that spawns under one task name, so the engine does not
+    refuse, and the harness pins both programs. Two awaits of one event name are
+    numbered the same way and are handed the same payload, so nothing is
+    swapped.
   - Two sleeps started together run one after the other. `sleepFor(5)` beside
     `sleepFor(7)` sleeps 5 seconds and then 7, not 7. A sleep suspends the whole
     run, the first suspension ends the pass, and the second sleep's seconds
@@ -994,7 +1006,7 @@ One invocation executes one claimed run to its next suspension point:
     is rolled back first. At the known gap's call the test pins what the engine
     does: the group is admitted and the task completes, or the saga's later
     member starts. Each known gap is a witness rather than a comparison: a
-    program of concurrent flows (`FLOW_PROGRAMS` in the harness) says how many
+    program of concurrent flows (`FLOW_PROGRAMS` and `SHARED_TASK_NAME_PROGRAMS` in the harness) says how many
     store calls the run with no fault makes, how it ends, and the store calls
     at which an outage ends it the other way, and the test runs an outage at
     every store call and fails on any other ending. A gap that is closed by

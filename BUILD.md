@@ -369,8 +369,9 @@ is left: line 18, held for the maintainer's choice.
     refuses a step name that concurrent flows share, and both programs are
     refused at every store call. Five registered mutations that hold the
     refusal are each caught by name. Three flow programs that the SDK refuses
-    as if a call were nested in a step are witnesses of what it does, each
-    failing on any other ending at any store call.
+    as if a call were nested in a step, and two programs of flows that share a
+    task name and are handed each other's child, are witnesses of what the
+    engine does, each failing on any other ending at any store call.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -3494,7 +3495,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     store calls, two flows over two emitted events fail on the run with no
     fault and complete at 5 of 11 store calls, and two flows that each wait on
     a timer and then run a step whose body takes time fail at 4 of 5 and
-    complete at one. The three flow programs pin those numbers.
+    complete at one. The three flow programs pin those numbers. (iii) The
+    shared step name's defect exists for a task name, and the engine does not
+    refuse it: two flows that each await something and then spawn a child under
+    one task name are handed each other's child at 2 of 14 store calls (over two
+    emitted events) and 3 of 28 (over two spawned children), and each then
+    awaits the wrong child. Two programs pin it, so it stays visible.
   - An option, not scheduled: admit the concurrency of sibling flows. A call
     would be refused only when it is made inside a step's own async context,
     which needs Node's `AsyncLocalStorage` in an SDK that imports nothing from
@@ -3503,6 +3509,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     started together are rolled back in, and rewrites six registered mutations
     and the four refused-group programs. Trigger: a task in use whose flows
     each call a step, or a decision that the SDK admits sibling flows.
+  - An option, not scheduled: refuse a task name that concurrent flows share,
+    by the rule the step name has. It costs every flow that spawns under one
+    task name after a call made beside a pending one, which a fan-out over one
+    task name does whenever a flow awaits something first. Trigger: a task in
+    use whose flows spawn under one task name, or a decision that the swap of
+    two children outweighs that cost.
   - An option, not scheduled: close gap (i) with a guard held while a replayed
     step settles. It refuses an ordinary fan-out written as flows on every
     replay, so it waits for the option above. Trigger: the same decision.

@@ -1047,6 +1047,57 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
 }
 
 /**
+ * The same defect for a task name, found while measuring the shared step name and not closed
+ * by it. Two flows that each await something and then spawn a child under one task name are
+ * numbered in the order their calls arrive (`$spawn:child`, then `$spawn:child#2`), and a
+ * replay from memos can reach the two calls in the other order, so each flow is handed the
+ * other's child, and then awaits the wrong one. The engine does not refuse a repeated task
+ * name, which a fan-out over one task name repeats every time, and a refusal would cost every
+ * such flow. The test says exactly what the engine does, so a swap that is closed by accident,
+ * or that reaches more store calls, fails it, and the swap stays visible. BUILD.md's PR3.4d
+ * entry names the option and its trigger.
+ */
+const SHARED_TASK_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
+  'flows that each await an event the program has emitted and then spawn a child under one task name':
+    {
+      gap: { calls: 14, reference: 'completed', otherwiseAt: [6, 8] },
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'spawn', name: 'child' }, 0),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'spawn', name: 'child' }, 1),
+          ],
+        ),
+      ],
+    },
+  'flows that each await a child and then spawn a second child under one task name': {
+    gap: { calls: 28, reference: 'completed', otherwiseAt: [5, 8, 21] },
+    ops: [
+      group<ProgramOp>(
+        inAFlow({ kind: 'spawn', name: 'first' }, 0),
+        inAFlow({ kind: 'spawn', name: 'first' }, 1),
+      ),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-child', childIndex: 0 }),
+          inAFlow({ kind: 'spawn', name: 'second' }, 0),
+        ],
+        [
+          inAFlow({ kind: 'await-child', childIndex: 1 }),
+          inAFlow({ kind: 'spawn', name: 'second' }, 1),
+        ],
+      ),
+    ],
+  },
+}
+
+/**
  * Programs in which one step name is used by two flows. The engine numbers the uses of a name
  * in the order the calls arrive (`record`, then `record#2`), and two flows reach their calls
  * in an order that a store call decides on one pass and that a replay from memos decides
@@ -1304,6 +1355,7 @@ describe('context-method enrollment (the inventory gate)', () => {
       saga: SAGA_SHAPE_NAMES,
       flows: Object.keys(FLOW_PROGRAMS),
       sharedName: Object.keys(SHARED_NAME_PROGRAMS),
+      sharedTaskName: Object.keys(SHARED_TASK_NAME_PROGRAMS),
       sharedNameCost: Object.keys(SHARED_NAME_COST_PROGRAMS),
     }).toEqual({
       plain: [
@@ -1332,6 +1384,10 @@ describe('context-method enrollment (the inventory gate)', () => {
       sharedName: [
         'flows that each await a child and then record it in a step under one name, and then a sleep',
         'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
+      ],
+      sharedTaskName: [
+        'flows that each await an event the program has emitted and then spawn a child under one task name',
+        'flows that each await a child and then spawn a second child under one task name',
       ],
       sharedNameCost: [
         'a step beside a sleep, and then the same step name again one call after another',
@@ -1501,7 +1557,10 @@ describe('replay equivalence (generated programs x fault points x adversarial va
     }, 60_000)
   }
 
-  for (const [title, program] of Object.entries(FLOW_PROGRAMS)) {
+  for (const [title, program] of Object.entries({
+    ...FLOW_PROGRAMS,
+    ...SHARED_TASK_NAME_PROGRAMS,
+  })) {
     it(`${title}: an outage at every store call ends as the known gap says`, async () => {
       // The registered mutant that the first program is the owner of.
       const verdict = (
@@ -1533,7 +1592,7 @@ describe('replay equivalence (generated programs x fault points x adversarial va
 
 /** How a run ended: what it completed with, or the call the engine refused. */
 function endingOf(run: Awaited<ReturnType<typeof runProgram>>): string {
-  if (run.state === 'completed') return `completed ${run.result}`
+  if (run.state === 'completed') return `completed ${run.result} ${run.spawned.join(',')}`
   const message = (JSON.parse(run.failure ?? 'null') as { message?: string } | null)?.message
   const refused = message?.match(/^(ctx\.\S+) (?:called inside a step|is a repeated step name)/)
   return refused?.[1] !== undefined ? `refused ${refused[1]}` : `${run.state} ${message}`
