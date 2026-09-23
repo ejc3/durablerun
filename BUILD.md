@@ -1533,7 +1533,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   point and not in the conformance package because a store's own tests import
   core and do not depend on the conformance package. The entry point is
   released, and a new export of a released entry point is an addition that
-  needs no `changed` entry. No statement, corpus file, or assertion changed.
+  needs no `changed` entry. `storeOverRecorder` in the identifier surface is
+  not a copy: it never calls the real executor, so that a refusal shows as no
+  batch reached. No statement, corpus file, or assertion changed.
 
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
