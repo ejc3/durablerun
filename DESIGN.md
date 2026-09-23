@@ -3729,6 +3729,18 @@ not depend on careful reading:
   sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
   controls, rounded-duration parity, and driver-cleanup atomicity pin the
   contract independently of the global invariant.
+- *The counts of this document* (`conformance/test/design-counts.test.ts`): a
+  count stated here for a property the code pins carries a marker straight
+  after the number, an HTML comment that names the property, and the test
+  compares the number, written in digits or as a word, with the value the code
+  exports: the poison matrix's conditions, write labels, witnesses and cells,
+  the durable counter and temporal fields, the port's string places, the
+  self-concurrency contests, and the identifier width with the UTF-16 units and
+  UTF-8 bytes it allows. A number that differs, a marker that names no pinned
+  count, and a pinned count that has no marker left each fail it by name. It
+  holds a count only where a marker stands, so a new count of a pinned
+  property takes a marker and an entry in the test's table, and a count that
+  no constant pins, such as a measurement, stays unmarked.
 - *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
   mutation names the exact behavioral or construction assertion that must
   kill it — test file, full test name, and marker in its failure. Compilation
