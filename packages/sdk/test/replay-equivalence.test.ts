@@ -933,8 +933,8 @@ interface KnownGap {
  * lockstep. A flow program is short, and the call that tells is not always one the sample
  * takes, so each runs with an outage at EVERY store call.
  *
- * A program with a `gap` is a KNOWN GAP, and the test says exactly what the engine does with
- * it (`theEngineDoesWhatTheGapSays`). Each is an ordinary program in which no call is made
+ * Each of these is a KNOWN GAP, and the test says exactly what the engine does with it
+ * (`theEngineDoesWhatTheGapSays`). Each is an ordinary program in which no call is made
  * inside a step, and each is refused as if a call had been made inside one, because the
  * engine's refusal is one flag that cannot tell a call nested in a step from a call that a
  * sibling flow makes while the step runs. Whether a program of this shape completes depends
@@ -943,7 +943,7 @@ interface KnownGap {
  * trigger). Until then the witness fails if a program ends another way at any call, so a gap
  * that is closed by accident, or that gets worse, is seen.
  */
-const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap?: KnownGap }> = {
+const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
   'flows that each await a child and then record it in a step under its own name, and then a sleep':
     {
       gap: { calls: 30, reference: 'completed', otherwiseAt: [6, 7, 24] },
@@ -1046,6 +1046,41 @@ const SHARED_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> =
     },
 }
 
+/**
+ * The cost of that refusal: programs of one flow, which the engine also refuses, because it
+ * cannot tell a flow that reuses a name after a call made beside a pending one from two flows
+ * that use one name. Each was completed by the engine before, and each is refused at every
+ * store call now. A step name used again one call after another is not refused (the
+ * generated programs draw six names and repeat them), and neither is a name whose earlier uses
+ * were made with no other call pending.
+ */
+const SHARED_NAME_COST_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> = {
+  'a step beside a sleep, and then the same step name again one call after another': {
+    name: 'x',
+    ops: [
+      group<ProgramOp>(
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+        inAFlow({ kind: 'step', name: 'x' }),
+      ),
+      inAFlow({ kind: 'step', name: 'x' }, 1),
+    ],
+  },
+  'a flow that repeats a step name, beside a flow that awaits an event': {
+    name: 'poll',
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'done' }),
+      flowsOf(
+        [inAFlow({ kind: 'await-inline', eventName: 'done' })],
+        [
+          inAFlow({ kind: 'step', name: 'poll' }),
+          inAFlow({ kind: 'step', name: 'poll' }, 1),
+          inAFlow({ kind: 'step', name: 'poll' }, 2),
+        ],
+      ),
+    ],
+  },
+}
+
 /** Every store call of a run, where the sample of `faultPoints` takes every other one. */
 const everyCall = (measuredCalls: number): number[] =>
   Array.from({ length: measuredCalls }, (_, at) => at + 1)
@@ -1055,6 +1090,12 @@ const SLEEPS_UNTIL_A_TIME: ProgramOp[] = [
   { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: wakeAt(3) },
   { kind: 'step', valueIndex: 0, nameIndex: 0 },
 ]
+
+const REPEATED_STEP: ProgramOp[] = [0, 1, 2].map((valueIndex) => ({
+  kind: 'step',
+  valueIndex,
+  nameIndex: 0,
+}))
 
 /** The generated programs this file runs at every fault point: six of random ops, and one for each shape. */
 const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
@@ -1067,6 +1108,8 @@ const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
   // The six seeds draw no sleep until a time outside a group, so one program makes that call
   // one after another: to a time already past, and to one ahead.
   ['a sleep until a time, one call after another', SLEEPS_UNTIL_A_TIME] as const,
+  // One step name, used one call after another, is never refused for being repeated.
+  ['a step name used again one call after another', REPEATED_STEP] as const,
 ]
 
 interface Row {
@@ -1208,6 +1251,7 @@ describe('context-method enrollment (the inventory gate)', () => {
       saga: SAGA_SHAPE_NAMES,
       flows: Object.keys(FLOW_PROGRAMS),
       sharedName: Object.keys(SHARED_NAME_PROGRAMS),
+      sharedNameCost: Object.keys(SHARED_NAME_COST_PROGRAMS),
     }).toEqual({
       plain: [
         'two awaits of one event, which park the run',
@@ -1235,6 +1279,10 @@ describe('context-method enrollment (the inventory gate)', () => {
       sharedName: [
         'flows that each await a child and then record it in a step under one name, and then a sleep',
         'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
+      ],
+      sharedNameCost: [
+        'a step beside a sleep, and then the same step name again one call after another',
+        'a flow that repeats a step name, beside a flow that awaits an event',
       ],
     })
   })
@@ -1384,26 +1432,48 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (const [title, ops] of RUN_PROGRAMS) {
     it(`${title}: every fault point yields the reference outcome`, async () => {
-      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
-      await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
-        runProgram(ops, runSeed, failAtCall),
-      )
+      // The registered mutant that the program generated for a step name is the owner of.
+      const verdict = (
+        {
+          'a step name used again one call after another':
+            'mutation-verdict:behavior:sdk-step-name-used-one-call-after-another-is-not-refused',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, async () => {
+        if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
+        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall) =>
+          runProgram(ops, runSeed, failAtCall),
+        )
+      })
     }, 60_000)
   }
 
   for (const [title, program] of Object.entries(FLOW_PROGRAMS)) {
-    it(`${title}: an outage at every store call ${program.gap === undefined ? 'yields the reference outcome' : 'ends as the known gap says'}`, async () => {
-      if (program.gap !== undefined) return theEngineDoesWhatTheGapSays(program.ops, program.gap)
-      await everyFaultPointYieldsTheReference(
-        title,
-        (runSeed, failAtCall) => runProgram(program.ops, runSeed, failAtCall, { ends: 'either' }),
-        everyCall,
-      )
+    it(`${title}: an outage at every store call ends as the known gap says`, async () => {
+      // The registered mutant that the first program is the owner of.
+      const verdict = (
+        {
+          'flows that each await a child and then record it in a step under its own name, and then a sleep':
+            'mutation-verdict:behavior:sdk-first-use-of-a-step-name-is-never-refused',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, () => theEngineDoesWhatTheGapSays(program.ops, program.gap))
     }, 120_000)
   }
-  for (const [title, program] of Object.entries(SHARED_NAME_PROGRAMS)) {
+
+  for (const [title, program] of Object.entries({
+    ...SHARED_NAME_PROGRAMS,
+    ...SHARED_NAME_COST_PROGRAMS,
+  })) {
     it(`${title}: an outage at every store call refuses the repeated name`, async () => {
-      await theEngineRefusesTheSharedName(program.ops, program.name)
+      // The registered mutants that the first program is the owner of.
+      const verdict = (
+        {
+          'flows that each await a child and then record it in a step under one name, and then a sleep':
+            'mutation-verdict:behavior:sdk-flows-repeating-a-step-name-are-refused',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, () => theEngineRefusesTheSharedName(program.ops, program.name))
     }, 120_000)
   }
 })

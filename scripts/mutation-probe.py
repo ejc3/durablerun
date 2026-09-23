@@ -13550,11 +13550,13 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 # The SDK's replay-equivalence harness draws durable calls started together and a step named
-# after the attempt (DESIGN.md S3.2 and S3.10), and two programs it generates each own a
-# mutation. They keep the audit checking that the generated programs can see two defects a
-# review found where the old grammar could not look: a second registered step that starts while
-# the first writes its start marker, and a rollback pass that does not replay as the run that
-# failed.
+# after the attempt (DESIGN.md S3.2 and S3.10), and programs it generates each own a mutation.
+# Two keep the audit checking that the generated programs can see two defects a review found
+# where the old grammar could not look: a second registered step that starts while the first
+# writes its start marker, and a rollback pass that does not replay as the run that failed. Five
+# hold the refusal of a step name that concurrent flows share: the counting of pending calls,
+# the mark a name takes when it is used beside another call, and the refusal of a marked name's
+# second use and of nothing else.
 MUTATION_SPECS.extend(
     (
         (
@@ -13570,6 +13572,41 @@ MUTATION_SPECS.extend(
             "      this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries\n",
             "      this.#sagaCauseJson === undefined ? attempt : attempt\n",
             "a rollback pass keeps its own ordinal, so a step named after the attempt finds no memo, registers no rollback, and the saga halts with nothing compensated",
+        ),
+        (
+            "sdk-durable-call-is-counted-as-pending",
+            "packages/sdk/src/context.ts",
+            "    this.pendingCalls++\n",
+            "    // MUTATION: a durable call is never counted as pending\n",
+            "no durable call is ever pending beside another, so two flows that use one step name are never found concurrent and a replay can hand each flow the other's value",
+        ),
+        (
+            "sdk-pending-durable-call-is-counted-until-it-settles",
+            "packages/sdk/src/context.ts",
+            "      return await run(beside)\n",
+            "      return run(beside)\n",
+            "a call stops counting the moment it hands back its promise, so a call answered from its memo is not pending when a sibling flow makes its next call, and a replay can hand each flow the other's value",
+        ),
+        (
+            "sdk-step-name-used-beside-another-call-is-marked",
+            "packages/sdk/src/context.ts",
+            "    if (beside) taskMapSet(this.besideAnotherCall, name, true)\n",
+            "    // MUTATION: a step name used beside another call is not marked\n",
+            "a step name used beside another call is not marked, so its second use is admitted and two flows can be handed each other's value",
+        ),
+        (
+            "sdk-first-use-of-a-step-name-is-refused",
+            "packages/sdk/src/context.ts",
+            "(taskMapGet(this.nameUses, name) ?? 0) > 1 && taskMapHas(this.besideAnotherCall, name)",
+            "taskMapHas(this.besideAnotherCall, name)",
+            "the first use of a step name made beside another call is refused too, so each flow of a fan-out that gives its step a name of its own fails",
+        ),
+        (
+            "sdk-step-name-refusal-ignores-the-mark",
+            "packages/sdk/src/context.ts",
+            "(taskMapGet(this.nameUses, name) ?? 0) > 1 && taskMapHas(this.besideAnotherCall, name)",
+            "(taskMapGet(this.nameUses, name) ?? 0) > 1",
+            "every repeated step name is refused, so a step called in a loop, one call after another, fails the task",
         ),
     )
 )
@@ -13591,6 +13628,37 @@ for _verdict, _names in (
             "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
         ),
         ("saga-pass-replays-as-the-run-that-failed",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "replay equivalence (generated programs x fault points x adversarial values) flows that each await a child and then record it in a step under one name, and then a sleep: an outage at every store call refuses the repeated name",
+            "mutation-verdict:behavior:sdk-flows-repeating-a-step-name-are-refused",
+        ),
+        (
+            "sdk-durable-call-is-counted-as-pending",
+            "sdk-pending-durable-call-is-counted-until-it-settles",
+            "sdk-step-name-used-beside-another-call-is-marked",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "replay equivalence (generated programs x fault points x adversarial values) flows that each await a child and then record it in a step under its own name, and then a sleep: an outage at every store call ends as the known gap says",
+            "mutation-verdict:behavior:sdk-first-use-of-a-step-name-is-never-refused",
+        ),
+        ("sdk-first-use-of-a-step-name-is-refused",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "replay equivalence (generated programs x fault points x adversarial values) a step name used again one call after another: every fault point yields the reference outcome",
+            "mutation-verdict:behavior:sdk-step-name-used-one-call-after-another-is-not-refused",
+        ),
+        ("sdk-step-name-refusal-ignores-the-mark",),
     ),
 ):
     for _name in _names:
@@ -15985,6 +16053,21 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "saga-pass-replays-as-the-run-that-failed": (
         "one test is generated for each program, and its title carries the shape the program was generated for"
     ),
+    "sdk-durable-call-is-counted-as-pending": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
+    "sdk-pending-durable-call-is-counted-until-it-settles": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
+    "sdk-step-name-used-beside-another-call-is-marked": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
+    "sdk-first-use-of-a-step-name-is-refused": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
+    "sdk-step-name-refusal-ignores-the-mark": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
     "sdk-durable-key-held-before-the-body-runs": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -18340,7 +18423,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 954:
+        if len(MUTATIONS) != 959:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

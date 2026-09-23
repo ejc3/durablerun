@@ -601,6 +601,45 @@ One invocation executes one claimed run to its next suspension point:
   - Every other group is admitted, and replays the same on every schedule: two
     awaits of one event, two spawns, two awaits of children, two sleeps, and a
     sleep or an await with a step started AFTER it.
+  - **A step name that concurrent flows share is refused.** A step name is
+    numbered in the order its calls arrive (`record`, then `record#2`), and
+    calls made one after another arrive in the order the task writes them. The
+    calls of two flows, which are async functions of the task's own that each
+    await something and then call a step under one name, can arrive in one
+    order on the pass that ran the steps and in the other on a pass that
+    replays them from their memos. Each flow is then handed the other's value:
+    the task completes with two values swapped, and nothing says so. The
+    harness measured it at 3 of the 30 store calls an outage can take, for two
+    flows over two spawned children. The engine cannot tell two flows from one,
+    so it refuses on what it can see. A durable call is pending from the moment
+    it is made until one turn of the microtask queue after it settles (the turn
+    keeps a call answered from its memo pending while a sibling flow, answered
+    in the same run, makes its next call). A step name that a call was made
+    under while another durable call was pending is marked, and the second and
+    every later use of a marked name fails the task for good: a
+    `FatalTaskError` that names the step and says it is a repeated step name
+    used beside another durable call. The first use of a name is never refused,
+    so a fan-out whose flows each name their own step is not affected, and a
+    name used one call after another, in a loop or a retry, is never marked.
+    The refusal is made on the pass that ran the steps and on every pass that
+    replays them, so a program does not end differently by which store call an
+    outage took: the harness runs two such programs with an outage at every
+    store call, and none completes.
+  - **What that refusal costs.** It also refuses programs of one flow. A name
+    used beside a pending call is marked whoever the other call belongs to, so
+    `Promise.all([ctx.sleepFor(5), ctx.step('x', ...)])` followed by another
+    `ctx.step('x', ...)` fails the task, and so does a loop of one step name in
+    `Promise.all` beside an `awaitEvent`. Both completed before. Telling the
+    swap from these needs the async context of each call, which an SDK with no
+    import from the runtime does not have. The harness pins both programs as
+    refused at every store call. A task in flight whose replay makes such calls
+    fails for good on its next replay,
+    with the refusal as its failure reason, which an operator reads on the
+    task's result and through the inspect route; nothing completes silently. A
+    saga that was already rolling back replays its handler to register its
+    rollbacks, the refusal ends that replay at the second use, and a step that
+    started after it is not registered: the rollback halts, naming the step
+    that started last.
   - Two sleeps started together run one after the other. `sleepFor(5)` beside
     `sleepFor(7)` sleeps 5 seconds and then 7, not 7. A sleep suspends the whole
     run, the first suspension ends the pass, and the second sleep's seconds
@@ -676,9 +715,12 @@ One invocation executes one claimed run to its next suspension point:
     drawing a shape, when a shape is taken out of its table (one self-test names
     every shape), when a generated method does not say whether a group holds it,
     when a shape is in no program the file runs, and when a kind of call is made
-    only inside a group. Two registered mutations keep the audit checking that
+    only inside a group. Seven registered mutations keep the audit checking that
     these programs can fail: one lowers the guard while a registered step writes
-    its start marker, and one lets a rollback pass keep its own ordinal.
+    its start marker, one lets a rollback pass keep its own ordinal, and five
+    hold the refusal of a shared step name (the counting of pending calls, the
+    turn that keeps a settled call counted, the mark a name takes, the refusal
+    of a marked name's second use and of nothing else).
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no

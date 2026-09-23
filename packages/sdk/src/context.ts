@@ -273,6 +273,14 @@ export class ReplayContext implements TaskContext {
   private readonly nameUses = new TaskMap<string, number>()
   private inStep = false
   /**
+   * The durable calls made and not yet answered, counted until one turn of the microtask queue
+   * after each settles. A call answered from its memo settles at once, so the turn keeps it
+   * counted while a sibling flow that was answered in the same run reaches its next call.
+   */
+  private pendingCalls = 0
+  /** The step names a call was made under while another durable call was pending. */
+  private readonly besideAnotherCall = new TaskMap<string, boolean>()
+  /**
    * The saga as its checkpoints tell it (core `sagas.ts`, specs/Sagas.tla): the start
    * index of every registered step that started, which rollbacks ran, each rollback's
    * failed attempts, and the failure that began the rolling-back phase. Nothing else
@@ -436,6 +444,41 @@ export class ReplayContext implements TaskContext {
     }
   }
 
+  /**
+   * Runs one durable call of the task and counts it as pending until it has settled. The
+   * call is made before this function first awaits, so a group's calls are all made, in the
+   * order written, before any of them is answered. `beside` says whether another durable
+   * call was pending when this one was made.
+   */
+  private async durably<T>(run: (beside: boolean) => Promise<T>): Promise<T> {
+    const beside = this.pendingCalls > 0
+    this.pendingCalls++
+    try {
+      return await run(beside)
+    } finally {
+      this.pendingCalls--
+    }
+  }
+
+  /**
+   * A step name is numbered by the order its calls arrive (`poll`, `poll#2`), and the order
+   * two flows arrive in is not the same on every pass: the flow that arrives second on the
+   * pass that runs the steps can arrive first on a pass that replays them, and each is then
+   * handed the other's value. That cannot happen to calls made one after another, which arrive
+   * in the order the task writes them. A name a call was made under while another durable call
+   * was pending is therefore refused when it is used again, on the pass that finds the two
+   * calls concurrent and on every pass that replays them, whichever call it is that finds it.
+   * The first use of a name is never refused.
+   */
+  private refuseSharedStepName(name: string, beside: boolean): void {
+    if (beside) taskMapSet(this.besideAnotherCall, name, true)
+    if ((taskMapGet(this.nameUses, name) ?? 0) > 1 && taskMapHas(this.besideAnotherCall, name)) {
+      throw new FatalTaskError(
+        `ctx.step('${name}') is a repeated step name that was used beside another durable call: calls of one step name that can arrive in either order do not replay in a fixed order`,
+      )
+    }
+  }
+
   private assertLeaseHeld(): void {
     // A pump beat was refused: stop the handler at the next context call, as
     // the refusal named it. The fences protect STATE regardless; this stops a
@@ -444,7 +487,16 @@ export class ReplayContext implements TaskContext {
     if (reason !== undefined) this.#controls.leaseEnded(reason, this.#run)
   }
 
-  async step<T>(name: string, fn: () => Promise<T> | T, opts?: StepOptions<T>): Promise<T> {
+  step<T>(name: string, fn: () => Promise<T> | T, opts?: StepOptions<T>): Promise<T> {
+    return this.durably((beside) => this.runStep(name, fn, opts, beside))
+  }
+
+  private async runStep<T>(
+    name: string,
+    fn: () => Promise<T> | T,
+    opts: StepOptions<T> | undefined,
+    beside: boolean,
+  ): Promise<T> {
     const parsed = UserName.parse('step name', name)
     this.enterDurableOp(`ctx.step('${name}')`)
     // A registration that cannot be kept is refused here, for good, before the body runs.
@@ -455,6 +507,7 @@ export class ReplayContext implements TaskContext {
       'step name',
       registration === undefined ? IDENTIFIER_CHARACTERS : SAGA_STEP_KEY_CHARACTERS,
     )
+    this.refuseSharedStepName(parsed.value, beside)
     // A memoized step re-registers its closure with what it returned, on every pass.
     if (registration !== undefined && taskMapHas(this.seen, key)) {
       this.register(key, name, registration, taskMapGet(this.seen, key))
@@ -707,7 +760,11 @@ export class ReplayContext implements TaskContext {
     if (this.#sagaCauseJson !== undefined) this.#controls.rollbackPhase()
   }
 
-  async sleepFor(seconds: number): Promise<void> {
+  sleepFor(seconds: number): Promise<void> {
+    return this.durably(() => this.runSleepFor(seconds))
+  }
+
+  private async runSleepFor(seconds: number): Promise<void> {
     this.enterDurableOp('ctx.sleepFor')
     // Validate HERE, before any suspend signal exists: an invalid duration
     // is a permanent user error, and validating later (inside the park)
@@ -716,7 +773,11 @@ export class ReplayContext implements TaskContext {
     await this.suspendPoint(EngineKey.sleep, { inSeconds: seconds })
   }
 
-  async sleepUntil(epochMs: number): Promise<void> {
+  sleepUntil(epochMs: number): Promise<void> {
+    return this.durably(() => this.runSleepUntil(epochMs))
+  }
+
+  private async runSleepUntil(epochMs: number): Promise<void> {
     this.enterDurableOp('ctx.sleepUntil')
     userEpochMs('sleepUntil epochMs', epochMs)
     await this.suspendPoint(EngineKey.sleepUntil, { atEpochMs: epochMs })
@@ -747,7 +808,11 @@ export class ReplayContext implements TaskContext {
     await this.#controls.storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload))
   }
 
-  async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
+  awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
+    return this.durably(() => this.runAwaitEvent(name, opts))
+  }
+
+  private async runAwaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
     const parsed = UserName.parse('event name', name)
     this.enterDurableOp('ctx.awaitEvent')
     const timeoutSeconds = opts?.timeoutSeconds
@@ -779,7 +844,15 @@ export class ReplayContext implements TaskContext {
     return this.registeredAwait(timedOut, key, outcome)
   }
 
-  async spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
+  spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
+    return this.durably(() => this.runSpawn(taskName, params, opts))
+  }
+
+  private async runSpawn(
+    taskName: string,
+    params: unknown,
+    opts?: ChildSpawnOptions,
+  ): Promise<ChildTask> {
     const parsed = UserName.parse('task name', taskName)
     this.enterDurableOp(`ctx.spawn('${taskName}')`)
     const key = this.storageName(EngineKey.spawn(parsed), 'task name')
@@ -822,7 +895,14 @@ export class ReplayContext implements TaskContext {
     )
   }
 
-  async awaitTask(child: ChildTask, opts?: { timeoutSeconds?: number }): Promise<TaskOutcome> {
+  awaitTask(child: ChildTask, opts?: { timeoutSeconds?: number }): Promise<TaskOutcome> {
+    return this.durably(() => this.runAwaitTask(child, opts))
+  }
+
+  private async runAwaitTask(
+    child: ChildTask,
+    opts?: { timeoutSeconds?: number },
+  ): Promise<TaskOutcome> {
     const taskId = UserName.parse('child task id', childTaskOf(child).taskId)
     this.enterDurableOp('ctx.awaitTask')
     // Read once: the value validated is the value sent.
