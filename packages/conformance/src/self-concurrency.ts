@@ -377,6 +377,9 @@ const RACES: readonly (readonly [string, Race])[] = [
   ),
 ]
 
+/** How many contests a dialect runs. DESIGN.md states it, and a test holds the two together. */
+export const SELF_CONCURRENCY_CONTESTS = RACES.length
+
 type Settled =
   | { readonly kind: 'answered'; readonly value: unknown }
   | { readonly kind: 'refused'; readonly name: string }
