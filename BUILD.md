@@ -2562,7 +2562,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   DESIGN.md said 37 contests, and a contest added on 2026-09-19 made it 38.
   The sentence beside it, the split of the contests by how many batches a
   copy sends on libSQL, is corrected to 25 of 38 after a measurement of the
-  added contest's claim: one batch. Nothing lower was replaced, because no
+  added contest's claim: one batch. That split and its neighbours (the 10 and
+  the three) are prose the test does not hold, only the total is. Four keys are
+  arithmetic over their factors (the cells, the durable integers, and the
+  units and bytes of the identifier width), so they hold the prose to the
+  arithmetic and not to one exported number. Nothing lower was replaced, because no
   earlier check compared a count with its constant. A count that no constant
   pins stays unmarked: measurements (1,776 MySQL error numbers at one server
   version), counts of another project's tables, the case counts of the
