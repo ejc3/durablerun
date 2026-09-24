@@ -32,9 +32,9 @@ Twelve of the thirteen defects above were found by outside review, and finding 0
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| The widened grammar (a generated program, red before its fix) | 1 (finding 0) | Yes |
-| First review round, a `/code-review` at HIGH | 10 (findings 1 to 10) | No |
-| Second review round, a `/code-review` at HIGH with its own probes | 2 (findings 11 and 12) | No |
+| The widened grammar (a generated program, red before its fix; finding 0) | 1 | Yes |
+| First review round, a `/code-review` at HIGH (findings 1 to 10) | 10 | No |
+| Second review round, a `/code-review` at HIGH with its own probes (findings 11 and 12) | 2 | No |
 
 Self-catch rate: 8 percent, 1 of 13 (previous round: see the sagas review's postmortem in this directory). Both review rounds found what the harness could not draw. The two review rounds are the same detector twice, one per attempted fix, so the number reads: our machinery found the defect, and an outside reader found what each fix broke.
 
