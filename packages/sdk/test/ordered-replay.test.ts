@@ -1,4 +1,9 @@
-import { FatalTaskError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
+import {
+  FatalTaskError,
+  PermanentStoreError,
+  type SchedulerStore,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { withStoreOverrides } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { type TaskContext, runClaimedRun } from '../src/index.js'
@@ -136,7 +141,7 @@ describe('order markers through the SDK', () => {
       const rows = await rowsOf(f, spawned.taskId)
       expect(
         rows.markers,
-        'mutation-verdict:behavior:order-marker-is-stored-for-calls-pending-together',
+        'order marker is stored for calls pending together',
       ).toEqual([
         { name: '$order:1', state: JSON.stringify('$await:x') },
         { name: '$order:2', state: JSON.stringify('$await:y') },
@@ -145,7 +150,7 @@ describe('order markers through the SDK', () => {
       expect(accepted).toHaveLength(4)
       expect(
         [at('$order:1') < at('$await:x'), at('$order:2') < at('$await:y')],
-        'mutation-verdict:behavior:order-marker-is-stored-before-its-result',
+        'order marker is stored before its result',
       ).toEqual([true, true])
       await expectCleanRows(f)
     } finally {
@@ -167,7 +172,7 @@ describe('order markers through the SDK', () => {
       const rows = await rowsOf(f, spawned.taskId)
       expect(
         rows.markers.map((row) => JSON.parse(row.state)),
-        'mutation-verdict:behavior:order-marker-is-stored-for-a-sleep-pending-beside-a-call',
+        'order marker is stored for a sleep pending beside a call',
       ).toContain('$sleep')
     } finally {
       await f.close()
@@ -217,13 +222,13 @@ describe('order markers through the SDK', () => {
         },
       })
       const pass = await settlesWithin(passOver(f, reg, 'w1'))
-      expect(pass, 'mutation-verdict:behavior:order-marker-without-a-result-names-nothing').toEqual(
+      expect(pass, 'order marker without a result names nothing').toEqual(
         { settled: true, value: { kind: 'completed' } },
       )
       const rows = await rowsOf(f, spawned.taskId)
       expect(
         rows.markers.map((row) => row.name),
-        'mutation-verdict:behavior:order-numbers-are-never-reused',
+        'order numbers are never reused',
       ).toEqual(['$order:7', '$order:8', '$order:9'])
     } finally {
       await f.close()
@@ -256,7 +261,7 @@ describe('order markers through the SDK', () => {
       expect(pass.settled).toBe(true)
       expect(
         log,
-        'mutation-verdict:behavior:the-highest-marker-of-a-result-is-the-one-that-counts',
+        'the highest marker of a result is the one that counts',
       ).toEqual(['y', 'x'])
     } finally {
       await f.close()
@@ -292,7 +297,7 @@ describe('a replay follows the order a first pass recorded', () => {
       expect(pass.settled).toBe(true)
       expect(
         log,
-        'mutation-verdict:behavior:recorded-results-are-handed-over-in-recorded-order',
+        'recorded results are handed over in recorded order',
       ).toEqual(['e2', 'e1'])
     } finally {
       await f.close()
@@ -314,7 +319,7 @@ describe('a replay follows the order a first pass recorded', () => {
       expect(pass.settled).toBe(true)
       expect(
         log,
-        'mutation-verdict:behavior:a-recorded-result-is-followed-by-a-turn-of-the-event-loop',
+        'a recorded result is followed by a turn of the event loop',
       ).toEqual(['e1', 'e2'])
     } finally {
       await f.close()
@@ -351,7 +356,7 @@ describe('a replay follows the order a first pass recorded', () => {
       expect(pass.settled).toBe(true)
       expect(
         log,
-        'mutation-verdict:behavior:a-result-the-pass-produces-waits-for-the-recorded-ones',
+        'a result the pass produces waits for the recorded ones',
       ).toEqual(['e1', 'e2'])
     } finally {
       await f.close()
@@ -381,7 +386,7 @@ describe('a replay follows the order a first pass recorded', () => {
       expect(pass.settled).toBe(true)
       expect(
         log,
-        'mutation-verdict:behavior:a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop',
+        'a result the pass produces is followed by a turn of the event loop',
       ).toEqual(['e1', 'e2'])
     } finally {
       await f.close()
@@ -407,7 +412,7 @@ describe('a replay follows the order a first pass recorded', () => {
       const pass = await settlesWithin(passOver(f, reg, 'w1'))
       expect(
         pass,
-        'mutation-verdict:behavior:a-call-that-failed-does-not-hold-up-the-calls-behind-it',
+        'a call that failed does not hold up the calls behind it',
       ).toEqual({ settled: true, value: { kind: 'completed' } })
     } finally {
       await f.close()
@@ -453,11 +458,11 @@ describe('a pass that was told the run cannot go on for its flows', () => {
       )
       expect(
         outcome,
-        'mutation-verdict:behavior:a-task-that-caught-the-error-that-ended-its-pass-does-not-complete',
+        'a task that caught the error that ended its pass does not complete',
       ).toEqual({ kind: 'aborted' })
       expect(
         accepted.filter((name) => name === 'b' || name === '$await:x'),
-        'mutation-verdict:behavior:flows-store-nothing-after-an-infrastructure-error-beside-them',
+        'flows store nothing after an infrastructure error beside them',
       ).toEqual([])
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(result?.state).not.toBe('completed')
@@ -496,7 +501,7 @@ describe('a pass that was told the run cannot go on for its flows', () => {
       )
       expect(
         first,
-        'mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it',
+        'a store error ends the pass whether or not a call is beside it',
       ).toEqual({
         kind: 'aborted',
       })
@@ -514,6 +519,42 @@ describe('a pass that was told the run cannot go on for its flows', () => {
       expect(second).toEqual({ kind: 'completed' })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(JSON.parse(result?.completedPayloadJson ?? 'null')).toBe('A')
+    } finally {
+      await f.close()
+    }
+  })
+})
+
+describe('a permanent answer of the store is not an error a retry can fix', () => {
+  it('reaches the task, which completes with its fallback in the pass it met it in', async () => {
+    const f = await fx('order-permanent')
+    try {
+      const store = withStoreOverrides(f.store, {
+        setCheckpoint: async (...args) => {
+          if (args[4] === 'big') throw new PermanentStoreError('injected permanent answer')
+          await f.store.setCheckpoint(...args)
+        },
+      })
+      const reg = registry({
+        job: async (ctx: TaskContext) => {
+          try {
+            return await ctx.step('big', () => 'B')
+          } catch {
+            return 'fallback'
+          }
+        },
+      })
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const first = await runClaimedRun(
+        { store, clock: f.clock, registry: reg },
+        await claimInvocation(f, 'w1'),
+      )
+      expect(
+        first,
+        'a permanent answer of the store does not end the pass',
+      ).toEqual({ kind: 'completed' })
+      const result = await f.store.getTaskResult(Q, spawned.taskId)
+      expect(JSON.parse(result?.completedPayloadJson ?? 'null')).toBe('fallback')
     } finally {
       await f.close()
     }
@@ -564,7 +605,7 @@ describe('a replay that waits for a call the task does not make', () => {
       const ended = await settlesWithin(pass)
       expect(
         ended,
-        'mutation-verdict:behavior:the-heartbeat-gives-up-on-a-result-nobody-asks-for',
+        'the heartbeat gives up on a result nobody asks for',
       ).toEqual({ settled: true, value: { kind: 'completed' } })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(JSON.parse(result?.completedPayloadJson ?? 'null')).toEqual(['"X"', '"B2"', '"A"'])
@@ -594,7 +635,7 @@ describe('a replay that waits for a call the task does not make', () => {
       const ended = await settlesWithin(pass)
       expect(
         ended,
-        'mutation-verdict:behavior:a-pass-whose-heartbeat-stopped-lets-every-call-go',
+        'a pass whose heartbeat stopped lets every call go',
       ).toEqual({ settled: true, value: { kind: 'completed' } })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(JSON.parse(result?.completedPayloadJson ?? 'null')).toEqual(['"X"', '"B2"', '"A"'])
@@ -613,7 +654,7 @@ describe('a replay that waits for a call the task does not make', () => {
       const ended = await settlesWithin(pass)
       expect(
         ended,
-        'mutation-verdict:behavior:a-pass-whose-lease-ended-lets-every-call-go',
+        'a pass whose lease ended lets every call go',
       ).toEqual({ settled: true, value: { kind: 'cancelled' } })
     } finally {
       await f.close()
@@ -677,7 +718,7 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         const result = await f.store.getTaskResult(Q, task.taskId)
         expect(
           { outcomes, effects, state: result?.state, rollback: result?.rollback?.outcome },
-          'mutation-verdict:behavior:replay-settles-before-the-rollback-decides',
+          'replay settles before the rollback decides',
         ).toEqual({
           outcomes: ['rolled-back'],
           effects: ['undo:second'],
@@ -739,7 +780,7 @@ describe('a replay that skips recorded calls is not slowed by more than one beat
     const seen = await skipping('order-skip-first', 2, [1])
     expect(
       seen.elapsedBeats,
-      'mutation-verdict:behavior:a-skipped-recorded-call-is-given-up-within-one-beat',
+      'a skipped recorded call is given up within one beat',
     ).toBeLessThanOrEqual(1)
     expect(seen.value).toEqual(['"P1"/S1'])
   })
@@ -748,7 +789,7 @@ describe('a replay that skips recorded calls is not slowed by more than one beat
     const seen = await skipping('order-skip-two', 3, [1])
     expect(
       seen.elapsedBeats,
-      'mutation-verdict:behavior:every-skipped-recorded-call-is-given-up-in-the-same-beat',
+      'every skipped recorded call is given up in the same beat',
     ).toBeLessThanOrEqual(1)
     expect(seen.value).toEqual(['"P1"/S1'])
   })
@@ -763,7 +804,7 @@ describe('a replay that skips recorded calls is not slowed by more than one beat
     const seen = await skipping('order-skip-middle', 3, [0, 2])
     expect(
       seen.elapsedBeats,
-      'mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began',
+      'a wait is judged by the results handed over since it began',
     ).toBeLessThanOrEqual(1)
     expect(seen.value).toEqual(['"P0"/S0', '"P2"/S2'])
   })
@@ -813,7 +854,7 @@ describe('a rollback pass whose replay is held', () => {
       expect(held.settled, 'the replay is held').toBe(false)
       expect(
         turns,
-        'mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release',
+        'a held rollback replay waits for the release',
       ).toBeLessThan(10)
       await f.advance(31_000)
       const ended = await settlesWithin(pass)
