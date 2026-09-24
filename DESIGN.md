@@ -1666,7 +1666,14 @@ One invocation executes one claimed run to its next suspension point:
     never reaches in the state it ran in costs nothing, so a reader that
     refuses too much is caught only in the shipped database. The measurement
     shares one fact with the reader, which columns name one entity, declared
-    once in each, and shares no reading of a plan.
+    once in each, and shares no reading of a plan. The two lists are held to each
+    other. `claimed_by` is on both because one claim token holds at most its
+    limit of runs, and the backlog gives every copy a token of its own, so a
+    seek by a token can never grow in it: that rule is assumed by both sides and
+    not measured. A leg of a multi-index OR read against its drivers and an
+    automatic index read as a walk are held by hand cases, because no shipped
+    plan has either. The driver heartbeat's trigger walks `drivers`, which the
+    measurement sees and no plan of the insert shows.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and

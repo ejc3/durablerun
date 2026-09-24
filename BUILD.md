@@ -4114,7 +4114,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   grow is passed unless a due range drives it, and a due range is what the
   reader already reports and `query-plans.test.ts` names line for line. Over the
   shipped database the reader refuses exactly the statements that grew, in both
-  directions, and only the sweep's scan grew. Every spelling is judged as its
+  directions, and only the sweep's scan grew there, apart from the driver
+  heartbeat, whose trigger's walk of `drivers` grows and no plan of the insert
+  shows, which the test holds apart in every variation. Every table a snapshot
+  holds no row of is given one, so no probe runs beside an empty table. Every
+  spelling is judged as its
   statement is: a schema, a quoted schema, a conflict clause, the table's name
   quoted or bare, and blank space first. A comment first is refused whatever the
   statement, because the reader tells a kind by the first word, and the surface
@@ -4123,9 +4127,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   shown to tell a scan of `runs` from a keyed read and to see a DELETE with no
   WHERE, and every kind of plan line the reader tells apart is reached but three
   (an INTERSECT or EXCEPT, a MATERIALIZE body, a seek through an automatic
-  index), which are named. Measured here: 1,236 variation runs, 41
-  of them grew without an index and 61 grew without a WHERE, and the file takes
-  about 15 s. Two older tests are deleted because the surface fails by name
+  index), which are named. Measured here: 1,236 variation runs (129 shipped, 1,028
+  without an index, 79 without a WHERE), 56 of the runs without an index grew and
+  all 79 without a WHERE did, and the file takes about 15 s. The surface also holds
+  that the backlog's identifying columns contain every entity column of the
+  reader but `key`, that a shipped write has no bind after its WHERE clause and
+  no `?` in a literal, that exactly three writes skip for a constraint, and that
+  a comment-first spelling is refused for hiding the first word. Two older tests are deleted because the surface fails by name
   under the same bugs: that a comment hides a write's kind, and that a write is
   read whatever its conflict clause or schema, both run under a bent reader and
   under the surface. The rest of `query-plans.test.ts` stays. Its cases over
@@ -4133,10 +4141,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   name, and its false negatives (each a statement the reader is known to pass)
   are not something a measurement of shipped statements can replace.
   - Recorded, and not planned: the measurement is blind where a statement never
-    reaches its probe in the database it ran in. Of the 33 variations the reader
+    reaches its probe in the database it ran in. Of the 26 variations the reader
     refuses that did not grow, each was run in the state its batch found, and a
     scan inside a probe that ran for no row costs nothing. That direction is not
     held, and only the shipped database is held both ways.
+  - Recorded, and not measured: the reader counts an equality on `claimed_by` as
+    one claim's rows because one token holds at most one claim's limit of runs,
+    and the backlog makes `claimed_by` fresh on every copy. Both sides assume the
+    rule, and no measurement checks it, so the surface cannot see a claim that
+    holds more runs than its limit. The two lists are held to each other. Its
+    trigger is a claim that can hold more than its limit.
+  - Recorded, and not detected: `plan-nests.ts` reads a leg of a multi-index OR
+    against its drivers and an automatic index as a walk, and each is held by a
+    hand case in `query-plans.test.ts` that no shipped plan reaches. The surface
+    cannot fail for either, which is the false negative of its own reach.
   - Option, not a deferral of this PR: a synthetic surface for the three plan-line
     kinds no shipped statement produces, each as the driver and the driven step.
     Its trigger is a shipped statement or a variation that reaches one, which
