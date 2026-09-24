@@ -79,9 +79,44 @@ export async function backlogOf(client: Client): Promise<Backlog> {
     const info = await client.execute(`pragma table_info(${name})`)
     const columns = info.rows.map((column) => String(column.name))
     const original = columns.find((column) => IDENTITY_COLUMNS.includes(column))
-    if (original !== undefined) tables.set(name, { columns, original })
+    if (original === undefined) continue
+    // Originals are the rows whose marker column holds no `~`, and a NULL is never `not like`.
+    const info0 = info.rows.find((column) => String(column.name) === original)
+    if (Number(info0?.notnull) !== 1 && Number(info0?.pk) === 0) {
+      throw new Error(`${name}.${original} may be NULL, so its rows would never be copied`)
+    }
+    tables.set(name, { columns, original })
   }
   return { tables }
+}
+
+/**
+ * One row in each table of the backlog that holds none, so a statement that reads or writes
+ * that table measures something: beside an empty table every probe costs nothing and a
+ * statement cannot grow. Each column takes a value its type allows, a state its checks
+ * accept, and an identifying column a value of its own.
+ */
+export async function seedEmpty(client: Client, backlog: Backlog): Promise<string[]> {
+  const seeded: string[] = []
+  for (const [table, { columns }] of backlog.tables) {
+    const count = Number(
+      (await client.execute(`select count(*) as n from ${table}`)).rows[0]?.n ?? 0,
+    )
+    if (count > 0) continue
+    const info = (await client.execute(`pragma table_info(${table})`)).rows
+    const values = columns.map((column) => {
+      if (IDENTITY_COLUMNS.includes(column)) return `'seed-${column}'`
+      if (column === 'state') return `'pending'`
+      if (column === 'status') return `'waiting'`
+      const type = String(info.find((c) => String(c.name) === column)?.type).toUpperCase()
+      return type.includes('INT') ? '0' : `'seed'`
+    })
+    await client.execute(
+      `insert into ${table} (${columns.join(', ')}) values (${values.join(', ')})`,
+    )
+    seeded.push(table)
+  }
+  return seeded
 }
 
 /**

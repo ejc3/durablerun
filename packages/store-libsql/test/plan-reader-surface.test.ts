@@ -5,14 +5,16 @@ import { type Client, createClient } from '@libsql/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openTestDb } from '../src/testing.js'
 import { type Shipped, keyOf, recordHistory } from './plan-history.js'
-import { type NestReading, type PlanRow, readNests } from './plan-nests.js'
+import { ENTITY_COLUMNS, type NestReading, type PlanRow, readNests } from './plan-nests.js'
 import {
   type Backlog,
+  IDENTITY_COLUMNS,
   type Statement,
   backlogOf,
   grew,
   measure,
   planRows,
+  seedEmpty,
   spellings,
   withoutWhere,
 } from './plan-oracle.js'
@@ -77,18 +79,28 @@ let contexts: Map<string, Context>
 let indexes: { name: string; unique: boolean }[]
 const clients = new Map<string, Client>()
 let backlog: Backlog
+/** The tables each snapshot held no row of, which were given one so a probe measures. */
+const seeded = new Map<string, string[]>()
 const rows: Row[] = []
 /** A statement that would not run in a variation, with why: an index a statement needs. */
 const skipped: { name: string; variation: string; dropped: string | undefined; error: string }[] =
   []
 /** A spelling of a statement, and whether the reader judged it as it judged the statement. */
-const spelled: { name: string; spelling: string; wasBad: boolean; isBad: boolean }[] = []
+const spelled: {
+  name: string
+  spelling: string
+  wasBad: boolean
+  isBad: boolean
+  faults: string[]
+}[] = []
 const spellingErrors: string[] = []
 
 const nameOf = (st: Shipped) =>
   `${st.label}#${st.index} ${st.sql.slice(0, 48).replace(/\s+/g, ' ')}`
 const kindOf = (sql: string) => /^\s*(\w+)/.exec(sql)?.[1]?.toLowerCase() ?? '?'
 const isBad = (reading: NestReading) => reading.faults.length > 0
+/** The binds a text takes: its `?` outside single-quoted literals. */
+const bindsIn = (sql: string) => (sql.replace(/'[^']*'/g, "''").match(/\?/g) ?? []).length
 
 /** The plans of several texts of one statement, in a database that may lack one index. */
 async function plansOf(
@@ -159,7 +171,13 @@ async function judgeSpellings(context: Context, was: Row, dropped: string | unde
     )
     for (const [i, [spelling, text]] of texts.entries()) {
       const reading = readNests(plans[i] as PlanRow[], text)
-      spelled.push({ name: was.name, spelling, wasBad: isBad(was.reading), isBad: isBad(reading) })
+      spelled.push({
+        name: was.name,
+        spelling,
+        wasBad: isBad(was.reading),
+        isBad: isBad(reading),
+        faults: reading.faults,
+      })
     }
   } catch (error) {
     spellingErrors.push(`${was.name} :: ${String(error).slice(0, 100)}`)
@@ -203,7 +221,9 @@ beforeAll(async () => {
     throw new Error('a statement was sent that no batch context holds')
   }
   for (const database of new Set([...contexts.values()].map((c) => c.database))) {
-    clients.set(database, createClient({ url: `file:${database}` }))
+    const client = createClient({ url: `file:${database}` })
+    clients.set(database, client)
+    seeded.set(database, await seedEmpty(client, backlog))
   }
 
   for (const dropped of [undefined, ...indexes.map((i) => i.name)]) {
@@ -224,7 +244,7 @@ beforeAll(async () => {
         // The same write with every row of its table in its reach. The statements ahead of it
         // in its batch bind the write's own arguments, so it runs with the same binds less the
         // ones its WHERE took: SQLite is handed exactly the placeholders that remain.
-        const kept = (stripped.match(/\?/g) ?? []).length
+        const kept = bindsIn(stripped)
         const args = shipped.args.slice(0, kept)
         await judge(context, 'without its WHERE', { sql: stripped, args }, before, undefined)
       }
@@ -240,6 +260,15 @@ afterAll(() => {
 })
 
 describe('the plan reader against a measured backlog', () => {
+  /**
+   * The one statement whose growth the reader cannot see: the driver heartbeat inserts into a
+   * view, and a trigger of the view deletes the drivers that expired, a walk of `drivers` that
+   * no plan of the insert shows (DESIGN.md says so). Seeded with drivers, the measurement
+   * sees it grow. It is held apart below, in both directions, so that it is neither hidden
+   * nor counted against the reader's reading of a plan.
+   */
+  const INSIDE_A_TRIGGER = 'driver-heartbeat#0'
+  const insideATrigger = (r: Row) => r.name.startsWith(INSIDE_A_TRIGGER)
   const nameOfRow = (r: Row) =>
     `${r.name} [${r.variation}${r.dropped === undefined ? '' : ` ${r.dropped}`}]`
 
@@ -260,6 +289,15 @@ describe('the plan reader against a measured backlog', () => {
         )
         .map((s) => `${s.name} [${s.dropped}] ${s.error}`),
     ).toEqual([])
+    // Three writes break a constraint of their table when they take every row, and they are
+    // the only writes skipped for it. Every other write without its WHERE ran.
+    expect(
+      skipped
+        .filter((s) => s.variation === 'without its WHERE')
+        .map((s) => s.name.split(' ')[0])
+        .sort(),
+    ).toEqual(['fail#3', 'sweep:claim-timeout#4', 'sweep:lost-launch#4'])
+    expect(rows.filter((r) => r.variation === 'without its WHERE')).toHaveLength(79)
     expect(rows.length + skipped.length).toBeGreaterThan(contexts.size * indexes.length)
     expect(spellingErrors).toEqual([])
   }, 30_000)
@@ -280,7 +318,14 @@ describe('the plan reader against a measured backlog', () => {
         `${kind} has no flat variation`,
       ).toBe(true)
     }
-    expect(rows.some((r) => r.variation === 'without its WHERE' && r.grew)).toBe(true)
+    // Every write that takes every row of its table did more work beside the larger backlog,
+    // so none ran beside an empty table: each table a snapshot lacked rows of was seeded.
+    expect(
+      rows.filter((r) => r.variation === 'without its WHERE' && !r.grew).map(nameOfRow),
+    ).toEqual([])
+    expect(new Set([...seeded.values()].flat())).toEqual(
+      new Set(['tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers']),
+    )
     expect(rows.some((r) => r.variation === 'without an index' && r.grew)).toBe(true)
   })
 
@@ -327,6 +372,7 @@ describe('the plan reader against a measured backlog', () => {
     // one it sees and `query-plans.test.ts` names them line for line. What it must not do is
     // pass a statement that grew, and report no due range either.
     const passedAndGrew = rows
+      .filter((r) => !insideATrigger(r))
       .filter((r) => r.grew && !isBad(r.reading) && r.reading.dueDrivers.length === 0)
       .map(nameOfRow)
     expect(passedAndGrew, 'mutation-verdict:behavior:plan-nests').toEqual([])
@@ -337,10 +383,47 @@ describe('the plan reader against a measured backlog', () => {
     // grew but the ones a due range drives. Both directions are held: a statement the reader
     // refuses that does no more work beside a backlog is a reader that has misread a plan.
     const disagree = rows
-      .filter((r) => r.variation === 'shipped')
+      .filter((r) => r.variation === 'shipped' && !insideATrigger(r))
       .filter((r) => isBad(r.reading) !== (r.grew && r.reading.dueDrivers.length === 0))
       .map(nameOfRow)
     expect(disagree, 'mutation-verdict:behavior:plan-nests').toEqual([])
+  })
+
+  it('sees the walk inside the driver heartbeat that no plan of it shows, in every variation', () => {
+    const heartbeat = rows.filter(insideATrigger)
+    expect(heartbeat.length).toBeGreaterThan(indexes.length)
+    expect(heartbeat.filter((r) => !r.grew || isBad(r.reading)).map(nameOfRow)).toEqual([])
+  })
+
+  it('strips a write of its WHERE without dropping a bind that follows it or counting one in a literal', () => {
+    // `judge` runs a write without its WHERE with the first `kept` of the binds it was sent
+    // with. That holds only if every bind of the statement stands before the WHERE clause's
+    // own, and nothing after the clause takes one, and no `?` sits in a string literal.
+    const checked: string[] = []
+    for (const { shipped } of contexts.values()) {
+      if (!/^\s*(?:update|delete)\b/i.test(shipped.sql)) continue
+      const stripped = withoutWhere(shipped.sql)
+      if (stripped === undefined) continue
+      checked.push(shipped.label)
+      // The clause's own subqueries may carry a LIMIT, so only the top level of the text is read.
+      let tail = shipped.sql.slice(stripped.length).replace(/'[^']*'/g, "''")
+      for (let before = ''; before !== tail; )
+        [before, tail] = [tail, tail.replace(/\([^()]*\)/g, '')]
+      expect(bindsIn(shipped.sql), `${shipped.label}: a ? in a literal`).toBe(shipped.args.length)
+      expect(tail, `${shipped.label}: text after the WHERE clause`).not.toMatch(
+        /\b(?:returning|order\s+by|limit)\b/i,
+      )
+    }
+    expect(checked.length).toBeGreaterThan(70)
+  })
+
+  it('names every entity column of the reader among the columns the backlog makes fresh', () => {
+    // The reader counts an equality on an entity column as one entity's rows, and the backlog
+    // makes each copy a new entity by giving it fresh identifying columns. A column the reader
+    // trusts and the backlog leaves shared would measure as a walk, and one the backlog freshens
+    // that the reader does not trust would hide one, so the two lists are held to each other.
+    // `key` is the reader's and not the backlog's: it names a row of `meta`, which is not copied.
+    expect(ENTITY_COLUMNS.filter((c) => !IDENTITY_COLUMNS.includes(c))).toEqual(['key'])
   })
 
   it('judges every spelling of a statement as it judges the statement', () => {
@@ -362,6 +445,9 @@ describe('the plan reader against a measured backlog', () => {
     // refusal into a pass.
     const commented = spelled.filter((s) => s.spelling.includes('comment first'))
     expect(commented.filter((s) => !s.isBad).map((s) => s.name)).toEqual([])
+    // And it is refused for the reason that it hides the first word, not for another.
+    const hidden = 'cannot tell what kind of statement this is from its first word'
+    expect(commented.filter((s) => !s.faults.includes(hidden)).map((s) => s.name)).toEqual([])
     // Every other spelling is the statement to the database, and to the reader.
     const differing = spelled
       .filter((s) => !s.spelling.includes('comment first') && s.wasBad !== s.isBad)
