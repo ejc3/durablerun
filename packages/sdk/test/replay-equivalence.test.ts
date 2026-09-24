@@ -581,7 +581,20 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
                 await (op.settled === true ? allSettled : Promise.all.bind(Promise))(
                   (op.flows ?? []).map(async (flow, position) => {
                     const seen: (string | ChildTask | undefined)[] = []
-                    for (const member of flow) seen.push(await call(member, index, position))
+                    for (const member of flow) {
+                      // A flow may start flows of its own, and answers what they answered.
+                      if (member.kind === 'flows') {
+                        const inner = await Promise.all(
+                          (member.flows ?? []).map(async (nested) => {
+                            const answers: (string | ChildTask | undefined)[] = []
+                            for (const call2 of nested)
+                              answers.push(await call(call2, index, position))
+                            return answers
+                          }),
+                        )
+                        seen.push(...inner.flat())
+                      } else seen.push(await call(member, index, position))
+                    }
                     return seen
                   }),
                 )
@@ -1036,6 +1049,33 @@ interface KnownGap {
  * (ORDERED_FLOW_PROGRAMS).
  */
 const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
+  'flows one of which starts two flows of its own, each awaiting an event and then recording it in a step under one name':
+    {
+      gap: { calls: 22, reference: 'completed', otherwiseAt: [16] },
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        inAFlow({ kind: 'emit', eventName: 'e3' }, 2),
+        flowsOf(
+          [
+            flowsOf(
+              [
+                inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+                inAFlow({ kind: 'step', name: 'rec' }),
+              ],
+              [
+                inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+                inAFlow({ kind: 'step', name: 'rec' }, 1),
+              ],
+            ),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e3' }),
+            inAFlow({ kind: 'step', name: 'rec' }, 2),
+          ],
+        ),
+      ],
+    },
   'flows that each wait on a timer of its own length and then run a step whose body takes time': {
     gap: { calls: 5, reference: 'refused', otherwiseAt: [4] },
     ops: [
@@ -1215,6 +1255,76 @@ const ORDERED_FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; answers: string[
         [
           inAFlow({ kind: 'await-child', childIndex: 1 }),
           inAFlow({ kind: 'spawn-own', name: 'second' }, 1),
+        ],
+      ),
+    ],
+  },
+  'a flow that starts a few promise turns after another flow has begun to store its result': {
+    answers: ['ev:e1:42', 'own:completed:42', 'ev:e2:"plain"', 'own:completed:"plain"'],
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+          inAFlow({ kind: 'spawn-own', name: 'kid' }, 0),
+        ],
+        [
+          inAFlow({ kind: 'wait', hops: 3 }),
+          inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+          inAFlow({ kind: 'spawn-own', name: 'kid' }, 1),
+        ],
+      ),
+    ],
+  },
+  'flows that each await a child, spawn another under one task name and await it, in a loop of two rounds':
+    {
+      answers: [
+        'child:completed:42',
+        'own:completed:42',
+        'own:completed:42',
+        'child:completed:"plain"',
+        'own:completed:"plain"',
+        'own:completed:"plain"',
+      ],
+      ops: [
+        group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-child', childIndex: 0 }),
+            inAFlow({ kind: 'spawn-own', name: 'round' }, 0),
+            inAFlow({ kind: 'spawn-own', name: 'round' }, 0),
+          ],
+          [
+            inAFlow({ kind: 'await-child', childIndex: 1 }),
+            inAFlow({ kind: 'spawn-own', name: 'round' }, 1),
+            inAFlow({ kind: 'spawn-own', name: 'round' }, 1),
+          ],
+        ),
+      ],
+    },
+  'flows that each await an event and then run steps under names of their own': {
+    answers: [
+      'ev:e1:42',
+      'number:42',
+      'number:42',
+      'ev:e2:"plain"',
+      'string:plain',
+      'string:plain',
+    ],
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+          inAFlow({ kind: 'step', name: 'a1' }),
+          inAFlow({ kind: 'step', name: 'a2' }),
+        ],
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+          inAFlow({ kind: 'step', name: 'b1' }, 1),
+          inAFlow({ kind: 'step', name: 'b2' }, 1),
         ],
       ),
     ],
@@ -1541,6 +1651,7 @@ describe('context-method enrollment (the inventory gate)', () => {
         'two registered steps started together, which the engine refuses',
       ],
       flows: [
+        'flows one of which starts two flows of its own, each awaiting an event and then recording it in a step under one name',
         'flows that each wait on a timer of its own length and then run a step whose body takes time',
       ],
       orderedFlows: [
@@ -1552,6 +1663,9 @@ describe('context-method enrollment (the inventory gate)', () => {
         'the same flows, gathered with allSettled',
         'flows that each await an event the program has emitted and then spawn and await a child under one task name',
         'flows that each await a child and then spawn and await a second child under one task name',
+        'a flow that starts a few promise turns after another flow has begun to store its result',
+        'flows that each await a child, spawn another under one task name and await it, in a loop of two rounds',
+        'flows that each await an event and then run steps under names of their own',
         'flows whose work between a result and the next call takes a different number of promise turns',
       ],
     })
@@ -1599,7 +1713,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
     })
     expect(
       JSON.stringify(duplicated) === JSON.stringify({ ...reference, calls: duplicated.calls }),
-      'mutation-verdict:behavior:replay-harness-counts-tasks',
+      'replay harness counts tasks',
     ).toBe(false)
   })
 
@@ -1695,7 +1809,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
       const last = Math.max(...faultPoints(calls))
       if (last !== calls) uncovered.push(`${title}: ${calls} calls, faulted through ${last}`)
     }
-    expect(uncovered, 'mutation-verdict:behavior:replay-harness-window-is-measured').toEqual([])
+    expect(uncovered, 'replay harness window is measured').toEqual([])
   }, 60_000)
 })
 
@@ -1993,7 +2107,7 @@ describe('the name-length axis (every call that passes a name: under its room, a
               lastAttempt: after.at(-1),
               attempts: watch.attempts,
             },
-            'mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call',
+            'a name past its room is refused before any store call',
           ).toEqual({
             faultAtCall: failAtCall,
             ranAtOrAfterTheRefusedCall: [],
@@ -2554,7 +2668,7 @@ describe('saga replay equivalence (generated programs x fault points across the 
     const run = await runSagaProgram(program, 'saga-fixed', 0)
     expect(
       { state: run.state, outcome: run.outcome, undone: run.undone, handed: run.handed },
-      'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
+      'saga replay harness reports the order',
     ).toEqual({
       state: 'failed',
       outcome: 'complete',
@@ -2569,9 +2683,9 @@ describe('saga replay equivalence (generated programs x fault points across the 
       const verdict = (
         {
           'two registered steps started together, which the engine refuses':
-            'mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together',
+            'saga replay harness sees two steps start together',
           'steps named after the attempt, and a rollback that fails once':
-            'mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as',
+            'saga replay harness sees the attempt a pass replays as',
         } as Record<string, string | undefined>
       )[title]
       await owning(verdict, () => sagaReplaysAsItsReference(title, program))
