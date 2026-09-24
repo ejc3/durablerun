@@ -335,17 +335,13 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'b1337fec0498bc98c8602a5318fda4459a37d859843909f13450728e76d5a0d3':
               # The SDK's replay-equivalence harness draws durable calls started together and a
-              # step named after the attempt, and the programs it generates each own a
-              # mutation: two bring back defects a review found where the old grammar could not
-              # look, and five hold the refusal of a step name that concurrent flows share.
-              # The mutations are newer than the base registry, so their verdict markers are
-              # exempted there. No base entry is re-aimed.
+              # step named after the attempt, and two programs it generates each own a
+              # mutation, which bring back defects a review found where the old grammar
+              # could not look. The mutations are newer than the base registry, so their
+              # verdict markers are exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together",
                   "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
-                  "mutation-verdict:behavior:sdk-flows-repeating-a-step-name-are-refused",
-                  "mutation-verdict:behavior:sdk-first-use-of-a-step-name-is-never-refused",
-                  "mutation-verdict:behavior:sdk-step-name-used-one-call-after-another-is-not-refused",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

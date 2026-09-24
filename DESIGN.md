@@ -893,46 +893,42 @@ One invocation executes one claimed run to its next suspension point:
   - Every other group is admitted, and replays the same on every schedule: two
     awaits of one event, two spawns, two awaits of children, two sleeps, and a
     sleep or an await with a step started AFTER it.
-  - **A step name that concurrent flows share is refused.** A step name is
-    numbered in the order its calls arrive (`record`, then `record#2`), and
-    calls made one after another arrive in the order the task writes them. The
-    calls of two flows, which are async functions of the task's own that each
-    await something and then call a step under one name, can arrive in one
-    order on the pass that ran the steps and in the other on a pass that
-    replays them from their memos. Each flow is then handed the other's value:
-    the task completes with two values swapped, and nothing says so. The
-    harness measured it at 3 of the 30 store calls an outage can take, for two
-    flows over two spawned children. The engine cannot tell two flows from one,
-    so it refuses on what it can see. A durable call is pending from the moment
-    it is made until one turn of the microtask queue after it settles (the turn
-    keeps a call answered from its memo pending while a sibling flow, answered
-    in the same run, makes its next call). A step name that a call was made
-    under while another durable call was pending is marked, and the second and
-    every later use of a marked name fails the task for good: a
-    `FatalTaskError` that names the step and says it is a repeated step name
-    used beside another durable call. The first use of a name is never refused,
-    so a fan-out whose flows each name their own step is not affected, and a
-    name used one call after another, in a loop or a retry, is never marked.
-    The refusal is made on the pass that ran the steps and on every pass that
-    replays them, so a program does not end differently by which store call an
-    outage took: the harness runs two such programs with an outage at every
-    store call, and none completes.
-  - **What that refusal costs.** It also refuses programs of one flow. A name
-    used beside a pending call is marked whoever the other call belongs to, so
-    `Promise.all([ctx.sleepFor(5), ctx.step('x', ...)])` followed by another
-    `ctx.step('x', ...)` fails the task, and so does a loop of one step name in
-    `Promise.all` beside an `awaitEvent`. Both completed before. Telling the
-    swap from these needs the async context of each call, which an SDK with no
-    import from the runtime does not have. The harness pins both programs as
-    refused at every store call. A task in flight whose replay makes such calls
-    fails for good on its next replay,
-    with the refusal as its failure reason, which an operator reads on the
-    task's result and through the inspect route; nothing completes silently. A
-    saga that was already rolling back replays its handler to register its
-    rollbacks, and the refusal ends that replay at the second use, as any error
-    a handler throws does. A step that started after that point is not
-    registered, and the rollback halts as section 3.10 says a rollback halts
-    at a step it cannot reach.
+  - **Known limitation: two flows that use one step name can be handed each
+    other's value, and the engine does not refuse it.** A step name is numbered
+    in the order its calls arrive (`record`, then `record#2`). Calls made one
+    after another arrive in the order the task writes them. The calls of two
+    flows (async functions of the task's own that each await something and then
+    call a step under one name) arrive in an order that a store call decides on
+    the pass that runs the steps, and a replay from memos decides again, in
+    lockstep. When the two orders differ, each flow is handed the other's
+    value, and the task completes with two values swapped. The harness measured
+    it for two flows over two spawned children at 3 of the 30 store calls an
+    outage can take, and for two flows over two emitted events at 2 of the 11.
+    Use distinct step names in flows that run concurrently, or run one flow at a
+    time. The harness pins the engine's ending for these programs at every
+    store call, so a change that closes the swap, or that widens it, fails
+    until the pin is changed on purpose.
+  - **Why the engine does not refuse it.** A refusal was built and rejected. The
+    engine cannot tell two flows from one, so any rule that catches the swap
+    reads what it can see, that a call was made while another was pending.
+    Measured over the harness's programs, that refuses ordinary programs that
+    complete today: a loop of one step name beside an `awaitEvent` or an
+    `awaitTask` (a poll loop), a loop beside an `awaitEvent` with a timeout (a
+    heartbeat), a step and then the same name after a sleep started before it,
+    a step beside a sleep followed by the same name, and a saga step named
+    twice with a sleep started before the first. Two narrower rules were
+    measured and rejected: counting only calls made in an earlier turn of the
+    microtask queue completes both swap programs at the last store call, and
+    refusing a repeated name only when the call itself is beside another fails
+    a poll loop at 6 of 8 store calls and completes it at 2. And a refusal is an
+    ordinary thrown error, so a task that catches it, with `try` or with
+    `Promise.allSettled`, goes on and still completes with the flows' values
+    swapped. A rule that neither refuses ordinary programs nor can be caught
+    needs the identity of the flow a call belongs to, which an SDK with no
+    import from the runtime does not have (it would be `AsyncLocalStorage`, or a
+    flow scope in the published surface). BUILD.md's PR3.4d entry records that
+    as an option with its trigger. A task in flight is unaffected: nothing here
+    changes what the engine does.
   - **Known gap: a task name that concurrent flows share is not refused.** The
     same arrival order numbers the uses of a task name (`$spawn:child`, then
     `$spawn:child#2`). Two flows that each await something and then spawn a child
@@ -1006,12 +1002,14 @@ One invocation executes one claimed run to its next suspension point:
     is rolled back first. At the known gap's call the test pins what the engine
     does: the group is admitted and the task completes, or the saga's later
     member starts. Each known gap is a witness rather than a comparison: a
-    program of concurrent flows (`FLOW_PROGRAMS` and `SHARED_TASK_NAME_PROGRAMS` in the harness) says how many
-    store calls the run with no fault makes, how it ends, and the store calls
+    program of concurrent flows (`FLOW_PROGRAMS` and `SHARED_TASK_NAME_PROGRAMS` in the harness)
+    says how many store calls the run with no fault makes, how it ends, and the store calls
     at which an outage ends it the other way, and the test runs an outage at
-    every store call and fails on any other ending. A gap that is closed by
-    accident, or that gets worse, fails the witness until it is changed on
-    purpose. One case reverses the order two spawns are answered in and shows
+    every store call and fails on any other ending. The programs of a shared
+    step name (`SHARED_NAME_PROGRAMS`), including one whose flows catch what
+    their step throws and one gathered with `allSettled`, pin instead the whole
+    table of endings by store call. A gap that is closed by accident, or that
+    gets worse, fails the witness until it is changed on purpose. One case reverses the order two spawns are answered in and shows
     each child still under the key of its own call, and shows that the
     comparison fails when the children are swapped. Each shape heads a short
     program of its own, so every shape runs at every fault point whatever the
@@ -1019,12 +1017,9 @@ One invocation executes one claimed run to its next suspension point:
     drawing a shape, when a shape is taken out of its table (one self-test names
     every shape), when a generated method does not say whether a group holds it,
     when a shape is in no program the file runs, and when a kind of call is made
-    only inside a group. Seven registered mutations keep the audit checking that
+    only inside a group. Two registered mutations keep the audit checking that
     these programs can fail: one lowers the guard while a registered step writes
-    its start marker, one lets a rollback pass keep its own ordinal, and five
-    hold the refusal of a shared step name (the counting of pending calls, the
-    turn that keeps a settled call counted, the mark a name takes, the refusal
-    of a marked name's second use and of nothing else).
+    its start marker, and one lets a rollback pass keep its own ordinal.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no

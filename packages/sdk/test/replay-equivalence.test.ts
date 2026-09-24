@@ -137,6 +137,10 @@ interface ProgramOp {
   members?: ProgramOp[]
   /** Flows: each is ops run one after the other, and all of them are started together. */
   flows?: ProgramOp[][]
+  /** A call whose refusal the task catches, and answers 'caught' for. */
+  catches?: boolean
+  /** Flows whose answers are gathered with `Promise.allSettled`, a rejection answering 'REJ'. */
+  settled?: boolean
   /** How long a wait lasts, in milliseconds of a real timer. */
   waitMs?: number
   /** A step whose body takes this many milliseconds of a real timer before it returns. */
@@ -431,6 +435,15 @@ function fingerprint(v: unknown): string {
   return `${typeof v}:${String(v)}`
 }
 
+/** `Promise.allSettled`, with a rejected flow answering 'REJ' in its place. */
+async function allSettled(
+  flows: Promise<(string | ChildTask | undefined)[]>[],
+): Promise<(string | ChildTask | undefined)[][]> {
+  return (await Promise.allSettled(flows)).map((flow) =>
+    flow.status === 'fulfilled' ? flow.value : ['REJ'],
+  )
+}
+
 function programHandler(ops: ProgramOp[], watch?: Watch) {
   return async (ctx: TaskContext) => {
     const observed: string[] = []
@@ -441,6 +454,18 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
      * It answers what the task observed, or the child it spawned.
      */
     const call = async (
+      op: ProgramOp,
+      index: number,
+      position = 0,
+    ): Promise<string | ChildTask | undefined> => {
+      if (op.catches !== true) return await callOnce(op, index, position)
+      try {
+        return await callOnce(op, index, position)
+      } catch {
+        return 'caught'
+      }
+    }
+    const callOnce = async (
       op: ProgramOp,
       index: number,
       position = 0,
@@ -540,7 +565,7 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
             )
           : op.kind === 'flows'
             ? (
-                await Promise.all(
+                await (op.settled === true ? allSettled : Promise.all.bind(Promise))(
                   (op.flows ?? []).map(async (flow, position) => {
                     const seen: (string | ChildTask | undefined)[] = []
                     for (const member of flow) seen.push(await call(member, index, position))
@@ -1098,17 +1123,41 @@ const SHARED_TASK_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGa
 }
 
 /**
- * Programs in which one step name is used by two flows. The engine numbers the uses of a name
- * in the order the calls arrive (`record`, then `record#2`), and two flows reach their calls
- * in an order that a store call decides on one pass and that a replay from memos decides
- * again, in lockstep. The flow that arrived second on the pass that ran the steps can arrive
- * first on the pass that replays them, and then each flow is handed the other's value: a task
- * completes with two values swapped, and nothing says so. The engine refuses the repeated
- * name instead, at every store call an outage can take, so no schedule completes the program.
+ * What the engine ends with at every store call, for a program it does not run the same at
+ * every fault point: each ending, and the calls at which an outage ends the run that way (0 is
+ * the run with no fault). The test runs every store call and fails on any other table, so a
+ * program that comes to end another way, or at another call, is seen whichever way it moved.
  */
-const SHARED_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> = {
+type PinnedEndings = Record<string, readonly number[]>
+
+/**
+ * Programs in which one step name is used by two flows, which the engine does NOT refuse
+ * (DESIGN.md section 3.10). The engine numbers the uses of a name in the order the calls
+ * arrive (`record`, then `record#2`), and two flows reach their calls in an order that a
+ * store call decides on one pass and that a replay from memos decides again, in lockstep. The
+ * flow that arrived second on the pass that ran the steps can arrive first on the pass that
+ * replays them, and then each flow is handed the other's value: the task completes with two
+ * values swapped, and nothing says so. A refusal was built, and rejected: it refuses ordinary
+ * programs (a poll loop beside an await), and a task that catches it still completes swapped,
+ * which the last two programs pin. The result of each ending shows the values: the flow that
+ * awaited the first event or child, then the flow that awaited the second.
+ */
+const SHARED_NAME_PROGRAMS: Record<
+  string,
+  { ops: ProgramOp[]; calls: number; endings: PinnedEndings }
+> = {
   'flows that each await a child and then record it in a step under one name, and then a sleep': {
-    name: 'record',
+    calls: 30,
+    endings: {
+      'completed ["child:completed:42","number:42","child:completed:\\"plain\\"","string:plain"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
+        [
+          0, 1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 25, 26, 27, 28, 29,
+          30,
+        ],
+      'completed ["child:completed:42","string:plain","child:completed:\\"plain\\"","number:42"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
+        [5, 8, 21],
+      "refused ctx.step('record')": [6, 7, 24],
+    },
     ops: [
       group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
       flowsOf(
@@ -1126,7 +1175,12 @@ const SHARED_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> =
   },
   'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep':
     {
-      name: 'record',
+      calls: 11,
+      endings: {
+        "refused ctx.step('record')": [0, 1, 2, 3, 4, 5, 10],
+        'completed ["ev:e1:42","string:plain","ev:e2:\\"plain\\"","number:42"] ': [6, 8],
+        'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [7, 9, 11],
+      },
       ops: [
         inAFlow({ kind: 'emit', eventName: 'e1' }),
         inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
@@ -1143,39 +1197,52 @@ const SHARED_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> =
         inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
       ],
     },
-}
-
-/**
- * The cost of that refusal: programs of one flow, which the engine also refuses, because it
- * cannot tell a flow that reuses a name after a call made beside a pending one from two flows
- * that use one name. Each was completed by the engine before, and each is refused at every
- * store call now. A step name used again one call after another is not refused (the
- * generated programs draw six names and repeat them), and neither is a name whose earlier uses
- * were made with no other call pending.
- */
-const SHARED_NAME_COST_PROGRAMS: Record<string, { ops: ProgramOp[]; name: string }> = {
-  'a step beside a sleep, and then the same step name again one call after another': {
-    name: 'x',
+  'the same flows, each catching what its step throws': {
+    calls: 11,
+    endings: {
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","caught"] ': [0, 1, 2, 3, 4, 5],
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [6, 7, 8, 9, 11],
+      'completed ["ev:e1:42","caught","ev:e2:\\"plain\\"","caught"] ': [10],
+    },
     ops: [
-      group<ProgramOp>(
-        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
-        inAFlow({ kind: 'step', name: 'x' }),
-      ),
-      inAFlow({ kind: 'step', name: 'x' }, 1),
-    ],
-  },
-  'a flow that repeats a step name, beside a flow that awaits an event': {
-    name: 'poll',
-    ops: [
-      inAFlow({ kind: 'emit', eventName: 'done' }),
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
       flowsOf(
-        [inAFlow({ kind: 'await-inline', eventName: 'done' })],
         [
-          inAFlow({ kind: 'step', name: 'poll' }),
-          inAFlow({ kind: 'step', name: 'poll' }, 1),
-          inAFlow({ kind: 'step', name: 'poll' }, 2),
+          inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+          inAFlow({ kind: 'step', name: 'record', catches: true }),
+        ],
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+          inAFlow({ kind: 'step', name: 'record', catches: true }, 1),
         ],
       ),
+    ],
+  },
+  'the same flows, gathered with allSettled': {
+    calls: 11,
+    endings: {
+      'completed ["ev:e1:42","number:42","REJ"] ': [0, 1, 2, 3, 4, 5, 7, 9],
+      'completed ["REJ","ev:e2:\\"plain\\"","string:plain"] ': [6, 8],
+      'completed ["REJ","REJ"] ': [10],
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [11],
+    },
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      {
+        ...flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record' }, 1),
+          ],
+        ),
+        settled: true,
+      },
     ],
   },
 }
@@ -1188,6 +1255,26 @@ const SLEEPS_UNTIL_A_TIME: ProgramOp[] = [
   { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: 900_000 },
   { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: wakeAt(3) },
   { kind: 'step', valueIndex: 0, nameIndex: 0 },
+]
+
+const STEP_BESIDE_A_SLEEP: ProgramOp[] = [
+  group<ProgramOp>(
+    inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+    inAFlow({ kind: 'step', name: 'x' }),
+  ),
+  inAFlow({ kind: 'step', name: 'x' }, 1),
+]
+
+const POLL_BESIDE_AN_AWAIT: ProgramOp[] = [
+  inAFlow({ kind: 'emit', eventName: 'done' }),
+  flowsOf(
+    [inAFlow({ kind: 'await-inline', eventName: 'done' })],
+    [
+      inAFlow({ kind: 'step', name: 'poll' }),
+      inAFlow({ kind: 'step', name: 'poll' }, 1),
+      inAFlow({ kind: 'step', name: 'poll' }, 2),
+    ],
+  ),
 ]
 
 const REPEATED_STEP: ProgramOp[] = [0, 1, 2].map((valueIndex) => ({
@@ -1207,8 +1294,11 @@ const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
   // The six seeds draw no sleep until a time outside a group, so one program makes that call
   // one after another: to a time already past, and to one ahead.
   ['a sleep until a time, one call after another', SLEEPS_UNTIL_A_TIME] as const,
-  // One step name, used one call after another, is never refused for being repeated.
+  // One step name, used one call after another, is an ordinary program, and so is one step
+  // name used beside another flow's call, when only one flow uses it.
   ['a step name used again one call after another', REPEATED_STEP] as const,
+  ['a step beside a sleep, and then the same step name again', STEP_BESIDE_A_SLEEP] as const,
+  ['a poll loop of one step name, beside an await', POLL_BESIDE_AN_AWAIT] as const,
 ]
 
 interface Row {
@@ -1356,7 +1446,6 @@ describe('context-method enrollment (the inventory gate)', () => {
       flows: Object.keys(FLOW_PROGRAMS),
       sharedName: Object.keys(SHARED_NAME_PROGRAMS),
       sharedTaskName: Object.keys(SHARED_TASK_NAME_PROGRAMS),
-      sharedNameCost: Object.keys(SHARED_NAME_COST_PROGRAMS),
     }).toEqual({
       plain: [
         'two awaits of one event, which park the run',
@@ -1384,14 +1473,12 @@ describe('context-method enrollment (the inventory gate)', () => {
       sharedName: [
         'flows that each await a child and then record it in a step under one name, and then a sleep',
         'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
+        'the same flows, each catching what its step throws',
+        'the same flows, gathered with allSettled',
       ],
       sharedTaskName: [
         'flows that each await an event the program has emitted and then spawn a child under one task name',
         'flows that each await a child and then spawn a second child under one task name',
-      ],
-      sharedNameCost: [
-        'a step beside a sleep, and then the same step name again one call after another',
-        'a flow that repeats a step name, beside a flow that awaits an event',
       ],
     })
   })
@@ -1541,19 +1628,10 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (const [title, ops] of RUN_PROGRAMS) {
     it(`${title}: every fault point yields the reference outcome`, async () => {
-      // The registered mutant that the program generated for a step name is the owner of.
-      const verdict = (
-        {
-          'a step name used again one call after another':
-            'mutation-verdict:behavior:sdk-step-name-used-one-call-after-another-is-not-refused',
-        } as Record<string, string | undefined>
-      )[title]
-      await owning(verdict, async () => {
-        if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
-        await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall, fault) =>
-          runProgram(ops, runSeed, failAtCall, { fault }),
-        )
-      })
+      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
+      await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall, fault) =>
+        runProgram(ops, runSeed, failAtCall, { fault }),
+      )
     }, 60_000)
   }
 
@@ -1562,30 +1640,13 @@ describe('replay equivalence (generated programs x fault points x adversarial va
     ...SHARED_TASK_NAME_PROGRAMS,
   })) {
     it(`${title}: an outage at every store call ends as the known gap says`, async () => {
-      // The registered mutant that the first program is the owner of.
-      const verdict = (
-        {
-          'flows that each await a child and then record it in a step under its own name, and then a sleep':
-            'mutation-verdict:behavior:sdk-first-use-of-a-step-name-is-never-refused',
-        } as Record<string, string | undefined>
-      )[title]
-      await owning(verdict, () => theEngineDoesWhatTheGapSays(program.ops, program.gap))
+      await theEngineDoesWhatTheGapSays(program.ops, program.gap)
     }, 120_000)
   }
 
-  for (const [title, program] of Object.entries({
-    ...SHARED_NAME_PROGRAMS,
-    ...SHARED_NAME_COST_PROGRAMS,
-  })) {
-    it(`${title}: an outage at every store call refuses the repeated name`, async () => {
-      // The registered mutants that the first program is the owner of.
-      const verdict = (
-        {
-          'flows that each await a child and then record it in a step under one name, and then a sleep':
-            'mutation-verdict:behavior:sdk-flows-repeating-a-step-name-are-refused',
-        } as Record<string, string | undefined>
-      )[title]
-      await owning(verdict, () => theEngineRefusesTheSharedName(program.ops, program.name))
+  for (const [title, program] of Object.entries(SHARED_NAME_PROGRAMS)) {
+    it(`${title}: an outage at every store call ends as pinned`, async () => {
+      await theEngineEndsAsPinned(program.ops, program.calls, program.endings)
     }, 120_000)
   }
 })
@@ -1594,7 +1655,7 @@ describe('replay equivalence (generated programs x fault points x adversarial va
 function endingOf(run: Awaited<ReturnType<typeof runProgram>>): string {
   if (run.state === 'completed') return `completed ${run.result} ${run.spawned.join(',')}`
   const message = (JSON.parse(run.failure ?? 'null') as { message?: string } | null)?.message
-  const refused = message?.match(/^(ctx\.\S+) (?:called inside a step|is a repeated step name)/)
+  const refused = message?.match(/^(ctx\.\S+) called inside a step/)
   return refused?.[1] !== undefined ? `refused ${refused[1]}` : `${run.state} ${message}`
 }
 
@@ -1625,20 +1686,22 @@ async function theEngineDoesWhatTheGapSays(ops: ProgramOp[], gap: KnownGap): Pro
 }
 
 /**
- * The engine refuses the repeated step name whichever store call an outage takes, and the run
- * with no fault refuses it too: no run completes, and none is handed another flow's value.
+ * The witness of a pinned program: how each run ended, by the store call the outage took, is
+ * exactly the table. Each run is seeded and each outage is at a fixed store call, so the table
+ * is the same on every machine.
  */
-async function theEngineRefusesTheSharedName(ops: ProgramOp[], name: string): Promise<void> {
-  const refused = `refused ctx.step('${name}')`
-  const reference = await runProgram(ops, 'shared-ref', 0, { ends: 'either' })
-  const otherwise: string[] = []
-  for (const call of [0, ...everyCall(reference.calls)]) {
-    const run =
-      call === 0 ? reference : await runProgram(ops, `shared-${call}`, call, { ends: 'either' })
-    if (endingOf(run) !== refused)
-      otherwise.push(`call ${call} of ${reference.calls}: ${endingOf(run)}`)
+async function theEngineEndsAsPinned(
+  ops: ProgramOp[],
+  calls: number,
+  endings: PinnedEndings,
+): Promise<void> {
+  const reference = await runProgram(ops, 'pinned-ref', 0, { ends: 'either' })
+  const seen = new Map<string, number[]>([[endingOf(reference), [0]]])
+  for (const call of everyCall(reference.calls)) {
+    const ending = endingOf(await runProgram(ops, `pinned-${call}`, call, { ends: 'either' }))
+    seen.set(ending, [...(seen.get(ending) ?? []), call])
   }
-  expect(otherwise, 'the runs that were not refused, by the store call the outage took').toEqual([])
+  expect({ calls: reference.calls, endings: Object.fromEntries(seen) }).toEqual({ calls, endings })
 }
 
 /**

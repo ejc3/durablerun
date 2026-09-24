@@ -361,17 +361,17 @@ is left: line 18, held for the maintainer's choice.
 18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
     together and a step named after the attempt, in its plain and its saga
     generator, with each shape in a program of its own that runs at every fault
-    point, and it runs two flows that share a step name with an outage at every
-    store call, none of which may complete. This is met. Two such programs,
-    over two spawned children and over two emitted events, were committed
-    failing by name: on the SDK as it was, an outage at 3 of 30 store calls and
-    at 2 of 11 completed the task with the two flows' values swapped. The SDK now
-    refuses a step name that concurrent flows share, and both programs are
-    refused at every store call. Five registered mutations that hold the
-    refusal are each caught by name. Three flow programs that the SDK refuses
-    as if a call were nested in a step, and two programs of flows that share a
-    task name and are handed each other's child, are witnesses of what the
-    engine does, each failing on any other ending at any store call.
+    point, and it runs concurrent flows with an outage at every store call and
+    states what the engine ends with at each one, so that a known limitation
+    that is closed or made worse fails a test. This is met. Nine programs are
+    pinned, each by a test that fails on any other ending: three flows that the
+    engine refuses as if a call were nested in a step, two flows that share a
+    task name and are handed each other's child, and four flows that share a
+    step name, over two spawned children, over two emitted events, with each
+    flow catching what its step throws, and gathered with `allSettled`. The
+    two programs of a shared step name were committed failing by name against
+    a refusal, and the pins fail by name when the refusal is put back, which
+    was run. The SDK is unchanged from main.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -3483,84 +3483,76 @@ these three things; nothing else in the system does I/O, time, or randomness.
   harness bullet under PR3.4: durable calls started together, and a step named
   after the attempt, in the plain and the saga generator, each shape in a
   program of its own that runs at every fault point. DESIGN.md section 3.2
-  says what the harness holds a group to.
-  - **What the wider grammar found, and what changed.** The harness found that
-    the engine refuses a durable call made while a step RUNS and raises nothing
-    while a step REPLAYS from its memo, so a group that one pass refuses is
-    admitted by a pass that replays its first step. The first version of this
-    entry closed that with a guard held while a replayed step settles. Its one
-    review showed that the guard also refuses an ordinary fan-out written as
-    concurrent flows (spawn two children, then in a flow for each await the
-    child and record it in a step under its own name) on every replay, where
-    it completes on main, and a task in flight of that shape would fail at its
-    next replay. The guard is withdrawn. Five options for it were measured side
-    by side over one set of programs (main as it is, the guard, a latch that
-    stops a pass from storing anything after a refused call, that latch
-    narrowed to one step, and telling a nested call from a sibling flow's by
-    the async context), and the maintainer chose on 2026-09-23 to leave the
-    nesting refusal as main has it and to make one change: the SDK refuses a
-    step name that concurrent flows share.
-  - **The change.** Two flows that each await something and then call a step
-    under one name are numbered in the order their calls arrive (`record`,
-    then `record#2`), and a replay from memos can reach the two calls in the
-    other order, so each flow is handed the other's value and the task
-    completes with two values swapped. On the SDK as it was, an outage at 3 of
-    30 store calls did that for two flows over two spawned children, and at 2
-    of 11 for two flows over two emitted events. The engine cannot tell two
-    flows from one, so it refuses on what it can see. It counts the durable
-    calls that are pending, keeps a settled call counted until one turn of the
-    microtask queue after it settles, and marks a step name that a call was
-    made under while another was pending. The second and every later use of a
-    marked name fails the task for good, naming the step. The first use is
-    never refused, and a name used one call after another is never marked. Both
-    programs are refused at every store call, and so are two programs of one
-    flow that the SDK completed before: a step beside a sleep followed by the
-    same name, and a poll loop beside an await. The harness pins both. Two
-    narrower rules were measured over the same programs and rejected. Counting
-    only the calls made in an earlier turn of the microtask queue, which spares
-    the step beside a sleep, completes both swap programs at the last store
-    call. Refusing a repeated name only when the call itself is made beside
-    another spares the step beside a sleep, and fails the poll loop beside an
-    await at 6 of 8 store calls and completes it at 2, so an outage decides
-    which. A swap is the same sequence of durable calls as an ordinary program,
-    and only the async context of each call tells them apart.
-    DESIGN.md section 3.2 says what a task in flight pays. It fails for good
-    on its next replay with the refusal as its failure reason, which an
-    operator reads on the task's result and through the inspect route, and
-    nothing completes silently.
-  - **Known gaps, pinned and not closed.** Each is a program the harness runs
-    with an outage at every store call and a test that says exactly what the
-    engine does, so a gap closed by accident or made worse fails the test.
-    (i) A group that starts a step ahead of another durable call is refused,
-    except that an outage on the failing pass's own `fail` call lets the next
-    pass replay the step and admit the group, so the task completes; the three
-    plain programs and the saga program of this kind are each pinned at that
-    call, with both kinds of store fault. (ii) A sibling flow is refused as if
-    its call were nested in a step, because one flag cannot tell the two apart:
-    a fan-out of two flows over two spawned children fails for good at 3 of 30
-    store calls, two flows over two emitted events fail on the run with no
-    fault and complete at 5 of 11 store calls, and two flows that each wait on
-    a timer and then run a step whose body takes time fail at 4 of 5 and
-    complete at one. The three flow programs pin those numbers. (iii) The
-    shared step name's defect exists for a task name, and the engine does not
-    refuse it: two flows that each await something and then spawn a child under
-    one task name are handed each other's child at 2 of 14 store calls (over two
-    emitted events) and 3 of 28 (over two spawned children), and each then
-    awaits the wrong child. Two programs pin it, so it stays visible.
-  - An option, not scheduled: admit the concurrency of sibling flows. A call
-    would be refused only when it is made inside a step's own async context,
-    which needs Node's `AsyncLocalStorage` in an SDK that imports nothing from
-    Node, and it would end gap (ii) and let a step name be shared. It reverses
-    DESIGN.md section 3.10, needs a rule for the order two registered steps
-    started together are rolled back in, and rewrites six registered mutations
-    and the four refused-group programs. Trigger: a task in use whose flows
-    each call a step, or a decision that the SDK admits sibling flows.
-  - An option, not scheduled: refuse a task name that concurrent flows share,
-    by the rule the step name has. It costs every flow that spawns under one
-    task name after a call made beside a pending one, which a fan-out over one
-    task name does whenever a flow awaits something first. Trigger: a task in
-    use whose flows spawn under one task name, or a decision that the swap of
-    two children outweighs that cost.
+  says what the harness holds a group to. The pull request changes tests and
+  documents only, and the SDK is main's.
+  - **What the wider grammar found.** The engine refuses a durable call made
+    while a step RUNS and raises nothing while a step REPLAYS from its memo, so a
+    group that one pass refuses is admitted by a pass that replays its first
+    step. The first version of this entry closed that with a guard held while a
+    replayed step settles. Its review showed that the guard also refuses an
+    ordinary fan-out written as concurrent flows on every replay, where it
+    completes on main, and the guard was withdrawn. The harness also found a
+    silent wrong result that no version of this pull request closes: two flows
+    that each await something and then call a step under one name are numbered
+    in the order their calls arrive (`record`, then `record#2`), and a replay
+    can reach the two calls in the other order, so each flow is handed the
+    other's value. On main an outage at 3 of 30 store calls does that for two
+    flows over two spawned children, and at 2 of 11 for two flows over two
+    emitted events.
+  - **A refusal of the shared step name, built and REJECTED.** The SDK counted
+    the durable calls that were pending, kept a settled call counted for one
+    turn of the microtask queue, and refused the second use of a step name that
+    a call was made under while another was pending. The two swap programs were
+    refused at every store call, and the review found two reasons not to land
+    it, both reproduced. It refuses ordinary programs that complete today: a
+    poll loop of one step name beside an `awaitEvent` or an `awaitTask`, a
+    heartbeat loop beside an `awaitEvent` with a timeout, a step named twice
+    after a sleep started before the first, a step beside a sleep followed by
+    the same name, and a saga step named twice with a sleep started before the
+    first. And a refusal is an ordinary thrown error, so flows that catch it
+    with `try` or gather with `Promise.allSettled` complete with the values
+    swapped or rejected where main completes with them. Two narrower rules were
+    measured over the same programs and rejected: counting only calls made in
+    an earlier turn of the microtask queue completes both swap programs at the
+    last store call, and refusing a repeated name only when the call itself is
+    beside another fails a poll loop at 6 of 8 store calls and completes it at
+    2. A swap is the same sequence of durable calls as an ordinary program, and
+    only the identity of the flow a call belongs to tells them apart. The
+    maintainer decided on 2026-09-23 that nothing that completes today may
+    start failing, so the swap is a pinned, documented limitation. DESIGN.md
+    section 3.2 says what it is, when it happens and what to do: use distinct
+    step names in flows that run concurrently, or one flow at a time.
+  - **Pinned, not closed.** Each is a program the harness runs with an outage at
+    every store call and a test that says exactly what the engine does, so a
+    limitation closed by accident or made worse fails the test. (i) A group that
+    starts a step ahead of another durable call is refused, except that an
+    outage on the failing pass's own `fail` call lets the next pass replay the
+    step and admit the group, so the task completes; the three plain programs and
+    the saga program of this kind are each pinned at that call, with both kinds
+    of store fault. (ii) A sibling flow is refused as if its call were nested in
+    a step, because one flag cannot tell the two apart: a fan-out of two flows
+    over two spawned children fails for good at 3 of 30 store calls, two flows
+    over two emitted events fail on the run with no fault and complete at 5 of
+    11 store calls, and two flows that each wait on a timer and then run a step
+    whose body takes time fail at 4 of 5 and complete at one. (iii) The shared
+    step name, over children and over events, and the same events program with
+    each flow catching what its step throws and with the flows gathered by
+    `allSettled`: the whole table of endings by store call is pinned. (iv) A
+    task name that concurrent flows share is not refused either: two flows that
+    each await something and then spawn under one task name are handed each
+    other's child at 2 of 14 store calls (over two emitted events) and 3 of 28
+    (over two spawned children).
+  - An option, not scheduled: give the SDK the identity of a flow. A call would
+    be refused, or keyed, by the flow it belongs to and not by the order it
+    arrives in, which needs Node's `AsyncLocalStorage` in an SDK that imports
+    nothing from Node, or a flow scope in the published surface (a `ctx.flow`
+    that carries its own name namespace and nesting flag). It would end the
+    shared step name and task name swaps and the sibling-flow refusal (ii), and
+    it reverses DESIGN.md section 3.10's statement that steps do not start
+    concurrently. It needs a rule for the order two registered steps started
+    together are rolled back in, and rewrites six registered mutations and the
+    refused-group programs. Trigger: a reported swap in a task in use, or a
+    decision that the SDK admits sibling flows.
   - An option, not scheduled: close gap (i) with a guard held while a replayed
     step settles. It refuses an ordinary fan-out written as flows on every
     replay, so it waits for the option above. Trigger: the same decision.
@@ -3585,12 +3577,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     fail when a generator stops drawing a shape, when a generated method does
     not say whether a group holds it, and when a shape is in no program the
     file runs.
-  - The registry gains seven mutations: the two above, and five that hold the
-    refusal of a shared step name (the counting of pending calls, the turn that
-    keeps a settled call counted, the mark a name takes, the refusal of a marked
-    name's second use and of nothing else). Each is owned by a generated
-    program. The base gate's arm is keyed on main's registry and exempts their
-    five verdict markers, which the base predates.
+  - The registry gains two mutations, the two above, so it holds 1096 where main
+    holds 1094. The base gate's arm is keyed on main's registry and exempts
+    their two verdict markers, which the base predates.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's
