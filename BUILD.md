@@ -357,7 +357,7 @@ is left: line 18, held for the maintainer's choice.
     records every completion event under another task's name, committed
     failing, is now rejected, and the matrix with every checker is green on
     three dialects. Of the copies, the SDK tests' `expectCleanRows` exists
-    once, and the label recorders are an option under the PR3.3d entry.
+    once, and the label recorders exist once (PR3.3e).
 18. PR3.4d: the SDK's replay-equivalence harness draws durable calls started
     together and a step named after the attempt, in its plain and its saga
     generator, with each shape in a program of its own that runs at every fault
@@ -554,6 +554,25 @@ is left: line 18, held for the maintainer's choice.
     name on libSQL against the base executor and passes on the two servers
     there, and the other fails by name against an executor that fails the call
     after a failed batch.
+
+28. PR3.3e: a test helper that records the batch labels an executor was sent
+    exists once, `RecordingExecutor` in `@durablerun/core/testing`, and the
+    child-task surface, the poison matrix, and the two libSQL tests that had a
+    copy each import it. This is met. Behaviour is unchanged: with the memo's
+    remember at activate deleted, `run-task-read.test.ts` fails by name; with
+    the forget after a won terminal write deleted, `refusal-read.test.ts` and
+    the child-task case "forgets the task of a run once its terminal batch has
+    ended the run" fail by name; with the poison subclass's state note removed,
+    the poison matrix fails on libSQL. No statement or corpus file moved.
+29. PR3.10b: a count DESIGN.md states for a pinned property equals the
+    constant, table or list the code pins for it. A number that differs, a
+    marker that names no pinned count, and a pinned count whose marker is gone
+    each fail `packages/conformance/test/design-counts.test.ts` by the count's
+    name. This is met. The test was committed failing by name on the
+    self-concurrency contests, `DESIGN.md says 37, the code pins 38`, a real
+    stale count, and one edit of DESIGN.md per kind of count fails it by name:
+    a length (116 conditions to 117), a constant (255 to 256), a product
+    (3,087 to 3,088), a word (eight counters to nine), and a deleted marker.
 
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
@@ -1504,6 +1523,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     second write path beside the hosted one. Trigger: upstream still unfixed
     when the trigger above is observed, or the recovery found to misbehave in
     use.
+- **PR3.3e the label recorders exist once**: DONE. The test executor that
+  records the batch labels it is sent had four copies: `recordingLabels` in the
+  child-task surface, `RecordingExecutor` in the poison matrix and in the
+  libSQL refusal-read test, and `LabelRecorder` in the libSQL run-task-read
+  test. One `RecordingExecutor` is exported from `@durablerun/core/testing`,
+  where a fourth dialect's tests inherit it. It records each batch's label,
+  statement text, and mode before the batch runs, so a batch that fails is
+  recorded too. The poison matrix keeps a subclass that also notes whether each
+  write batch changed durable state. The helper is in core's testing entry
+  point and not in the conformance package because a store's own tests import
+  core and do not depend on the conformance package. The entry point is
+  released, and a new export of a released entry point is an addition that
+  needs no `changed` entry. `storeOverRecorder` in the identifier surface is
+  not a copy: it never calls the real executor, so that a refusal shows as no
+  batch reached. No statement, corpus file, or assertion changed.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -2436,17 +2470,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that no role is read out of a sentence. It would close both ways above
     and the honest phrasings that are still refused. Trigger: a third class
     of misread.
-  - An option, not built: a test that holds each count DESIGN.md states to the
-    constant the code pins for it. A count in prose is true when it is
-    written and goes stale when a later change moves the code, and nothing
-    compares the two. The review of PR3.1d found DESIGN.md's counts of the
-    poison matrix behind what the code pins, and the review of PR3.3c found
-    five stale counts, in DESIGN.md, BUILD.md, two comments and the pull
-    request's body. The test would find each count by a marker beside it
-    and compare it with the value a test already asserts. A count in BUILD.md
-    or in a pull request's body stays outside it. Trigger: the next review
-    that finds a count DESIGN.md states contradicted by a constant the code
-    pins.
+  - Built as PR3.10b below: a test that holds the counts DESIGN.md states for
+    a property the code pins. What stays open is a count outside DESIGN.md, in
+    BUILD.md or in a pull request's body. Trigger: a review finds a count of
+    BUILD.md that a constant the code pins contradicts.
 
 - **PR3.10a the attestation reads the commits a postmortem cites**: DONE. A
   postmortem cites its red tests and its fixes by commit id, and an id does
@@ -2535,6 +2562,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `lint-selftest.py` holds 55 cases over a git history that git builds with a
   real rebase in it, through both entry points, and each of 53 deletions of a
   condition of the new code fails a named case.
+
+- **PR3.10b DESIGN.md's counts are held to the code**: DONE. A count in prose
+  is true when it is written and goes stale when a later change moves the
+  code, and it had recurred in nearly every review of the follow-ups
+  milestone. A count DESIGN.md states for a property the code pins now has a
+  marker straight after the number, such as
+  `116<!-- count: engine-invariant-conditions -->`, and
+  `packages/conformance/test/design-counts.test.ts` compares it with the value
+  the code exports: the condition, write label, witness and cell counts of the
+  poison matrix, the eight counter fields and 23 temporal fields, the 82
+  string places of the port, the contests of the self-concurrency surface, and
+  the identifier width with the units and bytes it implies. It fails by the
+  count's name when a number differs, when a marker names no pinned count, and
+  when a pinned count has no marker left. Its first run found one stale count:
+  DESIGN.md said 37 contests, and a contest added on 2026-09-19 made it 38.
+  The sentence beside it, the split of the contests by how many batches a
+  copy sends on libSQL, is corrected to 25 of 38 after a measurement of the
+  added contest's claim: one batch. That split and its neighbours (the 10 and
+  the three) are prose the test does not hold, only the total is. Four keys are
+  arithmetic over their factors (the cells, the durable integers, and the
+  units and bytes of the identifier width), so they hold the prose to the
+  arithmetic and not to one exported number. Nothing lower was replaced, because no
+  earlier check compared a count with its constant. A count that no constant
+  pins stays unmarked: measurements (1,776 MySQL error numbers at one server
+  version), counts of another project's tables, the case counts of the
+  verifier's own self-tests, and `82 shipped writes` in a tried experiment,
+  which no test asserts. A new count that a constant pins takes a marker and
+  an entry in the test's table.
 
 - **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
   other entry owned.
@@ -2852,15 +2907,6 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - One base class for the whole family. `InvalidDurableStringError` was
     released as a `TypeError`, so moving it under another parent changes the
     published surface, which is the maintainer's choice.
-  - An option, not built: one recorder of batch labels. The copies are
-    `LabelRecorder` in the libSQL store's `run-task-read.test.ts`,
-    `RecordingExecutor` in its `refusal-read.test.ts`, and `recordingLabels` in
-    the child-task surface, and the poison matrix has a fourth recorder,
-    another `RecordingExecutor`, which also records whether a call changed
-    state. This bullet left them with PR4.4d, which merged without them: its
-    exit test names four kinds of copy, and a recorder of labels is none of
-    them. Trigger: the next test that needs a recorder of labels, which would
-    be a fifth.
   - The matrix's judge tells the older build's ending from the state of the
     row. A cancel of that same child by the current build that lost its
     completion event would be excused too. No batch of the workload does

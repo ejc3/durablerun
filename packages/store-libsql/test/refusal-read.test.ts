@@ -5,23 +5,10 @@ import {
   type SqlStatement,
   StoreUnavailableError,
 } from '@durablerun/core'
+import { RecordingExecutor } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { LibsqlSchedulerStore } from '../src/index.js'
 import { openTestDb } from '../src/testing.js'
-
-/** Passes every batch through and records each batch's label and statements. */
-class RecordingExecutor implements SqlExecutor {
-  readonly batches: { label: string; statements: string[] }[] = []
-  constructor(private readonly real: SqlExecutor) {}
-  batch(
-    label: string,
-    statements: readonly SqlStatement[],
-    control?: SqlBatchControl,
-  ): Promise<SqlResult[]> {
-    this.batches.push({ label, statements: statements.map((statement) => statement.sql) })
-    return this.real.batch(label, statements, control)
-  }
-}
 
 /** Fails the refusal read the way a dropped connection would. */
 class FailingRefusalRead implements SqlExecutor {

@@ -1456,8 +1456,8 @@ One invocation executes one claimed run to its next suspension point:
     PostgreSQL's btree row may not pass about 2,700 bytes. With no bound, a
     claim under 3,000 characters that do not compress answered as an outage on
     PostgreSQL (SQLSTATE 54000) and took its run on the other two, where before
-    the index every dialect took it. 255 characters are at most 1,020 bytes, so
-    the row fits, and MySQL's prefix of 255 holds the whole token. The engine's
+    the index every dialect took it. 255<!-- count: identifier-characters --> characters are at most 1,020<!-- count: identifier-utf8-bytes --> bytes, so
+    the row fits, and MySQL's prefix of 255<!-- count: identifier-characters --> holds the whole token. The engine's
     own tokens are 32 characters. With the index one claim costs 4 to 8 ms on
     every dialect at every size measured, up to 100,000 running runs on libSQL
     and PostgreSQL and 40,000 on MySQL, and no other write was measurably
@@ -2766,13 +2766,13 @@ are load-bearing):
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
-10. **A durable identifier holds 255 characters, on every dialect.** The
+10. **A durable identifier holds 255<!-- count: identifier-characters --> characters, on every dialect.** The
    identifiers are a queue, a task id, a run id, a driver id, an idempotency
    key, an event name, a step name, a checkpoint name, and a claim token. A
    character is a
    Unicode code point, which is how MySQL counts a `VARCHAR`. It is not a
-   UTF-16 unit and not a byte: 255 characters outside the basic plane are 510
-   units and 1020 bytes, and they fit. The width is MySQL's, which cannot index
+   UTF-16 unit and not a byte: 255<!-- count: identifier-characters --> characters outside the basic plane are 510<!-- count: identifier-utf16-units -->
+   units and 1020<!-- count: identifier-utf8-bytes --> bytes, and they fit. The width is MySQL's, which cannot index
    unbounded text and indexes nothing wider. The engine behaves identically on
    every dialect, so the narrowest dialect sets the width for all of them, and
    core holds it once (`IDENTIFIER_CHARACTERS`, `requireIdentifiersFit`). Every
@@ -2870,7 +2870,7 @@ are load-bearing):
    carries no brand: a wrapper or a test double of a store needs nothing.
 
    The executable twin is the identifier surface, which every dialect runs. It generates
-   every place a string enters the port from the same table, 82 of them, and asks each
+   every place a string enters the port from the same table, 82<!-- count: port-string-places --> of them, and asks each
    held place for a NUL, each kind of lone surrogate, an emoji cut in half, a pair the
    wrong way round, a number and null, each identifier's place for three names past the
    width, and each payload's place for null and a number, over an executor that only
@@ -2912,7 +2912,7 @@ are load-bearing):
    the sweep hands the run to a claim under another token, which is how the engine recovers
    any run whose holder went away. A caller that passes one now is refused where it
    was stored under another name, or reported as an outage. A caller whose own claim
-   tokens are wider than 255 characters is refused at every claim from now on.
+   tokens are wider than 255<!-- count: identifier-characters --> characters is refused at every claim from now on.
 
    The width also holds the names the engine derives from an identifier, which
    are longer than it. Each is refused at the call that passes the identifier,
@@ -3576,7 +3576,7 @@ not depend on careful reading:
   inside the server, under a registered mutation. Other pairs of different
   calls stay with the fuzz and the fault matrix. On libSQL two calls interleave
   only between batches, because one connection runs a batch to its end.
-  Measured there: in 24 of the 37 contests every copy sends one batch, so both
+  Measured there: in 25 of the 38<!-- count: self-concurrency-contests --> contests every copy sends one batch, so both
   orders send the same batches in the same order, and on libSQL those contests
   can fail only on an invariant, an outage or the idle floor, and never on a
   race. In 10 the only second batch is a loser's read of why it was refused.
@@ -3606,13 +3606,13 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 116 typed condition IDs for every semantic arm. The eight durable
-  counters and 23 temporal fields are decoded totally through core's
+  one of 116<!-- count: engine-invariant-conditions --> typed condition IDs for every semantic arm. The eight<!-- count: durable-counter-fields --> durable
+  counters and 23<!-- count: temporal-fields --> temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
   arithmetic instead of aborting the invariant pass. Run→task existence and
   queue ownership are checked explicitly. One frozen temporal inventory covers
-  all 23 `_ms` fields across tasks, runs, checkpoints, events, waits, and
+  all 23<!-- count: temporal-fields --> `_ms` fields across tasks, runs, checkpoints, events, waits, and
   drivers, derives the public condition/witness identity from the nominal
   `table.column` bounds identity, records each field's epoch/duration kind and
   exact nullability, and
@@ -3620,8 +3620,8 @@ not depend on careful reading:
   three witnesses per field: invalid storage, one below the lower bound, and
   one above the upper bound. The shared schema/admin surface discovers every
   native integer column across those tables and compares the exact
-  field/64-bit-width/nullability vector to the union of eight counter
-  descriptors and 23 temporal descriptors: all 31 durable integers are
+  field/64-bit-width/nullability vector to the union of eight<!-- count: durable-counter-fields --> counter
+  descriptors and 23<!-- count: temporal-fields --> temporal descriptors: all 31<!-- count: durable-integers --> durable integers are
   enrolled without relying on a name suffix. Catalog SQL remains
   dialect-owned—libSQL projects real `PRAGMA table_info` rows—but the shared
   runner executes, validates, and compares the evidence.
@@ -3635,9 +3635,9 @@ not depend on careful reading:
   that are not identifiers. The test's reader refuses a migration statement
   that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 21 classified
-  write labels with 147 corrupt-state witnesses covering that exact
-  condition inventory: 3,087 generated cells,
+  keep the poison matrix complete. The poison surface crosses the 21<!-- count: poison-write-labels --> classified
+  write labels with 147<!-- count: poison-witnesses --> corrupt-state witnesses covering that exact
+  condition inventory: 3,087<!-- count: poison-cells --> generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state
@@ -3866,7 +3866,7 @@ not depend on careful reading:
   typed an outage.
 - *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
   `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
-  the 23-field inventory above is the sole persisted temporal representation.
+  the 23<!-- count: temporal-fields -->-field inventory above is the sole persisted temporal representation.
   Fixed-field fragments own due/not-due comparisons, and one
   `epochAdditionFits` constructor owns derived-epoch headroom. Each delta
   expression appears exactly once in the generated predicate, so an anonymous
@@ -3878,6 +3878,18 @@ not depend on careful reading:
   sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
   controls, rounded-duration parity, and driver-cleanup atomicity pin the
   contract independently of the global invariant.
+- *The counts of this document* (`conformance/test/design-counts.test.ts`): a
+  count stated here for a property the code pins carries a marker straight
+  after the number, an HTML comment that names the property, and the test
+  compares the number, written in digits or as a word, with the value the code
+  exports: the poison matrix's conditions, write labels, witnesses and cells,
+  the durable counter and temporal fields, the port's string places, the
+  self-concurrency contests, and the identifier width with the UTF-16 units and
+  UTF-8 bytes it allows. A number that differs, a marker that names no pinned
+  count, and a pinned count that has no marker left each fail it by name. It
+  holds a count only where a marker stands, so a new count of a pinned
+  property takes a marker and an entry in the test's table, and a count that
+  no constant pins, such as a measurement, stays unmarked.
 - *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
   mutation names the exact behavioral or construction assertion that must
   kill it — test file, full test name, and marker in its failure. Compilation

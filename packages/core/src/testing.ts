@@ -1,5 +1,13 @@
 import { isFencedBatchBindError } from './fenced-batch.js'
-import type { IdSource } from './primitives.js'
+import {
+  type IdSource,
+  type SqlBatchControl,
+  type SqlBatchMode,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+  sqlBatchMode,
+} from './primitives.js'
 
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
 export interface ReplacedFailureExpectation {
@@ -125,5 +133,51 @@ export function testIdSource(
       tokens = proposed
       return `${namespace}-token-${serial(tokens)}`
     },
+  }
+}
+
+/** One batch an executor was sent: its label, the text of its statements, and its mode. */
+export interface RecordedBatch {
+  readonly label: string
+  readonly statements: readonly string[]
+  readonly mode: SqlBatchMode
+}
+
+/**
+ * Passes every batch through to `real` and records what was sent, in order,
+ * before the batch runs, so a batch that fails is recorded too. A test clears
+ * the record with `batches.length = 0` or takes it with `batches.splice(0)`.
+ * A store built over it (a fixture's `storeOver`, or a store constructor) is
+ * observed at the one place every dialect sends its batches.
+ */
+export class RecordingExecutor implements SqlExecutor {
+  readonly batches: RecordedBatch[] = []
+  constructor(protected readonly real: SqlExecutor) {}
+
+  get labels(): string[] {
+    return this.batches.map((batch) => batch.label)
+  }
+
+  protected record(
+    label: string,
+    statements: readonly SqlStatement[],
+    control: SqlBatchControl | undefined,
+  ): RecordedBatch {
+    const batch: RecordedBatch = {
+      label,
+      statements: statements.map((statement) => statement.sql),
+      mode: sqlBatchMode(control),
+    }
+    this.batches.push(batch)
+    return batch
+  }
+
+  batch(
+    label: string,
+    statements: readonly SqlStatement[],
+    control?: SqlBatchControl,
+  ): Promise<SqlResult[]> {
+    this.record(label, statements, control)
+    return this.real.batch(label, statements, control)
   }
 }
