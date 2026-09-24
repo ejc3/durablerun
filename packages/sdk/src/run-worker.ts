@@ -197,7 +197,6 @@ export async function runClaimedRun(
     for (;;) {
       await clock.sleep(leaseMs / 2, pumpStopSignal)
       if (abortSignalAborted(pumpStopSignal)) return
-      if (passContext !== undefined) beatOrder(passContext)
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
         if (!lease.held) {
@@ -207,6 +206,9 @@ export async function runClaimedRun(
           if (passContext !== undefined) openOrder(passContext)
           return
         }
+        // A beat that finds the lease held may find the replay stuck. One that finds it gone
+        // has let every waiting call go, and there is nothing to give up on.
+        if (passContext !== undefined) beatOrder(passContext)
       } catch {
         // Heartbeat is advisory upkeep; the fences are the truth. With no more beats, a call
         // that waits for its turn has nobody left to give up on its number.
