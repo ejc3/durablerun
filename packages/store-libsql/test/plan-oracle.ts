@@ -1,4 +1,5 @@
 import type { Client } from '@libsql/client'
+import type { Shipped } from './plan-history.js'
 import type { PlanRow } from './plan-nests.js'
 
 /**
@@ -39,9 +40,22 @@ const IDENTITY_COLUMNS = [
 /** The backlog's small size and its large one, in copies of every row. */
 export const SCALES = { small: 4, large: 16 } as const
 
-export interface Statement {
-  readonly sql: string
-  readonly args: unknown[]
+export type Statement = Pick<Shipped, 'sql' | 'args'>
+
+/** The tree `EXPLAIN QUERY PLAN` returns for a statement, on a client or in a transaction. */
+export async function planRows(
+  from: { execute: (statement: { sql: string; args: number[] }) => Promise<{ rows: unknown[] }> },
+  statement: Statement,
+): Promise<PlanRow[]> {
+  const plan = await from.execute({
+    sql: `EXPLAIN QUERY PLAN ${statement.sql}`,
+    args: statement.args as number[],
+  })
+  return (plan.rows as Record<string, unknown>[]).map((row) => ({
+    id: Number(row.id),
+    parent: Number(row.parent),
+    detail: String(row.detail),
+  }))
 }
 
 export interface Measured {
@@ -70,35 +84,51 @@ export async function backlogOf(client: Client): Promise<Backlog> {
   return { tables }
 }
 
-/** The copies `from` to `to` of every original row, each with fresh identifying columns. */
+/**
+ * `rounds` copies of every original row, each with fresh identifying columns. A table that
+ * takes fewer copies than it should, because a column that identifies was not made fresh and
+ * a unique index refused the row, is an error and not a backlog too small to show a scan.
+ */
 async function copies(
-  tx: { execute: (sql: string) => Promise<unknown> },
+  tx: {
+    execute: (sql: string) => Promise<{ rows: unknown[]; rowsAffected: number }>
+  },
   backlog: Backlog,
-  from: number,
-  to: number,
+  rounds: number,
 ): Promise<void> {
   for (const [table, { columns, original }] of backlog.tables) {
+    const originals = Number(
+      (
+        (await tx.execute(`select count(*) as n from ${table} where ${original} not like '%~%'`))
+          .rows[0] as { n: number }
+      ).n,
+    )
     const selected = columns
       .map((column) => (IDENTITY_COLUMNS.includes(column) ? `${column} || '~' || n.i` : column))
       .join(', ')
-    await tx.execute(
-      `with recursive n(i) as (select ${from} union all select i + 1 from n where i < ${to})
+    const made = await tx.execute(
+      `with recursive n(i) as (select 1 union all select i + 1 from n where i < ${rounds})
        insert or ignore into ${table} (${columns.join(', ')})
        select ${selected} from ${table}, n where ${original} not like '%~%'`,
     )
+    if (made.rowsAffected !== originals * rounds) {
+      throw new Error(
+        `${table} took ${made.rowsAffected} copies of ${originals} rows for ${rounds} rounds`,
+      )
+    }
   }
 }
 
 /**
- * One statement's work beside a backlog of `scale` copies, in a transaction that is rolled
+ * One statement's work beside a backlog of `rounds` copies, in a transaction that is rolled
  * back. `before` is what ran ahead of it in its batch, so a statement finds the rows its
  * batch left it, and `dropped` is an index the database is asked to do without. The plan is
  * read from the same database at the same moment, so the plan and the work are of one plan.
  */
-export async function measure(
+async function measureAt(
   client: Client,
   backlog: Backlog,
-  scale: number,
+  rounds: number,
   before: readonly Statement[],
   statement: Statement,
   dropped?: string,
@@ -106,18 +136,9 @@ export async function measure(
   const tx = await client.transaction('write')
   try {
     if (dropped !== undefined) await tx.execute(`drop index ${dropped}`)
-    await copies(tx, backlog, 1, scale)
+    await copies(tx, backlog, rounds)
     for (const prior of before) await tx.execute({ sql: prior.sql, args: prior.args as number[] })
-    const plan = (
-      await tx.execute({
-        sql: `EXPLAIN QUERY PLAN ${statement.sql}`,
-        args: statement.args as number[],
-      })
-    ).rows.map((row) => ({
-      id: Number(row.id),
-      parent: Number(row.parent),
-      detail: String(row.detail),
-    }))
+    const plan = await planRows(tx, statement)
     const steps = async () =>
       Number(
         (
@@ -135,9 +156,25 @@ export async function measure(
   }
 }
 
+/** One statement's work beside the small backlog and beside the large one. */
+export async function measure(
+  client: Client,
+  backlog: Backlog,
+  before: readonly Statement[],
+  statement: Statement,
+  dropped?: string,
+): Promise<{ small: Measured; large: Measured }> {
+  return {
+    small: await measureAt(client, backlog, SCALES.small, before, statement, dropped),
+    large: await measureAt(client, backlog, SCALES.large, before, statement, dropped),
+  }
+}
+
 /** Whether the work grew with the backlog: by steps for any statement, by rows for a write. */
 export const grew = (small: Measured, large: Measured): boolean =>
   large.steps > small.steps * 1.5 + 5 || large.changed > small.changed * 1.5 + 2
+
+const WHERE_WORD = /^where\b/i
 
 /**
  * A statement's text without its WHERE, the one at the top level: an UPDATE or DELETE that
@@ -153,7 +190,7 @@ export function withoutWhere(sql: string): string | undefined {
     } else if (c === "'" || c === '"') quote = c
     else if (c === '(') depth++
     else if (c === ')') depth--
-    else if (depth === 0 && /^where\b/i.test(sql.slice(i)) && !/\w/.test(sql[i - 1] ?? ' ')) {
+    else if (depth === 0 && WHERE_WORD.test(sql.slice(i, i + 6)) && !/\w/.test(sql[i - 1] ?? ' ')) {
       return sql.slice(0, i).trimEnd()
     }
   }

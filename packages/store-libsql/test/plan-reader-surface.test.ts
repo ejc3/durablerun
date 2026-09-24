@@ -3,16 +3,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type Client, createClient } from '@libsql/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
+import { openTestDb } from '../src/testing.js'
 import { type Shipped, keyOf, recordHistory } from './plan-history.js'
 import { type NestReading, type PlanRow, readNests } from './plan-nests.js'
 import {
   type Backlog,
-  SCALES,
   type Statement,
   backlogOf,
   grew,
   measure,
+  planRows,
   spellings,
   withoutWhere,
 } from './plan-oracle.js'
@@ -76,7 +76,7 @@ let dir: string
 let contexts: Map<string, Context>
 let indexes: { name: string; unique: boolean }[]
 const clients = new Map<string, Client>()
-const backlogs = new Map<string, Backlog>()
+let backlog: Backlog
 const rows: Row[] = []
 /** A statement that would not run in a variation, with why: an index a statement needs. */
 const skipped: { name: string; variation: string; dropped: string | undefined; error: string }[] =
@@ -87,38 +87,98 @@ const spellingErrors: string[] = []
 
 const nameOf = (st: Shipped) =>
   `${st.label}#${st.index} ${st.sql.slice(0, 48).replace(/\s+/g, ' ')}`
-const kindOf = (sql: string) =>
-  /^\s*(?:\/\*.*?\*\/\s*|--.*\n\s*)*(\w+)/i.exec(sql)?.[1]?.toLowerCase() ?? '?'
+const kindOf = (sql: string) => /^\s*(\w+)/.exec(sql)?.[1]?.toLowerCase() ?? '?'
 const isBad = (reading: NestReading) => reading.faults.length > 0
 
-async function planOf(client: Client, sql: string, args: unknown[], dropped?: string) {
+/** The plans of several texts of one statement, in a database that may lack one index. */
+async function plansOf(
+  client: Client,
+  texts: readonly string[],
+  args: unknown[],
+  dropped?: string,
+) {
   const tx = await client.transaction('write')
   try {
     if (dropped !== undefined) await tx.execute(`drop index ${dropped}`)
-    const plan = await tx.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
-    return plan.rows.map(
-      (row): PlanRow => ({
-        id: Number(row.id),
-        parent: Number(row.parent),
-        detail: String(row.detail),
-      }),
-    )
+    const plans: PlanRow[][] = []
+    for (const sql of texts) plans.push(await planRows(tx, { sql, args }))
+    return plans
   } finally {
     await tx.rollback()
+  }
+}
+
+/** One statement, in one variation, measured and read, or recorded as skipped. */
+async function judge(
+  context: Context,
+  variation: Row['variation'],
+  variant: Statement,
+  before: readonly Statement[],
+  dropped: string | undefined,
+): Promise<Row | undefined> {
+  const name = nameOf(context.shipped)
+  try {
+    const { small, large } = await measure(
+      clients.get(context.database) as Client,
+      backlog,
+      before,
+      variant,
+      dropped,
+    )
+    const row: Row = {
+      name,
+      kind: kindOf(context.shipped.sql),
+      variation,
+      dropped,
+      grew: grew(small, large),
+      reading: readNests(large.plan, variant.sql),
+      lines: new Set(
+        large.plan.flatMap((line) =>
+          LINE_KINDS.filter(([, shape]) => shape.test(line.detail)).map(([kind]) => kind),
+        ),
+      ),
+    }
+    rows.push(row)
+    return row
+  } catch (error) {
+    skipped.push({ name, variation, dropped, error: String(error).slice(0, 120) })
+    return undefined
+  }
+}
+
+/** The reader's judgment of each spelling of a statement, against its judgment of the statement. */
+async function judgeSpellings(context: Context, was: Row, dropped: string | undefined) {
+  const { shipped, database } = context
+  const texts = Object.entries(spellings(shipped.sql))
+  try {
+    const plans = await plansOf(
+      clients.get(database) as Client,
+      texts.map(([, text]) => text),
+      shipped.args,
+      dropped,
+    )
+    for (const [i, [spelling, text]] of texts.entries()) {
+      const reading = readNests(plans[i] as PlanRow[], text)
+      spelled.push({ name: was.name, spelling, wasBad: isBad(was.reading), isBad: isBad(reading) })
+    }
+  } catch (error) {
+    spellingErrors.push(`${was.name} :: ${String(error).slice(0, 100)}`)
   }
 }
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'plan-reader-surface-'))
   const file = join(dir, 'history.db')
-  const executor = LibsqlExecutor.open(`file:${file}`)
-  await new LibsqlStoreAdmin(executor).migrate()
+  const { raw: executor } = await openTestDb({ url: `file:${file}` })
   const watcher = createClient({ url: `file:${file}` })
-  // The database as each batch finds it: one snapshot ahead of every batch, and for each
-  // statement the first time it is sent, the statements of its batch that run before it.
+  // The database as each batch finds it: one snapshot ahead of every batch that sends a
+  // statement for the first time, and for each such statement the statements of its batch
+  // that run before it.
   contexts = new Map()
   let snapshots = 0
   const sent = await recordHistory(executor, async (label, statements) => {
+    const fresh = statements.filter((st) => !contexts.has(keyOf(label, st.sql)))
+    if (fresh.length === 0) return
     const database = join(dir, `snapshot-${snapshots++}.db`)
     await watcher.execute(`vacuum into '${database}'`)
     for (const [index, st] of statements.entries()) {
@@ -137,48 +197,26 @@ beforeAll(async () => {
     `select name, sql like 'CREATE UNIQUE%' as u from sqlite_master where type = 'index' and sql is not null`,
   )
   indexes = listed.rows.map((row) => ({ name: String(row.name), unique: Number(row.u) === 1 }))
+  backlog = await backlogOf(watcher)
   watcher.close()
   if (contexts.size !== new Set(sent.map((st) => keyOf(st.label, st.sql))).size) {
     throw new Error('a statement was sent that no batch context holds')
   }
   for (const database of new Set([...contexts.values()].map((c) => c.database))) {
-    const client = createClient({ url: `file:${database}` })
-    clients.set(database, client)
-    backlogs.set(database, await backlogOf(client))
+    clients.set(database, createClient({ url: `file:${database}` }))
   }
 
   for (const dropped of [undefined, ...indexes.map((i) => i.name)]) {
-    for (const { shipped, database, before } of contexts.values()) {
-      const client = clients.get(database) as Client
-      const backlog = backlogs.get(database) as Backlog
-      const name = nameOf(shipped)
+    for (const context of contexts.values()) {
+      const { shipped, before } = context
       const statement = { sql: shipped.sql, args: shipped.args }
-      const run = async (
-        variation: Row['variation'],
-        variant: Statement,
-        beforeIt: readonly Statement[],
-      ) => {
-        try {
-          const small = await measure(client, backlog, SCALES.small, beforeIt, variant, dropped)
-          const large = await measure(client, backlog, SCALES.large, beforeIt, variant, dropped)
-          rows.push({
-            name,
-            kind: kindOf(shipped.sql),
-            variation,
-            dropped,
-            grew: grew(small, large),
-            reading: readNests(large.plan, variant.sql),
-            lines: new Set(
-              large.plan.flatMap((line) =>
-                LINE_KINDS.filter(([, shape]) => shape.test(line.detail)).map(([kind]) => kind),
-              ),
-            ),
-          })
-        } catch (error) {
-          skipped.push({ name, variation, dropped, error: String(error).slice(0, 120) })
-        }
-      }
-      await run(dropped === undefined ? 'shipped' : 'without an index', statement, before)
+      const row = await judge(
+        context,
+        dropped === undefined ? 'shipped' : 'without an index',
+        statement,
+        before,
+        dropped,
+      )
       const stripped = /^\s*(?:update|delete)\b/i.test(shipped.sql)
         ? withoutWhere(shipped.sql)
         : undefined
@@ -187,21 +225,11 @@ beforeAll(async () => {
         // in its batch bind the write's own arguments, so it runs with the same binds less the
         // ones its WHERE took: SQLite is handed exactly the placeholders that remain.
         const kept = (stripped.match(/\?/g) ?? []).length
-        await run('without its WHERE', { sql: stripped, args: shipped.args.slice(0, kept) }, before)
+        const args = shipped.args.slice(0, kept)
+        await judge(context, 'without its WHERE', { sql: stripped, args }, before, undefined)
       }
-      // The reader's judgment of each spelling, against its judgment of the statement.
-      // A statement that needs the dropped index has no plan, and was recorded as skipped.
-      const plan = await planOf(client, shipped.sql, shipped.args, dropped).catch(() => undefined)
-      if (plan === undefined) continue
-      const was = isBad(readNests(plan, shipped.sql))
-      for (const [spelling, text] of Object.entries(spellings(shipped.sql))) {
-        try {
-          const other = await planOf(client, text, shipped.args, dropped)
-          spelled.push({ name, spelling, wasBad: was, isBad: isBad(readNests(other, text)) })
-        } catch (error) {
-          spellingErrors.push(`${name} :: ${spelling} :: ${String(error).slice(0, 100)}`)
-        }
-      }
+      // A statement that needs the dropped index did not run, and was recorded as skipped.
+      if (row !== undefined) await judgeSpellings(context, row, dropped)
     }
   }
 }, 240_000)
@@ -261,7 +289,8 @@ describe('the plan reader against a measured backlog', () => {
     // Kinds no shipped statement produces, in this database or in one without an index it
     // uses. The reader's cases for them are written by hand in `query-plans.test.ts`, and a
     // kind that starts to be reached is removed from this list, so that its hand cases can be
-    // weighed against the surface's.
+    // weighed against the surface's. This test failing is that reminder, and editing the list
+    // is the response to it.
     const unreached = [
       'intersect or except',
       'materialized body',
@@ -284,12 +313,10 @@ describe('the plan reader against a measured backlog', () => {
     }
     expect(most).toBeGreaterThan(0)
     const client = clients.get(database) as Client
-    const backlog = backlogs.get(database) as Backlog
-    const under = async (sql: string, args: unknown[]) =>
-      grew(
-        await measure(client, backlog, SCALES.small, [], { sql, args }),
-        await measure(client, backlog, SCALES.large, [], { sql, args }),
-      )
+    const under = async (sql: string, args: unknown[]) => {
+      const { small, large } = await measure(client, backlog, [], { sql, args })
+      return grew(small, large)
+    }
     expect(await under('select run_id from runs where queue = ?', ['q'])).toBe(true)
     expect(await under('select state from runs where run_id = ?', ['nobody'])).toBe(false)
     expect(await under('delete from runs', [])).toBe(true)

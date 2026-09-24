@@ -573,7 +573,7 @@ is left: line 18, held for the maintainer's choice.
     (3,087 to 3,088), a word (eight counters to nine), and a deleted marker.
 30. PR3.14e: the libSQL plan reader is held to a measurement that reads no plan
     text. `store-libsql`'s `plan-reader-surface.test.ts` runs every one of the
-    129 statements the store ships in the database as its own batch found it,
+    129 statements the store ships, in the database its own batch found,
     beside a backlog of four copies of every row and beside one of sixteen, and
     it fails by name when a statement that did more work beside the larger
     backlog is passed by the reader, unless a due range drives it. It does the
@@ -581,8 +581,8 @@ is left: line 18, held for the maintainer's choice.
     each write without its WHERE (79 measured), and for every spelling of a
     statement that means what it means, which the reader must judge as it judges
     the statement. This is met. Four reader bugs written by hand each fail it by
-    name and were restored: the line that a write has a step over its table
-    deleted (a write without its WHERE passes), the schema of a written table
+    name and were restored: the reader's line that a write has a step over its
+    table, deleted (a write without its WHERE passes), the schema of a written table
     unread, a conflict clause unread, and `claimed_by` left off the list of
     entity columns (the claim's statements refused though they did no more work).
 

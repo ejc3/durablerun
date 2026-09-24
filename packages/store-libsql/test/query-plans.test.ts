@@ -16,6 +16,7 @@ import {
 import { testIdSource } from '../src/testing.js'
 import { type Shipped, keyOf, recordHistory } from './plan-history.js'
 import { type PlanRow, readNests } from './plan-nests.js'
+import { planRows } from './plan-oracle.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -49,12 +50,7 @@ async function writePlan(sql: string, args: (string | number)[] = []): Promise<s
 
 /** The same plan as the tree it is: each row's id and its parent's, which the flat text drops. */
 async function planTree(sql: string, args: unknown[] = []): Promise<PlanRow[]> {
-  const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
-  return r.rows.map((row) => ({
-    id: Number(row.id),
-    parent: Number(row.parent),
-    detail: String(row.detail),
-  }))
+  return planRows(raw, { sql, args })
 }
 
 /**
