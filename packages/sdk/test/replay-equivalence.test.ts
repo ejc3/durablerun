@@ -1407,8 +1407,11 @@ const overANetwork = (store: SchedulerStore): SchedulerStore =>
   })
 
 /**
- * Run a program of flows with an outage, and then a permanent answer, at EVERY store call. A
- * task must complete, and with `answers`. Answers how many runs there were.
+ * Run a program of flows with an outage at EVERY store call. A task must complete, and with
+ * `answers`. Answers how many runs there were. A permanent answer of the store is not injected
+ * here: it repeats on every retry, so the pass is not ended for it, and a one-shot answer in a
+ * run with flows lets a sibling flow go on as it did before markers (permanent-answer.test.ts
+ * holds what a task does with one).
  */
 async function everyFaultPointKeepsEachFlowsResult(
   label: string,
@@ -1420,7 +1423,7 @@ async function everyFaultPointKeepsEachFlowsResult(
   expect(JSON.parse(reference.result ?? 'null'), `${label}: the run with no fault`).toEqual(answers)
   let runs = 1
   for (const call of everyCall(reference.calls)) {
-    for (const fault of FAULT_KINDS) {
+    for (const fault of ['outage'] as const) {
       const run = await landing(fault, () =>
         runProgram(ops, faultSeed(`flows-${label}-${call}`, fault), call, { fault, tamper }),
       )
