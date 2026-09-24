@@ -11,6 +11,7 @@ import {
   snapshotTaskThrowable,
 } from '@durablerun/core'
 import { type LeaseEndLatch, ReplayContext, type TaskContext } from './context.js'
+import { beatOrder, bindTurn, endedBy, openOrder, replaySettled } from './delivery-order.js'
 import {
   TaskAbortController,
   abortControllerAbort,
@@ -190,19 +191,28 @@ export async function runClaimedRun(
   const pumpStopSignal = abortControllerSignal(pumpStop)
   const leaseEnd: LeaseEndLatch = { reason: undefined }
   const leaseMs = run.leaseSeconds * 1000
+  /** The pass's context once it exists, so each beat of the heartbeat can look at its order. */
+  let passContext: ReplayContext | undefined
   const pump = (async () => {
     for (;;) {
       await clock.sleep(leaseMs / 2, pumpStopSignal)
       if (abortSignalAborted(pumpStopSignal)) return
+      // Before the call, so the bound on a stuck replay does not wait for a heartbeat's latency.
+      if (passContext !== undefined) beatOrder(passContext)
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
         if (!lease.held) {
           // A store built against the earlier contract names no reason: that is a lost lease.
           leaseEnd.reason = lease.reason === 'cancelled' ? 'cancelled' : 'lease-lost'
+          // The pass is over, and a call that waits for its turn would wait for ever.
+          if (passContext !== undefined) openOrder(passContext)
           return
         }
       } catch {
-        return // heartbeat is advisory upkeep; the fences are the truth
+        // Heartbeat is advisory upkeep; the fences are the truth. With no more beats, a call
+        // that waits for its turn has nobody left to give up on its number.
+        if (passContext !== undefined) openOrder(passContext)
+        return
       }
     }
   })()
@@ -247,6 +257,9 @@ export async function runClaimedRun(
       return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
     }
 
+    passContext = ctx
+    bindTurn(ctx, () => clock.yieldTurn())
+
     /**
      * A rollback pass (DESIGN.md §3.10, specs/Sagas.tla). The task function runs again so
      * every memoized step re-registers its closure, and however that replay ends, its
@@ -261,6 +274,9 @@ export async function runClaimedRun(
         const infrastructure = infrastructureOutcome(taskControls.snapshot(error))
         if (infrastructure !== undefined) return infrastructure
       }
+      // A flow of the task that the replay held for its turn registers its rollbacks after
+      // the flow that ended the replay threw. What is owed is decided only when none is left.
+      await replaySettled(ctx)
       for (;;) {
         const next = ctx.nextRollback()
         if (next.kind === 'run') {
@@ -315,6 +331,10 @@ export async function runClaimedRun(
       const saga = ctx.rollingBack
       if (saga !== undefined) return await rollBack(params, saga.causeJson)
       const result = await handler(ctx, params)
+      // A task that caught the error which ended its pass, and went on to return, has not
+      // finished: what it returned was decided after its run was told it could not go on.
+      const ended = infrastructureOutcome(taskControls.snapshot(endedBy(ctx)))
+      if (ended !== undefined) return ended
       resultJson = serializeTaskValue('task result', result)
     } catch (error) {
       const control = taskControls.snapshot(error)

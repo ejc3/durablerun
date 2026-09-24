@@ -333,15 +333,40 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'b1337fec0498bc98c8602a5318fda4459a37d859843909f13450728e76d5a0d3':
-              # The SDK's replay-equivalence harness draws durable calls started together and a
-              # step named after the attempt, and two programs it generates each own a
-              # mutation, which bring back defects a review found where the old grammar
-              # could not look. The mutations are newer than the base registry, so their
-              # verdict markers are exempted there. No base entry is re-aimed.
+          if digest == '8857eb75f149cfbf35ad1e24bb12b0bd929cd60742dec023bef7db08235a9be2':
+              # The order results reach the task in (DESIGN.md section 3.2) registers one
+              # mutation for each line it adds, so every verdict marker of its cases is newer
+              # than the base registry, and each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together",
-                  "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
+                  "mutation-verdict:behavior:order-marker-is-stored-for-calls-pending-together",
+                  "mutation-verdict:behavior:order-marker-is-stored-before-its-result",
+                  "mutation-verdict:behavior:order-marker-is-stored-for-a-sleep-pending-beside-a-call",
+                  "mutation-verdict:behavior:order-marker-without-a-result-names-nothing",
+                  "mutation-verdict:behavior:order-numbers-are-never-reused",
+                  "mutation-verdict:behavior:the-highest-marker-of-a-result-is-the-one-that-counts",
+                  "mutation-verdict:behavior:recorded-results-are-handed-over-in-recorded-order",
+                  "mutation-verdict:behavior:a-recorded-result-is-followed-by-a-turn-of-the-event-loop",
+                  "mutation-verdict:behavior:a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop",
+                  "mutation-verdict:behavior:a-result-the-pass-produces-waits-for-the-recorded-ones",
+                  "mutation-verdict:behavior:a-call-that-failed-does-not-hold-up-the-calls-behind-it",
+                  "mutation-verdict:behavior:a-task-that-caught-the-error-that-ended-its-pass-does-not-complete",
+                  "mutation-verdict:behavior:flows-store-nothing-after-an-infrastructure-error-beside-them",
+                  "mutation-verdict:behavior:the-heartbeat-gives-up-on-a-result-nobody-asks-for",
+                  "mutation-verdict:behavior:a-pass-whose-lease-ended-lets-every-call-go",
+                  "mutation-verdict:behavior:a-pass-whose-heartbeat-stopped-lets-every-call-go",
+                  "mutation-verdict:behavior:replay-settles-before-the-rollback-decides",
+                  "mutation-verdict:behavior:a-number-given-up-is-answered-at-once",
+                  "mutation-verdict:behavior:a-beat-that-saw-results-handed-over-is-not-stuck",
+                  "mutation-verdict:behavior:a-number-a-call-waits-for-is-not-given-up",
+                  "mutation-verdict:behavior:a-number-the-pass-gave-is-never-given-up",
+                  "mutation-verdict:behavior:an-open-order-lets-every-call-go",
+                  "mutation-verdict:behavior:the-order-queue-drops-what-it-handed-over",
+                  "mutation-verdict:behavior:a-skipped-recorded-call-is-given-up-within-one-beat",
+                  "mutation-verdict:behavior:every-skipped-recorded-call-is-given-up-in-the-same-beat",
+                  "mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began",
+                  "mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release",
+                  "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
+                  "mutation-verdict:behavior:a-permanent-answer-of-the-store-does-not-end-the-pass",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
