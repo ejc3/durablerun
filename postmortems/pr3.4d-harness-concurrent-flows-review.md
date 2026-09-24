@@ -66,3 +66,30 @@ Three of the thirteen findings were caused by a fix for an earlier finding in th
 - Finder: the second review round, quoted verdict: two MEDIUM, both reproduced. The refusal is an ordinary thrown error, so flows that catch it complete with swapped values, at calls 5 and 6 of 40; and the false refusals go beyond the two named, to a poll loop beside an await, a heartbeat loop, and a step named twice after a sleep started before the first.
 - Claims that did not reproduce: two narrower rules, counting only calls from an earlier microtask turn, and refusing a repeated name only when the call itself is beside another, were measured over the same programs and rejected. The first completes both swap programs at the last store call. The second fails a poll loop at 6 of 8 store calls and completes it at 2.
 - The maintainer's decision, 2026-09-23: nothing that completes today may start failing, so the swap is a documented, pinned limitation and a flow identity in the SDK is the option that would close it.
+
+## Root cause
+
+The common cause is that no layer of the SDK, and no test of it, could see which flow a durable call belongs to. Every layer reasons over the sequence of durable calls, and a swap of two flows' values makes the same sequence as an ordinary program, so nothing that reads the sequence can tell them apart. The guard and the refusal were each a check over something visible, a pending step and a pending call, standing for the property that was not visible. Both were built because the harness had shown a real defect and a check over visible facts was the smallest thing that moved the numbers. Neither was tested against the programs it would break, because the harness drew no such programs until the review supplied them: a fan-out of flows, a poll loop, a heartbeat, a try around the flows. So the second attempt repeated the first attempt's method, and what stopped it was again a reviewer drawing the program the grammar lacked. The gap under both is that a proposed rule was not run against a corpus of ordinary concurrent programs before it was built.
+
+## Mechanisms
+
+Built in this PR:
+
+- Flow programs with an outage at every store call, and a witness that fails on any ending other than the one main has (rung 3, in the SDK's replay-equivalence test). They cover the sibling-flow refusal, the refused groups, and the task-name swap.
+- Pinned tables of endings by store call for the shared step name: children, events, events with each flow catching, and events gathered with `allSettled` (rung 3, same file). A change that closes the swap, or widens it, or changes what a catching flow returns, fails by name.
+- Programs of one flow that a refusal would break, run as ordinary programs against the reference (rung 3), so a future rule that refuses a poll loop or a step beside a sleep fails.
+- DESIGN.md section 3.2 states the limitation, its guidance, and why the engine does not refuse it.
+
+Deferred (recorded in BUILD.md):
+
+- A flow identity in the SDK, by `AsyncLocalStorage` or a flow scope in the published surface, which would key calls by flow and end the swaps and the sibling-flow refusal. It is deferred because it changes the published surface or the SDK's imports and reverses a design statement, and the maintainer decides. Its trigger is a reported swap or a decision that the SDK admits sibling flows.
+- A guard held while a replayed step settles, which waits for the option above because it refuses an ordinary fan-out.
+
+## What this round still would not catch
+
+- **The swap itself.** Two flows that share a step name are handed each other's value, and the SDK completes the task. The pin sees the endings of four programs. A program of another shape (three flows, a saga, a retry) is not drawn.
+- **The sibling-flow refusal.** A fan-out of flows is refused as if nested in a step at some store calls. Three programs pin it, and a fan-out of another shape has no witness.
+- **The task-name swap.** Two flows that spawn under one task name are handed each other's child. Two programs pin it. Two concurrent `awaitEvent('x')` or `sleepFor` calls are numbered by arrival order too, and no program draws them.
+- **The caught-refusal completion.** A flow that catches an error the engine throws goes on, and completes with what its catch returns. The catch program pins main's own refusal being caught, and the catch of a swap is not observable on main, since no refusal exists to catch.
+- **A pin that fails for the wrong reason.** A witness compares endings and store calls, not causes, so an engine change that reaches the same table by another route passes it.
+- **A machine whose microtask order differs.** The tables are fixed by seeded runs, and a runtime that orders microtasks differently would fail them loudly, which is the intended direction, but this round did not run one.
