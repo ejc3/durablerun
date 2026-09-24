@@ -40,6 +40,10 @@ export const taskMapSet = Map.prototype.set.call.bind(Map.prototype.set) as <K, 
   key: K,
   value: V,
 ) => Map<K, V>
+export const taskMapDelete = Map.prototype.delete.call.bind(Map.prototype.delete) as <K, V>(
+  map: Map<K, V>,
+  key: K,
+) => boolean
 
 /**
  * A Map registry is data: its stored entries, not an overridable `get`, grant
@@ -60,7 +64,7 @@ export function taskRegistryGet<K, V>(registry: ReadonlyMap<K, V>, key: K): V | 
 }
 export const taskHasOwn = hasOwn
 
-const TaskPromise = Promise
+export const TaskPromise = Promise
 const taskPromiseThen = Promise.prototype.then.call.bind(Promise.prototype.then) as <T>(
   promise: Promise<T>,
   onFulfilled: (value: T) => void,
@@ -85,3 +89,11 @@ export const trustedSliceFrom = String.prototype.slice.call.bind(String.prototyp
   start: number,
 ) => string
 export const trustedIsSafeInteger = Number.isSafeInteger
+const capturedSort = Array.prototype.sort.call.bind(Array.prototype.sort) as (
+  values: number[],
+  compare: (left: number, right: number) => number,
+) => number[]
+/** Ascending, in place, by the captured sort. */
+export function trustedSortNumbers(values: number[]): void {
+  capturedSort(values, (left, right) => left - right)
+}

@@ -36,17 +36,24 @@ import {
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
+import { DeliveryOrder, bindOrder } from './delivery-order.js'
 import {
   TaskMap,
   taskHasOwn,
   taskMapGet,
   taskMapHas,
   taskMapSet,
+  trustedCharCodeAt,
   trustedIsSafeInteger,
   trustedSliceFrom,
+  trustedSortNumbers,
   trustedStartsWith,
 } from './intrinsics.js'
-import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
+import {
+  type TaskControlIssuer,
+  createTaskControlScope,
+  trustedStoreControl,
+} from './task-control.js'
 
 /**
  * An engine-namespace replay key ('$'-prefixed, so no validated user name
@@ -87,6 +94,35 @@ function requireRoom(what: string, key: string, room: number): void {
       ? `${what} is too long: it would be stored under a key longer than the ${IDENTIFIER_CHARACTERS} characters a durable identifier holds`
       : `${what} is too long for a step that registers a rollback: its key would be longer than ${room} characters, which is what leaves room for the saga's own names in the ${IDENTIFIER_CHARACTERS} a durable identifier holds`,
   )
+}
+
+/**
+ * `$order:<n>` records that the result stored under the key it holds was handed to the task
+ * function n-th, among the results that were pending together. Only a result that was
+ * pending beside another call has one, so a task that makes one call at a time stores none.
+ */
+const ORDER_PREFIX = '$order:'
+
+/** The number an order marker's name carries, or undefined for a name that is not one. */
+function orderNumberOf(name: string): number | undefined {
+  if (!trustedStartsWith(name, ORDER_PREFIX)) return undefined
+  const digits = trustedSliceFrom(name, ORDER_PREFIX.length)
+  if (digits.length === 0 || digits.length > 15) return undefined
+  for (let at = 0; at < digits.length; at++) {
+    const code = trustedCharCodeAt(digits, at)
+    if (code < 48 || code > 57 || (at === 0 && code === 48)) return undefined
+  }
+  return +digits
+}
+
+/** One durable call's life in a pass, from the call to the moment its result reaches the task. */
+class CallSpan {
+  constructor(
+    /** How many calls had been made when this one was, itself included. */
+    readonly startNo: number,
+    /** Whether another call was pending when this one was made. */
+    readonly beganBesideAnother: boolean,
+  ) {}
 }
 
 /** What a rollback handler is handed (DESIGN.md §3.10). */
@@ -271,6 +307,12 @@ export class ReplayContext implements TaskContext {
   private readonly seen = new TaskMap<string, unknown>()
   private readonly nameUses = new TaskMap<string, number>()
   private inStep = false
+  /** The order results reach the task in (DESIGN.md §3.2). */
+  readonly #order: DeliveryOrder
+  /** The number a previous pass recorded for a stored result, by its key. */
+  readonly #orderNumbers = new TaskMap<string, number>()
+  #callsMade = 0
+  #callsPending = 0
   /**
    * The saga as its checkpoints tell it (core `sagas.ts`, specs/Sagas.tla): the start
    * index of every registered step that started, which rollbacks ran, each rollback's
@@ -319,6 +361,8 @@ export class ReplayContext implements TaskContext {
       taskMapSet(this.seen, cp.checkpointName, parseTaskValueJson(cp.stateJson))
       this.readSagaCheckpoint(cp.checkpointName, cp.stateJson)
     }
+    this.#order = this.#readOrder(checkpoints)
+    bindOrder(this, this.#order)
     // A rollback pass replays as the run that failed. Each pass is one ordinal past the
     // run before it, so a pass that kept its own ordinal would replay as an attempt that
     // never ran, and a step named after `ctx.attempt` would find no memo and register no
@@ -327,6 +371,125 @@ export class ReplayContext implements TaskContext {
     // attempts recorded. An infrastructure retry of a pass moves no user ordinal.
     this.#attempt =
       this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries
+  }
+
+  /**
+   * The recorded order, from the markers whose result is stored. A marker whose result is
+   * not stored is one a pass wrote and then died before the result: it names nothing. A key
+   * with more than one marker takes the highest, which is the last one written for it.
+   */
+  #readOrder(checkpoints: readonly Checkpoint[]): DeliveryOrder {
+    const numbers: number[] = []
+    const keyOf = new TaskMap<number, string>()
+    for (const cp of checkpoints) {
+      const seq = orderNumberOf(cp.checkpointName)
+      const key = taskMapGet(this.seen, cp.checkpointName)
+      if (seq === undefined || typeof key !== 'string') continue
+      numbers[numbers.length] = seq
+      taskMapSet(keyOf, seq, key)
+    }
+    trustedSortNumbers(numbers)
+    // From the highest number down, so the first marker a result is found under is its highest.
+    const highestFirst: number[] = []
+    for (let at = numbers.length - 1; at >= 0; at--) {
+      const seq = numbers[at]
+      const key = seq === undefined ? undefined : taskMapGet(keyOf, seq)
+      if (seq === undefined || key === undefined) continue
+      if (taskMapHas(this.seen, key) && !taskMapHas(this.#orderNumbers, key)) {
+        taskMapSet(this.#orderNumbers, key, seq)
+        highestFirst[highestFirst.length] = seq
+      }
+    }
+    const recorded: number[] = []
+    for (let at = highestFirst.length - 1; at >= 0; at--) {
+      const seq = highestFirst[at]
+      if (seq !== undefined) recorded[recorded.length] = seq
+    }
+    return new DeliveryOrder(recorded, numbers[numbers.length - 1] ?? 0)
+  }
+
+  /**
+   * Every store call of the pass. An infrastructure error that meets a call while another
+   * call is pending ends the pass for the flows of its task: they are running beside the
+   * call that failed, its result may be stored with no marker, and anything they store
+   * after it would be read by a replay ahead of it. So the pass stores nothing after that
+   * error, and it lets every call that waits for its turn go, to meet the error at its own
+   * store call. A task that makes one call at a time has no other flow, and is not
+   * fenced: it may catch the error and call again, as it did.
+   */
+  async #storeCall<T>(operation: () => Promise<T>, inACall = true): Promise<T> {
+    const ended = this.#order.endedBy
+    if (ended !== undefined) throw ended
+    try {
+      return await this.#controls.storeCall(operation)
+    } catch (error) {
+      const beside = this.#callsPending - (inACall ? 1 : 0)
+      if (beside > 0 && trustedStoreControl(error) !== undefined) {
+        this.#order.end(error as object)
+      }
+      throw error
+    }
+  }
+
+  #beginCall(): CallSpan {
+    const span = new CallSpan(++this.#callsMade, this.#callsPending > 0)
+    this.#callsPending++
+    return span
+  }
+
+  #endCall(): void {
+    this.#callsPending--
+  }
+
+  /** Whether another call was pending at some moment of this call's life. */
+  #overlapped(span: CallSpan): boolean {
+    return span.beganBesideAnother || this.#callsMade > span.startNo
+  }
+
+  /** A stored result reaches the task: when every result recorded before it has. */
+  async #turnOf(key: string): Promise<void> {
+    const seq = taskMapGet(this.#orderNumbers, key)
+    if (seq === undefined) return
+    const turn = this.#order.wait(seq)
+    if (turn !== undefined) await turn
+    this.#order.release(seq, true)
+  }
+
+  /** The marker of a result: before the result is stored, so a result with a marker was never without one. */
+  async #recordOrder(seq: number, key: string): Promise<void> {
+    await this.commitCheckpoint(`${ORDER_PREFIX}${seq}`, 'delivery order marker', key)
+  }
+
+  /**
+   * Store a result this pass produced, and hand it over in its turn. It takes the next
+   * number, so it waits for every result before it, the recorded ones included. A result
+   * that was pending beside another call is recorded, and its marker is stored first: a
+   * marker without a result names nothing, and a result without a marker would be handed
+   * over first in a replay. A call that began alone and was joined while it stored is
+   * recorded after it stored, and still before it is handed over, so what a replay has of
+   * it is what the task saw of it.
+   */
+  async #commitOrdered(span: CallSpan, key: string, label: string, raw: unknown): Promise<unknown> {
+    const seq = this.#order.assign()
+    try {
+      let recorded = false
+      if (this.#overlapped(span)) {
+        await this.#recordOrder(seq, key)
+        recorded = true
+      }
+      const value = await this.commitCheckpoint(key, label, raw)
+      const turn = this.#order.wait(seq)
+      if (turn !== undefined) await turn
+      if (!recorded && this.#overlapped(span)) {
+        await this.#recordOrder(seq, key)
+        recorded = true
+      }
+      this.#order.release(seq, recorded)
+      return value
+    } catch (error) {
+      this.#order.abandon(seq)
+      throw error
+    }
   }
 
   private readSagaCheckpoint(name: string, stateJson: string): void {
@@ -454,10 +617,27 @@ export class ReplayContext implements TaskContext {
       'step name',
       registration === undefined ? IDENTIFIER_CHARACTERS : SAGA_STEP_KEY_CHARACTERS,
     )
+    const span = this.#beginCall()
+    try {
+      return await this.#runStep(span, key, name, fn, registration)
+    } finally {
+      this.#endCall()
+    }
+  }
+
+  async #runStep<T>(
+    span: CallSpan,
+    key: string,
+    name: string,
+    fn: () => Promise<T> | T,
+    registration: RollbackRegistration | undefined,
+  ): Promise<T> {
     // A memoized step re-registers its closure with what it returned, on every pass.
     if (registration !== undefined && taskMapHas(this.seen, key)) {
       this.register(key, name, registration, taskMapGet(this.seen, key))
     }
+    // A memoized result that was recorded is handed over in its turn.
+    if (taskMapHas(this.#orderNumbers, key)) await this.#turnOf(key)
     if (taskMapHas(this.seen, key)) {
       return taskMapGet(this.seen, key) as T
     }
@@ -493,7 +673,7 @@ export class ReplayContext implements TaskContext {
     } finally {
       this.inStep = false
     }
-    const value = await this.commitCheckpoint(key, `step '${name}' result`, raw)
+    const value = await this.#commitOrdered(span, key, `step '${name}' result`, raw)
     if (registration !== undefined) this.register(key, name, registration, value)
     return value as T
   }
@@ -735,7 +915,8 @@ export class ReplayContext implements TaskContext {
     // ending the replay here would leave every later step's rollback unregistered. A
     // rollback handler runs as a step of its own, and a step may emit.
     if (this.#sagaCauseJson !== undefined && !this.inStep) return
-    await this.#controls.storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload))
+    // An emit is no call of its own: it has no key, and no place in the order.
+    await this.#storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload), false)
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
@@ -747,33 +928,55 @@ export class ReplayContext implements TaskContext {
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed), 'event name')
     const timedOut: TimedOut = () => new EventTimeoutError(name)
-    const settled = await this.settledAwait(timedOut, key)
-    if (settled !== undefined) return settled
-    const outcome = await this.#controls.storeCall(() =>
-      this.#store.awaitEvent(
-        this.#queue,
-        this.#run.taskId,
-        this.#run.runId,
-        this.#run.claimToken,
-        key,
-        // parsed.value, not `name` — emitEvent already sends the parsed form,
-        // and the two must be the same string or a wait registers under one
-        // spelling while the emit fires the other and never matches it. They
-        // are identical today because parse only validates; the moment it
-        // normalizes anything, the raw path becomes a silent lost wakeup. The
-        // validated value is the canonical one, so nothing downstream should
-        // read the raw one again.
-        parsed.value,
-        timeoutSeconds ?? null,
-      ),
-    )
-    return this.registeredAwait(timedOut, key, outcome)
+    const span = this.#beginCall()
+    try {
+      const settled = await this.settledAwait(span, timedOut, key)
+      if (settled !== undefined) return settled
+      const outcome = await this.#storeCall(() =>
+        this.#store.awaitEvent(
+          this.#queue,
+          this.#run.taskId,
+          this.#run.runId,
+          this.#run.claimToken,
+          key,
+          // parsed.value, not `name` — emitEvent already sends the parsed form,
+          // and the two must be the same string or a wait registers under one
+          // spelling while the emit fires the other and never matches it. They
+          // are identical today because parse only validates; the moment it
+          // normalizes anything, the raw path becomes a silent lost wakeup. The
+          // validated value is the canonical one, so nothing downstream should
+          // read the raw one again.
+          parsed.value,
+          timeoutSeconds ?? null,
+        ),
+      )
+      return await this.registeredAwait(span, timedOut, key, outcome)
+    } finally {
+      this.#endCall()
+    }
   }
 
   async spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
     const parsed = UserName.parse('task name', taskName)
     this.enterDurableOp(`ctx.spawn('${taskName}')`)
     const key = this.storageName(EngineKey.spawn(parsed), 'task name')
+    const span = this.#beginCall()
+    try {
+      return await this.#runSpawn(span, key, parsed, taskName, params, opts)
+    } finally {
+      this.#endCall()
+    }
+  }
+
+  async #runSpawn(
+    span: CallSpan,
+    key: string,
+    parsed: UserName,
+    taskName: string,
+    params: unknown,
+    opts: ChildSpawnOptions | undefined,
+  ): Promise<ChildTask> {
+    if (taskMapHas(this.#orderNumbers, key)) await this.#turnOf(key)
     if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))
     this.refuseForwardProgress()
     const paramsJson = serializeTaskValue('child task params', params)
@@ -796,7 +999,7 @@ export class ReplayContext implements TaskContext {
     }
     let spawned: Awaited<ReturnType<SchedulerStore['spawn']>>
     try {
-      spawned = await this.#controls.storeCall(() =>
+      spawned = await this.#storeCall(() =>
         this.#store.spawn(queue, parsed.value, paramsJson, { ...spawnOptions, childOf }),
       )
     } catch (error) {
@@ -809,7 +1012,7 @@ export class ReplayContext implements TaskContext {
       throw error
     }
     return childTaskOf(
-      await this.commitCheckpoint(key, 'child task', { taskId: spawned.taskId, queue }),
+      await this.#commitOrdered(span, key, 'child task', { taskId: spawned.taskId, queue }),
     )
   }
 
@@ -824,10 +1027,11 @@ export class ReplayContext implements TaskContext {
     const key = this.storageName(EngineKey.awaitTask(taskId), 'child task id')
     // The task sees the task it awaited, never the engine's name for the event.
     const timedOut: TimedOut = () => new TaskTimeoutError(taskId.value)
+    const span = this.#beginCall()
     try {
-      const settled = await this.settledAwait(timedOut, key)
+      const settled = await this.settledAwait(span, timedOut, key)
       if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled)
-      const outcome = await this.#controls.storeCall(() =>
+      const outcome = await this.#storeCall(() =>
         this.#store.awaitTaskDone(
           this.#queue,
           this.#run.taskId,
@@ -838,7 +1042,10 @@ export class ReplayContext implements TaskContext {
           timeout === undefined ? null : timeout,
         ),
       )
-      return decodeTaskOutcome(taskId.value, await this.registeredAwait(timedOut, key, outcome))
+      return decodeTaskOutcome(
+        taskId.value,
+        await this.registeredAwait(span, timedOut, key, outcome),
+      )
     } catch (error) {
       // Neither changes on a retry: the child's queue, so the refusal, and a recorded
       // outcome that cannot be read, which the store and the decoder refuse with
@@ -847,6 +1054,8 @@ export class ReplayContext implements TaskContext {
         throw new FatalTaskError(error.message)
       }
       throw error
+    } finally {
+      this.#endCall()
     }
   }
 
@@ -854,12 +1063,17 @@ export class ReplayContext implements TaskContext {
    * An await that needs no store call: its memo, or the wake this claim carried for
    * it. An empty payload is still an answer, and only undefined means unsettled.
    */
-  private async settledAwait(timedOut: TimedOut, key: string): Promise<string | undefined> {
+  private async settledAwait(
+    span: CallSpan,
+    timedOut: TimedOut,
+    key: string,
+  ): Promise<string | undefined> {
     if (taskMapHas(this.seen, key)) {
       // A memo already covers THIS await (matched by its step key): retire
       // its carried wake so it cannot be re-read; a wake for a different
       // await (same event name, different step) is left untouched.
       this.takeWake(key)
+      if (taskMapHas(this.#orderNumbers, key)) await this.#turnOf(key)
       return eventMemoPayload(timedOut, taskMapGet(this.seen, key) as EventMemo)
     }
     // Ahead of the carried wake: consuming one commits a memo, which is forward progress.
@@ -869,17 +1083,18 @@ export class ReplayContext implements TaskContext {
     // unique step key (not the shared event name) keeps a later same-name
     // await from stealing this one's wake.
     const wake = this.takeWake(key)
-    return wake ? this.commitEventMemo(timedOut, key, memoOfWake(wake)) : undefined
+    return wake ? this.commitEventMemo(span, timedOut, key, memoOfWake(wake)) : undefined
   }
 
   /** What the store's await answered: the event's payload, or a run the batch already parked. */
   private async registeredAwait(
+    span: CallSpan,
     timedOut: TimedOut,
     key: string,
     outcome: { emitted: true; payloadJson: string } | { emitted: false },
   ): Promise<string> {
     if (outcome.emitted) {
-      return this.commitEventMemo(timedOut, key, { payloadJson: outcome.payloadJson })
+      return this.commitEventMemo(span, timedOut, key, { payloadJson: outcome.payloadJson })
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
@@ -896,7 +1111,7 @@ export class ReplayContext implements TaskContext {
   private async commitCheckpoint(key: string, label: string, raw: unknown): Promise<unknown> {
     const stateJson = serializeTaskValue(label, raw)
     const value = parseTaskValueJson(stateJson)
-    await this.#controls.storeCall(() =>
+    await this.#storeCall(() =>
       this.#store.setCheckpoint(
         this.#queue,
         this.#run.taskId,
@@ -912,8 +1127,13 @@ export class ReplayContext implements TaskContext {
   }
 
   /** Commit an await's memo, then resolve it exactly as a replay of that memo would. */
-  private async commitEventMemo(timedOut: TimedOut, key: string, memo: EventMemo): Promise<string> {
-    await this.commitCheckpoint(key, 'event wake marker', memo)
+  private async commitEventMemo(
+    span: CallSpan,
+    timedOut: TimedOut,
+    key: string,
+    memo: EventMemo,
+  ): Promise<string> {
+    await this.#commitOrdered(span, key, 'event wake marker', memo)
     return eventMemoPayload(timedOut, memo)
   }
 
@@ -928,8 +1148,21 @@ export class ReplayContext implements TaskContext {
    */
   private async suspendPoint(kind: EngineKey, wake: WakeSpec): Promise<void> {
     const key = this.storageName(kind, 'sleep')
+    const span = this.#beginCall()
+    try {
+      await this.#suspendAt(span, key, wake)
+    } finally {
+      this.#endCall()
+    }
+  }
+
+  async #suspendAt(span: CallSpan, key: string, wake: WakeSpec): Promise<void> {
+    if (taskMapHas(this.#orderNumbers, key)) await this.#turnOf(key)
     if (taskMapHas(this.seen, key)) return // the wake already happened: continue
     this.refuseForwardProgress()
+    // The marker lands with the park, which ends the pass. What is recorded of a sleep is
+    // its place among the results before it, so its number is stored ahead of the park.
+    if (this.#overlapped(span)) await this.#recordOrder(this.#order.reserve(), key)
     this.#controls.sleep(wake, {
       key,
       stateJson: serializeTaskValue('sleep marker', wake),

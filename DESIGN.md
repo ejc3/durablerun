@@ -893,53 +893,90 @@ One invocation executes one claimed run to its next suspension point:
   - Every other group is admitted, and replays the same on every schedule: two
     awaits of one event, two spawns, two awaits of children, two sleeps, and a
     sleep or an await with a step started AFTER it.
-  - **Known limitation: two flows that use one step name can be handed each
-    other's value, and the engine does not refuse it.** A step name is numbered
-    in the order its calls arrive (`record`, then `record#2`). Calls made one
-    after another arrive in the order the task writes them. The calls of two
-    flows (async functions of the task's own that each await something and then
-    call a step under one name) arrive in an order that a store call decides on
-    the pass that runs the steps, and a replay from memos decides again, in
-    lockstep. When the two orders differ, each flow is handed the other's
-    value, and the task completes with two values swapped. The harness measured
-    it for two flows over two spawned children at 3 of the 30 store calls an
-    outage can take, and for two flows over two emitted events at 2 of the 11.
-    Use distinct step names in flows that run concurrently, or run one flow at a
-    time. The harness pins the engine's ending for these programs at every
-    store call, so a change that closes the swap, or that widens it, fails
-    until the pin is changed on purpose.
-  - **Why the engine does not refuse it.** A refusal was built and rejected. The
-    engine cannot tell two flows from one, so any rule that catches the swap
-    reads what it can see, that a call was made while another was pending.
-    Measured over the harness's programs, that refuses ordinary programs that
-    complete today: a loop of one step name beside an `awaitEvent` or an
-    `awaitTask` (a poll loop), a loop beside an `awaitEvent` with a timeout (a
-    heartbeat), a step and then the same name after a sleep started before it,
-    a step beside a sleep followed by the same name, and a saga step named
-    twice with a sleep started before the first. Two narrower rules were
-    measured and rejected: counting only calls made in an earlier turn of the
-    microtask queue completes both swap programs at the last store call, and
-    refusing a repeated name only when the call itself is beside another fails
-    a poll loop at 6 of 8 store calls and completes it at 2. And a refusal is an
-    ordinary thrown error, so a task that catches it, with `try` or with
-    `Promise.allSettled`, goes on and still completes with the flows' values
-    swapped. A rule that neither refuses ordinary programs nor can be caught
-    needs the identity of the flow a call belongs to, which an SDK with no
-    import from the runtime does not have (it would be `AsyncLocalStorage`, or a
-    flow scope in the published surface). BUILD.md's PR3.4d entry records that
-    as an option with its trigger. A task in flight is unaffected: nothing here
-    changes what the engine does.
-  - **Known gap: a task name that concurrent flows share is not refused.** The
-    same arrival order numbers the uses of a task name (`$spawn:child`, then
-    `$spawn:child#2`). Two flows that each await something and then spawn a child
-    under one task name are handed each other's child by a replay that reaches
-    the two calls in the other order, and each then awaits the wrong one. The
-    harness measured it at 2 of 14 store calls for two flows over two emitted
-    events, and 3 of 28 for two flows over two spawned children. A refusal would
-    cost every flow that spawns under one task name, so the engine does not
-    refuse, and the harness pins both programs. Two awaits of one event name are
-    numbered the same way and are handed the same payload, so nothing is
-    swapped.
+  - **The order results reach the task in.** Two calls that are pending together
+    can be answered in either order, and the order decides which call the task
+    makes next. A step name is numbered in the order its calls arrive (`record`,
+    then `record#2`), and so is a task name (`$spawn:child`, then
+    `$spawn:child#2`), so two flows that each await something and then call
+    under one name are handed a checkpoint by the order their awaits were
+    answered in. A first pass answers them in the order they settle. A replay
+    used to answer each memoized await as soon as its call was made, which is
+    the order the calls are made in, and when the two orders differed each flow
+    was handed the other's checkpoint and the task completed with two values
+    swapped. A task name shared by flows was numbered the same way, and each
+    flow was handed the other's child. The engine now records the order, and a
+    replay follows it.
+    - **What is recorded.** A call whose life overlapped another call's in one
+      pass, from the moment it is made to the moment its result reaches the
+      task, gets a number: the marker `$order:<n>`, a checkpoint whose state is
+      the key of the result it names. Numbers are taken in the order results
+      become ready, and results reach the task in number order. A call that was
+      alone stores nothing, so a task that makes one call at a time stores no
+      marker and makes the store calls it made.
+    - **The write order.** A marker is stored before the result it names. A
+      marker whose result never landed names nothing, is ignored, and its number
+      is not used again. A call that began alone and was joined while its result
+      was being stored gets its marker after the result and before the result
+      reaches the task. So a result that reached the task and needed a marker
+      had its marker stored before it reached the task, and a pass that dies
+      anywhere in between leaves a result that no flow was handed.
+    - **The replay.** A result with a number waits until every lower recorded
+      number has reached the task. A result the pass produces takes the next
+      number and waits behind every recorded one, which puts new work after what
+      the first pass had answered. After a result that was recorded, the next
+      waits for a turn of the event loop (the clock's `yieldTurn`), so that what
+      the task does with a result, up to its next durable call, finishes before
+      the next result arrives, as it did in a first pass when a store call
+      separated them. A sleep made beside another call has its number stored
+      ahead of the park.
+    - **A wait that cannot end.** A result waits only for calls that the first
+      pass made and answered earlier, and a task function that is a function of
+      its parameters, its attempt and its results makes them again in that
+      order, so the wait ends. A task function that is not, such as one that
+      names a step after `ctx.attempt` or after the clock beside another call,
+      can be recorded waiting for a call that it never makes. The pass's
+      heartbeat beats at half the lease, and a beat that finds a call waiting
+      and no result handed over since the last beat gives up on the lowest
+      number of an earlier pass that nobody has asked for. That pass goes on in
+      the order its calls arrive, which is the order it had before markers,
+      after at most two beats (a minute at a lease of 60 seconds). A pass whose
+      lease has ended, or whose heartbeat has stopped, lets every waiting call
+      go at once. A rollback pass waits until no result of its replay is held
+      before it decides which rollbacks are owed, because the replay ends at the
+      first call that has no memo, and a flow that was held for its turn
+      registers its rollback after that.
+    - **After an infrastructure error beside another call.** A store call that
+      fails with a lost lease, a cancelled run, or an outage or a permanent
+      answer of the store is thrown into the task function. When another call is
+      pending beside it, the flows of the task run on past a call whose result
+      may be stored with no marker, and anything they store, or any child they
+      spawn, would be read by a replay ahead of it. The pass then stores nothing
+      more and lets every waiting call go, and it does not complete a task that
+      caught the error and returned: a handler that swallows every rejection,
+      with an empty `catch` or `Promise.allSettled`, over calls that overlapped,
+      ends its pass as aborted and the run is retried, where it used to complete
+      with the error in its result. A task that makes one call at a time is not
+      fenced, and may catch the error and call again.
+    - **Compatibility.** The markers are ordinary checkpoints under names no
+      task name can take, and the store, its port and its schema do not change.
+      A build without markers ignores them, replays in the order its calls
+      arrive, and stores its results with no marker, so a task written by this
+      build runs on the older one as it ran before markers, and a task in flight
+      from the older build has no markers and replays as it did. A result with
+      no marker reaches the task as soon as its call is made. A fleet that is
+      part older and part newer gives a task the order it had before for as long
+      as an older worker touches it, and no task fails for that, so no stage of
+      a deploy is needed.
+    - **Cost.** A call that overlapped another stores one more checkpoint,
+      before its result: two awaits started together store two markers, and a
+      flow that makes three calls beside another stores three.
+    - **What it does not close.** The order fixes which result reaches the task
+      first. It does not fix the order of two calls that a timer or other I/O of
+      the task's own decides: two flows that each wait on a timer before calling
+      under one name are numbered by the timers, in a replay as in a first pass,
+      and a step body that takes time in a first pass and none in a replay can
+      make the two orders differ. The refusal of a call made while a step's body
+      runs is a separate gap, below.
   - Two sleeps started together run one after the other. `sleepFor(5)` beside
     `sleepFor(7)` sleeps 5 seconds and then 7, not 7. A sleep suspends the whole
     run, the first suspension ends the pass, and the second sleep's seconds
@@ -964,16 +1001,17 @@ One invocation executes one claimed run to its next suspension point:
     a sibling flow makes while the step runs.** A flow is an async function of
     the task's own that awaits and then makes a call. Two flows started
     together, each awaiting something and then calling a step under a name of
-    its own, are an ordinary program with no call inside a step. Whether it
-    completes depends on the moment each flow reaches its call: a call that
-    lands while the other flow's step body runs is refused as nested, and a
-    fan-out of two flows over two spawned children fails for good at 3 of the 30
-    store calls an outage can take, and completes at the other 27. Two flows
-    over events the program has already emitted fail for good on the run with no
-    fault. Telling the two apart needs the call's async context, which an SDK
-    with no import from the runtime does not have, and admitting the calls of
-    sibling flows reverses the refusal above. It is an option in BUILD.md
-    (PR3.4d), with its trigger.
+    its own, are an ordinary program with no call inside a step, and a call that
+    lands while the other flow's step body runs is refused as nested. Results
+    reach the task a turn of the event loop apart, so the flows of the harness's
+    programs over emitted events, over spawned children, and over a step whose
+    body takes no time are not refused, at any store call. A flow whose step
+    body waits on a timer is: two flows that each wait on a timer of their own
+    and then run a step whose body takes time are refused at 4 of 5 store calls
+    an outage can take and complete at the other one. Telling the two apart needs
+    the call's async context, which an SDK with no import from the runtime does
+    not have, and admitting the calls of sibling flows reverses the refusal above.
+    It is an option in BUILD.md (PR3.4d), with its trigger.
   - A call made later than the step's own synchronous run, after the task
     awaited something that is not durable and while the step is still pending,
     races the step's body on the pass that runs it. No guard makes that the same
@@ -1001,15 +1039,28 @@ One invocation executes one claimed run to its next suspension point:
     back its place in the order is asserted too: it started last of all, so it
     is rolled back first. At the known gap's call the test pins what the engine
     does: the group is admitted and the task completes, or the saga's later
-    member starts. Each known gap is a witness rather than a comparison: a
-    program of concurrent flows (`FLOW_PROGRAMS` and `SHARED_TASK_NAME_PROGRAMS` in the harness)
-    says how many store calls the run with no fault makes, how it ends, and the store calls
-    at which an outage ends it the other way, and the test runs an outage at
-    every store call and fails on any other ending. The programs of a shared
-    step name (`SHARED_NAME_PROGRAMS`), including one whose flows catch what
-    their step throws and one gathered with `allSettled`, pin instead the whole
-    table of endings by store call. A gap that is closed by accident, or that
-    gets worse, fails the witness until it is changed on purpose. One case reverses the order two spawns are answered in and shows
+    member starts.
+    The one gap of concurrent flows that is left, a sibling's call that lands
+    inside a step that waits, is a witness rather than a comparison:
+    `FLOW_PROGRAMS` says how many store calls the run with no fault makes, how
+    it ends, and the store calls at which an outage ends it the other way, and
+    the test runs an outage at every store call and fails on any other ending,
+    so a gap that is closed by accident, or that gets worse, fails until it is
+    changed on purpose. The order results reach the task in is held by programs
+    of concurrent flows, each run with an outage and then a permanent answer at
+    every store call, on a store that answers at once and on one that answers a
+    turn later. `ORDERED_FLOW_PROGRAMS` has nine, written out with their
+    answers: flows over a shared step name, over a shared task name (each flow
+    awaits the child it spawned, so a flow handed another's child says so),
+    flows that catch what their step throws, flows gathered with
+    `Promise.allSettled`, and flows whose own work between a result and the next
+    call takes a different number of promise turns. `drawSharedNameFlows` draws
+    twelve more, over emitted and external events, sleeps, and a first attempt
+    that fails after the flows. Each flow carries values of its own, so a run
+    that hands a flow another flow's result fails, and every run must complete
+    with the answers. `delivery-order.test.ts` holds the queue, and
+    `ordered-replay.test.ts` the markers, the fence, the give-up and the rollback
+    pass, each with a case that fails when its line is removed. One case reverses the order two spawns are answered in and shows
     each child still under the key of its own call, and shows that the
     comparison fails when the children are swapped. Each shape heads a short
     program of its own, so every shape runs at every fault point whatever the
@@ -1019,7 +1070,9 @@ One invocation executes one claimed run to its next suspension point:
     when a shape is in no program the file runs, and when a kind of call is made
     only inside a group. Two registered mutations keep the audit checking that
     these programs can fail: one lowers the guard while a registered step writes
-    its start marker, and one lets a rollback pass keep its own ordinal.
+    its start marker, and one lets a rollback pass keep its own ordinal. Twenty-three
+    more each remove one line of the order results reach the task in, and the case
+    that names it fails.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no
@@ -5126,6 +5179,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     that started is left uncompensated.
   - A cancellation in the forward phase triggers no rollback: only a terminal
     failure does.
+  - A rollback pass replays the task function as the failed run did, and the
+    replay hands memoized results to the task in the order the first pass
+    recorded them (section 3.2, "The order results reach the task in"), so two
+    flows that share a step name re-register each rollback with its own output.
+    The replay ends at the first call that has no memo, and a flow that it holds
+    for its turn registers its rollbacks after that, so the pass waits until no
+    result of its replay is held before it decides which rollbacks are owed.
 - **The batches**, each mapped onto one action of the model. Nothing here is a
   new kind of statement: a rollback pass is the failed run's successor, and
   every saga checkpoint is an ordinary fenced checkpoint write.

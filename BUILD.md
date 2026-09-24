@@ -587,13 +587,24 @@ is left: line 18, held for the maintainer's choice.
     table, deleted (a write without its WHERE passes), the schema of a written table
     unread, a conflict clause unread, and `claimed_by` left off the list of
     entity columns (the claim's statements refused though they did no more work).
+31. PR3.4e: two flows that each await something and then call a step or spawn a
+    child under one name are never handed each other's result, at any store call
+    an outage or a permanent answer of the store can take. This is met. The four
+    programs of a shared step name and the two of a shared task name that
+    PR3.4d pinned as swapped now expect each flow's own answers, and were
+    committed failing against main's SDK by name, with three more written out
+    and twelve generated. Over 21 programs, both kinds of fault, and a store that
+    answers at once and one that answers a turn later (42 cases), main's SDK
+    completes 157 of 2,798 runs with two flows' values swapped and refuses 494
+    of them as nested, and this branch completes all 3,720 with each flow's own
+    answers. 23 registered mutations each remove one line of the order results
+    reach the task in, and each is caught by one case.
 
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
 none of them. Whether the SDK admits the concurrency of sibling flows, which
-would end the refusal that fails an ordinary fan-out written as flows at some
-store calls and would reverse DESIGN.md section 3.10, is an option with its
-trigger under PR3.4d. Five changes that a caller of a published package can
+would end the refusal of a flow whose step body waits on a timer and would
+reverse DESIGN.md section 3.10, is an option with its trigger under PR3.4d. Five changes that a caller of a published package can
 see were approved by the maintainer on 2026-09-21, and each is recorded in its
 entry: PR3.3d changed `error.name` at the port's bare refusals from
 `RangeError` to `PortRefusalError`, PR3.4c changed the signature of
@@ -3534,7 +3545,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     start failing, so the swap is a pinned, documented limitation. DESIGN.md
     section 3.2 says what it is, when it happens and what to do: use distinct
     step names in flows that run concurrently, or one flow at a time.
-  - **Pinned, not closed.** Each is a program the harness runs with an outage at
+  - **Pinned, not closed.** (PR3.4e closed (iii) and (iv), and (ii) for flows whose steps take no time.) Each is a program the harness runs with an outage at
     every store call and a test that says exactly what the engine does, so a
     limitation closed by accident or made worse fails the test. (i) A group that
     starts a step ahead of another durable call is refused, except that an
@@ -3554,26 +3565,25 @@ these three things; nothing else in the system does I/O, time, or randomness.
     each await something and then spawn under one task name are handed each
     other's child at 2 of 14 store calls (over two emitted events) and 3 of 28
     (over two spawned children).
-  - An option, not scheduled: give the SDK the identity of a flow. A call would
-    be refused, or keyed, by the flow it belongs to and not by the order it
-    arrives in, which needs Node's `AsyncLocalStorage` in an SDK that imports
-    nothing from Node, or a flow scope in the published surface (a `ctx.flow`
-    that carries its own name namespace and nesting flag). It would end the
-    shared step name and task name swaps and the sibling-flow refusal (ii), and
-    it reverses DESIGN.md section 3.10's statement that steps do not start
-    concurrently. It needs a rule for the order two registered steps started
-    together are rolled back in, and rewrites six registered mutations and the
-    refused-group programs. Trigger: a reported swap in a task in use, or a
-    decision that the SDK admits sibling flows.
+  - Discharged by PR3.4e, and restated: the option to give the SDK the identity of a
+    flow (`AsyncLocalStorage`, or a `ctx.flow` scope in the published surface) was
+    what the shared step name and task name swaps needed, and PR3.4e closes them
+    without it, by recording the order results reach the task in. What is left of
+    the option is the sibling-flow refusal of a step whose body waits on a timer
+    (gap (ii), one program of `FLOW_PROGRAMS`). Trigger: a reported refusal of an
+    ordinary program of flows whose step bodies take time, or a decision that the
+    SDK admits sibling flows.
   - An option, not scheduled: close gap (i) with a guard held while a replayed
     step settles. It refuses an ordinary fan-out written as flows on every
     replay, so it waits for the option above. Trigger: the same decision.
-  - Open question: a handler that swallows every rejection, with an empty
-    `catch` or with `Promise.allSettled`, can observe an injected store outage
-    and complete with it in its result. DESIGN.md says task code cannot forge a
-    control, and says nothing of a handler that swallows a real one. Trigger: a
-    handler in use that catches every error around a durable call, or a
-    decision that a swallowed control ends the pass anyway.
+  - Open question, decided by PR3.4e for a pass with concurrent calls only: a
+    handler that swallows every rejection, with an empty `catch` or with
+    `Promise.allSettled`, could observe an injected store outage and complete
+    with it in its result. A store error that meets a call while another call is
+    pending now ends the pass for its flows, and the pass does not complete a
+    task that caught it. For a task that makes one call at a time the question
+    stays open, and such a task may catch a store error and call again. Trigger:
+    a handler in use that catches every error around a durable call.
   - Both generators draw a step named after `ctx.attempt`. The plain one also
     draws a first attempt that fails, so that such a step runs under two names.
     The saga one draws a rollback that fails once, so that a second rollback
@@ -3592,6 +3602,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The registry gains two mutations, the two above, so it holds 1096 where main
     holds 1094. The base gate's arm is keyed on main's registry and exempts
     their two verdict markers, which the base predates.
+- **PR3.4e ordered replay: two flows that share a step or task name are not handed each other's result**: DONE. PR3.4d found the swap, built a refusal for it, had the refusal rejected, and pinned the swap. This entry closes it in the SDK. Nothing in the store, its port or its schema changes, no released declaration changes, and a task that makes one call at a time stores what it stored.
+  - **What it does.** A call that was pending beside another call in a pass stores a marker `$order:<n>` before its result, and a replay hands recorded results to the task in number order, with a turn of the event loop after each one. DESIGN.md section 3.2 ("The order results reach the task in") states the mechanism, the write order, the wait that cannot end, the fence after an infrastructure error, the compatibility rule and the cost. The sibling-flow refusal of PR3.4d's gap (ii) also stops for flows whose steps take no time, because results now reach the task a turn apart. A flow whose step body waits on a timer is still refused, and `FLOW_PROGRAMS` keeps that witness.
+  - **Measured before and after.** On main's SDK, 21 programs of flows (nine written out, twelve generated), each on a store that answers at once and on one that answers a turn later, ran an outage and then a permanent answer at every store call, 42 cases in all: 157 of 2,798 runs completed with two flows' values swapped, 494 were refused as nested, and 60 ended another way. On this branch every one of 3,720 runs completes with each flow's own answers, none is swapped or refused. The tests were committed failing by name against main's SDK: 44 of the 113 tests of `replay-equivalence.test.ts` and `ordered-replay.test.ts` fail, and the 69 that pass include the two that say a task with no markers replays as it did and a task that makes one call at a time stores none.
+  - **Alternatives.** A refusal was built in PR3.4d and rejected: it refuses ordinary programs and a `try` defeats it. The identity of a flow by `AsyncLocalStorage` cannot work, measured: two flows started by one `Promise.all(map(async ...))` inside one `run` read one store, and the SDK imports nothing from Node. Keying a step by a hash of its arguments has nothing to hash, since a step receives none. Keying by the caller's stack cannot tell two flows that run one function apart. Recording the position of every call, and not only of calls that overlapped, was rejected: it writes a marker for every call of every task, and a step named after `ctx.attempt` beside another call is recorded waiting for a call the next attempt never makes. Recording the order inside each result's own row (an envelope) was rejected: an older build would return the envelope as the value, so a deploy would have to be staged, and every reader of a checkpoint's state would change.
+  - **Is it a protocol area (AGENTS.md, spec first)?** No. It writes no batch and no statement: the markers are ordinary lease-fenced checkpoints, and the property is one task function's replay against the rows it left. Its cross-pass reasoning is the write order (marker first, or after the result and before the hand-over), and the replay-equivalence harness states that property executably at every store call, with two kinds of fault, which is how the harness found the two windows that the design closes (a flow that goes on after another flow's write failed, and a call joined while it stores). A model would restate the same induction. A `specs/OrderedReplay.tla` is an option if the maintainer wants one.
+  - **What changed for a task in use.** (i) The swap is closed for flows over a step name and a task name. (ii) A store error that meets a call while another call is pending ends the pass for its flows: the pass stores nothing more, and a task that caught the error and returned is not completed, so it is retried. That answers the open question below for a pass with concurrent calls only. A task that makes one call at a time may still catch a store error and call again. (iii) A replay that waits for a call the task never makes gives up after two beats of the heartbeat, in the order it had before markers, so it is delayed by up to a minute and not failed.
+  - **Compatibility, run.** A new build ran pass 1 of a two-flow program against a database file with an outage at each of its 17 store calls, and an older build (main's SDK) finished the task. 15 of 17 completed with each flow's value, and 2 failed with the older build's own refusal, `called inside a step`. The older build alone, faulted at the same 17 calls, fails 1 of 17 the same way.
+  - **Cost.** A call that overlapped another stores one more checkpoint. Two awaits started together store four rows where they stored two. The 33 tests that main's tree and this one share (the generated and the saga programs) took 44 to 50 seconds of wall time on main's SDK and 46 to 48 on this branch over three interleaved rounds, with user CPU of 77 to 81 seconds against 80 to 83, on a host under load. The 42 new cases add about 3,700 runs to the file.
+  - **Registered mutations.** 23 mutations each remove one line of the order, and 23 cases fail by name. The registry holds 1119 where main holds 1096, and the base gate's arm is keyed on main's digest and exempts the 23 markers. Four of main's mutations name lines that this change touches, and the lines were kept as they were.
+  - **Not built.** A flow that waits on a timer inside a step is still refused (DESIGN.md names the gap). Two flows that each wait on a timer before calling under one name are numbered by the timers in a replay as in a first pass. A `specs/OrderedReplay.tla`.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
   cold-start migrators converge on the current schema` failed PR #40's

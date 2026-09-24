@@ -14688,6 +14688,387 @@ for _verdict, _names in (
         VERDICTS[_name] = _verdict
 
 
+# The order results reach the task in (DESIGN.md S3.2): the markers a first pass stores for calls that
+# were pending together, the queue a replay hands results over in, the turn of the event loop between two
+# recorded results, what a pass does once the run cannot go on, and the beat that lets a replay stop
+# waiting for a call the task does not make. One condition each, and each is caught by a case of the SDK.
+MUTATION_SPECS.extend(
+    (
+        (
+            "order-marker-is-stored-for-calls-pending-together",
+            "packages/sdk/src/context.ts",
+            "    return span.beganBesideAnother || this.#callsMade > span.startNo\n",
+            "    return false // MUTATION: no call is ever taken to have been pending beside another\n",
+            "no call stores a marker, so a replay hands the results of flows over in the order their calls are made, and two flows that share a step name can be handed each other's value",
+        ),
+        (
+            "order-marker-is-stored-before-its-result",
+            "packages/sdk/src/context.ts",
+            "      let recorded = false\n      if (this.#overlapped(span)) {\n        await this.#recordOrder(seq, key)\n        recorded = true\n      }\n      const value = await this.commitCheckpoint(key, label, raw)\n",
+            "      let recorded = false\n      const value = await this.commitCheckpoint(key, label, raw) // MUTATION: the marker follows the result\n",
+            "a result is stored before its marker, so a pass that dies between the two leaves a result that a replay hands over first, and its flow makes its next call ahead of a flow the first pass had already answered",
+        ),
+        (
+            "order-marker-is-stored-for-a-sleep-pending-beside-a-call",
+            "packages/sdk/src/context.ts",
+            "    if (this.#overlapped(span)) await this.#recordOrder(this.#order.reserve(), key)\n",
+            "    // MUTATION: a sleep made beside another call stores no marker\n",
+            "a sleep that was made beside another call has no place among the results, so a replay wakes it in call order and a flow that awaited something else can make its next call in the other order",
+        ),
+        (
+            "order-marker-without-a-result-names-nothing",
+            "packages/sdk/src/context.ts",
+            "      if (taskMapHas(this.seen, key) && !taskMapHas(this.#orderNumbers, key)) {\n",
+            "      if (!taskMapHas(this.#orderNumbers, key)) {\n",
+            "a marker that a pass stored and died before the result of is queued as a result to hand over, and every result behind its number waits for a call that has no result",
+        ),
+        (
+            "order-numbers-are-never-reused",
+            "packages/sdk/src/context.ts",
+            "    return new DeliveryOrder(recorded, numbers[numbers.length - 1] ?? 0)\n",
+            "    return new DeliveryOrder(recorded, (numbers[numbers.length - 1] ?? 0) * 0) // MUTATION: numbering starts again from one\n",
+            "a pass numbers its results from one again, so a result takes the number of a marker that a dead pass left, and a replay reads two results under one number",
+        ),
+        (
+            "the-highest-marker-of-a-result-is-the-one-that-counts",
+            "packages/sdk/src/context.ts",
+            "      if (taskMapHas(this.seen, key) && !taskMapHas(this.#orderNumbers, key)) {\n",
+            "      if (taskMapHas(this.seen, key)) { // MUTATION: the lowest marker of a result counts\n",
+            "a result that two passes stored a marker for is handed over at the number of the pass that died, and not of the pass that finished it, because a marker read after it, at a lower number, takes the result over",
+        ),
+        (
+            "recorded-results-are-handed-over-in-recorded-order",
+            "packages/sdk/src/context.ts",
+            "    const turn = this.#order.wait(seq)\n    if (turn !== undefined) await turn\n    this.#order.release(seq, true)\n",
+            "    this.#order.release(seq, true) // MUTATION: a recorded result is handed over as its call is made\n",
+            "a replay answers each recorded result as its call is made, so two flows reach their next calls in the order their calls were made and not the order the first pass answered them, and each is handed the other's checkpoint",
+        ),
+        (
+            "a-recorded-result-is-followed-by-a-turn-of-the-event-loop",
+            "packages/sdk/src/context.ts",
+            "    this.#order.release(seq, true)\n",
+            "    this.#order.release(seq, false) // MUTATION: the next result follows in the same turn\n",
+            "a replay hands the next recorded result over in the turn of the event loop that handed over the one before, so a flow whose work between two calls takes more promise turns makes its call after a flow that takes fewer, as the first pass did not",
+        ),
+        (
+            "a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop",
+            "packages/sdk/src/context.ts",
+            "      this.#order.release(seq, recorded)\n",
+            "      this.#order.release(seq, false) // MUTATION: a result of this pass is followed by no turn\n",
+            "a first pass hands two results of one turn to their flows one after the other with no turn between, so the order of their next calls is decided by the length of the work, and the replay, which takes a turn, orders them the other way",
+        ),
+        (
+            "a-result-the-pass-produces-waits-for-the-recorded-ones",
+            "packages/sdk/src/context.ts",
+            "      const turn = this.#order.wait(seq)\n      if (turn !== undefined) await turn\n      if (!recorded && this.#overlapped(span)) {\n",
+            "      if (!recorded && this.#overlapped(span)) {\n",
+            "a result that is new to a replay is handed to its flow ahead of results the first pass had already answered, so its flow makes a call that the first pass never made before flows that the first pass had answered",
+        ),
+        (
+            "a-call-that-failed-does-not-hold-up-the-calls-behind-it",
+            "packages/sdk/src/context.ts",
+            "      this.#order.abandon(seq)\n",
+            "      // MUTATION: the calls behind a failed call go on waiting for its number\n",
+            "a flow whose call failed, and whose failure the task caught, leaves every call answered after it waiting for a number that will never be handed over, and the pass never ends",
+        ),
+        (
+            "a-task-that-caught-the-error-that-ended-its-pass-does-not-complete",
+            "packages/sdk/src/run-worker.ts",
+            "      if (ended !== undefined) return ended\n",
+            "      // MUTATION: a task that caught the error goes on to complete\n",
+            "a task that caught the outage or the lost lease that ended its pass, with an empty catch or Promise.allSettled, returns and is completed with whatever it made of the error",
+        ),
+        (
+            "flows-store-nothing-after-an-infrastructure-error-beside-them",
+            "packages/sdk/src/context.ts",
+            "    const ended = this.#order.endedBy\n    if (ended !== undefined) throw ended\n",
+            "    // MUTATION: a flow that goes on after the error stores what it likes\n",
+            "a flow that goes on after an outage or a lost lease met a call beside it stores checkpoints and spawns children that a replay reads ahead of the call that failed, so a flow is handed the checkpoint of another",
+        ),
+        (
+            "the-heartbeat-gives-up-on-a-result-nobody-asks-for",
+            "packages/sdk/src/run-worker.ts",
+            "      if (passContext !== undefined) beatOrder(passContext)\n",
+            "      // MUTATION: the heartbeat never looks at the order\n",
+            "a replay that waits for a recorded result whose call the task never makes, a step named after the attempt beside another call, waits for ever while its heartbeat keeps the lease",
+        ),
+        (
+            "a-pass-whose-lease-ended-lets-every-call-go",
+            "packages/sdk/src/run-worker.ts",
+            "          if (passContext !== undefined) openOrder(passContext)\n",
+            "          // MUTATION: a pass whose lease ended leaves its waiting calls waiting\n",
+            "a pass whose lease was cancelled or lost while a call waits for its turn never ends, because the call never reaches the durable operation that would raise the error",
+        ),
+        (
+            "a-pass-whose-heartbeat-stopped-lets-every-call-go",
+            "packages/sdk/src/run-worker.ts",
+            "        // that waits for its turn has nobody left to give up on its number.\n        if (passContext !== undefined) openOrder(passContext)\n",
+            "        // that waits for its turn has nobody left to give up on its number.\n        // MUTATION: a heartbeat that fails leaves the waiting calls waiting\n",
+            "a heartbeat that fails ends the beats, so a replay that waits for a recorded result whose call the task never makes waits for ever, and the run is retried until the retries are spent",
+        ),
+        (
+            "replay-settles-before-the-rollback-decides",
+            "packages/sdk/src/run-worker.ts",
+            "      await replaySettled(ctx)\n",
+            "      // MUTATION: what is owed is decided while a held flow has yet to register its rollback\n",
+            "a rollback pass decides what is owed before a flow that its replay holds for its turn has registered the rollback of a step it started, and the saga halts with that step uncompensated",
+        ),
+        (
+            "a-number-given-up-is-answered-at-once",
+            "packages/sdk/src/delivery-order.ts",
+            "    return seq < this.#floor || taskMapHas(this.#done, seq)\n",
+            "    return taskMapHas(this.#done, seq)\n",
+            "a call that comes late for a number the pass gave up on waits for it for ever once the queue has moved past it",
+        ),
+        (
+            "a-beat-that-saw-results-handed-over-is-not-stuck",
+            "packages/sdk/src/delivery-order.ts",
+            "    const stuck = this.stalled && this.#progress === this.#beatProgress\n",
+            "    const stuck = this.stalled\n",
+            "a beat gives up on a number while results are being handed over, so a replay of a long recorded history loses its order at its first beat",
+        ),
+        (
+            "a-number-a-call-waits-for-is-not-given-up",
+            "packages/sdk/src/delivery-order.ts",
+            "    if (seq === undefined || seq >= this.#firstLive || taskMapHas(this.#waiting, seq)) return false\n",
+            "    if (seq === undefined || seq >= this.#firstLive) return false\n",
+            "a beat gives up on the number of a call that is waiting for its turn, and hands its result over ahead of the results before it",
+        ),
+        (
+            "a-number-the-pass-gave-is-never-given-up",
+            "packages/sdk/src/delivery-order.ts",
+            "    if (seq === undefined || seq >= this.#firstLive || taskMapHas(this.#waiting, seq)) return false\n",
+            "    if (seq === undefined || taskMapHas(this.#waiting, seq)) return false\n",
+            "a beat gives up on the number of a call of this pass that is slow to store its result, and hands the results behind it over first, so the order the pass answered them in is not the order it recorded",
+        ),
+        (
+            "an-open-order-lets-every-call-go",
+            "packages/sdk/src/delivery-order.ts",
+            "    if (this.#open || this.isDone(seq) || this.isTurn(seq)) return undefined\n",
+            "    if (this.isDone(seq) || this.isTurn(seq)) return undefined\n",
+            "a call that arrives after the pass cannot go on waits for its turn for ever",
+        ),
+        (
+            "the-order-queue-drops-what-it-handed-over",
+            "packages/sdk/src/delivery-order.ts",
+            "    if (this.#head >= COMPACT_AT) {\n",
+            "    if (this.#head < 0) {\n",
+            "a task that makes a million calls one after another keeps a million numbers for the length of the pass",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK stores a marker for each of two awaits made together, and before the result it names",
+            "mutation-verdict:behavior:order-marker-is-stored-for-calls-pending-together",
+        ),
+        ("order-marker-is-stored-for-calls-pending-together",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK stores a marker for each of two awaits made together, and before the result it names",
+            "mutation-verdict:behavior:order-marker-is-stored-before-its-result",
+        ),
+        ("order-marker-is-stored-before-its-result",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK stores the place of a sleep that was made beside another call",
+            "mutation-verdict:behavior:order-marker-is-stored-for-a-sleep-pending-beside-a-call",
+        ),
+        ("order-marker-is-stored-for-a-sleep-pending-beside-a-call",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK ignores a marker whose result was never stored, and does not reuse its number",
+            "mutation-verdict:behavior:order-marker-without-a-result-names-nothing",
+        ),
+        ("order-marker-without-a-result-names-nothing",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK ignores a marker whose result was never stored, and does not reuse its number",
+            "mutation-verdict:behavior:order-numbers-are-never-reused",
+        ),
+        ("order-numbers-are-never-reused",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "order markers through the SDK takes the highest of the markers that name one result",
+            "mutation-verdict:behavior:the-highest-marker-of-a-result-is-the-one-that-counts",
+        ),
+        ("the-highest-marker-of-a-result-is-the-one-that-counts",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay follows the order a first pass recorded hands recorded results to the task in the order they were recorded, not the order its calls come in",
+            "mutation-verdict:behavior:recorded-results-are-handed-over-in-recorded-order",
+        ),
+        ("recorded-results-are-handed-over-in-recorded-order",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay follows the order a first pass recorded lets what the task does with a result finish before it hands over the next recorded one",
+            "mutation-verdict:behavior:a-recorded-result-is-followed-by-a-turn-of-the-event-loop",
+        ),
+        ("a-recorded-result-is-followed-by-a-turn-of-the-event-loop",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay follows the order a first pass recorded lets what the task does with a result finish before it hands over the next result of the same pass",
+            "mutation-verdict:behavior:a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop",
+        ),
+        ("a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay follows the order a first pass recorded queues a result the pass produces behind the recorded results that its flows have not asked for yet",
+            "mutation-verdict:behavior:a-result-the-pass-produces-waits-for-the-recorded-ones",
+        ),
+        ("a-result-the-pass-produces-waits-for-the-recorded-ones",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay follows the order a first pass recorded does not let a call that failed hold up a call that is answered after it",
+            "mutation-verdict:behavior:a-call-that-failed-does-not-hold-up-the-calls-behind-it",
+        ),
+        ("a-call-that-failed-does-not-hold-up-the-calls-behind-it",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a pass that was told the run cannot go on for its flows stores nothing more, and does not complete a task that caught the error",
+            "mutation-verdict:behavior:a-task-that-caught-the-error-that-ended-its-pass-does-not-complete",
+        ),
+        ("a-task-that-caught-the-error-that-ended-its-pass-does-not-complete",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a pass that was told the run cannot go on for its flows stores nothing more, and does not complete a task that caught the error",
+            "mutation-verdict:behavior:flows-store-nothing-after-an-infrastructure-error-beside-them",
+        ),
+        ("flows-store-nothing-after-an-infrastructure-error-beside-them",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that waits for a call the task does not make gives up on the recorded result of a call it never makes, at the beat of the heartbeat, and finishes",
+            "mutation-verdict:behavior:the-heartbeat-gives-up-on-a-result-nobody-asks-for",
+        ),
+        ("the-heartbeat-gives-up-on-a-result-nobody-asks-for",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that waits for a call the task does not make lets every call go when the lease ends while the replay waits",
+            "mutation-verdict:behavior:a-pass-whose-lease-ended-lets-every-call-go",
+        ),
+        ("a-pass-whose-lease-ended-lets-every-call-go",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that waits for a call the task does not make lets every call go when the heartbeat stops while the replay waits",
+            "mutation-verdict:behavior:a-pass-whose-heartbeat-stopped-lets-every-call-go",
+        ),
+        ("a-pass-whose-heartbeat-stopped-lets-every-call-go",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a rollback pass whose replay holds a flow for its turn [libsql] registers the rollback of a step that the held flow started, before it decides what is owed",
+            "mutation-verdict:behavior:replay-settles-before-the-rollback-decides",
+        ),
+        ("replay-settles-before-the-rollback-decides",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) does not make a call that failed hold up the calls behind it, and answers at once for a number given up",
+            "mutation-verdict:behavior:a-number-given-up-is-answered-at-once",
+        ),
+        ("a-number-given-up-is-answered-at-once",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) gives up on a recorded number nobody asks for when a beat finds nothing handed over since the last",
+            "mutation-verdict:behavior:a-beat-that-saw-results-handed-over-is-not-stuck",
+        ),
+        ("a-beat-that-saw-results-handed-over-is-not-stuck",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) never gives up on a number that has a call waiting, or when no call waits",
+            "mutation-verdict:behavior:a-number-a-call-waits-for-is-not-given-up",
+        ),
+        ("a-number-a-call-waits-for-is-not-given-up",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) never gives up on a number the pass gave, which is a call that is running",
+            "mutation-verdict:behavior:a-number-the-pass-gave-is-never-given-up",
+        ),
+        ("a-number-the-pass-gave-is-never-given-up",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) lets every call go, now and after, once the pass cannot go on",
+            "mutation-verdict:behavior:an-open-order-lets-every-call-go",
+        ),
+        ("an-open-order-lets-every-call-go",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/delivery-order.test.ts",
+            "the order results reach the task in (DeliveryOrder) keeps its queue as long as the calls that are pending when a task makes one call at a time",
+            "mutation-verdict:behavior:the-order-queue-drops-what-it-handed-over",
+        ),
+        ("the-order-queue-drops-what-it-handed-over",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 # The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
 # every string once, and every store is reached only through the check built from that
 # table. The first two bend the check: the rule of an identifier, and the wrapper that
@@ -18161,6 +18542,9 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "replay-settles-before-the-rollback-decides": (
+        "the suite runs once for each dialect, and its describe title carries the dialect"
+    ),
     "saga-start-marker-before-the-body": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -20730,7 +21114,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1096:
+        if len(MUTATIONS) != 1119:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
