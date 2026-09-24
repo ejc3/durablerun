@@ -38,6 +38,29 @@ interface Context {
   readonly before: Statement[]
 }
 
+/**
+ * The kinds of line a plan has that the reader tells apart, each by the start of the line
+ * that says it. A kind that no plan of the surface holds is a reading the surface never
+ * asks of the reader, so which kinds it reaches is held below in both directions.
+ */
+const LINE_KINDS: readonly (readonly [string, RegExp])[] = [
+  ['scan', /^SCAN (?!CONSTANT)/],
+  ['seek', /^SEARCH /],
+  ['seek through an automatic index', /^SEARCH .*AUTOMATIC/],
+  ['constant rows', /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS)/],
+  ['virtual table', /VIRTUAL TABLE/],
+  ['scalar subquery', /^SCALAR SUBQUERY/],
+  ['correlated subquery', /^CORRELATED (?:SCALAR|LIST) SUBQUERY/],
+  ['list subquery', /^LIST SUBQUERY/],
+  ['co-routine', /^CO-ROUTINE/],
+  ['materialized body', /^MATERIALIZE/],
+  ['compound query', /^(?:COMPOUND QUERY|LEFT-MOST SUBQUERY)/],
+  ['union', /^UNION/],
+  ['intersect or except', /^(?:INTERSECT|EXCEPT)/],
+  ['multi-index or', /^MULTI-INDEX OR/],
+  ['temp b-tree', /^USE TEMP B-TREE/],
+]
+
 /** One statement, in one variation, measured and read. */
 interface Row {
   readonly name: string
@@ -46,6 +69,7 @@ interface Row {
   readonly dropped: string | undefined
   readonly grew: boolean
   readonly reading: NestReading
+  readonly lines: ReadonlySet<string>
 }
 
 let dir: string
@@ -144,6 +168,11 @@ beforeAll(async () => {
             dropped,
             grew: grew(small, large),
             reading: readNests(large.plan, variant.sql),
+            lines: new Set(
+              large.plan.flatMap((line) =>
+                LINE_KINDS.filter(([, shape]) => shape.test(line.detail)).map(([kind]) => kind),
+              ),
+            ),
           })
         } catch (error) {
           skipped.push({ name, variation, dropped, error: String(error).slice(0, 120) })
@@ -225,6 +254,24 @@ describe('the plan reader against a measured backlog', () => {
     }
     expect(rows.some((r) => r.variation === 'without its WHERE' && r.grew)).toBe(true)
     expect(rows.some((r) => r.variation === 'without an index' && r.grew)).toBe(true)
+  })
+
+  it('reaches every kind of plan line the reader can be asked about, and names the ones no plan here holds', () => {
+    const reached = new Set(rows.flatMap((r) => [...r.lines]))
+    // Kinds no shipped statement produces, in this database or in one without an index it
+    // uses. The reader's cases for them are written by hand in `query-plans.test.ts`, and a
+    // kind that starts to be reached is removed from this list, so that its hand cases can be
+    // weighed against the surface's.
+    const unreached = [
+      'intersect or except',
+      'materialized body',
+      'seek through an automatic index',
+    ]
+    expect(
+      LINE_KINDS.map(([kind]) => kind)
+        .filter((kind) => !reached.has(kind))
+        .sort(),
+    ).toEqual(unreached)
   })
 
   it('the measurement can tell a walk from a lookup', async () => {
