@@ -59,9 +59,9 @@ Two. Finding 7 was introduced by the fold for finding 6, which widened the fence
 
 ## Evidence
 
-- Red test: commit `eb4c649`, probe `packages/sdk/test/ordered-replay.test.ts` `skips two of three flows` — run and seen failing against `f1989b0`, where a replay of three flows that keeps one ended after 5 beats.
+- Red test: commit `eb4c649`, probe `packages/sdk/test/ordered-replay.test.ts` `skips two of three flows`, run and seen failing against `f1989b0`, where a replay of three flows that keeps one ended after 5 beats.
 - Fix: commit `66493a9`, which turns the red test green; gate after the fix: typecheck, lint, format, the source checkers, the registry count by import, `lint:mutation-verdicts`, `verify:packages`, the SDK suite, conformance on three dialects, the unfiltered mutation audit and the base gate, on the head that contains main.
-- Red test: commit `1cb4871`, probe `packages/sdk/test/ordered-replay.test.ts` `reaches the task, which completes with its fallback in the pass it met it in` — run and seen failing against `7f1bd43`, where the pass was ended as aborted and the run never ended.
+- Red test: commit `1cb4871`, probe `packages/sdk/test/ordered-replay.test.ts` `reaches the task, which completes with its fallback in the pass it met it in`, run and seen failing against `7f1bd43`, where the pass was ended as aborted and the run never ended.
 - Fix: commit `51b0b55`, which turns that red test green; gate after the fix: the full list on the head that contains main, the unfiltered audit among it.
 - Finder: a review at high effort of the first round's head, quoted verdict: "no swap and no deadlock found", with two MEDIUM and three LOW findings, and its own probes on eleven programs.
 - Reproduced, three beats to seven: the three cases of a replay that skips recorded calls fail on `f1989b0` with 3, 5 and 7 beats (the bound is one). The held rollback replay fails there with 101 clock turns in 100 turns of the event loop. The flow that starts after another flow's first call failed fails there at an outage at store call 6, with the children swapped. Five of 124 tests fail at the red commit.
