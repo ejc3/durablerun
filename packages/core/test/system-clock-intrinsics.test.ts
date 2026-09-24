@@ -5,6 +5,9 @@ async function replaceMethodAndCount(
   target: object,
   key: PropertyKey,
   action: () => Promise<unknown> | unknown,
+  // Count only the calls made before the action returns. The global Promise is also constructed by the test
+  // runner while the action's promise is pending, and the clock builds its own promise inside the call.
+  synchronousOnly = false,
 ): Promise<number> {
   const descriptor = Object.getOwnPropertyDescriptor(target, key)
   if (descriptor === undefined || typeof descriptor.value !== 'function') {
@@ -12,16 +15,20 @@ async function replaceMethodAndCount(
   }
   const original = descriptor.value as CallableFunction
   let calls = 0
-  Object.defineProperty(target, key, {
-    ...descriptor,
-    value: function (this: unknown, ...args: unknown[]) {
-      calls++
-      if (new.target !== undefined) return Reflect.construct(original, args, original)
-      return Reflect.apply(original, this, args)
-    },
-  })
+  let counted = true
+  const counting = function (this: unknown, ...args: unknown[]) {
+    if (counted) calls++
+    if (new.target !== undefined) return Reflect.construct(original, args, original)
+    return Reflect.apply(original, this, args)
+  }
+  // The test runner calls statics such as Promise.all and Promise.reject while the action is pending
+  // (vitest 4 does), so the replacement inherits the original's statics.
+  Object.setPrototypeOf(counting, original)
+  Object.defineProperty(target, key, { ...descriptor, value: counting })
   try {
-    await action()
+    const pending = action()
+    if (synchronousOnly) counted = false
+    await pending
   } finally {
     Object.defineProperty(target, key, descriptor)
   }
@@ -61,12 +68,12 @@ describe('systemClock captured intrinsics', () => {
   })
 
   it('captures the Promise constructor', async () => {
-    const calls = await replaceMethodAndCount(globalThis, 'Promise', () => clock.sleep(0))
+    const calls = await replaceMethodAndCount(globalThis, 'Promise', () => clock.sleep(0), true)
     expect(calls, 'mutation-verdict:construction:system-clock-captured-promise').toBe(0)
   })
 
   it('captures the Promise constructor for yieldTurn', async () => {
-    const calls = await replaceMethodAndCount(globalThis, 'Promise', () => clock.yieldTurn())
+    const calls = await replaceMethodAndCount(globalThis, 'Promise', () => clock.yieldTurn(), true)
     expect(calls, 'mutation-verdict:construction:system-clock-captured-yield-promise').toBe(0)
   })
 
