@@ -1641,6 +1641,39 @@ One invocation executes one claimed run to its next suspension point:
     PostgreSQL or
     MySQL, whose plan tests hold chosen statements, and BUILD.md records that as
     an option under PR3.14c.
+  - The plan reader against a measured backlog. The reader above judges plan
+    text, and its findings were shapes and spellings it read wrongly, so
+    `plan-reader-surface.test.ts` holds it to a measurement that reads no plan
+    text. A backlog is every row of every table copied again with fresh
+    identifying columns and every other column kept, so a statement that finds
+    rows by anything but an identity finds each copy and one that finds them by
+    an identity does not. Each statement runs in a rolled-back transaction, in
+    the database as its own batch found it, beside four copies and beside
+    sixteen, and it did more work if its virtual machine steps grew, or for a
+    write the rows it wrote, because a DELETE with no WHERE is one step
+    whatever the table holds. The surface is the statements the store ships
+    and three variations of each: the database without one index it may use,
+    each write without its WHERE, and each statement in the spellings a write
+    can take. Four properties hold. A statement that grew is not passed unless a
+    due range drives it, which the reader reports. In the shipped database the
+    reader refuses exactly the statements that grew and none other. A spelling
+    is judged as the statement is, and a comment first is refused and never
+    turns a refusal into a pass. And the surface reaches every kind of plan line
+    the reader tells apart but an INTERSECT or EXCEPT, a MATERIALIZE body and a
+    seek through an automatic index, which the test names, so a kind that
+    starts to be reached shows itself. What it does not hold: a refusal of a
+    statement that did no more work in a variation, because a probe a statement
+    never reaches in the state it ran in costs nothing, so a reader that
+    refuses too much is caught only in the shipped database. The measurement
+    shares one fact with the reader, which columns name one entity, declared
+    once in each, and shares no reading of a plan. The two lists are held to each
+    other. `claimed_by` is on both because one claim token holds at most its
+    limit of runs, and the backlog gives every copy a token of its own, so a
+    seek by a token can never grow in it: that rule is assumed by both sides and
+    not measured. A leg of a multi-index OR read against its drivers and an
+    automatic index read as a walk are held by hand cases, because no shipped
+    plan has either. The driver heartbeat's trigger walks `drivers`, which the
+    measurement sees and no plan of the insert shows.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and

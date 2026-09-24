@@ -571,6 +571,20 @@ is left: line 18, held for the maintainer's choice.
     stale count, and one edit of DESIGN.md per kind of count fails it by name:
     a length (116 conditions to 117), a constant (255 to 256), a product
     (3,087 to 3,088), a word (eight counters to nine), and a deleted marker.
+30. PR3.14e: the libSQL plan reader is held to a measurement that reads no plan
+    text. `store-libsql`'s `plan-reader-surface.test.ts` runs every one of the
+    129 statements the store ships, in the database its own batch found,
+    beside a backlog of four copies of every row and beside one of sixteen, and
+    it fails by name when a statement that did more work beside the larger
+    backlog is passed by the reader, unless a due range drives it. It does the
+    same for each statement without one index it uses (eight databases), for
+    each write without its WHERE (79 measured), and for every spelling of a
+    statement that means what it means, which the reader must judge as it judges
+    the statement. This is met. Four reader bugs written by hand each fail it by
+    name and were restored: the reader's line that a write has a step over its
+    table, deleted (a write without its WHERE passes), the schema of a written table
+    unread, a conflict clause unread, and `claimed_by` left off the list of
+    entity columns (the claim's statements refused though they did no more work).
 
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
@@ -601,9 +615,7 @@ lasts and the executor framing a file's transaction itself, are recorded as
 options with their triggers (the PR3.15 entry). Two design questions are
 recorded as the maintainer's, each an option with its trigger: a way for a
 batch of reads to say it needs a current answer (under PR3.4), and what ends a
-run whose store call fails permanently (under PR2.5a). The generated surface
-for the plan reader, whose trigger has been met, waits for the maintainer's
-decision (an option under PR3.14c, met by the reviews of PR3.14d). A comment
+run whose store call fails permanently (under PR2.5a). A comment
 for the client library's open issue upstream,
 tursodatabase/libsql-client-ts#352, which points at
 tursodatabase/libsql-js#228, is prepared with reproductions and not posted, and
@@ -3960,24 +3972,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     testing entry both packages can import, would serve both, and a server's
     generated check too. Its trigger is that check being built for a server, or
     the second variant that has to be scripted in both.
-  - Option, not a deferral of this PR: a generated surface for the plan reader.
-    Its review found the reader blind to a read of a subquery's rows inside a
-    nest, and not failing closed at three seams, and every such finding lay
-    where no shipped plan goes and no case picked by hand went. The surface
-    would make every kind of line the reader knows stand as the step that drives
-    and as the step that is driven, under each reach, with the expected reading
-    derived and not written by hand. The postmortem of that review names it as
-    the mechanism its root cause asks for. Its trigger is the next finding
-    against the reader, and it has been met: by five findings of PR3.14d's first
-    review, an equality on `key` read as keyed on any table, a test for NULL
-    read as keyed, a table aliased to a body's name never judged, a table's name
-    read wrongly from the text, and the rows of a VALUES read as a walk; by a
-    write hidden behind a comment, whose red PR3.14d committed first; and by
-    findings of its second review, a due range in a subquery of a write, four
-    conditions of the lines over a write held by no case, sound writes refused
-    with wrong words, a table aliased to what a plan prints for the rows of a
-    VALUES, and a select-list alias read as a table's name. Building it waits
-    for the maintainer's decision.
+  - Built as PR3.14e, in its entry below: a generated surface for the plan
+    reader. It measures instead of enumerating plan lines: a statement is run
+    beside a backlog, and the reader is held to whether the work grew. Its
+    trigger had been met by five findings of PR3.14d's first review and five of
+    its second.
   - Recorded, and not planned: a statement inside a trigger is never planned.
     libSQL has three triggers. The DELETE inside the driver heartbeat's scans
     `drivers`, a table of one row for each live driver, and the two that hold
@@ -4092,6 +4091,75 @@ these three things; nothing else in the system does I/O, time, or randomness.
     were written against, and the writes they refused that pass now were found
     by the reviews, which ran the pins' own code by hand. Its trigger is the
     next check deleted for a replacement.
+- **PR3.14e the plan reader against a measured backlog**: `readNests` in
+  `plan-nests.ts` judges the text of `EXPLAIN QUERY PLAN`, and every finding
+  against it in PR3.14c and PR3.14d was a plan shape or a statement spelling it
+  read wrongly, found by a reviewer and by no test. `plan-oracle.ts` asks the
+  database instead. A backlog is every row of every table copied again with
+  fresh identifying columns and every other column kept, so a statement that
+  finds rows by anything but an identity finds each copy. A statement is run in
+  a rolled-back transaction beside four copies and beside sixteen, after the
+  statements of its batch that ran before it, and it did more work if its
+  virtual machine steps (`sqlite_stmt`) or the rows it wrote grew: rows for a
+  write, because a DELETE with no WHERE takes SQLite's truncate path and is one
+  step whatever the table holds. `plan-history.ts` holds the scripted history
+  `query-plans.test.ts` used to hold, and takes a hook that is called before
+  each batch, which the surface uses to snapshot the database the batch found.
+  `plan-reader-surface.test.ts` holds four properties over the 129 statements
+  the store ships and three variations of each: the statement in a database
+  without one of the eight indexes it may use, which reshapes plans into scans;
+  each of the 82 writes without its WHERE, of which 79 run (three break a
+  constraint of their table and are skipped by that reason alone); and each
+  statement in the spellings a write can take. No statement the measurement saw
+  grow is passed unless a due range drives it, and a due range is what the
+  reader already reports and `query-plans.test.ts` names line for line. Over the
+  shipped database the reader refuses exactly the statements that grew, in both
+  directions, and only the sweep's scan grew there, apart from the driver
+  heartbeat, whose trigger's walk of `drivers` grows and no plan of the insert
+  shows, which the test holds apart in every variation. Every table a snapshot
+  holds no row of is given one, so no probe runs beside an empty table. Every
+  spelling is judged as its
+  statement is: a schema, a quoted schema, a conflict clause, the table's name
+  quoted or bare, and blank space first. A comment first is refused whatever the
+  statement, because the reader tells a kind by the first word, and the surface
+  holds that a comment never turns a refusal into a pass. Floors: every kind of
+  statement has a variation that grew and one that did not, the measurement is
+  shown to tell a scan of `runs` from a keyed read and to see a DELETE with no
+  WHERE, and every kind of plan line the reader tells apart is reached but three
+  (an INTERSECT or EXCEPT, a MATERIALIZE body, a seek through an automatic
+  index), which are named. Measured here: 1,236 variation runs (129 shipped, 1,028
+  without an index, 79 without a WHERE), 56 of the runs without an index grew and
+  all 79 without a WHERE did, and the file takes about 15 s. The surface also holds
+  that the backlog's identifying columns contain every entity column of the
+  reader but `key`, that a shipped write has no bind after its WHERE clause and
+  no `?` in a literal, that exactly three writes skip for a constraint, and that
+  a comment-first spelling is refused for hiding the first word. Two older tests are deleted because the surface fails by name
+  under the same bugs: that a comment hides a write's kind, and that a write is
+  read whatever its conflict clause or schema, both run under a bent reader and
+  under the surface. The rest of `query-plans.test.ts` stays. Its cases over
+  the plan-line kinds no plan here holds, its wording of a fault and of a table's
+  name, and its false negatives (each a statement the reader is known to pass)
+  are not something a measurement of shipped statements can replace.
+  - Recorded, and not planned: the measurement is blind where a statement never
+    reaches its probe in the database it ran in. Of the 26 variations the reader
+    refuses that did not grow, each was run in the state its batch found, and a
+    scan inside a probe that ran for no row costs nothing. That direction is not
+    held, and only the shipped database is held both ways.
+  - Recorded, and not measured: the reader counts an equality on `claimed_by` as
+    one claim's rows because one token holds at most one claim's limit of runs,
+    and the backlog makes `claimed_by` fresh on every copy. Both sides assume the
+    rule, and no measurement checks it, so the surface cannot see a claim that
+    holds more runs than its limit. The two lists are held to each other. Its
+    trigger is a claim that can hold more than its limit.
+  - Recorded, and not detected: `plan-nests.ts` reads a leg of a multi-index OR
+    against its drivers and an automatic index as a walk, and each is held by a
+    hand case in `query-plans.test.ts` that no shipped plan reaches. The surface
+    cannot fail for either, which is the false negative of its own reach.
+  - Option, not a deferral of this PR: a synthetic surface for the three plan-line
+    kinds no shipped statement produces, each as the driver and the driven step.
+    Its trigger is a shipped statement or a variation that reaches one, which
+    the test's list of unreached kinds fails on, or the next finding against the
+    reader in one of them.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It

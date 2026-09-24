@@ -64,7 +64,7 @@ export interface PlanRow {
  * its limit of runs, because `claim` takes nothing under a token that already holds a run.
  * `key` is the primary key of `meta`, whose rows are the clock and the schema's versions.
  */
-const ENTITY_COLUMNS = [
+export const ENTITY_COLUMNS = [
   'task_id',
   'run_id',
   'event_name',
