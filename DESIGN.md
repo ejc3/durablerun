@@ -877,6 +877,149 @@ One invocation executes one claimed run to its next suspension point:
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
+- Durable calls started together, which a task writes as `Promise.all`. Every
+  keyed call (a step, a sleep, an await, a spawn) takes its key when the call is
+  MADE, in the order the task writes the calls and before anything is awaited.
+  A group therefore replays by position, whatever order the store answers its
+  calls in. What the engine promises of a group is what it promises of any
+  program: the same result, the same failure, and the same checkpoints on every
+  schedule. The order the calls are answered in, how often a step's body ran,
+  and the order the rows were written are no part of that.
+  - A durable call made while a step is pending is refused, and the refusal
+    fails the task for good: a `FatalTaskError` that names the call. A step is
+    pending while its body runs and while a registered step writes its start
+    marker. `emitEvent` takes no key and may be called inside a step, so it is
+    never refused this way.
+  - Every other group is admitted, and replays the same on every schedule: two
+    awaits of one event, two spawns, two awaits of children, two sleeps, and a
+    sleep or an await with a step started AFTER it.
+  - **Known limitation: two flows that use one step name can be handed each
+    other's value, and the engine does not refuse it.** A step name is numbered
+    in the order its calls arrive (`record`, then `record#2`). Calls made one
+    after another arrive in the order the task writes them. The calls of two
+    flows (async functions of the task's own that each await something and then
+    call a step under one name) arrive in an order that a store call decides on
+    the pass that runs the steps, and a replay from memos decides again, in
+    lockstep. When the two orders differ, each flow is handed the other's
+    value, and the task completes with two values swapped. The harness measured
+    it for two flows over two spawned children at 3 of the 30 store calls an
+    outage can take, and for two flows over two emitted events at 2 of the 11.
+    Use distinct step names in flows that run concurrently, or run one flow at a
+    time. The harness pins the engine's ending for these programs at every
+    store call, so a change that closes the swap, or that widens it, fails
+    until the pin is changed on purpose.
+  - **Why the engine does not refuse it.** A refusal was built and rejected. The
+    engine cannot tell two flows from one, so any rule that catches the swap
+    reads what it can see, that a call was made while another was pending.
+    Measured over the harness's programs, that refuses ordinary programs that
+    complete today: a loop of one step name beside an `awaitEvent` or an
+    `awaitTask` (a poll loop), a loop beside an `awaitEvent` with a timeout (a
+    heartbeat), a step and then the same name after a sleep started before it,
+    a step beside a sleep followed by the same name, and a saga step named
+    twice with a sleep started before the first. Two narrower rules were
+    measured and rejected: counting only calls made in an earlier turn of the
+    microtask queue completes both swap programs at the last store call, and
+    refusing a repeated name only when the call itself is beside another fails
+    a poll loop at 6 of 8 store calls and completes it at 2. And a refusal is an
+    ordinary thrown error, so a task that catches it, with `try` or with
+    `Promise.allSettled`, goes on and still completes with the flows' values
+    swapped. A rule that neither refuses ordinary programs nor can be caught
+    needs the identity of the flow a call belongs to, which an SDK with no
+    import from the runtime does not have (it would be `AsyncLocalStorage`, or a
+    flow scope in the published surface). BUILD.md's PR3.4d entry records that
+    as an option with its trigger. A task in flight is unaffected: nothing here
+    changes what the engine does.
+  - **Known gap: a task name that concurrent flows share is not refused.** The
+    same arrival order numbers the uses of a task name (`$spawn:child`, then
+    `$spawn:child#2`). Two flows that each await something and then spawn a child
+    under one task name are handed each other's child by a replay that reaches
+    the two calls in the other order, and each then awaits the wrong one. The
+    harness measured it at 2 of 14 store calls for two flows over two emitted
+    events, and 3 of 28 for two flows over two spawned children. A refusal would
+    cost every flow that spawns under one task name, so the engine does not
+    refuse, and the harness pins both programs. Two awaits of one event name are
+    numbered the same way and are handed the same payload, so nothing is
+    swapped.
+  - Two sleeps started together run one after the other. `sleepFor(5)` beside
+    `sleepFor(7)` sleeps 5 seconds and then 7, not 7. A sleep suspends the whole
+    run, the first suspension ends the pass, and the second sleep's seconds
+    count from the pass that reaches it. A task that wants the longer of two
+    waits sleeps once, for the longer.
+  - The members of a group must not depend on one another. A task that awaits,
+    in a group, the event the same group emits can park before its emit lands,
+    and then nothing wakes it.
+  - **Known gap: the refusal is made by the pass that runs a step, and a pass
+    that replays the step raises nothing.** A group that starts a step ahead of
+    another durable call is refused on the pass that ran the step, and fails
+    the task for good. If the outage or crash takes the failing pass's own
+    `fail` call, after the step's checkpoint landed, the next pass replays the
+    step from its memo and admits the later call, so the task completes, and a
+    saga starts the later step and rolls it back. The same program ends two
+    ways depending on which store call an outage took. The engine does not
+    close this. A guard held while a replayed step settles closes it and
+    refuses, on every replay, an ordinary fan-out written as concurrent flows,
+    which is a worse change: it fails such a task for good the first time it
+    replays, and a task in flight of that shape fails at its next replay.
+  - **Known gap: one flag cannot tell a call nested in a step from a call that
+    a sibling flow makes while the step runs.** A flow is an async function of
+    the task's own that awaits and then makes a call. Two flows started
+    together, each awaiting something and then calling a step under a name of
+    its own, are an ordinary program with no call inside a step. Whether it
+    completes depends on the moment each flow reaches its call: a call that
+    lands while the other flow's step body runs is refused as nested, and a
+    fan-out of two flows over two spawned children fails for good at 3 of the 30
+    store calls an outage can take, and completes at the other 27. Two flows
+    over events the program has already emitted fail for good on the run with no
+    fault. Telling the two apart needs the call's async context, which an SDK
+    with no import from the runtime does not have, and admitting the calls of
+    sibling flows reverses the refusal above. It is an option in BUILD.md
+    (PR3.4d), with its trigger.
+  - A call made later than the step's own synchronous run, after the task
+    awaited something that is not durable and while the step is still pending,
+    races the step's body on the pass that runs it. No guard makes that the same
+    on two passes, and the engine does not try.
+  - What holds this. The SDK's replay-equivalence harness
+    (`packages/sdk/test/replay-equivalence.test.ts`) draws these groups in both
+    of its generators, beside the programs of one call after another that it
+    drew before, and runs every program with an outage injected at each sampled
+    store call. It observes a group by position, as `Promise.all` answers it,
+    and never in the order the calls were answered in. A program with an
+    admitted group is held to the whole comparison every program is held to:
+    the same ending, result, failure, checkpoint table and task counts as the
+    run with no fault, and for a saga the same rollback order and the same
+    output handed to each rollback. A program with a refused group is held, at
+    every fault point but the known gap's, to the same failure, to the refused
+    call having run no body and left no row, to the saga's row checkers, and to
+    a checkpoint table equal to the reference's but for the first step's own
+    rows, each of which is either missing or exactly what the program says it
+    holds. That trusts neither run for those rows. Its false negative is a row
+    of the first step that is wrongly MISSING from a run where it should have
+    landed, which nothing sees. That is tolerable here: the task has failed for
+    good, and the only later reader of those rows is the rollback, which is held
+    to being run when and only when the start marker landed and to being handed
+    the output when and only when the result landed. When that member was rolled
+    back its place in the order is asserted too: it started last of all, so it
+    is rolled back first. At the known gap's call the test pins what the engine
+    does: the group is admitted and the task completes, or the saga's later
+    member starts. Each known gap is a witness rather than a comparison: a
+    program of concurrent flows (`FLOW_PROGRAMS` and `SHARED_TASK_NAME_PROGRAMS` in the harness)
+    says how many store calls the run with no fault makes, how it ends, and the store calls
+    at which an outage ends it the other way, and the test runs an outage at
+    every store call and fails on any other ending. The programs of a shared
+    step name (`SHARED_NAME_PROGRAMS`), including one whose flows catch what
+    their step throws and one gathered with `allSettled`, pin instead the whole
+    table of endings by store call. A gap that is closed by accident, or that
+    gets worse, fails the witness until it is changed on purpose. One case reverses the order two spawns are answered in and shows
+    each child still under the key of its own call, and shows that the
+    comparison fails when the children are swapped. Each shape heads a short
+    program of its own, so every shape runs at every fault point whatever the
+    random programs draw. The file's self-tests fail when a generator stops
+    drawing a shape, when a shape is taken out of its table (one self-test names
+    every shape), when a generated method does not say whether a group holds it,
+    when a shape is in no program the file runs, and when a kind of call is made
+    only inside a group. Two registered mutations keep the audit checking that
+    these programs can fail: one lowers the guard while a registered step writes
+    its start marker, and one lets a rollback pass keep its own ordinal.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
   its own memoized step, so like every durable operation it is not called
   inside a `ctx.step` body. The await suspends like any other wait and holds no
@@ -1204,7 +1347,8 @@ One invocation executes one claimed run to its next suspension point:
     queue and decodes. It runs in the operation fuzz, which awaits children
     and requires a cross-queue await to be refused, and in the SDK's
     replay-equivalence harness, which generates `spawn` and `awaitTask`, counts
-    tasks so that a second child fails the comparison, and faults every program
+    tasks so that a second child fails the comparison, says which child each
+    spawn's key holds, and faults every program
     through its last measured store call. It is
     not part of the invariant library, because that library also judges states
     the poison matrix writes by hand, where no batch could have written the
@@ -4953,10 +5097,14 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     SDK writes it only when the step has none, only the lease holder writes
     checkpoints, and the next index is one past the highest handed out. So a
     step retried by a later attempt keeps its place, and no two started steps
-    share one. Steps do not start concurrently: a durable call made while a
+    share one. Steps do not start concurrently on the pass that runs them: a durable call made while a
     registered step is still writing its start marker is refused as a nested
     call, exactly as one made while a step's body runs, so two registered
     steps under `Promise.all` fail the task as two unregistered ones do. The
+    pass that runs the first step refuses the group; a pass that replays the
+    step from its memo raises nothing, so an outage on the failing pass's own
+    `fail` call lets the next pass admit it and start both (section 3.2, "Durable
+    calls started together", which names the gap). The
     model keys the index by saga generation because a fresh
     revival would forget it. Under the decision below no revival follows a
     saga, so a task has one generation and the key is not needed.
@@ -5063,7 +5211,9 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   retry of a pass spends none of it. A rollback pass replays as the run that
   failed: `ctx.attempt` reads that run's attempt on every pass, however many
   passes the rollbacks take, because a pass that replayed as a later attempt
-  would find no memo for a step named after the attempt. A handler that names
+  would find no memo for a step named after the attempt. The replay-equivalence
+  harness draws such steps in its sagas, with a rollback that fails once so
+  that a second pass follows the first. A handler that names
   steps after the attempt still cannot register the steps of its earlier
   attempts, which no replay reaches. The saga compensates what it can in
   order and then halts, naming the step it could not reach.

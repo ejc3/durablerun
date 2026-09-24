@@ -4,18 +4,29 @@ import {
   FatalTaskError,
   type IdSource,
   PermanentStoreError,
+  SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   StoreUnavailableError,
   taskDoneEventName,
 } from '@durablerun/core'
-import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
+import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { type ChildTask, type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
 import { LONGEST_NAME_BUILT, roomOf } from './name-rooms.js'
 
 const Q = 'q'
+
+/** A wait on a real timer. It is not durable: nothing of it is stored, and a replay waits again. */
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Two tries, the second at once: a task whose first attempt fails, and every rollback. */
+const TWO_TRIES_AT_ONCE = {
+  maxAttempts: 2,
+  retryStrategy: { kind: 'fixed', baseSeconds: 0 },
+} as const
 
 /**
  * The SDK's generated fault surface — its equivalent of the store's fault
@@ -48,6 +59,20 @@ const CTX_COVERAGE = {
   taskName: 'observed-property',
 } as const satisfies Record<keyof TaskContext, 'generated' | 'observed-property'>
 
+/**
+ * Which generated methods a generated group starts beside another call. Every generated
+ * method answers, so a new one does not compile until it says whether a group holds it.
+ */
+const GROUPED = {
+  step: 'a member',
+  sleepFor: 'a member',
+  sleepUntil: 'a member',
+  awaitEvent: 'a member',
+  spawn: 'a member',
+  awaitTask: 'a member',
+  emitEvent: 'takes no key, so it has no place in the order a group takes its keys in',
+} as const satisfies Record<GeneratedMethod, string>
+
 /** Adversarial value corpus: JSON-clean AND lossy-under-serialization. */
 const VALUES: unknown[] = [
   42,
@@ -69,18 +94,27 @@ const VALUES: unknown[] = [
  */
 const STEP_NAMES = ['op', 'op', 'a$b', 'sp ace', 'näme', '']
 
+/** One durable call of the context, made once. */
+type CallKind =
+  | 'step'
+  | 'sleep'
+  | 'sleep-until'
+  | 'emit'
+  | 'await-inline'
+  | 'await-external'
+  | 'await-timeout'
+  | 'spawn'
+  | 'await-child'
+  | 'await-child-timeout'
+
 interface ProgramOp {
-  kind:
-    | 'step'
-    | 'sleep'
-    | 'sleep-until'
-    | 'emit'
-    | 'await-inline'
-    | 'await-external'
-    | 'await-timeout'
-    | 'spawn'
-    | 'await-child'
-    | 'await-child-timeout'
+  /**
+   * A call; a group of calls started together and awaited together, which a task writes as
+   * `Promise.all`; a failure of the task's first attempt, which its retry gets past; flows,
+   * which are functions started together that each await and then go on; or a wait on a timer,
+   * which is not durable.
+   */
+  kind: CallKind | 'group' | 'fail-once' | 'flows' | 'wait'
   valueIndex: number
   nameIndex: number
   sleepSeconds?: number
@@ -97,9 +131,25 @@ interface ProgramOp {
   registersRollback?: boolean
   /** The name-length axis: a spawn whose child's task id has this many characters. */
   childIdLength?: number
+  /** A step whose name ends in `ctx.attempt`, so every attempt of the task runs a step of its own. */
+  namedAfterAttempt?: boolean
+  /** A group's calls, in the order the task writes them. */
+  members?: ProgramOp[]
+  /** Flows: each is ops run one after the other, and all of them are started together. */
+  flows?: ProgramOp[][]
+  /** A call whose refusal the task catches, and answers 'caught' for. */
+  catches?: boolean
+  /** Flows whose answers are gathered with `Promise.allSettled`, a rejection answering 'REJ'. */
+  settled?: boolean
+  /** How long a wait lasts, in milliseconds of a real timer. */
+  waitMs?: number
+  /** A step whose body takes this many milliseconds of a real timer before it returns. */
+  bodyMs?: number
+  /** The shape this op was drawn as a part of, for the inventory. */
+  shape?: string
 }
 
-const KIND_TO_METHOD: Record<ProgramOp['kind'], keyof TaskContext> = {
+const KIND_TO_METHOD: Record<CallKind, keyof TaskContext> = {
   step: 'step',
   sleep: 'sleepFor',
   'sleep-until': 'sleepUntil',
@@ -112,44 +162,218 @@ const KIND_TO_METHOD: Record<ProgramOp['kind'], keyof TaskContext> = {
   'await-child-timeout': 'awaitTask',
 }
 
-function generateProgram(rng: Rng): ProgramOp[] {
-  const length = 3 + rng.int(5)
+/**
+ * A program's calls in the order the task writes them: a group's members stand in its place,
+ * and so do the ops of its flows, one flow after another.
+ */
+function flat<Op extends { kind: string; members?: Op[]; flows?: Op[][] }>(
+  ops: readonly Op[],
+): Op[] {
+  return ops.flatMap((op) =>
+    op.kind === 'group' ? (op.members ?? []) : op.kind === 'flows' ? (op.flows ?? []).flat() : [op],
+  )
+}
+
+/** What a shape is drawn from: the generator's stream, and what the program holds so far. */
+interface Drawing {
+  readonly rng: Rng
+  /** The generator's position, which names an event that no other op of the program awaits. */
+  at: number
+  readonly emitted: string[]
+  spawned: number
+}
+
+/** An op of a shape, with the value and the name that every op draws. */
+const drawn = (d: Drawing, op: Omit<ProgramOp, 'valueIndex' | 'nameIndex'>): ProgramOp => ({
+  valueIndex: d.rng.int(VALUES.length),
+  nameIndex: d.rng.int(STEP_NAMES.length),
+  ...op,
+})
+
+/** Calls started together and awaited together, in the order the task writes them. */
+const group = <Op>(...members: Op[]) => ({
+  kind: 'group' as const,
+  valueIndex: 0,
+  nameIndex: 0,
+  members,
+})
+
+/** The grammar's recipes, which a shape draws as the random ops do. */
+const sleepSeconds = (rng: Rng): number => 5 + rng.int(20)
+const childFails = (rng: Rng): boolean => rng.next() < 0.3
+const externalEvent = (at: number): string => `ext${at}`
+/** An absolute wake near the fake clock's base: some are already past, some are ahead. */
+const wakeAt = (at: number): number => 1_000_000 + (at + 1) * 15_000
+
+/**
+ * A step of a refused group has a name no other op has, so that its key is its name and the
+ * comparison can name its row.
+ */
+const FIRST_OF_A_REFUSED_GROUP = 'the first of a refused group'
+const LATER_IN_A_REFUSED_GROUP = 'the later of a refused group'
+
+/** A group whose first call is a step, so that the engine refuses the call made after it. */
+const refusedAfterAStep = (d: Drawing, later: ProgramOp): ProgramOp[] => [
+  group(drawn(d, { kind: 'step', name: FIRST_OF_A_REFUSED_GROUP }), later),
+]
+
+/**
+ * The group of a program that the engine refuses, when it has one. A durable call made while
+ * a step runs is refused, so it is a group with a step ahead of its last call. The refusal
+ * fails the task for good, so nothing of a program runs after it.
+ */
+function refusedGroupOf<Op extends { kind: string; members?: Op[] }>(
+  ops: readonly Op[],
+): (Op & { members: Op[] }) | undefined {
+  return ops.find(
+    (op): op is Op & { members: Op[] } =>
+      op.kind === 'group' &&
+      (op.members ?? [])
+        .slice(0, -1)
+        .some((member) => member.kind === 'step' || member.kind === 'registered'),
+  )
+}
+
+const twoSpawns = (d: Drawing): ProgramOp[] => {
+  d.spawned += 2
+  return [
+    group(
+      drawn(d, { kind: 'spawn', childFails: childFails(d.rng) }),
+      drawn(d, { kind: 'spawn', childFails: childFails(d.rng) }),
+    ),
+  ]
+}
+
+/**
+ * The shapes a grammar of one call after another cannot draw. A group is durable calls
+ * started together and awaited together, which a task writes as `Promise.all`. Every call of
+ * a group takes its key when it is made, in the order written, so a group replays by
+ * position, and the handler observes it by position: the order its calls are answered in may
+ * differ between two schedules for no defect. A durable call made while a step runs is
+ * refused (DESIGN.md section 3.10), whether the pass runs the step or replays it, so a group
+ * that starts its step first is refused on every schedule, and one that starts its step last
+ * is admitted. Every other call may be started beside another. The members of a group do not
+ * depend on one another: a task that awaits, in a group, the event the same group emits can
+ * park before its emit lands, and nothing else will wake it.
+ */
+const PROGRAM_SHAPES = {
+  'two awaits of one event, which park the run': (d) => {
+    const eventName = externalEvent(d.at)
+    return [
+      group(
+        drawn(d, { kind: 'await-external', eventName }),
+        drawn(d, { kind: 'await-external', eventName }),
+      ),
+    ]
+  },
+  'two awaits of one event the program has emitted': (d) => {
+    const eventName = `ev${d.at}`
+    d.emitted.push(eventName)
+    return [
+      drawn(d, { kind: 'emit', eventName }),
+      group(
+        drawn(d, { kind: 'await-inline', eventName }),
+        drawn(d, { kind: 'await-inline', eventName }),
+      ),
+    ]
+  },
+  'two spawns': twoSpawns,
+  'two awaits of children': (d) => [
+    ...(d.spawned < 2 ? twoSpawns(d) : []),
+    group(
+      drawn(d, { kind: 'await-child', childIndex: d.rng.int(d.spawned) }),
+      drawn(d, { kind: 'await-child', childIndex: d.rng.int(d.spawned) }),
+    ),
+  ],
+  // The first suspension ends the pass, so the second sleep is reached by the pass after it.
+  'two sleeps, which run one after the other': (d) => [
+    group(
+      drawn(d, { kind: 'sleep', sleepSeconds: sleepSeconds(d.rng) }),
+      drawn(d, { kind: 'sleep', sleepSeconds: sleepSeconds(d.rng) }),
+    ),
+  ],
+  'a sleep beside a step': (d) => [
+    group(
+      d.rng.next() < 0.5
+        ? drawn(d, { kind: 'sleep', sleepSeconds: sleepSeconds(d.rng) })
+        : drawn(d, { kind: 'sleep-until', atEpochMs: wakeAt(d.at) }),
+      drawn(d, { kind: 'step' }),
+    ),
+  ],
+  'an await beside a step': (d) => [
+    group(
+      drawn(d, { kind: 'await-external', eventName: externalEvent(d.at) }),
+      drawn(d, { kind: 'step' }),
+    ),
+  ],
+  'a step named after the attempt, on an attempt that fails and on the one after it': (d) => [
+    drawn(d, { kind: 'step', namedAfterAttempt: true }),
+    drawn(d, { kind: 'fail-once' }),
+    drawn(d, { kind: 'step', namedAfterAttempt: true }),
+  ],
+  'a step and then a step, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'step', name: LATER_IN_A_REFUSED_GROUP })),
+  'a step and then a sleep, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'sleep', sleepSeconds: sleepSeconds(d.rng) })),
+  'a step and then an await, which the engine refuses': (d) =>
+    refusedAfterAStep(d, drawn(d, { kind: 'await-external', eventName: externalEvent(d.at) })),
+} satisfies Record<string, (d: Drawing) => ProgramOp[]>
+
+type ProgramShape = keyof typeof PROGRAM_SHAPES
+
+const PROGRAM_SHAPE_NAMES = Object.keys(PROGRAM_SHAPES) as ProgramShape[]
+
+function drawShape(shape: ProgramShape, d: Drawing): ProgramOp[] {
+  return PROGRAM_SHAPES[shape](d).map((op) => ({ ...op, shape }))
+}
+
+/**
+ * A program of random ops. One generated for a shape holds that shape at a random place, and
+ * is short, so that the shape is most of what its run costs.
+ */
+function generateProgram(rng: Rng, forced?: ProgramShape): ProgramOp[] {
+  const length = forced === undefined ? 3 + rng.int(5) : 1 + rng.int(2)
+  const forcedAt = forced === undefined ? -1 : rng.int(length)
   const ops: ProgramOp[] = []
-  const emitted: string[] = []
-  let spawned = 0
+  const d: Drawing = { rng, at: 0, emitted: [], spawned: 0 }
   for (let i = 0; i < length; i++) {
+    d.at = i
+    // A refused group fails the task for good, so it is the last thing a program holds.
+    if (refusedGroupOf(ops) !== undefined) break
+    if (forced !== undefined && i === forcedAt) {
+      ops.push(...drawShape(forced, d))
+      continue
+    }
     const roll = rng.next()
     const valueIndex = rng.int(VALUES.length)
     const nameIndex = rng.int(STEP_NAMES.length)
     if (roll < 0.14) {
-      ops.push({ kind: 'sleep', valueIndex, nameIndex, sleepSeconds: 5 + rng.int(20) })
+      ops.push({ kind: 'sleep', valueIndex, nameIndex, sleepSeconds: sleepSeconds(rng) })
     } else if (roll < 0.22) {
-      // Absolute wakes near the fake-clock base: some already past (due
-      // immediately), some ahead — both legal, both deterministic.
-      ops.push({
-        kind: 'sleep-until',
-        valueIndex,
-        nameIndex,
-        atEpochMs: 1_000_000 + (i + 1) * 15_000,
-      })
+      ops.push({ kind: 'sleep-until', valueIndex, nameIndex, atEpochMs: wakeAt(i) })
     } else if (roll < 0.34) {
       const eventName = `ev${i}`
-      emitted.push(eventName)
+      d.emitted.push(eventName)
       ops.push({ kind: 'emit', valueIndex, nameIndex, eventName })
-    } else if (roll < 0.44 && emitted.length > 0) {
+    } else if (roll < 0.44 && d.emitted.length > 0) {
       // Awaiting an event this program already emitted: the inline-hit path.
       ops.push({
         kind: 'await-inline',
         valueIndex,
         nameIndex,
-        eventName: emitted[rng.int(emitted.length)] ?? 'ev0',
+        eventName: d.emitted[rng.int(d.emitted.length)] ?? 'ev0',
       })
     } else if (roll < 0.52) {
       // The park→wake path: the driver loop emits ext* names every round
       // (first-write-wins keeps the stored payload unchanged), so whether a
       // schedule parks first or arrives late, the await resolves to the SAME
       // payload even if delivery provenance refreshes.
-      const base = { kind: 'await-external' as const, valueIndex, nameIndex, eventName: `ext${i}` }
+      const base = {
+        kind: 'await-external' as const,
+        valueIndex,
+        nameIndex,
+        eventName: externalEvent(i),
+      }
       ops.push(rng.next() < 0.5 ? { ...base, timeoutSeconds: 120 } : base)
     } else if (roll < 0.58) {
       // Nothing ever emits never*: the timeout wake is the only exit.
@@ -163,19 +387,27 @@ function generateProgram(rng: Rng): ProgramOp[] {
     } else if (roll < 0.68) {
       // A child that completes with an adversarial value, or fails for good. Either
       // way it ends, so an untimed await of it resolves on every schedule.
-      ops.push({ kind: 'spawn', valueIndex, nameIndex, childFails: rng.next() < 0.3 })
-      spawned++
-    } else if (roll < 0.76 && spawned > 0) {
+      ops.push({ kind: 'spawn', valueIndex, nameIndex, childFails: childFails(rng) })
+      d.spawned++
+    } else if (roll < 0.76 && d.spawned > 0) {
       // Untimed on purpose: a fault can delay the child past any timeout, and then
       // the faulted schedule would time out where the reference did not.
-      ops.push({ kind: 'await-child', valueIndex, nameIndex, childIndex: rng.int(spawned) })
+      ops.push({ kind: 'await-child', valueIndex, nameIndex, childIndex: rng.int(d.spawned) })
     } else if (roll < 0.8) {
       // A child that sleeps past the end of every schedule: the timeout is the only exit.
       ops.push({ kind: 'await-child-timeout', valueIndex, nameIndex, timeoutSeconds: 20 })
+    } else if (roll < 0.88 && forced === undefined && !ops.some((op) => op.shape !== undefined)) {
+      // One shape to a program, and one failed attempt, so that a program's size is bounded.
+      ops.push(...drawShape(rng.pick(PROGRAM_SHAPE_NAMES), d))
+    } else if (roll >= 0.88 && roll < 0.9 && !ops.some((op) => op.kind === 'fail-once')) {
+      // The first attempt fails here and the second gets past, so the ops after it run as
+      // attempt 2, and a step named after the attempt is another step there.
+      ops.push({ kind: 'fail-once', valueIndex, nameIndex })
     } else {
-      ops.push({ kind: 'step', valueIndex, nameIndex })
+      ops.push({ kind: 'step', valueIndex, nameIndex, namedAfterAttempt: rng.next() < 0.3 })
     }
   }
+  if (refusedGroupOf(ops) !== undefined) return ops
   ops.push({ kind: 'step', valueIndex: rng.int(VALUES.length), nameIndex: 0 }) // always end with output
   return ops
 }
@@ -203,88 +435,148 @@ function fingerprint(v: unknown): string {
   return `${typeof v}:${String(v)}`
 }
 
+/** `Promise.allSettled`, with a rejected flow answering 'REJ' in its place. */
+async function allSettled(
+  flows: Promise<(string | ChildTask | undefined)[]>[],
+): Promise<(string | ChildTask | undefined)[][]> {
+  return (await Promise.allSettled(flows)).map((flow) =>
+    flow.status === 'fulfilled' ? flow.value : ['REJ'],
+  )
+}
+
 function programHandler(ops: ProgramOp[], watch?: Watch) {
   return async (ctx: TaskContext) => {
     const observed: string[] = []
     const children: ChildTask[] = []
-    for (const [index, op] of ops.entries()) {
-      watch?.trace.push(`op ${index}`)
+    /**
+     * One op's durable call. The call is made before this function first awaits, so the
+     * calls of a group are all made, in the order written, before any of them is answered.
+     * It answers what the task observed, or the child it spawned.
+     */
+    const call = async (
+      op: ProgramOp,
+      index: number,
+      position = 0,
+    ): Promise<string | ChildTask | undefined> => {
+      if (op.catches !== true) return await callOnce(op, index, position)
+      try {
+        return await callOnce(op, index, position)
+      } catch {
+        return 'caught'
+      }
+    }
+    const callOnce = async (
+      op: ProgramOp,
+      index: number,
+      position = 0,
+    ): Promise<string | ChildTask | undefined> => {
       switch (op.kind) {
         case 'spawn':
-          children.push(
-            await ctx.spawn(op.name ?? 'child', {
-              valueIndex: op.valueIndex,
-              fails: op.childFails === true,
-            }),
-          )
-          break
+          return await ctx.spawn(op.name ?? 'child', {
+            valueIndex: op.valueIndex,
+            fails: op.childFails === true,
+          })
         case 'await-child': {
           const child = children[op.childIndex ?? 0]
           if (child === undefined)
             throw new FatalTaskError('the generator awaited an unspawned child')
           const outcome = await ctx.awaitTask(child)
-          observed.push(
-            `child:${outcome.state}:${outcome.completedPayloadJson ?? outcome.failureReasonJson}`,
-          )
-          break
+          return `child:${outcome.state}:${outcome.completedPayloadJson ?? outcome.failureReasonJson}`
         }
         case 'await-child-timeout': {
           const stuck = await ctx.spawn('stuck', null)
           try {
             await ctx.awaitTask(stuck, { timeoutSeconds: op.timeoutSeconds ?? 20 })
-            observed.push('unexpected-child-outcome')
+            return 'unexpected-child-outcome'
           } catch (error) {
             if (!(error instanceof EventTimeoutError)) throw error
-            observed.push('child-timeout')
+            return 'child-timeout'
           }
-          break
         }
         case 'sleep':
           await ctx.sleepFor(op.sleepSeconds ?? 5)
-          break
+          return undefined
         case 'sleep-until':
           await ctx.sleepUntil(op.atEpochMs ?? 1_000_000)
-          break
+          return undefined
         case 'emit':
           await ctx.emitEvent(
             op.eventName as string,
             JSON.stringify(VALUES[op.valueIndex]) ?? 'null',
           )
-          break
+          return undefined
         case 'await-inline':
         case 'await-external': {
           const payload = await ctx.awaitEvent(
             op.eventName as string,
             op.timeoutSeconds !== undefined ? { timeoutSeconds: op.timeoutSeconds } : undefined,
           )
-          observed.push(`ev:${op.eventName}:${payload}`)
-          break
+          return `ev:${op.eventName}:${payload}`
         }
         case 'await-timeout':
           try {
             await ctx.awaitEvent(op.eventName as string, {
               timeoutSeconds: op.timeoutSeconds ?? 20,
             })
-            observed.push(`unexpected-delivery:${op.eventName}`)
+            return `unexpected-delivery:${op.eventName}`
           } catch (error) {
             if (!(error instanceof EventTimeoutError)) throw error
-            observed.push(`timeout:${op.eventName}`)
+            return `timeout:${op.eventName}`
           }
-          break
-        case 'step':
-          observed.push(
-            fingerprint(
-              await ctx.step(
-                op.name ?? STEP_NAMES[op.nameIndex] ?? 'op',
-                () => {
-                  watch?.bodies.push(index)
-                  return VALUES[op.valueIndex]
-                },
-                op.registersRollback ? { rollback: () => {} } : undefined,
-              ),
+        case 'step': {
+          const name = op.name ?? STEP_NAMES[op.nameIndex] ?? 'op'
+          const ran = () => {
+            watch?.bodies.push(index)
+            watch?.members?.push(`${index}.${position}`)
+            return VALUES[op.valueIndex]
+          }
+          return fingerprint(
+            await ctx.step(
+              op.namedAfterAttempt ? `${name}-${ctx.attempt}` : name,
+              op.bodyMs === undefined ? ran : () => wait(op.bodyMs ?? 0).then(ran),
+              op.registersRollback ? { rollback: () => {} } : undefined,
             ),
           )
-          break
+        }
+        case 'wait':
+          await wait(op.waitMs ?? 1)
+          return undefined
+        case 'group':
+        case 'flows':
+        case 'fail-once':
+          throw new FatalTaskError(`the generator drew '${op.kind}' where a call goes`)
+      }
+    }
+    for (const [index, op] of ops.entries()) {
+      watch?.trace.push(`op ${index}`)
+      if (op.kind === 'fail-once') {
+        if (ctx.attempt === 1) throw new Error('the first attempt fails')
+        continue
+      }
+      // A group is observed by position, as `Promise.all` answers it, and never in the order
+      // its calls were answered in, which a fault may change.
+      // A flow is a function of its own: it makes its next call when its last one is answered,
+      // so the calls of two flows are made at moments the store and the timers decide. Flows
+      // are observed by position too, each flow's answers in the order it got them.
+      const answers =
+        op.kind === 'group'
+          ? await Promise.all(
+              (op.members ?? []).map((member, position) => call(member, index, position)),
+            )
+          : op.kind === 'flows'
+            ? (
+                await (op.settled === true ? allSettled : Promise.all.bind(Promise))(
+                  (op.flows ?? []).map(async (flow, position) => {
+                    const seen: (string | ChildTask | undefined)[] = []
+                    for (const member of flow) seen.push(await call(member, index, position))
+                    return seen
+                  }),
+                )
+              ).flat()
+            : [await call(op, index)]
+      for (const answer of answers) {
+        if (typeof answer === 'string') observed.push(answer)
+        else if (answer !== undefined) children.push(answer)
       }
     }
     return observed
@@ -310,12 +602,22 @@ async function stuckHandler(ctx: TaskContext): Promise<unknown> {
  * a child await's key embeds it, so ids are replaced by the child's spawn order, which
  * is the same on every schedule.
  */
-function withoutChildIds(rows: { checkpoint_name: unknown; state: unknown }[]): unknown[] {
-  const spawns = rows
+/** A checkpoint row as the executor answers it. */
+type StoredRow = Record<string, unknown>
+
+/** A task's spawn memos in the order of their keys: each key, and the id of the child it holds. */
+function spawnMemos(rows: readonly StoredRow[]): { name: string; taskId: string }[] {
+  return rows
     .filter((row) => String(row.checkpoint_name).startsWith('$spawn:'))
-    .map((row) => ({ name: String(row.checkpoint_name), state: String(row.state) }))
+    .map((row) => ({
+      name: String(row.checkpoint_name),
+      taskId: (JSON.parse(String(row.state)) as { taskId: string }).taskId,
+    }))
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
-  const ids = spawns.map((row) => (JSON.parse(row.state) as { taskId: string }).taskId)
+}
+
+function withoutChildIds(rows: readonly StoredRow[]): Row[] {
+  const ids = spawnMemos(rows).map((memo) => memo.taskId)
   const normalize = (text: string): string =>
     ids.reduce((out, id, index) => out.replaceAll(id, `child-${index}`), text)
   return rows
@@ -359,6 +661,8 @@ interface Watch {
   readonly trace: string[]
   /** The index of every step whose body ran, once for each time it ran. */
   readonly bodies: number[]
+  /** The same, as `index.position`, which tells the members of a group apart. */
+  readonly members?: string[]
   /** The user attempts the task was charged. */
   attempts?: number
 }
@@ -409,8 +713,11 @@ async function landing<T>(fault: FaultKind, run: () => Promise<T>): Promise<T> {
 
 interface RunOptions {
   readonly tamper?: (store: SchedulerStore) => SchedulerStore
-  /** Every generated program completes. A name past its room fails its task for good. */
-  readonly ends?: 'completed' | 'failed'
+  /**
+   * Every generated program completes. A name past its room fails its task for good. 'either'
+   * leaves the ending to the caller, who compares it between schedules.
+   */
+  readonly ends?: 'completed' | 'failed' | 'either'
   readonly watch?: Watch
   /** The kind of fault the failed call meets. An outage, unless a sweep says otherwise. */
   readonly fault?: FaultKind
@@ -429,14 +736,17 @@ async function runProgram(
 ): Promise<{
   result: string | undefined
   failure: string | undefined
-  checkpoints: unknown[]
+  checkpoints: Row[]
   /** How many tasks of each name exist at the end: a second child is a second row here. */
   tasks: string[]
+  /** Which child each spawn's key holds, told by the params the child was spawned with. */
+  spawned: string[]
   /** The longest checkpoint name, emitted event name and task id the run left, in characters. */
   longestCheckpointName: number
   longestEmittedName: number
   longestTaskId: number
   calls: number
+  state: string | undefined
 }> {
   const {
     tamper = (store: SchedulerStore) => store,
@@ -452,8 +762,9 @@ async function runProgram(
     // engine mints a long id. A store's spawn mints the task's id first and before it
     // awaits anything, so the first id minted inside the spawn of such a child is padded.
     const seeded = seededIdSource(new Rng(seed))
+    const written = flat(ops)
     const longChildren = new Map(
-      ops.flatMap((op) =>
+      written.flatMap((op) =>
         op.kind === 'spawn' && op.childIdLength !== undefined
           ? [[op.name ?? 'child', op.childIdLength] as const]
           : [],
@@ -497,14 +808,22 @@ async function runProgram(
       ['prog', programHandler(ops, watch)],
       ['child', childHandler],
       ['stuck', stuckHandler],
-      ...ops.flatMap((op) =>
+      ...written.flatMap((op) =>
         op.kind === 'spawn' && op.name !== undefined ? [[op.name, childHandler] as const] : [],
       ),
     ])
-    const spawned = await real.spawn(Q, 'prog', '{}')
-    const externals = ops
-      .filter((op) => op.kind === 'await-external')
-      .map((op) => op.eventName as string)
+    const spawned = await real.spawn(
+      Q,
+      'prog',
+      '{}',
+      ops.some((op) => op.kind === 'fail-once') ? TWO_TRIES_AT_ONCE : undefined,
+    )
+    const settleMs = 3 * Math.max(0, ...written.map((op) => op.bodyMs ?? 0))
+    const externals = [
+      ...new Set(
+        written.filter((op) => op.kind === 'await-external').map((op) => op.eventName as string),
+      ),
+    ]
 
     // Drive to termination: claim, pass, advance, sweep — the plain loop.
     for (let round = 0; round < 60; round++) {
@@ -527,6 +846,9 @@ async function runProgram(
           { store, clock, registry },
           { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
         ).catch(() => {})
+        // A body on a timer can outlast its pass. The lease is still held, so what it writes
+        // lands, and the round waits for it as a worker's process would go on running it.
+        if (settleMs > 0) await wait(settleMs)
       }
       // Moves time without firing sleeps: the pump parks until its pass ends.
       clock.advance(70_000)
@@ -534,8 +856,11 @@ async function runProgram(
       await real.sweep(Q, 10)
     }
     const outcome = await real.getTaskResult(Q, spawned.taskId)
-    expect(outcome?.state, `program must terminate (fault at call ${failAtCall})`).toBe(ends)
-    const [cps] = await raw.batch(
+    expect(
+      ends === 'either' ? ['completed', 'failed'] : [ends],
+      `program must terminate (fault at call ${failAtCall})`,
+    ).toContain(outcome?.state)
+    const [cps, spawnedWith] = await raw.batch(
       't',
       [
         {
@@ -543,6 +868,7 @@ async function runProgram(
                 ORDER BY checkpoint_name`,
           args: [spawned.taskId],
         },
+        { sql: 'SELECT task_id, params FROM tasks', args: [] },
       ],
       'read',
     )
@@ -563,10 +889,17 @@ async function runProgram(
       ],
       'read',
     )
+    const paramsOf = new Map(
+      (spawnedWith?.rows ?? []).map((row) => [String(row.task_id), String(row.params)]),
+    )
     if (watch !== undefined) watch.attempts = Number(measured?.rows[0]?.attempts)
     return {
       calls,
+      state: outcome?.state,
       tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
+      spawned: spawnMemos(cps?.rows ?? []).map(
+        (memo) => `${memo.name} -> ${paramsOf.get(memo.taskId)}`,
+      ),
       result: outcome?.completedPayloadJson,
       failure: outcome?.failureReasonJson,
       longestCheckpointName: Math.max(
@@ -583,12 +916,27 @@ async function runProgram(
           .map((name) => [...name].length),
       ),
       longestTaskId: Number(measured?.rows[0]?.id_width),
-      checkpoints: withoutChildIds(
-        (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
-      ),
+      checkpoints: withoutChildIds(cps?.rows ?? []),
     }
   } finally {
     raw.close()
+  }
+}
+
+/**
+ * A generated program that owns a registered mutant fails under it wherever the defect first
+ * shows: where a run checks how it ended, at a row checker, or at the comparison between two
+ * schedules. The failure is the program's, so it is reported under the program's verdict,
+ * with the assertion that failed as its cause.
+ */
+async function owning(verdict: string | undefined, body: () => Promise<unknown>): Promise<void> {
+  try {
+    await body()
+  } catch (error) {
+    // Only a failed assertion is the program's verdict. A timeout, or a fault of the harness's
+    // own, is reported as itself, so that it is never booked as a mutant caught.
+    const failedAssertion = error instanceof Error && error.name === 'AssertionError'
+    throw verdict !== undefined && failedAssertion ? new Error(verdict, { cause: error }) : error
   }
 }
 
@@ -599,9 +947,10 @@ async function runProgram(
 async function everyFaultPointYieldsTheReference(
   label: string,
   run: (seed: string, failAtCall: number, fault: FaultKind) => ReturnType<typeof runProgram>,
+  points: (measuredCalls: number) => number[] = faultPoints,
 ): ReturnType<typeof runProgram> {
   const reference = await run(`ref-${label}`, 0, 'outage')
-  for (const call of faultPoints(reference.calls)) {
+  for (const call of points(reference.calls)) {
     for (const fault of FAULT_KINDS) {
       const faulted = await landing(fault, () =>
         run(faultSeed(`fault-${label}-${call}`, fault), call, fault),
@@ -611,6 +960,447 @@ async function everyFaultPointYieldsTheReference(
     }
   }
   return reference
+}
+
+/** What a program holds, for the inventory: every kind, a group's members among them, and every shape. */
+function inventoryOf(ops: readonly ProgramOp[]): string[] {
+  return [...ops, ...flat(ops)].flatMap((op) => [
+    op.kind,
+    ...(op.shape === undefined ? [] : [op.shape]),
+    ...(op.namedAfterAttempt ? [NAMED_AFTER_THE_ATTEMPT] : []),
+  ])
+}
+
+const NAMED_AFTER_THE_ATTEMPT = 'a step named after the attempt'
+/** What a program can hold beside a kind of call and a shape. */
+const OTHER_HOLDINGS = ['group', 'fail-once', NAMED_AFTER_THE_ATTEMPT]
+
+const flowsOf = (...flows: ProgramOp[][]): ProgramOp => ({
+  kind: 'flows',
+  valueIndex: 0,
+  nameIndex: 0,
+  flows,
+})
+const inAFlow = (op: Omit<ProgramOp, 'valueIndex' | 'nameIndex'>, valueIndex = 0): ProgramOp => ({
+  valueIndex,
+  nameIndex: 0,
+  ...op,
+})
+
+/**
+ * What the engine does today with a program that it does not run the same at every fault
+ * point: how many store calls the run with no fault makes, how it ends, and the store calls
+ * at which an outage makes it end the other way. Every store call is tried.
+ */
+interface KnownGap {
+  readonly calls: number
+  readonly reference: 'completed' | 'refused'
+  readonly otherwiseAt: readonly number[]
+}
+
+/**
+ * The programs no generator draws: concurrent FLOWS. The calls of a group are all made before
+ * the first of them is answered. A flow is a function of its own that awaits and then makes a
+ * durable call, so two flows started together reach their calls at moments that a store call
+ * or a timer decides, and on a pass that replays every await from its memo they reach them in
+ * lockstep. A flow program is short, and the call that tells is not always one the sample
+ * takes, so each runs with an outage at EVERY store call.
+ *
+ * Each of these is a KNOWN GAP, and the test says exactly what the engine does with it
+ * (`theEngineDoesWhatTheGapSays`). Each is an ordinary program in which no call is made
+ * inside a step, and each is refused as if a call had been made inside one, because the
+ * engine's refusal is one flag that cannot tell a call nested in a step from a call that a
+ * sibling flow makes while the step runs. Whether a program of this shape completes depends
+ * on which store call an outage takes. Closing the gap means admitting concurrency, which
+ * reverses DESIGN.md section 3.10 (BUILD.md's PR3.4d entry names the option and its
+ * trigger). Until then the witness fails if a program ends another way at any call, so a gap
+ * that is closed by accident, or that gets worse, is seen.
+ */
+const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
+  'flows that each await a child and then record it in a step under its own name, and then a sleep':
+    {
+      gap: { calls: 30, reference: 'completed', otherwiseAt: [6, 7, 24] },
+      ops: [
+        group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-child', childIndex: 0 }),
+            inAFlow({ kind: 'step', name: 'record-0' }),
+          ],
+          [
+            inAFlow({ kind: 'await-child', childIndex: 1 }),
+            inAFlow({ kind: 'step', name: 'record-1' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'flows that each await an event the program has emitted and then record it in a step, and then a sleep':
+    {
+      gap: { calls: 11, reference: 'refused', otherwiseAt: [6, 7, 8, 9, 11] },
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record-e1' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record-e2' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'flows that each wait on a timer of its own length and then run a step whose body takes time': {
+    gap: { calls: 5, reference: 'refused', otherwiseAt: [4] },
+    ops: [
+      flowsOf(
+        [
+          inAFlow({ kind: 'wait', waitMs: 1 }),
+          inAFlow({ kind: 'step', name: 'item-1', bodyMs: 10 }),
+        ],
+        [
+          inAFlow({ kind: 'wait', waitMs: 4 }),
+          inAFlow({ kind: 'step', name: 'item-4', bodyMs: 10 }, 1),
+        ],
+      ),
+    ],
+  },
+}
+
+/**
+ * The same defect for a task name, found while measuring the shared step name and not closed
+ * by it. Two flows that each await something and then spawn a child under one task name are
+ * numbered in the order their calls arrive (`$spawn:child`, then `$spawn:child#2`), and a
+ * replay from memos can reach the two calls in the other order, so each flow is handed the
+ * other's child, and then awaits the wrong one. The engine does not refuse a repeated task
+ * name, which a fan-out over one task name repeats every time, and a refusal would cost every
+ * such flow. The test says exactly what the engine does, so a swap that is closed by accident,
+ * or that reaches more store calls, fails it, and the swap stays visible. BUILD.md's PR3.4d
+ * entry names the option and its trigger.
+ */
+const SHARED_TASK_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
+  'flows that each await an event the program has emitted and then spawn a child under one task name':
+    {
+      gap: { calls: 14, reference: 'completed', otherwiseAt: [6, 8] },
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'spawn', name: 'child' }, 0),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'spawn', name: 'child' }, 1),
+          ],
+        ),
+      ],
+    },
+  'flows that each await a child and then spawn a second child under one task name': {
+    gap: { calls: 28, reference: 'completed', otherwiseAt: [5, 8, 21] },
+    ops: [
+      group<ProgramOp>(
+        inAFlow({ kind: 'spawn', name: 'first' }, 0),
+        inAFlow({ kind: 'spawn', name: 'first' }, 1),
+      ),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-child', childIndex: 0 }),
+          inAFlow({ kind: 'spawn', name: 'second' }, 0),
+        ],
+        [
+          inAFlow({ kind: 'await-child', childIndex: 1 }),
+          inAFlow({ kind: 'spawn', name: 'second' }, 1),
+        ],
+      ),
+    ],
+  },
+}
+
+/**
+ * What the engine ends with at every store call, for a program it does not run the same at
+ * every fault point: each ending, and the calls at which an outage ends the run that way (0 is
+ * the run with no fault). The test runs every store call and fails on any other table, so a
+ * program that comes to end another way, or at another call, is seen whichever way it moved.
+ */
+type PinnedEndings = Record<string, readonly number[]>
+
+/**
+ * Programs in which one step name is used by two flows, which the engine does NOT refuse
+ * (DESIGN.md section 3.10). The engine numbers the uses of a name in the order the calls
+ * arrive (`record`, then `record#2`), and two flows reach their calls in an order that a
+ * store call decides on one pass and that a replay from memos decides again, in lockstep. The
+ * flow that arrived second on the pass that ran the steps can arrive first on the pass that
+ * replays them, and then each flow is handed the other's value: the task completes with two
+ * values swapped, and nothing says so. A refusal was built, and rejected: it refuses ordinary
+ * programs (a poll loop beside an await), and a task that catches it still completes swapped,
+ * which the last two programs pin. The result of each ending shows the values: the flow that
+ * awaited the first event or child, then the flow that awaited the second.
+ */
+const SHARED_NAME_PROGRAMS: Record<
+  string,
+  { ops: ProgramOp[]; calls: number; endings: PinnedEndings }
+> = {
+  'flows that each await a child and then record it in a step under one name, and then a sleep': {
+    calls: 30,
+    endings: {
+      'completed ["child:completed:42","number:42","child:completed:\\"plain\\"","string:plain"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
+        [
+          0, 1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 25, 26, 27, 28, 29,
+          30,
+        ],
+      'completed ["child:completed:42","string:plain","child:completed:\\"plain\\"","number:42"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
+        [5, 8, 21],
+      "refused ctx.step('record')": [6, 7, 24],
+    },
+    ops: [
+      group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-child', childIndex: 0 }),
+          inAFlow({ kind: 'step', name: 'record' }),
+        ],
+        [
+          inAFlow({ kind: 'await-child', childIndex: 1 }),
+          inAFlow({ kind: 'step', name: 'record' }, 1),
+        ],
+      ),
+      inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+    ],
+  },
+  'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep':
+    {
+      calls: 11,
+      endings: {
+        "refused ctx.step('record')": [0, 1, 2, 3, 4, 5, 10],
+        'completed ["ev:e1:42","string:plain","ev:e2:\\"plain\\"","number:42"] ': [6, 8],
+        'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [7, 9, 11],
+      },
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'the same flows, each catching what its step throws': {
+    calls: 11,
+    endings: {
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","caught"] ': [0, 1, 2, 3, 4, 5],
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [6, 7, 8, 9, 11],
+      'completed ["ev:e1:42","caught","ev:e2:\\"plain\\"","caught"] ': [10],
+    },
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+          inAFlow({ kind: 'step', name: 'record', catches: true }),
+        ],
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+          inAFlow({ kind: 'step', name: 'record', catches: true }, 1),
+        ],
+      ),
+    ],
+  },
+  'the same flows, gathered with allSettled': {
+    calls: 11,
+    endings: {
+      'completed ["ev:e1:42","number:42","REJ"] ': [0, 1, 2, 3, 4, 5, 7, 9],
+      'completed ["REJ","ev:e2:\\"plain\\"","string:plain"] ': [6, 8],
+      'completed ["REJ","REJ"] ': [10],
+      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [11],
+    },
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      {
+        ...flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'step', name: 'record' }),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'step', name: 'record' }, 1),
+          ],
+        ),
+        settled: true,
+      },
+    ],
+  },
+}
+
+/** Every store call of a run, where the sample of `faultPoints` takes every other one. */
+const everyCall = (measuredCalls: number): number[] =>
+  Array.from({ length: measuredCalls }, (_, at) => at + 1)
+
+const SLEEPS_UNTIL_A_TIME: ProgramOp[] = [
+  { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: 900_000 },
+  { kind: 'sleep-until', valueIndex: 0, nameIndex: 0, atEpochMs: wakeAt(3) },
+  { kind: 'step', valueIndex: 0, nameIndex: 0 },
+]
+
+const STEP_BESIDE_A_SLEEP: ProgramOp[] = [
+  group<ProgramOp>(
+    inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+    inAFlow({ kind: 'step', name: 'x' }),
+  ),
+  inAFlow({ kind: 'step', name: 'x' }, 1),
+]
+
+const POLL_BESIDE_AN_AWAIT: ProgramOp[] = [
+  inAFlow({ kind: 'emit', eventName: 'done' }),
+  flowsOf(
+    [inAFlow({ kind: 'await-inline', eventName: 'done' })],
+    [
+      inAFlow({ kind: 'step', name: 'poll' }),
+      inAFlow({ kind: 'step', name: 'poll' }, 1),
+      inAFlow({ kind: 'step', name: 'poll' }, 2),
+    ],
+  ),
+]
+
+const REPEATED_STEP: ProgramOp[] = [0, 1, 2].map((valueIndex) => ({
+  kind: 'step',
+  valueIndex,
+  nameIndex: 0,
+}))
+
+/** The generated programs this file runs at every fault point: six of random ops, and one for each shape. */
+const RUN_PROGRAMS: readonly (readonly [string, ProgramOp[]])[] = [
+  ...[0, 1, 2, 3, 4, 5].map(
+    (seed) => [`program ${seed}`, generateProgram(new Rng(`program-${seed}`))] as const,
+  ),
+  ...PROGRAM_SHAPE_NAMES.map(
+    (shape) => [shape, generateProgram(new Rng(`shape-${shape}`), shape)] as const,
+  ),
+  // The six seeds draw no sleep until a time outside a group, so one program makes that call
+  // one after another: to a time already past, and to one ahead.
+  ['a sleep until a time, one call after another', SLEEPS_UNTIL_A_TIME] as const,
+  // One step name, used one call after another, is an ordinary program, and so is one step
+  // name used beside another flow's call, when only one flow uses it.
+  ['a step name used again one call after another', REPEATED_STEP] as const,
+  ['a step beside a sleep, and then the same step name again', STEP_BESIDE_A_SLEEP] as const,
+  ['a poll loop of one step name, beside an await', POLL_BESIDE_AN_AWAIT] as const,
+]
+
+interface Row {
+  checkpoint_name: string
+  state: string
+}
+
+/**
+ * What two runs of a program with a refused group may differ by. The refusal ends the pass
+ * while the first member's own writes may still be in flight, so each row of that member may
+ * be missing from a run. One that is there holds what the program says it holds, and the rows
+ * that are left are compared whole, so no other row may differ.
+ */
+function withoutTheRowsInFlight(
+  rows: readonly Row[],
+  inFlight: ReadonlyMap<string, string>,
+): Row[] {
+  const left: Row[] = []
+  for (const row of rows) {
+    const holds = inFlight.get(row.checkpoint_name)
+    if (holds === undefined) left.push(row)
+    else
+      expect(row.state, `the row '${row.checkpoint_name}', which a refusal may leave out`).toBe(
+        holds,
+      )
+  }
+  return left
+}
+
+/** What a step's checkpoint holds: the value as the engine serializes it. */
+const storedValue = (valueIndex: number): string => JSON.stringify(VALUES[valueIndex]) ?? 'null'
+
+/** How the engine names a call it refuses: a step by its name, any other call by its method. */
+const refusedCallOf = (op: ProgramOp): string =>
+  op.kind === 'step' ? `ctx.step('${op.name}')` : `ctx.${KIND_TO_METHOD[op.kind as CallKind]}`
+
+/** The store call that is a run's first `fail`: the failing pass's own record of its failure. */
+function firstFailCall(trace: readonly string[]): number {
+  const calls = trace.filter(
+    (entry) => entry !== 'attempt' && entry !== INJECTED_OUTAGE && !/^op \d+$/.test(entry),
+  )
+  const at = calls.indexOf('fail')
+  if (at < 0) throw new Error('the run made no `fail` call')
+  return at + 1
+}
+
+/**
+ * A program whose group the engine refuses is held to this at every fault point but one: the
+ * task fails for good with the same refusal, which names the later call; the later member
+ * left nothing, no body and no row; and the checkpoint table is the reference's, but for the
+ * first member's own row, which the refusal may leave out.
+ *
+ * The one is a KNOWN GAP, and the test says what the engine does at it. When the outage takes
+ * the failing pass's own `fail` call, the next pass replays the first member from its memo,
+ * which raises nothing, so the pass admits the later call and the task completes. Closing it
+ * means making a replayed step refuse calls beside it, which also refuses an ordinary fan-out
+ * written as concurrent flows (BUILD.md's PR3.4d entry names the options). The run with the
+ * outage on that call must complete, so a change that closes the gap, or that admits the group
+ * at any other call, fails here until this test is changed on purpose.
+ */
+async function everyFaultPointRefusesTheGroup(label: string, ops: ProgramOp[]): Promise<void> {
+  const refused = refusedGroupOf(ops)
+  const [first, later] = refused?.members ?? []
+  if (refused === undefined || first === undefined || later === undefined)
+    throw new Error('the program holds no refused group')
+  const inFlight = new Map([[String(first.name), storedValue(first.valueIndex)]])
+  const laterBody = `${ops.indexOf(refused)}.1`
+  const measured: Watch = { trace: [], bodies: [] }
+  await runProgram(ops, `ref-${label}`, 0, { ends: 'failed', watch: measured })
+  const admittedAt = firstFailCall(measured.trace)
+  const reference = await everyFaultPointYieldsTheReference(
+    label,
+    async (seed, failAtCall, fault) => {
+      const watch: Watch = { trace: [], bodies: [], members: [] }
+      const record = await runProgram(ops, seed, failAtCall, { ends: 'failed', watch, fault })
+      expect(watch.members, `fault at call ${failAtCall}`).not.toContain(laterBody)
+      return {
+        ...record,
+        checkpoints: withoutTheRowsInFlight(record.checkpoints, inFlight),
+        // The longest name is the first member's own when its row is there, so it is not compared.
+        longestCheckpointName: 0,
+      }
+    },
+    (measuredCalls) => faultPoints(measuredCalls).filter((call) => call !== admittedAt),
+  )
+  const failure = JSON.parse(reference.failure ?? 'null') as { name?: string; message?: string }
+  expect({
+    name: failure?.name,
+    refuses: failure?.message?.split(' called inside a step')[0],
+  }).toEqual({ name: 'FatalTaskError', refuses: refusedCallOf(later) })
+  for (const fault of FAULT_KINDS) {
+    const admitted = await landing(fault, () =>
+      runProgram(ops, faultSeed(`fault-${label}-${admittedAt}`, fault), admittedAt, {
+        ends: 'either',
+        fault,
+      }),
+    )
+    expect(
+      { state: admitted.state, failure: admitted.failure },
+      `known gap: the ${fault} on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+    ).toEqual({ state: 'completed', failure: undefined })
+  }
 }
 
 describe('context-method enrollment (the inventory gate)', () => {
@@ -624,12 +1414,88 @@ describe('context-method enrollment (the inventory gate)', () => {
     expect([...classified].sort()).toEqual([...generatedMethods].sort())
   })
 
-  it('every op kind is actually reachable by generation (no dead weights)', () => {
-    const seen = new Set<string>()
-    for (let seed = 0; seed < 300; seed++) {
-      for (const op of generateProgram(new Rng(`inventory-${seed}`))) seen.add(op.kind)
-    }
-    expect([...seen].sort()).toEqual((Object.keys(KIND_TO_METHOD) as string[]).sort())
+  const drawnAtRandom = Array.from({ length: 300 }, (_, seed) =>
+    generateProgram(new Rng(`inventory-${seed}`)),
+  )
+
+  it('every op kind and every shape is actually reachable by generation (no dead weights)', () => {
+    const seen = new Set(drawnAtRandom.flatMap(inventoryOf))
+    expect([...seen].sort()).toEqual(
+      [...Object.keys(KIND_TO_METHOD), ...OTHER_HOLDINGS, ...PROGRAM_SHAPE_NAMES].sort(),
+    )
+  })
+
+  it('every generated method that takes a key is a member of a generated group, or says why it is not', () => {
+    const members = new Set(
+      drawnAtRandom.flatMap((ops) =>
+        ops.flatMap((op) =>
+          (op.members ?? []).map((member) => KIND_TO_METHOD[member.kind as CallKind]),
+        ),
+      ),
+    )
+    const declared = (Object.keys(GROUPED) as GeneratedMethod[]).filter(
+      (method) => GROUPED[method] === 'a member',
+    )
+    expect([...members].sort()).toEqual([...declared].sort())
+  })
+
+  it('draws these shapes and runs these flow programs, by name, so that taking one out of its table fails here', () => {
+    expect({
+      plain: PROGRAM_SHAPE_NAMES,
+      saga: SAGA_SHAPE_NAMES,
+      flows: Object.keys(FLOW_PROGRAMS),
+      sharedName: Object.keys(SHARED_NAME_PROGRAMS),
+      sharedTaskName: Object.keys(SHARED_TASK_NAME_PROGRAMS),
+    }).toEqual({
+      plain: [
+        'two awaits of one event, which park the run',
+        'two awaits of one event the program has emitted',
+        'two spawns',
+        'two awaits of children',
+        'two sleeps, which run one after the other',
+        'a sleep beside a step',
+        'an await beside a step',
+        'a step named after the attempt, on an attempt that fails and on the one after it',
+        'a step and then a step, which the engine refuses',
+        'a step and then a sleep, which the engine refuses',
+        'a step and then an await, which the engine refuses',
+      ],
+      saga: [
+        'a registered step beside a sleep',
+        'steps named after the attempt, and a rollback that fails once',
+        'two registered steps started together, which the engine refuses',
+      ],
+      flows: [
+        'flows that each await a child and then record it in a step under its own name, and then a sleep',
+        'flows that each await an event the program has emitted and then record it in a step, and then a sleep',
+        'flows that each wait on a timer of its own length and then run a step whose body takes time',
+      ],
+      sharedName: [
+        'flows that each await a child and then record it in a step under one name, and then a sleep',
+        'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
+        'the same flows, each catching what its step throws',
+        'the same flows, gathered with allSettled',
+      ],
+      sharedTaskName: [
+        'flows that each await an event the program has emitted and then spawn a child under one task name',
+        'flows that each await a child and then spawn a second child under one task name',
+      ],
+    })
+  })
+
+  it('every kind of call is made one call after another in a program this file runs, and not only inside a group', () => {
+    const oneAfterAnother = new Set<string>(
+      [
+        ...RUN_PROGRAMS.flatMap(([, ops]) => ops),
+        ...NAME_AXIS_MEMBERS.flatMap((call) => call.ops('n')),
+      ].map((op) => op.kind),
+    )
+    expect(Object.keys(KIND_TO_METHOD).filter((kind) => !oneAfterAnother.has(kind))).toEqual([])
+  })
+
+  it('every shape, and a step named after the attempt, is in a program this file runs at every fault point', () => {
+    const run = new Set(RUN_PROGRAMS.flatMap(([, ops]) => inventoryOf(ops)))
+    expect([...PROGRAM_SHAPE_NAMES, ...OTHER_HOLDINGS].filter((held) => !run.has(held))).toEqual([])
   })
 })
 
@@ -663,28 +1529,180 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
     ).toBe(false)
   })
 
+  const SPAWNS_TWO_TOGETHER: ProgramOp[] = [
+    group<ProgramOp>(
+      { kind: 'spawn', valueIndex: 0, nameIndex: 0 },
+      { kind: 'spawn', valueIndex: 1, nameIndex: 0 },
+    ),
+    { kind: 'await-child', valueIndex: 0, nameIndex: 0, childIndex: 0 },
+    { kind: 'await-child', valueIndex: 0, nameIndex: 0, childIndex: 1 },
+    { kind: 'step', valueIndex: 0, nameIndex: 0 },
+  ]
+
+  /** A store that answers a task's first spawn only after it has answered the second. */
+  const answersTheFirstSpawnLast =
+    (written: string[]) =>
+    (store: SchedulerStore): SchedulerStore => {
+      let spawns = 0
+      let answerTheFirst = () => {}
+      return withStoreOverrides(store, {
+        spawn: (...args) => {
+          const answer = store.spawn(...args)
+          spawns++
+          if (spawns === 1) {
+            return new Promise((resolve) => {
+              answerTheFirst = () => resolve(answer)
+            })
+          }
+          if (spawns === 2) void answer.finally(() => answerTheFirst())
+          return answer
+        },
+        setCheckpoint: (...args) => {
+          written.push(args[4])
+          return store.setCheckpoint(...args)
+        },
+      })
+    }
+
+  /** A store that spawns each of a task's first two children with the other's params. */
+  const swapsTheParamsOfTwoSpawns = (store: SchedulerStore): SchedulerStore => {
+    let spawns = 0
+    let firstParams = ''
+    let issueTheFirstWith = (_paramsJson: string) => {}
+    return withStoreOverrides(store, {
+      spawn: (queue, taskName, paramsJson, options) => {
+        spawns++
+        if (spawns === 1) {
+          firstParams = paramsJson
+          return new Promise((resolve) => {
+            issueTheFirstWith = (other) => resolve(store.spawn(queue, taskName, other, options))
+          })
+        }
+        if (spawns !== 2) return store.spawn(queue, taskName, paramsJson, options)
+        issueTheFirstWith(paramsJson)
+        return store.spawn(queue, taskName, firstParams, options)
+      },
+    })
+  }
+
+  it('sees a group whose keys do not follow the order its calls are written in', async () => {
+    const inWrittenOrder = [
+      '$spawn:child -> {"valueIndex":0,"fails":false}',
+      '$spawn:child#2 -> {"valueIndex":1,"fails":false}',
+    ]
+    const reference = await runProgram(SPAWNS_TWO_TOGETHER, 'keys-ref', 0)
+    // The second spawn is answered first, and its checkpoint is written first. The keys are
+    // taken when the calls are made, so each child is still under the key of its own call.
+    const written: string[] = []
+    const reversed = await runProgram(SPAWNS_TWO_TOGETHER, 'keys-reversed', 0, {
+      tamper: answersTheFirstSpawnLast(written),
+    })
+    expect({
+      spawned: reference.spawned,
+      writtenFirst: written.slice(0, 2),
+      reversed: { ...reversed, calls: reference.calls },
+    }).toEqual({
+      spawned: inWrittenOrder,
+      writtenFirst: ['$spawn:child#2', '$spawn:child'],
+      reversed: reference,
+    })
+    // And the comparison can fail: with each child under the other's key it is not equal.
+    const swapped = await runProgram(SPAWNS_TWO_TOGETHER, 'keys-swapped', 0, {
+      tamper: swapsTheParamsOfTwoSpawns,
+    })
+    expect(swapped.spawned).not.toEqual(inWrittenOrder)
+  })
+
   it('faults every program through its last store call', async () => {
     const uncovered: string[] = []
-    for (let seed = 0; seed < 6; seed++) {
-      const ops = generateProgram(new Rng(`program-${seed}`))
-      const { calls } = await runProgram(ops, `window-${seed}`, 0)
+    for (const [title, ops] of RUN_PROGRAMS) {
+      const ends = refusedGroupOf(ops) === undefined ? 'completed' : 'failed'
+      const { calls } = await runProgram(ops, `window-${title}`, 0, { ends })
       const last = Math.max(...faultPoints(calls))
-      if (last !== calls) uncovered.push(`program ${seed}: ${calls} calls, faulted through ${last}`)
+      if (last !== calls) uncovered.push(`${title}: ${calls} calls, faulted through ${last}`)
     }
     expect(uncovered, 'mutation-verdict:behavior:replay-harness-window-is-measured').toEqual([])
   }, 60_000)
 })
 
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
-  for (let seed = 0; seed < 6; seed++) {
-    it(`program ${seed}: every fault point yields the reference outcome`, async () => {
-      const ops = generateProgram(new Rng(`program-${seed}`))
-      await everyFaultPointYieldsTheReference(String(seed), (runSeed, failAtCall, fault) =>
+  for (const [title, ops] of RUN_PROGRAMS) {
+    it(`${title}: every fault point yields the reference outcome`, async () => {
+      if (refusedGroupOf(ops) !== undefined) return everyFaultPointRefusesTheGroup(title, ops)
+      await everyFaultPointYieldsTheReference(title, (runSeed, failAtCall, fault) =>
         runProgram(ops, runSeed, failAtCall, { fault }),
       )
     }, 60_000)
   }
+
+  for (const [title, program] of Object.entries({
+    ...FLOW_PROGRAMS,
+    ...SHARED_TASK_NAME_PROGRAMS,
+  })) {
+    it(`${title}: an outage at every store call ends as the known gap says`, async () => {
+      await theEngineDoesWhatTheGapSays(program.ops, program.gap)
+    }, 120_000)
+  }
+
+  for (const [title, program] of Object.entries(SHARED_NAME_PROGRAMS)) {
+    it(`${title}: an outage at every store call ends as pinned`, async () => {
+      await theEngineEndsAsPinned(program.ops, program.calls, program.endings)
+    }, 120_000)
+  }
 })
+
+/** How a run ended: what it completed with, or the call the engine refused. */
+function endingOf(run: Awaited<ReturnType<typeof runProgram>>): string {
+  if (run.state === 'completed') return `completed ${run.result} ${run.spawned.join(',')}`
+  const message = (JSON.parse(run.failure ?? 'null') as { message?: string } | null)?.message
+  const refused = message?.match(/^(ctx\.\S+) called inside a step/)
+  return refused?.[1] !== undefined ? `refused ${refused[1]}` : `${run.state} ${message}`
+}
+
+/**
+ * The witness of a known gap. The run with no fault ends as the gap says. An outage at each
+ * store call ends the same way, except at the calls the gap names, where the program ends the
+ * other way: refused where the reference completed, and completed with the reference's
+ * result where the reference was refused.
+ */
+async function theEngineDoesWhatTheGapSays(ops: ProgramOp[], gap: KnownGap): Promise<void> {
+  const reference = await runProgram(ops, 'gap-ref', 0, { ends: 'either' })
+  const referenceEnding = endingOf(reference)
+  expect(
+    { calls: reference.calls, ending: referenceEnding.split(' ')[0] },
+    'the run with no fault',
+  ).toEqual({ calls: gap.calls, ending: gap.reference })
+  const otherwise: { call: number; ending: string }[] = []
+  for (const call of everyCall(reference.calls)) {
+    const ending = endingOf(await runProgram(ops, `gap-${call}`, call, { ends: 'either' }))
+    if (ending !== referenceEnding) otherwise.push({ call, ending })
+  }
+  expect(
+    otherwise.map((run) => run.call),
+    'the store calls at which an outage ends it the other way',
+  ).toEqual([...gap.otherwiseAt])
+  // Every one of them ends the same one other way.
+  expect(new Set(otherwise.map((run) => run.ending)).size).toBeLessThanOrEqual(1)
+}
+
+/**
+ * The witness of a pinned program: how each run ended, by the store call the outage took, is
+ * exactly the table. Each run is seeded and each outage is at a fixed store call, so the table
+ * is the same on every machine.
+ */
+async function theEngineEndsAsPinned(
+  ops: ProgramOp[],
+  calls: number,
+  endings: PinnedEndings,
+): Promise<void> {
+  const reference = await runProgram(ops, 'pinned-ref', 0, { ends: 'either' })
+  const seen = new Map<string, number[]>([[endingOf(reference), [0]]])
+  for (const call of everyCall(reference.calls)) {
+    const ending = endingOf(await runProgram(ops, `pinned-${call}`, call, { ends: 'either' }))
+    seen.set(ending, [...(seen.get(ending) ?? []), call])
+  }
+  expect({ calls: reference.calls, endings: Object.fromEntries(seen) }).toEqual({ calls, endings })
+}
 
 /**
  * The name-length axis. A durable identifier holds 255 characters (DESIGN.md §3.4 rule 10),
@@ -935,39 +1953,139 @@ describe('the name-length axis (every call that passes a name: under its room, a
  * a fault its effect may repeat, and the record may not.
  */
 interface SagaOp {
-  kind: 'step' | 'registered' | 'sleep' | 'emit'
+  kind: 'step' | 'registered' | 'sleep' | 'emit' | 'group'
   nameIndex: number
   valueIndex: number
   /** A registered step whose rollback can never succeed halts the saga there. */
   rollbackAlwaysFails?: boolean
+  /** A registered step whose rollback fails the first time it is tried, and succeeds the next. */
+  rollbackFailsOnce?: boolean
+  /**
+   * A step whose name ends in `ctx.attempt`. A rollback pass replays as the run that failed,
+   * so it finds the step's memo. A pass that replayed as any other attempt would find none,
+   * register no rollback, and halt the saga with nothing compensated.
+   */
+  namedAfterAttempt?: boolean
+  /** A group's calls, started together and awaited together, in the order the task writes them. */
+  members?: SagaOp[]
+  /** A name of the op's own, in place of the corpus's, so that the step's key is its name. */
+  name?: string
+  /** The shape this op was drawn as a part of, for the inventory. */
+  shape?: string
 }
 
 interface SagaProgram {
   ops: SagaOp[]
-  /** The op whose body fails for good, or `ops.length` for a failure after every op. */
+  /**
+   * The site whose body fails for good, or the number of sites for a failure after every op.
+   * A site is a call's place among the program's calls in the order the task writes them,
+   * a group's members standing in its place.
+   */
   failsAt: number
 }
 
-function generateSagaProgram(rng: Rng): SagaProgram {
-  const length = 3 + rng.int(4)
+/** An op of a saga shape, with the name and the value that every op draws. */
+const sagaDrawn = (rng: Rng, op: Omit<SagaOp, 'nameIndex' | 'valueIndex'>): SagaOp => ({
+  nameIndex: rng.int(STEP_NAMES.length),
+  valueIndex: rng.int(VALUES.length),
+  ...op,
+})
+
+/**
+ * The saga shapes a grammar of one call after another cannot draw. A registered step writes
+ * its start marker before its body runs, so beside a sleep its marker and the suspension are
+ * in flight together. A step named after the attempt is what a pass must replay as the failed
+ * run to find, and a rollback that fails once puts a second pass after the first, so both
+ * terms of the attempt a pass replays as are in one program.
+ */
+const SAGA_SHAPES = {
+  'a registered step beside a sleep': (rng) => [
+    group(sagaDrawn(rng, { kind: 'sleep' }), sagaDrawn(rng, { kind: 'registered' })),
+  ],
+  'steps named after the attempt, and a rollback that fails once': (rng) => [
+    sagaDrawn(rng, { kind: 'registered', namedAfterAttempt: true, rollbackFailsOnce: true }),
+    sagaDrawn(rng, { kind: 'registered', namedAfterAttempt: true }),
+  ],
+  // A registered step comes first, so that the task has a rollback to run whether or not the
+  // first member's start marker lands.
+  'two registered steps started together, which the engine refuses': (rng) => [
+    sagaDrawn(rng, { kind: 'registered' }),
+    group(
+      sagaDrawn(rng, { kind: 'registered', name: FIRST_OF_A_REFUSED_GROUP }),
+      sagaDrawn(rng, { kind: 'registered', name: LATER_IN_A_REFUSED_GROUP }),
+    ),
+  ],
+} satisfies Record<string, (rng: Rng) => SagaOp[]>
+
+type SagaShape = keyof typeof SAGA_SHAPES
+
+const SAGA_SHAPE_NAMES = Object.keys(SAGA_SHAPES) as SagaShape[]
+
+function drawSagaShape(shape: SagaShape, rng: Rng): SagaOp[] {
+  return SAGA_SHAPES[shape](rng).map((op) => ({ ...op, shape }))
+}
+
+/** A saga of random ops. One generated for a shape holds it at a random place, is short, and fails after every op. */
+function generateSagaProgram(rng: Rng, forced?: SagaShape): SagaProgram {
+  const length = forced === undefined ? 3 + rng.int(4) : 1 + rng.int(2)
+  const forcedAt = forced === undefined ? -1 : rng.int(length)
   const ops: SagaOp[] = []
   for (let i = 0; i < length; i++) {
+    // A refused group fails the task for good, so it is the last thing a program holds.
+    if (refusedGroupOf(ops) !== undefined) break
+    if (forced !== undefined && i === forcedAt) {
+      ops.push(...drawSagaShape(forced, rng))
+      continue
+    }
     const roll = rng.next()
     const base = { nameIndex: rng.int(STEP_NAMES.length), valueIndex: rng.int(VALUES.length) }
-    if (roll < 0.55)
-      ops.push({ ...base, kind: 'registered', rollbackAlwaysFails: rng.next() < 0.15 })
-    else if (roll < 0.75) ops.push({ ...base, kind: 'step' })
-    else if (roll < 0.9) ops.push({ ...base, kind: 'sleep' })
-    else ops.push({ ...base, kind: 'emit' })
+    if (roll < 0.55) {
+      const failing = rng.next()
+      ops.push({
+        ...base,
+        kind: 'registered',
+        rollbackAlwaysFails: failing < 0.15,
+        // One to a program: each one puts another pass after the first.
+        rollbackFailsOnce:
+          failing >= 0.15 && failing < 0.25 && !flat(ops).some((op) => op.rollbackFailsOnce),
+        namedAfterAttempt: rng.next() < 0.25,
+      })
+    } else if (roll < 0.72)
+      ops.push({ ...base, kind: 'step', namedAfterAttempt: rng.next() < 0.25 })
+    else if (roll < 0.85) ops.push({ ...base, kind: 'sleep' })
+    else if (roll < 0.93 || forced !== undefined || ops.some((op) => op.shape !== undefined))
+      ops.push({ ...base, kind: 'emit' })
+    else ops.push(...drawSagaShape(rng.pick(SAGA_SHAPE_NAMES), rng))
   }
   // Every program has a rollback to run, and half of them fail inside a step's body, so
   // a step that started and never persisted is rolled back too.
-  if (!ops.some((op) => op.kind === 'registered')) {
+  if (!flat(ops).some((op) => op.kind === 'registered')) {
     ops[0] = { kind: 'registered', nameIndex: 0, valueIndex: 0 }
   }
-  const bodies = ops.flatMap((op, i) => (op.kind === 'registered' || op.kind === 'step' ? [i] : []))
-  const failsAt = rng.next() < 0.5 ? ops.length : (bodies[rng.int(bodies.length)] ?? ops.length)
+  const sites = flat(ops)
+  // A body that can fail: a step at the top level, or a member of a group. Of a refused group
+  // none is chosen, because the refusal ends the task first.
+  const bodies = sites.flatMap((op, site) =>
+    op.kind === 'registered' || op.kind === 'step' ? [site] : [],
+  )
+  const failsAt =
+    forced !== undefined || refusedGroupOf(ops) !== undefined || rng.next() < 0.5
+      ? sites.length
+      : (bodies[rng.int(bodies.length)] ?? sites.length)
   return { ops, failsAt }
+}
+
+/**
+ * A program that fails for good in the body of its group's registered step. A program
+ * generated for a shape fails after every op, so without this one no member of a group is a
+ * step that started and never persisted.
+ */
+function failingInsideItsGroup(program: SagaProgram): SagaProgram {
+  const member = program.ops
+    .flatMap((op) => (op.kind === 'group' ? (op.members ?? []) : []))
+    .find((op) => op.kind === 'registered')
+  if (member === undefined) throw new Error('the program has no group with a registered step')
+  return { ...program, failsAt: flat(program.ops).indexOf(member) }
 }
 
 /** What the world outside the store saw: bodies that ran, and rollbacks that ran or failed. */
@@ -976,34 +2094,55 @@ interface SagaEffects {
   handed: Record<number, string>
 }
 
-function sagaHandler(program: SagaProgram, effects: SagaEffects) {
+function sagaHandler(
+  program: SagaProgram,
+  effects: SagaEffects,
+  triedBefore: (stepKey: string) => Promise<boolean>,
+) {
+  const sites = flat(program.ops)
   return async (ctx: TaskContext) => {
-    for (const [i, op] of program.ops.entries()) {
+    /** One op's durable call, made before this function first awaits, as a group needs. */
+    const call = async (op: SagaOp): Promise<void> => {
+      const i = sites.indexOf(op)
       const body = () => {
         effects.log.push(`do:${i}`)
         if (i === program.failsAt) throw new FatalTaskError(`op ${i} failed for good`)
         return VALUES[op.valueIndex]
       }
-      const name = STEP_NAMES[op.nameIndex] ?? 'op'
+      // A rollback that fails once asks the store whether it has failed before, by its step's
+      // key. Its step has a name no other op has, so that the key is the name.
+      const base =
+        op.name ?? (op.rollbackFailsOnce ? `fails-once-${i}` : (STEP_NAMES[op.nameIndex] ?? 'op'))
+      const name = op.namedAfterAttempt ? `${base}-${ctx.attempt}` : base
       if (op.kind === 'registered') {
         await ctx.step(name, body, {
-          rollback: (input) => {
+          rollback: async (input) => {
             effects.handed[i] = fingerprint(input.output)
-            if (op.rollbackAlwaysFails) {
+            // What a rollback does is a function of what the store holds, so that a pass an
+            // outage repeats does what the pass it repeats did.
+            if (op.rollbackAlwaysFails || (op.rollbackFailsOnce && !(await triedBefore(name)))) {
               effects.log.push(`try:${i}`)
-              throw new Error(`rollback ${i} cannot succeed`)
+              throw new Error(
+                `rollback ${i} ${op.rollbackAlwaysFails ? 'cannot succeed' : 'fails once'}`,
+              )
             }
             effects.log.push(`undo:${i}`)
           },
-          rollbackConfig: { maxAttempts: 2, retryStrategy: { kind: 'fixed', baseSeconds: 0 } },
+          rollbackConfig: TWO_TRIES_AT_ONCE,
         })
       } else if (op.kind === 'step') {
         await ctx.step(name, body)
       } else if (op.kind === 'sleep') {
         await ctx.sleepFor(5)
-      } else {
+      } else if (op.kind === 'emit') {
         await ctx.emitEvent(`saga-ev${i}`, JSON.stringify(VALUES[op.valueIndex]) ?? 'null')
+      } else {
+        throw new FatalTaskError(`the generator drew '${op.kind}' where a call goes`)
       }
+    }
+    for (const op of program.ops) {
+      if (op.kind === 'group') await Promise.all((op.members ?? []).map(call))
+      else await call(op)
     }
     throw new FatalTaskError('the program failed for good')
   }
@@ -1011,13 +2150,18 @@ function sagaHandler(program: SagaProgram, effects: SagaEffects) {
 
 /** What Sagas.tla and §3.10 say this program's rollbacks must be, from the program alone. */
 function expectedSaga(program: SagaProgram) {
-  const started = program.ops.flatMap((op, i) =>
-    op.kind === 'registered' && i <= program.failsAt ? [i] : [],
+  const sites = flat(program.ops)
+  // Of a refused group the first member starts, and with no fault its result never persists:
+  // the refusal fails the task while the step's start marker is being written, and the body
+  // runs after that. The later member is refused, so it never starts.
+  const [first, later] = (refusedGroupOf(program.ops)?.members ?? []).map((op) => sites.indexOf(op))
+  const started = sites.flatMap((op, i) =>
+    op.kind === 'registered' && i <= program.failsAt && i !== later ? [i] : [],
   )
   const undone: number[] = []
   let halted = false
   for (const i of [...started].reverse()) {
-    if (program.ops[i]?.rollbackAlwaysFails) {
+    if (sites[i]?.rollbackAlwaysFails) {
       halted = true
       break
     }
@@ -1025,19 +2169,81 @@ function expectedSaga(program: SagaProgram) {
   }
   return {
     undone,
-    outcome: halted ? 'failed' : 'complete',
+    // A task none of whose registered steps started has nothing to roll back, and its result
+    // holds no rollback outcome.
+    outcome: started.length === 0 ? undefined : halted ? 'failed' : 'complete',
     handed: Object.fromEntries(
       (halted ? [...undone, started[started.length - 1 - undone.length]] : undone).map((i) => [
         i,
-        i === program.failsAt
+        i === program.failsAt || i === first
           ? fingerprint(undefined)
-          : fingerprint(
-              JSON.parse(
-                JSON.stringify(VALUES[program.ops[i as number]?.valueIndex ?? 0]) ?? 'null',
-              ),
-            ),
+          : fingerprint(JSON.parse(storedValue(sites[i as number]?.valueIndex ?? 0))),
       ]),
     ),
+  }
+}
+
+/**
+ * The rows of a refused group's first member, and its site. The refusal ends the pass while
+ * the member's start marker is being written, so the marker, the step's result and the
+ * record of its rollback may each be missing from a run, and one that is there holds this.
+ */
+function rowsARefusalMayLeaveOut(program: SagaProgram) {
+  const sites = flat(program.ops)
+  const first = refusedGroupOf(program.ops)?.members[0]
+  if (first === undefined) return undefined
+  const site = sites.indexOf(first)
+  const startedBefore = sites.slice(0, site).filter((op) => op.kind === 'registered').length
+  const key = String(first.name)
+  return {
+    site,
+    key,
+    rows: new Map([
+      [key, storedValue(first.valueIndex)],
+      [`${SAGA_STARTED_PREFIX}${key}`, String(startedBefore + 1)],
+      [`${SAGA_ROLLBACK_PREFIX}${key}`, 'null'],
+    ]),
+  }
+}
+
+/**
+ * What two schedules of a saga are compared by. With a refused group the first member's own
+ * rows are left out of the table once each is seen to hold what it should, and the member is
+ * left out of the order and of what the rollbacks were handed once it is seen to agree with
+ * its rows: it was rolled back when and only when its start marker landed, and it was handed
+ * its output when and only when its result landed.
+ */
+function comparable(
+  run: Awaited<ReturnType<typeof runSagaProgram>>,
+  inFlight: ReturnType<typeof rowsARefusalMayLeaveOut>,
+) {
+  const { state, failure, outcome, checkpoints, undone, handed } = run
+  const whole = { state, failure, outcome, checkpoints, undone, handed }
+  if (inFlight === undefined) return whole
+  const { [inFlight.site]: handedTheFirst, ...handedTheRest } = handed
+  const holds = (name: string): Row | undefined =>
+    checkpoints.find((row) => row.checkpoint_name === name)
+  const result = holds(inFlight.key)
+  const rolledBack = undone.includes(inFlight.site)
+  expect({
+    startMarkerLanded: holds(`${SAGA_STARTED_PREFIX}${inFlight.key}`) !== undefined,
+    rollbackRecorded: holds(`${SAGA_ROLLBACK_PREFIX}${inFlight.key}`) !== undefined,
+    handed: handedTheFirst,
+    place: undone.indexOf(inFlight.site),
+  }).toEqual({
+    startMarkerLanded: rolledBack,
+    rollbackRecorded: rolledBack,
+    // It started last of all, so it is rolled back first.
+    place: rolledBack ? 0 : -1,
+    handed: rolledBack
+      ? fingerprint(result === undefined ? undefined : JSON.parse(result.state))
+      : undefined,
+  })
+  return {
+    ...whole,
+    checkpoints: withoutTheRowsInFlight(checkpoints, inFlight.rows),
+    undone: undone.filter((site) => site !== inFlight.site),
+    handed: handedTheRest,
   }
 }
 
@@ -1054,12 +2260,14 @@ async function runSagaProgram(
     await admin.migrate()
     const real = new LibsqlSchedulerStore(raw, seededIdSource(new Rng(seed)))
     let calls = 0
+    const methods: string[] = []
     const store = new Proxy(tamper(real), {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver)
         if (typeof value !== 'function' || prop === 'constructor') return value
         return (...args: unknown[]) => {
           calls++
+          methods.push(String(prop))
           if (calls === failAtCall) {
             return Promise.reject(meetsFault(String(prop), injectedFault(fault)))
           }
@@ -1070,7 +2278,20 @@ async function runSagaProgram(
     const clock = new FakeClock()
     await admin.setFakeNowEpochMs(clock.now)
     const effects: SagaEffects = { log: [], handed: {} }
-    const registry: TaskRegistry = new Map([['saga', sagaHandler(program, effects)]])
+    const triedBefore = async (stepKey: string): Promise<boolean> => {
+      const [tries] = await raw.batch(
+        't',
+        [
+          {
+            sql: 'SELECT 1 AS tried FROM checkpoints WHERE checkpoint_name = ?',
+            args: [`${SAGA_TRIES_PREFIX}${stepKey}`],
+          },
+        ],
+        'read',
+      )
+      return (tries?.rows.length ?? 0) > 0
+    }
+    const registry: TaskRegistry = new Map([['saga', sagaHandler(program, effects, triedBefore)]])
     const spawned = await real.spawn(Q, 'saga', '{}')
     for (let round = 0; round < 80; round++) {
       const done = await real.getTaskResult(Q, spawned.taskId)
@@ -1102,11 +2323,13 @@ async function runSagaProgram(
     const undos = effects.log.filter((line) => line.startsWith('undo:'))
     return {
       calls,
+      /** The SDK's store calls, by method, in the order they were made. */
+      methods,
       state: result?.state,
       failure: result?.failureReasonJson,
       outcome: result?.rollback?.outcome,
       checkpoints: (cps?.rows ?? []).map(
-        (row) => `${String(row.checkpoint_name)} = ${String(row.state)}`,
+        (row): Row => ({ checkpoint_name: String(row.checkpoint_name), state: String(row.state) }),
       ),
       /** Each rollback in the order it first succeeded, and how often each ran. */
       undone: [...new Set(undos)].map((line) => Number(line.slice('undo:'.length))),
@@ -1120,19 +2343,129 @@ async function runSagaProgram(
   }
 }
 
+/** A generated saga does what its program says with no fault, and ends the same at every fault point. */
+async function sagaReplaysAsItsReference(title: string, program: SagaProgram): Promise<void> {
+  const expected = expectedSaga(program)
+  const reference = await runSagaProgram(program, `saga-ref-${title}`, 0)
+  // With no fault, the program alone says what ran, in what order, and how often.
+  expect({
+    state: reference.state,
+    outcome: reference.outcome,
+    undone: reference.undone,
+    undoCounts: reference.undoCounts,
+    handed: reference.handed,
+  }).toEqual({
+    state: 'failed',
+    outcome: expected.outcome,
+    undone: expected.undone,
+    undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
+    handed: expected.handed,
+  })
+  const inFlight = rowsARefusalMayLeaveOut(program)
+  const comparedTo = comparable(reference, inFlight)
+  // A refused group is admitted, as a plain program's is, when the outage takes the failing
+  // pass's own `fail` call (see everyFaultPointRefusesTheGroup): both members start and the
+  // task ends with the program's own failure. That call is run apart and pinned.
+  const admittedAt = inFlight === undefined ? undefined : reference.methods.indexOf('fail') + 1
+  for (const call of faultPoints(reference.calls).filter((point) => point !== admittedAt)) {
+    for (const fault of FAULT_KINDS) {
+      const faulted = await landing(fault, () =>
+        runSagaProgram(program, faultSeed(`saga-fault-${title}-${call}`, fault), call, fault),
+      )
+      expect(
+        comparable(faulted, inFlight),
+        `${fault} at call ${call} of ${reference.calls}`,
+      ).toEqual(comparedTo)
+      // The record is exactly once, which the checkpoint table holds. The effect is at
+      // least once, and a second run needs a fault between the handler and its record.
+      const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
+      expect(repeats.every((n) => n === 2) && repeats.length <= 1, `${fault} at call ${call}`).toBe(
+        true,
+      )
+    }
+  }
+  if (admittedAt !== undefined) {
+    const sites = flat(program.ops)
+    const [, later] = (refusedGroupOf(program.ops)?.members ?? []).map((op) => sites.indexOf(op))
+    for (const fault of FAULT_KINDS) {
+      const admitted = await landing(fault, () =>
+        runSagaProgram(
+          program,
+          faultSeed(`saga-fault-${title}-${admittedAt}`, fault),
+          admittedAt,
+          fault,
+        ),
+      )
+      expect(
+        {
+          state: admitted.state,
+          failure: (JSON.parse(admitted.failure ?? 'null') as { message?: string } | null)?.message,
+          laterMemberStarted: admitted.undone.includes(later ?? -1),
+        },
+        `known gap: the ${fault} on the failing pass's own fail call (call ${admittedAt}) admits the group`,
+      ).toEqual({
+        state: 'failed',
+        failure: 'the program failed for good',
+        laterMemberStarted: true,
+      })
+    }
+  }
+}
+
+/** The generated sagas this file runs at every fault point: eight of random ops, and one for each shape. */
+const SAGA_RUN_PROGRAMS: readonly (readonly [string, SagaProgram])[] = [
+  ...[0, 1, 2, 3, 4, 5, 6, 7].map(
+    (seed) =>
+      [`saga program ${seed}`, generateSagaProgram(new Rng(`saga-program-${seed}`))] as const,
+  ),
+  ...SAGA_SHAPE_NAMES.map(
+    (shape) => [shape, generateSagaProgram(new Rng(`saga-shape-${shape}`), shape)] as const,
+  ),
+  [
+    'a registered step beside a sleep, whose body fails for good',
+    failingInsideItsGroup(
+      generateSagaProgram(
+        new Rng('saga-shape-a registered step beside a sleep'),
+        'a registered step beside a sleep',
+      ),
+    ),
+  ] as const,
+]
+
 describe('saga replay equivalence (generated programs x fault points across the phase)', () => {
-  it('generates registered steps, failing bodies, and rollbacks that cannot succeed', () => {
-    const seen = { registered: 0, failsInABody: 0, failsAfter: 0, halts: 0, sleeps: 0 }
+  it('generates registered steps, failing bodies, rollbacks that cannot succeed or fail once, groups, and steps named after the attempt', () => {
+    const seen = {
+      registered: 0,
+      failsInABody: 0,
+      failsAfter: 0,
+      halts: 0,
+      sleeps: 0,
+      groups: 0,
+      rollbacksThatFailOnce: 0,
+      namedAfterTheAttempt: 0,
+    }
+    const shapes = new Set<string>()
     for (let seed = 0; seed < 200; seed++) {
       const program = generateSagaProgram(new Rng(`saga-inventory-${seed}`))
-      if (program.ops.some((op) => op.kind === 'registered')) seen.registered++
-      if (program.failsAt < program.ops.length) seen.failsInABody++
+      const sites = flat(program.ops)
+      if (sites.some((op) => op.kind === 'registered')) seen.registered++
+      if (program.failsAt < sites.length) seen.failsInABody++
       else seen.failsAfter++
       if (expectedSaga(program).outcome === 'failed') seen.halts++
-      if (program.ops.some((op) => op.kind === 'sleep')) seen.sleeps++
+      if (sites.some((op) => op.kind === 'sleep')) seen.sleeps++
+      if (program.ops.some((op) => op.kind === 'group')) seen.groups++
+      if (sites.some((op) => op.rollbackFailsOnce)) seen.rollbacksThatFailOnce++
+      if (sites.some((op) => op.namedAfterAttempt)) seen.namedAfterTheAttempt++
+      for (const op of program.ops) if (op.shape !== undefined) shapes.add(op.shape)
     }
     expect(Object.entries(seen).filter(([, n]) => n === 0)).toEqual([])
     expect(seen.registered).toBe(200)
+    expect([...shapes].sort()).toEqual([...SAGA_SHAPE_NAMES].sort())
+    // And every shape is in a program this file runs at every fault point.
+    const run = new Set(
+      SAGA_RUN_PROGRAMS.flatMap(([, program]) => program.ops.map((op) => op.shape)),
+    )
+    expect(SAGA_SHAPE_NAMES.filter((shape) => !run.has(shape))).toEqual([])
   })
 
   it('says what a fixed program rolls back, in what order, and what each rollback is handed', async () => {
@@ -1157,57 +2490,18 @@ describe('saga replay equivalence (generated programs x fault points across the 
     })
   })
 
-  for (let seed = 0; seed < 8; seed++) {
-    it(`saga program ${seed}: rollbacks run in reverse start order, once each, at every fault point`, async () => {
-      const program = generateSagaProgram(new Rng(`saga-program-${seed}`))
-      const expected = expectedSaga(program)
-      const reference = await runSagaProgram(program, `saga-ref-${seed}`, 0)
-      // With no fault, the program alone says what ran, in what order, and how often.
-      expect({
-        state: reference.state,
-        outcome: reference.outcome,
-        undone: reference.undone,
-        undoCounts: reference.undoCounts,
-        handed: reference.handed,
-      }).toEqual({
-        state: 'failed',
-        outcome: expected.outcome,
-        undone: expected.undone,
-        undoCounts: Object.fromEntries(expected.undone.map((i) => [`undo:${i}`, 1])),
-        handed: expected.handed,
-      })
-      for (const call of faultPoints(reference.calls)) {
-        for (const fault of FAULT_KINDS) {
-          const faulted = await landing(fault, () =>
-            runSagaProgram(program, faultSeed(`saga-fault-${seed}-${call}`, fault), call, fault),
-          )
-          expect(
-            {
-              state: faulted.state,
-              failure: faulted.failure,
-              outcome: faulted.outcome,
-              checkpoints: faulted.checkpoints,
-              undone: faulted.undone,
-              handed: faulted.handed,
-            },
-            `${fault} at call ${call} of ${reference.calls}`,
-          ).toEqual({
-            state: reference.state,
-            failure: reference.failure,
-            outcome: reference.outcome,
-            checkpoints: reference.checkpoints,
-            undone: reference.undone,
-            handed: reference.handed,
-          })
-          // The record is exactly once, which the checkpoint table holds. The effect is at
-          // least once, and a second run needs a fault between the handler and its record.
-          const repeats = Object.values(faulted.undoCounts).filter((n) => n !== 1)
-          expect(
-            repeats.every((n) => n === 2) && repeats.length <= 1,
-            `fault at call ${call}`,
-          ).toBe(true)
-        }
-      }
+  for (const [title, program] of SAGA_RUN_PROGRAMS) {
+    it(`${title}: rollbacks run in reverse start order, once each, at every fault point`, async () => {
+      // The registered mutants that the saga generated for a shape is the owner of.
+      const verdict = (
+        {
+          'two registered steps started together, which the engine refuses':
+            'mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together',
+          'steps named after the attempt, and a rollback that fails once':
+            'mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as',
+        } as Record<string, string | undefined>
+      )[title]
+      await owning(verdict, () => sagaReplaysAsItsReference(title, program))
     }, 120_000)
   }
 })

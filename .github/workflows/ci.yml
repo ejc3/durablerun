@@ -333,16 +333,15 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'c696278a7e864a1c1b8ea00d7fc98e5e7276a69a62929d88f4e76c9a2b4cd7ad':
-              # On a libSQL database file a failed batch no longer fails the calls after it on
-              # its executor: the executor asks a suspect connection before it trusts it, and
-              # runs a file's batches one at a time, and a reconnect keeps to the file it opened.
-              # Each registers a mutation the base predates, so their verdict markers are
-              # exempted. No base entry is re-aimed.
+          if digest == 'b1337fec0498bc98c8602a5318fda4459a37d859843909f13450728e76d5a0d3':
+              # The SDK's replay-equivalence harness draws durable calls started together and a
+              # step named after the attempt, and two programs it generates each own a
+              # mutation, which bring back defects a review found where the old grammar
+              # could not look. The mutations are newer than the base registry, so their
+              # verdict markers are exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:libsql-suspect-connection-is-asked",
-                  "mutation-verdict:behavior:libsql-file-batches-run-one-at-a-time",
-                  "mutation-verdict:behavior:libsql-reconnect-refuses-another-file",
+                  "mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together",
+                  "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

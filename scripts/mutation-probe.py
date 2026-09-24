@@ -14640,6 +14640,53 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The SDK's replay-equivalence harness draws durable calls started together and a step named
+# after the attempt (DESIGN.md S3.2 and S3.10), and two programs it generates each own a
+# mutation. They keep the audit checking that the generated programs can see two defects a
+# review found where the old grammar could not look: a second registered step that starts while
+# the first writes its start marker, and a rollback pass that does not replay as the run that
+# failed.
+MUTATION_SPECS.extend(
+    (
+        (
+            "saga-start-marker-is-written-with-the-guard-up",
+            "packages/sdk/src/context.ts",
+            "        await this.markStarted(key)\n",
+            "        this.inStep = false\n        await this.markStarted(key)\n        this.inStep = true\n",
+            "the guard is down while a registered step writes its start marker, so a second registered step started beside it starts too, and the two share an index",
+        ),
+        (
+            "saga-pass-replays-as-the-run-that-failed",
+            "packages/sdk/src/context.ts",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries\n",
+            "      this.#sagaCauseJson === undefined ? attempt : attempt\n",
+            "a rollback pass keeps its own ordinal, so a step named after the attempt finds no memo, registers no rollback, and the saga halts with nothing compensated",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "saga replay equivalence (generated programs x fault points across the phase) two registered steps started together, which the engine refuses: rollbacks run in reverse start order, once each, at every fault point",
+            "mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together",
+        ),
+        ("saga-start-marker-is-written-with-the-guard-up",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/replay-equivalence.test.ts",
+            "saga replay equivalence (generated programs x fault points across the phase) steps named after the attempt, and a rollback that fails once: rollbacks run in reverse start order, once each, at every fault point",
+            "mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as",
+        ),
+        ("saga-pass-replays-as-the-run-that-failed",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 
 # The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
 # every string once, and every store is reached only through the check built from that
@@ -18207,6 +18254,12 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "sdk-repeated-name-key-held-with-its-counter": (
         "one test is generated for each member of the name-length axis, and its title carries the member"
     ),
+    "saga-start-marker-is-written-with-the-guard-up": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
+    "saga-pass-replays-as-the-run-that-failed": (
+        "one test is generated for each program, and its title carries the shape the program was generated for"
+    ),
     "sdk-durable-key-held-before-the-body-runs": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
@@ -20677,7 +20730,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1094:
+        if len(MUTATIONS) != 1096:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
