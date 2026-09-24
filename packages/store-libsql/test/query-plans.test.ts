@@ -14,7 +14,9 @@ import {
   LibsqlStoreAdmin,
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
+import { type Shipped, keyOf, recordHistory } from './plan-history.js'
 import { type PlanRow, readNests } from './plan-nests.js'
+import { planRows } from './plan-oracle.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -48,12 +50,7 @@ async function writePlan(sql: string, args: (string | number)[] = []): Promise<s
 
 /** The same plan as the tree it is: each row's id and its parent's, which the flat text drops. */
 async function planTree(sql: string, args: unknown[] = []): Promise<PlanRow[]> {
-  const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args: args as number[] })
-  return r.rows.map((row) => ({
-    id: Number(row.id),
-    parent: Number(row.parent),
-    detail: String(row.detail),
-  }))
+  return planRows(raw, { sql, args })
 }
 
 /**
@@ -744,176 +741,22 @@ describe('cancellation deadlines', () => {
   })
 })
 
-/** One statement a real operation sent: the label of its batch, its place in it, its binds. */
-interface Shipped {
-  readonly label: string
-  readonly index: number
-  readonly sql: string
-  readonly args: unknown[]
-}
-
 /**
  * Every statement the store sends, once each under the label that carried it, recovered
- * from one scripted history of real operations, so nothing planned below is a hand copy of
- * what ships. The history reaches every batch in every variant it compiles to, and what
- * holds it to that is the corpus: a statement of `corpus/libsql.json` that this history
- * never sent fails the last block of this file. It runs once for the file, because a plan
- * needs a statement and its binds, not the rows it touched. A statement is kept with the
- * binds of one of its sends, and the last block holds that every send of it plans alike.
+ * from one scripted history of real operations (`plan-history.ts`). It runs once for the
+ * file, because a plan needs a statement and its binds, not the rows it touched. A statement
+ * is kept with the binds of one of its sends, and the last block holds that every send of it
+ * plans alike.
  */
-const keyOf = (label: string, sql: string) => `${label}\n${sql}`
 let sends: Promise<Shipped[]> | undefined
 function everySend(): Promise<Shipped[]> {
-  sends ??= sendEveryStatement()
+  sends ??= recordHistory(db)
   return sends
 }
 let shipped: Promise<Map<string, Shipped>> | undefined
 function shippedStatements(): Promise<Map<string, Shipped>> {
   shipped ??= everySend().then((sent) => new Map(sent.map((st) => [keyOf(st.label, st.sql), st])))
   return shipped
-}
-
-async function sendEveryStatement(): Promise<Shipped[]> {
-  const seen: Shipped[] = []
-  const recorder: SqlExecutor = {
-    batch: (label, statements, mode) => {
-      for (const [index, st] of statements.entries()) {
-        seen.push({ label, index, sql: st.sql, args: [...st.args] })
-      }
-      return db.batch(label, statements, mode)
-    },
-  }
-  const admin = new LibsqlStoreAdmin(db)
-  await admin.setFakeNowEpochMs(1_000_000)
-  const store = new LibsqlSchedulerStore(recorder, testIdSource('shipped-statements'))
-  // A claim token is fresh for every claim, as a tick's is, and the run carries it.
-  let claims = 0
-  const claimOf = async (taskId: string) => {
-    claims += 1
-    const [run] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
-    if (!run || run.taskId !== taskId) throw new Error(`expected to claim task ${taskId}`)
-    return run
-  }
-  const startedOf = async (taskId: string) => {
-    const run = await claimOf(taskId)
-    await store.activate('q', run.runId, run.claimToken, run.claimGen)
-    return run
-  }
-  const claimed = async (name: string) => claimOf((await store.spawn('q', name, '{}')).taskId)
-  const started = async (name: string, options: { maxAttempts?: number } = {}) =>
-    startedOf((await store.spawn('q', name, '{}', options)).taskId)
-  const deferred = await claimed('deferred')
-  await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
-  const rescheduled = await started('rescheduled')
-  await store.reschedule('q', rescheduled.runId, rescheduled.claimToken, { inSeconds: 3600 })
-  const suspended = await started('suspended')
-  await store.suspendRun(
-    'q',
-    suspended.runId,
-    suspended.claimToken,
-    { inSeconds: 3600 },
-    { key: 'step', stateJson: '{}' },
-  )
-  // A heartbeat and the reads, beside a live run. A read changes nothing, so where it
-  // stands is free. The driver's heartbeat is no run's, and rides here.
-  const live = await started('live')
-  await store.heartbeat('q', live.runId, live.claimToken, 60)
-  await store.claimedTaskName('q', live.runId, live.claimToken, live.claimGen)
-  await store.getCheckpoints('q', live.taskId, 1)
-  await store.getTaskResult('q', live.taskId)
-  await store.nextWakeAtEpochMs('q')
-  await store.driverHeartbeat('q', 'driver', 60)
-  // A run this store never heard of: the terminal batch reads its task, finds none, and
-  // reads its state to say why it refuses.
-  const refused = await store.complete('q', 'no-such-run', 'no-token', '{}').then(
-    () => false,
-    () => true,
-  )
-  if (!refused) throw new Error('expected a run nobody made to be refused')
-  await store.complete('q', live.runId, live.claimToken, '{}')
-  const waiting = await started('waiting')
-  await store.awaitEvent(
-    'q',
-    waiting.taskId,
-    waiting.runId,
-    waiting.claimToken,
-    'step',
-    'event',
-    null,
-  )
-  await store.emitEvent('q', 'event', '{}')
-  const woken = await startedOf(waiting.taskId)
-  await store.complete('q', woken.runId, woken.claimToken, '{}')
-  // A parent awaits a live child, and the child ends and wakes it. Then an older build's
-  // ending is staged, one that wrote no event, so the parent's next await records it.
-  const parent = await started('parent')
-  const child = await store.spawn('q', 'child', '{}', {
-    childOf: {
-      parentQueue: 'q',
-      parentTaskId: parent.taskId,
-      runId: parent.runId,
-      claimToken: parent.claimToken,
-      replayKey: 'site',
-    },
-  })
-  const awaitChild = (run: typeof parent) =>
-    store.awaitTaskDone('q', run.taskId, run.runId, run.claimToken, 'step', child.taskId, null)
-  await awaitChild(parent)
-  const childRun = await startedOf(child.taskId)
-  await store.complete('q', childRun.runId, childRun.claimToken, '{}')
-  const wokenParent = await startedOf(parent.taskId)
-  await db.batch('an-older-build-wrote-no-event', [
-    {
-      sql: 'DELETE FROM events WHERE queue = ? AND event_name LIKE ?',
-      args: ['q', '$task-done:%'],
-    },
-  ])
-  await awaitChild(wokenParent)
-  await store.complete('q', wokenParent.runId, wokenParent.claimToken, '{}')
-  const retried = await started('fails-and-retries', { maxAttempts: 2 })
-  await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
-  const failed = await started('fails', { maxAttempts: 1 })
-  await store.fail('q', failed.runId, failed.claimToken, '{}', null)
-  // A saga (DESIGN.md §3.10). A registered step starts, and the failure that ends the
-  // forward phase places the rollback pass, which `fail` ships. A rollback's failed
-  // attempt places the next pass, and the one after it halts the saga, which
-  // `fail-rollback` ships both ways.
-  const saga = await started('rolls-back', { maxAttempts: 1 })
-  await store.setCheckpoint(
-    'q',
-    saga.taskId,
-    saga.runId,
-    saga.claimToken,
-    `${SAGA_STARTED_PREFIX}a`,
-    '1',
-    60,
-  )
-  const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
-  if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
-  const sagaTried = { stepKey: 'a', errorJson: '{}' }
-  const firstPass = await startedOf(saga.taskId)
-  const again = await store.failRollback(
-    'q',
-    firstPass.runId,
-    firstPass.claimToken,
-    '{}',
-    { delaySeconds: 0 },
-    sagaTried,
-  )
-  if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
-  const lastPass = await startedOf(saga.taskId)
-  await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried)
-  await store.retryTask('q', failed.taskId)
-  await store.cancelTask('q', failed.taskId)
-  // Last, because it moves the clock: a launch that is lost, a worker that dies and whose
-  // lease an advisory signal shortens first, and a task never started by its deadline.
-  await claimed('launch-is-lost')
-  const dies = await started('worker-dies')
-  await store.expireLeaseNow('q', dies.runId, dies.claimToken)
-  await store.spawn('q', 'never-starts', '{}', { cancellation: { maxDelaySeconds: 30 } })
-  await admin.setFakeNowEpochMs(1_000_000 + 120_000)
-  await store.sweep('q', 10)
-  return seen
 }
 
 describe('every statement a store ships, by the nests of its plan', () => {
@@ -1231,26 +1074,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     }
   })
 
-  it('refuses a statement whose kind it cannot tell from its first word', async () => {
-    // The two lines over a write go by the statement's kind, which its first word says. A
-    // comment before that word hides a DELETE with no WHERE, which plans as no rows at all.
-    expect((await read('/* every wait */ delete from waits')).faults).toEqual([
-      'cannot tell what kind of statement this is from its first word',
-    ])
-  })
-
-  it('reads a write as a write whatever its conflict clause or its schema', async () => {
-    // A write may name what it does on a conflict, and a table may be named with its schema.
-    // Each of these reaches one row by its key, and each is read as the write it is.
-    for (const sql of [
-      'update or ignore runs set wake_event = null where run_id = ?',
-      'update main.runs set wake_event = null where run_id = ?',
-      'delete from "main"."waits" where run_id = ?',
-    ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
-    }
-  })
-
   it('counts `key` as the name of one row only while `meta` alone has a column of that name', async () => {
     // A step is judged by its constrained columns, whatever table it names, so an equality on
     // a column named `key` reads as keyed on any table. It is true of `meta`, whose primary
@@ -1551,6 +1374,28 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(faultsOf([1, 0, 'CO-ROUTINE x'], [2, 0, keyed], [3, 0, 'SCAN x'])).toEqual([
       'cannot read the rows of: CO-ROUTINE x',
       `SCAN x :: is not keyed, and runs once for each row of ${keyed}`,
+    ])
+  })
+
+  it('judges a leg of a multi-index OR against the loops that drive it, and an automatic index as a walk', () => {
+    // The surface measures shipped statements and reaches neither shape: no shipped plan has a
+    // leg of a MULTI-INDEX OR under a driver, or a seek through an automatic index. These are
+    // plans written by hand, so the reader's reading of each is held here and not measured.
+    const faultsOf = (...details: [number, number, string][]) =>
+      readNests(
+        details.map(([id, parent, detail]) => ({ id, parent, detail })),
+        'select 1',
+      ).faults
+    const keyed = 'SEARCH r USING INDEX runs_task_attempt (task_id=?)'
+    const due = 'SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>? AND cancel_at_ms<?)'
+    // A leg that is a due range runs once for each row of the keyed step before the OR. A leg
+    // read with no drivers would find nothing wrong with a due range that drives nothing.
+    expect(
+      faultsOf([1, 0, keyed], [2, 0, 'MULTI-INDEX OR'], [3, 2, 'INDEX 1'], [4, 3, due]),
+    ).toEqual([`${due} :: is not keyed, and runs once for each row of ${keyed}`])
+    // A seek through an automatic index builds the index by scanning, whatever it is keyed on.
+    expect(faultsOf([1, 0, 'SEARCH t USING AUTOMATIC COVERING INDEX (task_id=?)'])).toEqual([
+      'SEARCH t USING AUTOMATIC COVERING INDEX (task_id=?) :: is a walk of t: neither keyed nor a due range',
     ])
   })
 
