@@ -933,30 +933,40 @@ One invocation executes one claimed run to its next suspension point:
       pass made and answered earlier, and a task function that is a function of
       its parameters, its attempt and its results makes them again in that
       order, so the wait ends. A task function that is not, such as one that
-      names a step after `ctx.attempt` or after the clock beside another call,
-      can be recorded waiting for a call that it never makes. The pass's
-      heartbeat beats at half the lease, and a beat that finds a call waiting
-      and no result handed over since the last beat gives up on the lowest
-      number of an earlier pass that nobody has asked for. That pass goes on in
-      the order its calls arrive, which is the order it had before markers,
-      after at most two beats (a minute at a lease of 60 seconds). A pass whose
-      lease has ended, or whose heartbeat has stopped, lets every waiting call
-      go at once. A rollback pass waits until no result of its replay is held
-      before it decides which rollbacks are owed, because the replay ends at the
-      first call that has no memo, and a flow that was held for its turn
-      registers its rollback after that.
-    - **After an infrastructure error beside another call.** A store call that
-      fails with a lost lease, a cancelled run, or an outage or a permanent
-      answer of the store is thrown into the task function. When another call is
-      pending beside it, the flows of the task run on past a call whose result
-      may be stored with no marker, and anything they store, or any child they
-      spawn, would be read by a replay ahead of it. The pass then stores nothing
-      more and lets every waiting call go, and it does not complete a task that
-      caught the error and returned: a handler that swallows every rejection,
-      with an empty `catch` or `Promise.allSettled`, over calls that overlapped,
-      ends its pass as aborted and the run is retried, where it used to complete
-      with the error in its result. A task that makes one call at a time is not
-      fenced, and may catch the error and call again.
+      names a step after `ctx.attempt` or after the clock beside another call, or
+      one that runs fewer flows on a later attempt, can be recorded waiting for a
+      call that it never makes. Whether a call will be made is not something the
+      SDK can see: a flow that waits on a timer of its own, outside the SDK, has
+      no pending call and may still make it. So the release is a fact of the
+      heartbeat and not of the event loop. The pass's heartbeat beats at half the
+      lease, and a beat that finds a call waiting, and no result handed over
+      since that wait began, gives up on every number of an earlier pass that
+      nobody has asked for, the first at once and each next as it comes to the
+      head. Giving up hands nothing over, so it is no sign of life, and the bound
+      is one beat whatever the number of calls skipped: at most 30 seconds at a
+      lease of 60. That pass goes on in the order its calls arrive, which is the
+      order it had before markers. A wait that a beat cuts while a flow is still
+      on a timer of its own is the price: that flow's calls are numbered in call
+      order, as they were before markers. A pass whose lease has ended, or whose
+      heartbeat has stopped, lets every waiting call go at once. A rollback pass
+      waits until no result of its replay is held before it decides which
+      rollbacks are owed, because the replay ends at the first call that has no
+      memo, and a flow that was held for its turn registers its rollback after
+      that. It waits on a release, and does not poll the event loop.
+    - **After an infrastructure error.** A store call that fails with a lost
+      lease, a cancelled run, or an outage or a permanent answer of the store is
+      thrown into the task function. A flow of the task that has yet to make a
+      call is beside nothing when the error lands, and what it stores afterwards
+      would be read by a replay with no marker to order it against what the
+      failed call stored. So the pass stores nothing after the first such error,
+      it lets every waiting call go, and it does not complete a task that caught
+      the error and returned: a handler that swallows every rejection, with an
+      empty `catch` or `Promise.allSettled`, ends its pass as aborted and the run
+      is retried, where it used to complete with the error in its result. This
+      holds for an error from any store call of the pass, on the last call of a
+      run as on the first. An error raised at the top of a durable operation for
+      a lease that the heartbeat found ended is not a store call's, and that run
+      is refused at `complete` by its fences.
     - **Compatibility.** The markers are ordinary checkpoints under names no
       task name can take, and the store, its port and its schema do not change.
       A build without markers ignores them, replays in the order its calls
@@ -1008,7 +1018,10 @@ One invocation executes one claimed run to its next suspension point:
     body takes no time are not refused, at any store call. A flow whose step
     body waits on a timer is: two flows that each wait on a timer of their own
     and then run a step whose body takes time are refused at 4 of 5 store calls
-    an outage can take and complete at the other one. Telling the two apart needs
+    an outage can take and complete at the other one. So is a flow that starts
+    flows of its own: two flows inside one outer flow, beside a third, that each
+    await an event and then record a step under one name, are refused at 1 of the
+    22 store calls an outage can take and complete at the other 21. Telling the two apart needs
     the call's async context, which an SDK with no import from the runtime does
     not have, and admitting the calls of sibling flows reverses the refusal above.
     It is an option in BUILD.md (PR3.4d), with its trigger.
@@ -1040,9 +1053,9 @@ One invocation executes one claimed run to its next suspension point:
     is rolled back first. At the known gap's call the test pins what the engine
     does: the group is admitted and the task completes, or the saga's later
     member starts.
-    The one gap of concurrent flows that is left, a sibling's call that lands
-    inside a step that waits, is a witness rather than a comparison:
-    `FLOW_PROGRAMS` says how many store calls the run with no fault makes, how
+    The gap of concurrent flows that is left, a sibling's call that lands
+    inside a step, is a witness rather than a comparison: `FLOW_PROGRAMS` has
+    two programs of it, and says how many store calls the run with no fault makes, how
     it ends, and the store calls at which an outage ends it the other way, and
     the test runs an outage at every store call and fails on any other ending,
     so a gap that is closed by accident, or that gets worse, fails until it is
@@ -1070,7 +1083,7 @@ One invocation executes one claimed run to its next suspension point:
     when a shape is in no program the file runs, and when a kind of call is made
     only inside a group. Two registered mutations keep the audit checking that
     these programs can fail: one lowers the guard while a registered step writes
-    its start marker, and one lets a rollback pass keep its own ordinal. Twenty-three
+    its start marker, and one lets a rollback pass keep its own ordinal. Twenty-eight
     more each remove one line of the order results reach the task in, and the case
     that names it fails.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is

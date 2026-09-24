@@ -409,24 +409,21 @@ export class ReplayContext implements TaskContext {
   }
 
   /**
-   * Every store call of the pass. An infrastructure error that meets a call while another
-   * call is pending ends the pass for the flows of its task: they are running beside the
-   * call that failed, its result may be stored with no marker, and anything they store
-   * after it would be read by a replay ahead of it. So the pass stores nothing after that
-   * error, and it lets every call that waits for its turn go, to meet the error at its own
-   * store call. A task that makes one call at a time has no other flow, and is not
-   * fenced: it may catch the error and call again, as it did.
+   * Every store call of the pass. An infrastructure error that meets a call ends the pass for
+   * the flows of its task, whether or not another call is pending when it lands: a flow that
+   * has yet to make its first call is beside nothing, and what it stores after the error
+   * would be read by a replay with no marker to order it. So the pass stores nothing after
+   * that error, it lets every call that waits for its turn go, to meet the error at its own
+   * store call, and it does not complete a task that caught the error and returned. The
+   * run is retried, and infrastructure retries are not the task's attempts.
    */
-  async #storeCall<T>(operation: () => Promise<T>, inACall = true): Promise<T> {
+  async #storeCall<T>(operation: () => Promise<T>): Promise<T> {
     const ended = this.#order.endedBy
     if (ended !== undefined) throw ended
     try {
       return await this.#controls.storeCall(operation)
     } catch (error) {
-      const beside = this.#callsPending - (inACall ? 1 : 0)
-      if (beside > 0 && trustedStoreControl(error) !== undefined) {
-        this.#order.end(error as object)
-      }
+      if (trustedStoreControl(error) !== undefined) this.#order.end(error as object)
       throw error
     }
   }
@@ -915,8 +912,7 @@ export class ReplayContext implements TaskContext {
     // ending the replay here would leave every later step's rollback unregistered. A
     // rollback handler runs as a step of its own, and a step may emit.
     if (this.#sagaCauseJson !== undefined && !this.inStep) return
-    // An emit is no call of its own: it has no key, and no place in the order.
-    await this.#storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload), false)
+    await this.#storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload))
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {

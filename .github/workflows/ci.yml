@@ -361,6 +361,11 @@ jobs:
                   "mutation-verdict:behavior:a-number-the-pass-gave-is-never-given-up",
                   "mutation-verdict:behavior:an-open-order-lets-every-call-go",
                   "mutation-verdict:behavior:the-order-queue-drops-what-it-handed-over",
+                  "mutation-verdict:behavior:a-skipped-recorded-call-is-given-up-within-one-beat",
+                  "mutation-verdict:behavior:every-skipped-recorded-call-is-given-up-in-the-same-beat",
+                  "mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began",
+                  "mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release",
+                  "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

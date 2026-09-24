@@ -592,12 +592,12 @@ is left: line 18, held for the maintainer's choice.
     an outage or a permanent answer of the store can take. This is met. The four
     programs of a shared step name and the two of a shared task name that
     PR3.4d pinned as swapped now expect each flow's own answers, and were
-    committed failing against main's SDK by name, with three more written out
-    and twelve generated. Over 21 programs, both kinds of fault, and a store that
-    answers at once and one that answers a turn later (42 cases), main's SDK
-    completes 157 of 2,798 runs with two flows' values swapped and refuses 494
-    of them as nested, and this branch completes all 3,720 with each flow's own
-    answers. 23 registered mutations each remove one line of the order results
+    committed failing against main's SDK by name, with six more written out
+    and twelve generated. Over 24 programs, both kinds of fault, and a store that
+    answers at once and one that answers a turn later (48 cases), main's SDK
+    completes 193 of 3,260 runs with two flows' values swapped and refuses 513
+    of them as nested, and this branch completes all 4,272 with each flow's own
+    answers. 28 registered mutations each remove one line of the order results
     reach the task in, and each is caught by one case.
 
 **Held for the maintainer:** each of these needs a decision, an account or an
@@ -3569,21 +3569,22 @@ these three things; nothing else in the system does I/O, time, or randomness.
     flow (`AsyncLocalStorage`, or a `ctx.flow` scope in the published surface) was
     what the shared step name and task name swaps needed, and PR3.4e closes them
     without it, by recording the order results reach the task in. What is left of
-    the option is the sibling-flow refusal of a step whose body waits on a timer
-    (gap (ii), one program of `FLOW_PROGRAMS`). Trigger: a reported refusal of an
-    ordinary program of flows whose step bodies take time, or a decision that the
-    SDK admits sibling flows.
+    the option is the sibling-flow refusal (gap (ii)): a step whose body waits on
+    a timer, and a flow that starts flows of its own, each a program of
+    `FLOW_PROGRAMS`. Trigger: a reported refusal of an ordinary program of flows
+    whose step bodies take time or that nest, or a decision that the SDK admits
+    sibling flows.
   - An option, not scheduled: close gap (i) with a guard held while a replayed
     step settles. It refuses an ordinary fan-out written as flows on every
     replay, so it waits for the option above. Trigger: the same decision.
-  - Open question, decided by PR3.4e for a pass with concurrent calls only: a
-    handler that swallows every rejection, with an empty `catch` or with
-    `Promise.allSettled`, could observe an injected store outage and complete
-    with it in its result. A store error that meets a call while another call is
-    pending now ends the pass for its flows, and the pass does not complete a
-    task that caught it. For a task that makes one call at a time the question
-    stays open, and such a task may catch a store error and call again. Trigger:
-    a handler in use that catches every error around a durable call.
+  - Decided by PR3.4e: a handler that swallows every rejection, with an empty
+    `catch` or with `Promise.allSettled`, could observe an injected store outage
+    and complete with it in its result. An error that a store call of the pass
+    throws into the task function now ends the pass, and the pass does not
+    complete a task that caught it, so the run is retried. What is not covered
+    is an error that did not come from a store call of the pass: a lease that
+    the heartbeat found ended, raised at the top of a durable operation, which
+    the run's fences already refuse at `complete`.
   - Both generators draw a step named after `ctx.attempt`. The plain one also
     draws a first attempt that fails, so that such a step runs under two names.
     The saga one draws a rollback that fails once, so that a second rollback
@@ -3603,14 +3604,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     holds 1094. The base gate's arm is keyed on main's registry and exempts
     their two verdict markers, which the base predates.
 - **PR3.4e ordered replay: two flows that share a step or task name are not handed each other's result**: DONE. PR3.4d found the swap, built a refusal for it, had the refusal rejected, and pinned the swap. This entry closes it in the SDK. Nothing in the store, its port or its schema changes, no released declaration changes, and a task that makes one call at a time stores what it stored.
-  - **What it does.** A call that was pending beside another call in a pass stores a marker `$order:<n>` before its result, and a replay hands recorded results to the task in number order, with a turn of the event loop after each one. DESIGN.md section 3.2 ("The order results reach the task in") states the mechanism, the write order, the wait that cannot end, the fence after an infrastructure error, the compatibility rule and the cost. The sibling-flow refusal of PR3.4d's gap (ii) also stops for flows whose steps take no time, because results now reach the task a turn apart. A flow whose step body waits on a timer is still refused, and `FLOW_PROGRAMS` keeps that witness.
-  - **Measured before and after.** On main's SDK, 21 programs of flows (nine written out, twelve generated), each on a store that answers at once and on one that answers a turn later, ran an outage and then a permanent answer at every store call, 42 cases in all: 157 of 2,798 runs completed with two flows' values swapped, 494 were refused as nested, and 60 ended another way. On this branch every one of 3,720 runs completes with each flow's own answers, none is swapped or refused. The tests were committed failing by name against main's SDK: 44 of the 113 tests of `replay-equivalence.test.ts` and `ordered-replay.test.ts` fail, and the 69 that pass include the two that say a task with no markers replays as it did and a task that makes one call at a time stores none.
+  - **What it does.** A call that was pending beside another call in a pass stores a marker `$order:<n>` before its result, and a replay hands recorded results to the task in number order, with a turn of the event loop after each one. DESIGN.md section 3.2 ("The order results reach the task in") states the mechanism, the write order, the wait that cannot end, the fence after an infrastructure error, the compatibility rule and the cost. The sibling-flow refusal of PR3.4d's gap (ii) also stops for flows whose steps take no time, because results now reach the task a turn apart. Two kinds of program of flows are still refused by a sibling's call and are pinned in `FLOW_PROGRAMS`: a step whose body waits on a timer, and a flow that starts flows of its own (refused at 1 of 22 store calls in the program the review found).
+  - **Measured before and after.** On main's SDK, 24 programs of flows (twelve written out, twelve generated), each on a store that answers at once and on one that answers a turn later, ran an outage and then a permanent answer at every store call, 48 cases in all: 193 of 3,260 runs completed with two flows' values swapped, 513 were refused as nested, and 62 ended another way. On this branch every one of 4,272 runs completes with each flow's own answers, none is swapped or refused. (The program of a flow inside a flow is not among the 24: it is a witness of the gap, in `FLOW_PROGRAMS`.) The tests were committed failing by name against main's SDK: 44 of the 113 tests of `replay-equivalence.test.ts` and `ordered-replay.test.ts` fail, and the 69 that pass include the two that say a task with no markers replays as it did and a task that makes one call at a time stores none. The review's fold was committed failing too, on the head of the first round: 5 of 124 tests fail, three replays that skip recorded calls and end after 3, 5 and 7 beats where one is the bound, a held rollback replay that yields to the event loop 101 times in 100 turns, and a flow that starts after another flow's first call failed, which ended with two flows' children swapped.
   - **Alternatives.** A refusal was built in PR3.4d and rejected: it refuses ordinary programs and a `try` defeats it. The identity of a flow by `AsyncLocalStorage` cannot work, measured: two flows started by one `Promise.all(map(async ...))` inside one `run` read one store, and the SDK imports nothing from Node. Keying a step by a hash of its arguments has nothing to hash, since a step receives none. Keying by the caller's stack cannot tell two flows that run one function apart. Recording the position of every call, and not only of calls that overlapped, was rejected: it writes a marker for every call of every task, and a step named after `ctx.attempt` beside another call is recorded waiting for a call the next attempt never makes. Recording the order inside each result's own row (an envelope) was rejected: an older build would return the envelope as the value, so a deploy would have to be staged, and every reader of a checkpoint's state would change.
   - **Is it a protocol area (AGENTS.md, spec first)?** No. It writes no batch and no statement: the markers are ordinary lease-fenced checkpoints, and the property is one task function's replay against the rows it left. Its cross-pass reasoning is the write order (marker first, or after the result and before the hand-over), and the replay-equivalence harness states that property executably at every store call, with two kinds of fault, which is how the harness found the two windows that the design closes (a flow that goes on after another flow's write failed, and a call joined while it stores). A model would restate the same induction. A `specs/OrderedReplay.tla` is an option if the maintainer wants one.
-  - **What changed for a task in use.** (i) The swap is closed for flows over a step name and a task name. (ii) A store error that meets a call while another call is pending ends the pass for its flows: the pass stores nothing more, and a task that caught the error and returned is not completed, so it is retried. That answers the open question below for a pass with concurrent calls only. A task that makes one call at a time may still catch a store error and call again. (iii) A replay that waits for a call the task never makes gives up after two beats of the heartbeat, in the order it had before markers, so it is delayed by up to a minute and not failed.
-  - **Compatibility, run.** A new build ran pass 1 of a two-flow program against a database file with an outage at each of its 17 store calls, and an older build (main's SDK) finished the task. 15 of 17 completed with each flow's value, and 2 failed with the older build's own refusal, `called inside a step`. The older build alone, faulted at the same 17 calls, fails 1 of 17 the same way.
+  - **What changed for a task in use.** (i) The swap is closed for flows over a step name and a task name. (ii) A store error that a store call throws into the task function ends the pass: the pass stores nothing more, and a task that caught the error and returned is not completed, so the run is retried on its next pass, on the last call of a run as on the first. That answers the open question below for any error that a store call raises. (iii) A replay that waits for a call the task never makes, a task function that differs between passes, is released by the heartbeat within one beat, in the order it had before markers: at most 30 seconds at a lease of 60, whatever the number of calls skipped, and not failed. Main finishes such a replay at once, so this is a delay that main does not have, and the bound is a lease's half, not zero.
+  - **Compatibility, run, on the folded head.** A two-flow program ran pass 1 in one build with an outage at each of 18 store calls (none, and 1 to 17), and the other build finished the task. New pass 1, main's SDK finishing: 16 of 18 completed with each flow's value, and 2 failed with the older build's own refusal, `called inside a step`. Main's SDK pass 1, this branch finishing: 17 of 18 completed, and 1 failed with the same refusal. No task completed with a swapped value in either direction, and the older build alone fails 1 of 17 the same way.
   - **Cost.** A call that overlapped another stores one more checkpoint. Two awaits started together store four rows where they stored two. The 33 tests that main's tree and this one share (the generated and the saga programs) took 44 to 50 seconds of wall time on main's SDK and 46 to 48 on this branch over three interleaved rounds, with user CPU of 77 to 81 seconds against 80 to 83, on a host under load. The 42 new cases add about 3,700 runs to the file.
-  - **Registered mutations.** 23 mutations each remove one line of the order, and 23 cases fail by name. The registry holds 1119 where main holds 1096, and the base gate's arm is keyed on main's digest and exempts the 23 markers. Four of main's mutations name lines that this change touches, and the lines were kept as they were.
+  - **Registered mutations.** 28 mutations each remove one line of the order, and 28 cases fail by name. The registry holds 1124 where main holds 1096, and the base gate's arm is keyed on main's digest and exempts the 28 markers. Four of main's mutations name lines that this change touches, and the lines were kept as they were.
   - **Not built.** A flow that waits on a timer inside a step is still refused (DESIGN.md names the gap). Two flows that each wait on a timer before calling under one name are numbered by the timers in a replay as in a first pass. A `specs/OrderedReplay.tla`.
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent

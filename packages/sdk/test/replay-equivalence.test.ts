@@ -1713,7 +1713,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
     })
     expect(
       JSON.stringify(duplicated) === JSON.stringify({ ...reference, calls: duplicated.calls }),
-      'replay harness counts tasks',
+      'mutation-verdict:behavior:replay-harness-counts-tasks',
     ).toBe(false)
   })
 
@@ -1809,7 +1809,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
       const last = Math.max(...faultPoints(calls))
       if (last !== calls) uncovered.push(`${title}: ${calls} calls, faulted through ${last}`)
     }
-    expect(uncovered, 'replay harness window is measured').toEqual([])
+    expect(uncovered, 'mutation-verdict:behavior:replay-harness-window-is-measured').toEqual([])
   }, 60_000)
 })
 
@@ -2107,7 +2107,7 @@ describe('the name-length axis (every call that passes a name: under its room, a
               lastAttempt: after.at(-1),
               attempts: watch.attempts,
             },
-            'a name past its room is refused before any store call',
+            'mutation-verdict:behavior:a-name-past-its-room-is-refused-before-any-store-call',
           ).toEqual({
             faultAtCall: failAtCall,
             ranAtOrAfterTheRefusedCall: [],
@@ -2668,7 +2668,7 @@ describe('saga replay equivalence (generated programs x fault points across the 
     const run = await runSagaProgram(program, 'saga-fixed', 0)
     expect(
       { state: run.state, outcome: run.outcome, undone: run.undone, handed: run.handed },
-      'saga replay harness reports the order',
+      'mutation-verdict:behavior:saga-replay-harness-reports-the-order',
     ).toEqual({
       state: 'failed',
       outcome: 'complete',
@@ -2683,9 +2683,9 @@ describe('saga replay equivalence (generated programs x fault points across the 
       const verdict = (
         {
           'two registered steps started together, which the engine refuses':
-            'saga replay harness sees two steps start together',
+            'mutation-verdict:behavior:saga-replay-harness-sees-two-steps-start-together',
           'steps named after the attempt, and a rollback that fails once':
-            'saga replay harness sees the attempt a pass replays as',
+            'mutation-verdict:behavior:saga-replay-harness-sees-the-attempt-a-pass-replays-as',
         } as Record<string, string | undefined>
       )[title]
       await owning(verdict, () => sagaReplaysAsItsReference(title, program))

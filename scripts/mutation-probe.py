@@ -15069,6 +15069,97 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The fold of the review of the order results reach the task in: a replay that skips recorded calls is
+# released within one beat, and a held rollback replay waits for a release instead of polling.
+MUTATION_SPECS.extend(
+    (
+        (
+            "a-skipped-recorded-call-is-given-up-within-one-beat",
+            "packages/sdk/src/delivery-order.ts",
+            "    this.#draining = true\n    this.wake()\n",
+            "    this.wake() // MUTATION: a beat that finds the pass stuck gives up on nothing\n",
+            "a replay that skips a recorded call waits for it for ever while the heartbeat keeps the lease, and the task that completes at once on main never completes",
+        ),
+        (
+            "every-skipped-recorded-call-is-given-up-in-the-same-beat",
+            "packages/sdk/src/delivery-order.ts",
+            "      if (!this.#draining || seq >= this.#firstLive) return\n",
+            "      if (true || seq >= this.#firstLive) return // MUTATION: a number is given up only at the beat that found it head\n",
+            "each skipped call after the first waits for a beat of its own, so a replay that skips two calls is held for two beats and three for three",
+        ),
+        (
+            "a-wait-is-judged-by-the-results-handed-over-since-it-began",
+            "packages/sdk/src/delivery-order.ts",
+            "    if (this.#waitingCount === 0) this.#beatProgress = this.#progress\n",
+            "    // MUTATION: a wait is judged by the results handed over since the last beat\n",
+            "a wait that begins after results were handed over is not stuck at the next beat, so a replay that skips a call is held for a second beat",
+        ),
+        (
+            "a-held-rollback-replay-waits-for-the-release",
+            "packages/sdk/src/delivery-order.ts",
+            "    while (order.busy) await order.idle()\n",
+            "    while (order.busy) await turn() // MUTATION: the replay is polled with a turn of the event loop\n",
+            "a rollback pass whose replay is held polls the event loop, one turn after another, until a beat lets the replay go, which is a full core for as long as a lease",
+        ),
+        (
+            "a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
+            "packages/sdk/src/context.ts",
+            "      if (trustedStoreControl(error) !== undefined) this.#order.end(error as object)\n",
+            "      if (this.#callsPending > 1 && trustedStoreControl(error) !== undefined) this.#order.end(error as object)\n",
+            "a flow that has not yet made its first call when another flow's call fails goes on after the error, and stores results that a replay reads ahead of the flow that failed, so a task that caught the error completes on that pass",
+        ),
+    )
+)
+for _verdict, _names in (
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that skips recorded calls is not slowed by more than one beat of the heartbeat skips the first of two flows",
+            "mutation-verdict:behavior:a-skipped-recorded-call-is-given-up-within-one-beat",
+        ),
+        ("a-skipped-recorded-call-is-given-up-within-one-beat",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that skips recorded calls is not slowed by more than one beat of the heartbeat skips two of three flows",
+            "mutation-verdict:behavior:every-skipped-recorded-call-is-given-up-in-the-same-beat",
+        ),
+        ("every-skipped-recorded-call-is-given-up-in-the-same-beat",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a replay that skips recorded calls is not slowed by more than one beat of the heartbeat skips a flow between two that run, after results were handed over",
+            "mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began",
+        ),
+        ("a-wait-is-judged-by-the-results-handed-over-since-it-began",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a rollback pass whose replay is held waits for the release, and does not spin the event loop while it waits",
+            "mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release",
+        ),
+        ("a-held-rollback-replay-waits-for-the-release",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a pass that was told the run cannot go on for its flows ends the pass of a task that makes one call at a time and catches the error, and the run completes on its next pass",
+            "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
+        ),
+        ("a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",),
+    ),
+):
+    for _name in _names:
+        VERDICTS[_name] = _verdict
+
 # The one check of the strings a port call carries (DESIGN.md S3.4 rule 10). Core names
 # every string once, and every store is reached only through the check built from that
 # table. The first two bend the check: the rule of an identifier, and the wrapper that
@@ -21114,7 +21205,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1119:
+        if len(MUTATIONS) != 1124:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

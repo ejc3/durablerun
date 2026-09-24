@@ -45,6 +45,9 @@ export class DeliveryOrder {
   /** How many calls wait for a number that is not their turn. */
   #waitingCount = 0
   #open = false
+  /** A beat found the pass stuck, and every number nobody asks for is given up as it comes to the head. */
+  #draining = false
+  #idlers: (() => void)[] = []
   #endedBy: object | undefined
   #next: number
   /** The first number this pass gave: every number below it was recorded by an earlier pass. */
@@ -117,6 +120,8 @@ export class DeliveryOrder {
   /** Resolves when it is `seq`'s turn, and is undefined when it is already. */
   wait(seq: number): Promise<void> | undefined {
     if (this.#open || this.isDone(seq) || this.isTurn(seq)) return undefined
+    // A wait that begins now is judged by the results handed over from here on.
+    if (this.#waitingCount === 0) this.#beatProgress = this.#progress
     this.#waitingCount++
     return new TaskPromise<void>((resolve) => {
       let woken = false
@@ -151,6 +156,7 @@ export class DeliveryOrder {
     await turn()
     this.#settling = false
     this.wake()
+    this.notifyIdle()
   }
 
   /** How this order takes a real turn of the event loop. Without it a result is followed by none. */
@@ -183,22 +189,55 @@ export class DeliveryOrder {
     const resolvers = this.#resolvers
     this.#resolvers = []
     for (let at = 0; at < resolvers.length; at++) resolvers[at]?.()
+    this.notifyIdle()
   }
 
-  /** `seq` will not be handed over: its call failed. The calls behind it must not wait for it. */
+  /**
+   * `seq` will not be handed over: its call failed, or the task never makes it. The calls
+   * behind it must not wait for it. That hands nothing over, so it is no sign of life.
+   */
   abandon(seq: number): void {
-    this.release(seq, false)
+    taskMapSet(this.#done, seq, true)
+    this.wake()
   }
 
   private wake(): void {
-    this.advance()
-    if (this.#settling) return
-    const seq = this.#queue[this.#head]
-    if (seq === undefined) return
-    const resolve = taskMapGet(this.#waiting, seq)
-    if (resolve === undefined) return
-    taskMapDelete(this.#waiting, seq)
-    resolve()
+    for (;;) {
+      this.advance()
+      if (this.#settling) return
+      if (this.#waitingCount === 0) {
+        this.#draining = false
+        this.notifyIdle()
+        return
+      }
+      const seq = this.#queue[this.#head]
+      if (seq === undefined) return
+      const resolve = taskMapGet(this.#waiting, seq)
+      if (resolve !== undefined) {
+        taskMapDelete(this.#waiting, seq)
+        resolve()
+        this.notifyIdle()
+        return
+      }
+      // Once a beat has found the pass stuck, a number of an earlier pass that nobody has
+      // asked for is given up as it comes to the head, and not a beat after the one before.
+      if (!this.#draining || seq >= this.#firstLive) return
+      taskMapSet(this.#done, seq, true)
+    }
+  }
+
+  /** Resolves when no result waits and no turn is owed: the state a rollback pass needs to read what its replay registered. */
+  idle(): Promise<void> {
+    return new TaskPromise<void>((resolve) => {
+      this.#idlers[this.#idlers.length] = resolve
+    })
+  }
+
+  private notifyIdle(): void {
+    if (this.busy) return
+    const idlers = this.#idlers
+    this.#idlers = []
+    for (let at = 0; at < idlers.length; at++) idlers[at]?.()
   }
 
   /** Whether a call waits for a number that is not its turn. */
@@ -227,7 +266,9 @@ export class DeliveryOrder {
   beat(): void {
     const stuck = this.stalled && this.#progress === this.#beatProgress
     this.#beatProgress = this.#progress
-    if (stuck) this.giveUpOnHead()
+    if (!stuck) return
+    this.#draining = true
+    this.wake()
   }
 
   /**
@@ -276,5 +317,12 @@ export function openOrder(owner: object): void {
 export async function replaySettled(owner: object): Promise<void> {
   const order = orders.get(owner)
   const turn = order?.turn
-  while (order?.busy === true && turn !== undefined) await turn()
+  if (order === undefined || turn === undefined) return
+  for (;;) {
+    // Held results are let go by a beat, a lease that ended, or a release: nothing to poll.
+    while (order.busy) await order.idle()
+    // What a released flow does before its next call takes a turn of the event loop.
+    await turn()
+    if (!order.busy) return
+  }
 }
