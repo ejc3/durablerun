@@ -60,9 +60,11 @@ of the milestone that a caller of a published package can see (PR3.3d's
 `PortRefusalError`, PR3.4c's `failRollback` signature, the 255 code point cap on
 a claim token, PR2.5a's 500 for a permanent store error, and PR3.3c's 400 for
 a task id with a NUL in it), and each is recorded in its entry. Dependabot
-alerts were enabled on 2026-09-23. PR #93 (vitest 4.1.11) cleared the five open
-medium alerts of the test toolchain and also resolved a `nanoid` high alert that
-GitHub had dismissed automatically without a fix (3.3.16, now 3.3.19). New alerts are read from the repository's Dependabot page.
+alerts were enabled on 2026-09-23, and the Dependabot page then listed five
+open medium alerts in the test toolchain and a `nanoid` high alert that GitHub
+had dismissed automatically without a fix. PR #93 (vitest 4.1.11) cleared the
+five and moved `nanoid` from 3.3.16 to 3.3.19. New alerts are read from the
+repository's Dependabot page.
 
 **Exit test:**
 
@@ -645,8 +647,10 @@ them, are the bullets marked Rejected under PR3.5 that would change a published
 export. Review configuration owned outside the repository is PR0.2. Cutting the next
 release, alpha.2 or later, is the maintainer's. The two releases so far were
 immutable GitHub pre-releases with four package tarballs, a clean external
-install, a live Vercel and Turso receipt in `receipts/` (the latest is
-`hosted-alpha-v0.1.0-alpha.1.json`), and a mutation audit. Twenty-two released
+install, and a live Vercel and Turso receipt in `receipts/` (the latest is
+`hosted-alpha-v0.1.0-alpha.1.json`). alpha.1 also had a full mutation audit;
+alpha.0 is the disclosed exception, published without the full pre-release
+sweep (PRA.1 and PRH.2). Twenty-two released
 declarations have changed since alpha.1, and
 `scripts/published-surface-v0.1.0-alpha.1.json` lists each in its `changed`
 table, so those two files are the inputs, and the live receipt needs the
@@ -1985,7 +1989,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   remain public, and the generated wake-witness surface remains their defense.
   Activate this work only when the product supports an in-place v5 upgrade or
   mixed-version writers, accepts external writers or partial restores, or gains
-  a public-API counterexample. Until then it is outside the current milestone.
+  a public-API counterexample. Until then this plan does not schedule it.
 
   Everything above makes a wait row hard to misuse; none of it lets one PROVE
   it is current. Emit infers that
@@ -4436,7 +4440,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR4.2 store-postgres**: native executor/schema, `SKIP LOCKED` claim, closed
   event and same-token claim lock preludes, and the identical six-surface
   conformance suite against PostgreSQL 17. Upstream Absurd oracle parity
-  remains deferred by the current milestone.
+  remains deferred, and no milestone of this plan schedules it.
 - **PR4.3 store-mysql**: `packages/store-mysql` passes the identical
   six-surface conformance suite against MySQL 8.4, in its own CI job,
   `conformance-mysql`, beside `verify`. READ COMMITTED, BIGINT epoch-ms, one
