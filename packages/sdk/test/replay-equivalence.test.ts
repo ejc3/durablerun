@@ -114,7 +114,7 @@ interface ProgramOp {
    * which are functions started together that each await and then go on; or a wait on a timer,
    * which is not durable.
    */
-  kind: CallKind | 'group' | 'fail-once' | 'flows' | 'wait'
+  kind: CallKind | 'group' | 'fail-once' | 'flows' | 'wait' | 'spawn-own'
   valueIndex: number
   nameIndex: number
   sleepSeconds?: number
@@ -143,6 +143,8 @@ interface ProgramOp {
   settled?: boolean
   /** How long a wait lasts, in milliseconds of a real timer. */
   waitMs?: number
+  /** A wait of this many microtask turns, in place of a timer: the task's own work between two calls. */
+  hops?: number
   /** A step whose body takes this many milliseconds of a real timer before it returns. */
   bodyMs?: number
   /** The shape this op was drawn as a part of, for the inventory. */
@@ -538,8 +540,19 @@ function programHandler(ops: ProgramOp[], watch?: Watch) {
             ),
           )
         }
+        case 'spawn-own': {
+          // A child spawned and awaited by the same call site: what the flow observes is
+          // the outcome of the child IT spawned, so a flow handed another flow's child says so.
+          const child = await ctx.spawn(op.name ?? 'child', {
+            valueIndex: op.valueIndex,
+            fails: op.childFails === true,
+          })
+          const outcome = await ctx.awaitTask(child)
+          return `own:${outcome.state}:${outcome.completedPayloadJson ?? outcome.failureReasonJson}`
+        }
         case 'wait':
-          await wait(op.waitMs ?? 1)
+          if (op.hops !== undefined) for (let hop = 0; hop < op.hops; hop++) await Promise.resolve()
+          else await wait(op.waitMs ?? 1)
           return undefined
         case 'group':
         case 'flows':
@@ -614,6 +627,17 @@ function spawnMemos(rows: readonly StoredRow[]): { name: string; taskId: string 
       taskId: (JSON.parse(String(row.state)) as { taskId: string }).taskId,
     }))
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+}
+
+/**
+ * The rows without the engine's order markers. A marker says in which order results reached
+ * the task, which a fault changes without changing the task's outcome, so two schedules of one
+ * program differ in the numbers and in which results have one. The markers are held apart
+ * (`orderMarkersHold`).
+ */
+const ORDER_MARKER = '$order:'
+function withoutOrderMarkers<Row extends StoredRow>(rows: readonly Row[]): Row[] {
+  return rows.filter((row) => !String(row.checkpoint_name).startsWith(ORDER_MARKER))
 }
 
 function withoutChildIds(rows: readonly StoredRow[]): Row[] {
@@ -809,7 +833,9 @@ async function runProgram(
       ['child', childHandler],
       ['stuck', stuckHandler],
       ...written.flatMap((op) =>
-        op.kind === 'spawn' && op.name !== undefined ? [[op.name, childHandler] as const] : [],
+        (op.kind === 'spawn' || op.kind === 'spawn-own') && op.name !== undefined
+          ? [[op.name, childHandler] as const]
+          : [],
       ),
     ])
     const spawned = await real.spawn(
@@ -916,7 +942,7 @@ async function runProgram(
           .map((name) => [...name].length),
       ),
       longestTaskId: Number(measured?.rows[0]?.id_width),
-      checkpoints: withoutChildIds(cps?.rows ?? []),
+      checkpoints: withoutChildIds(withoutOrderMarkers(cps?.rows ?? [])),
     }
   } finally {
     raw.close()
@@ -988,9 +1014,9 @@ const inAFlow = (op: Omit<ProgramOp, 'valueIndex' | 'nameIndex'>, valueIndex = 0
 })
 
 /**
- * What the engine does today with a program that it does not run the same at every fault
- * point: how many store calls the run with no fault makes, how it ends, and the store calls
- * at which an outage makes it end the other way. Every store call is tried.
+ * What the engine does with a program that it does not run the same at every fault point:
+ * how many store calls the run with no fault makes, how it ends, and the store calls at which
+ * an outage makes it end the other way. Every store call is tried.
  */
 interface KnownGap {
   readonly calls: number
@@ -999,61 +1025,17 @@ interface KnownGap {
 }
 
 /**
- * The programs no generator draws: concurrent FLOWS. The calls of a group are all made before
- * the first of them is answered. A flow is a function of its own that awaits and then makes a
- * durable call, so two flows started together reach their calls at moments that a store call
- * or a timer decides, and on a pass that replays every await from its memo they reach them in
- * lockstep. A flow program is short, and the call that tells is not always one the sample
- * takes, so each runs with an outage at EVERY store call.
- *
- * Each of these is a KNOWN GAP, and the test says exactly what the engine does with it
- * (`theEngineDoesWhatTheGapSays`). Each is an ordinary program in which no call is made
- * inside a step, and each is refused as if a call had been made inside one, because the
- * engine's refusal is one flag that cannot tell a call nested in a step from a call that a
- * sibling flow makes while the step runs. Whether a program of this shape completes depends
- * on which store call an outage takes. Closing the gap means admitting concurrency, which
- * reverses DESIGN.md section 3.10 (BUILD.md's PR3.4d entry names the option and its
- * trigger). Until then the witness fails if a program ends another way at any call, so a gap
- * that is closed by accident, or that gets worse, is seen.
+ * A program of concurrent flows that no generator draws, and the one gap that is left in the
+ * engine's handling of them. The engine refuses a call made while a step's callback runs,
+ * because a call nested in a step advances counters that a replay, which skips the callback,
+ * never sees. That is one flag, and it cannot tell a nested call from a call that a sibling
+ * flow makes while the step runs. A flow whose step waits on a timer is refused by its
+ * sibling's call at some store calls and not at others. The test says exactly what the
+ * engine does (`theEngineDoesWhatTheGapSays`), so a change that closes the gap, or widens it,
+ * is seen. Every other flow program of this file completes at every store call
+ * (ORDERED_FLOW_PROGRAMS).
  */
 const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
-  'flows that each await a child and then record it in a step under its own name, and then a sleep':
-    {
-      gap: { calls: 30, reference: 'completed', otherwiseAt: [6, 7, 24] },
-      ops: [
-        group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
-        flowsOf(
-          [
-            inAFlow({ kind: 'await-child', childIndex: 0 }),
-            inAFlow({ kind: 'step', name: 'record-0' }),
-          ],
-          [
-            inAFlow({ kind: 'await-child', childIndex: 1 }),
-            inAFlow({ kind: 'step', name: 'record-1' }, 1),
-          ],
-        ),
-        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
-      ],
-    },
-  'flows that each await an event the program has emitted and then record it in a step, and then a sleep':
-    {
-      gap: { calls: 11, reference: 'refused', otherwiseAt: [6, 7, 8, 9, 11] },
-      ops: [
-        inAFlow({ kind: 'emit', eventName: 'e1' }),
-        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
-        flowsOf(
-          [
-            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
-            inAFlow({ kind: 'step', name: 'record-e1' }),
-          ],
-          [
-            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
-            inAFlow({ kind: 'step', name: 'record-e2' }, 1),
-          ],
-        ),
-        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
-      ],
-    },
   'flows that each wait on a timer of its own length and then run a step whose body takes time': {
     gap: { calls: 5, reference: 'refused', otherwiseAt: [4] },
     ops: [
@@ -1072,92 +1054,58 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
 }
 
 /**
- * The same defect for a task name, found while measuring the shared step name and not closed
- * by it. Two flows that each await something and then spawn a child under one task name are
- * numbered in the order their calls arrive (`$spawn:child`, then `$spawn:child#2`), and a
- * replay from memos can reach the two calls in the other order, so each flow is handed the
- * other's child, and then awaits the wrong one. The engine does not refuse a repeated task
- * name, which a fan-out over one task name repeats every time, and a refusal would cost every
- * such flow. The test says exactly what the engine does, so a swap that is closed by accident,
- * or that reaches more store calls, fails it, and the swap stays visible. BUILD.md's PR3.4d
- * entry names the option and its trigger.
+ * Flows that make calls under a name they share. A repeated name is numbered in the order
+ * the calls arrive (`record`, then `record#2`), and two flows reach their calls in an order
+ * that the results they awaited decide. A first pass answers those awaits in the order they
+ * settle, and a replay answers them from memos, so a replay that did not follow the first pass
+ * would number the two calls the other way and hand each flow the other's result (DESIGN.md
+ * section 3.2). Each program below is run with an outage at EVERY store call, under both kinds
+ * of fault, and a task that completes must complete with exactly its `answers`: what each flow
+ * observed, flow after flow. Each flow's values are its own (flow 0 carries value 0, flow 1
+ * value 1), so a swap shows in the answers. Every run must also complete: none is refused.
+ * The answers of one program are written out and never derived from a run, so a program that
+ * ends the same wrong way at every fault point fails too.
  */
-const SHARED_TASK_NAME_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
-  'flows that each await an event the program has emitted and then spawn a child under one task name':
+const ORDERED_FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; answers: string[] }> = {
+  'flows that each await a child and then record it in a step under its own name, and then a sleep':
     {
-      gap: { calls: 14, reference: 'completed', otherwiseAt: [6, 8] },
+      answers: ['child:completed:42', 'number:42', 'child:completed:"plain"', 'string:plain'],
+      ops: [
+        group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-child', childIndex: 0 }),
+            inAFlow({ kind: 'step', name: 'record-0' }),
+          ],
+          [
+            inAFlow({ kind: 'await-child', childIndex: 1 }),
+            inAFlow({ kind: 'step', name: 'record-1' }, 1),
+          ],
+        ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
+      ],
+    },
+  'flows that each await an event the program has emitted and then record it in a step, and then a sleep':
+    {
+      answers: ['ev:e1:42', 'number:42', 'ev:e2:"plain"', 'string:plain'],
       ops: [
         inAFlow({ kind: 'emit', eventName: 'e1' }),
         inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
         flowsOf(
           [
             inAFlow({ kind: 'await-inline', eventName: 'e1' }),
-            inAFlow({ kind: 'spawn', name: 'child' }, 0),
+            inAFlow({ kind: 'step', name: 'record-e1' }),
           ],
           [
             inAFlow({ kind: 'await-inline', eventName: 'e2' }),
-            inAFlow({ kind: 'spawn', name: 'child' }, 1),
+            inAFlow({ kind: 'step', name: 'record-e2' }, 1),
           ],
         ),
+        inAFlow({ kind: 'sleep', sleepSeconds: 5 }),
       ],
     },
-  'flows that each await a child and then spawn a second child under one task name': {
-    gap: { calls: 28, reference: 'completed', otherwiseAt: [5, 8, 21] },
-    ops: [
-      group<ProgramOp>(
-        inAFlow({ kind: 'spawn', name: 'first' }, 0),
-        inAFlow({ kind: 'spawn', name: 'first' }, 1),
-      ),
-      flowsOf(
-        [
-          inAFlow({ kind: 'await-child', childIndex: 0 }),
-          inAFlow({ kind: 'spawn', name: 'second' }, 0),
-        ],
-        [
-          inAFlow({ kind: 'await-child', childIndex: 1 }),
-          inAFlow({ kind: 'spawn', name: 'second' }, 1),
-        ],
-      ),
-    ],
-  },
-}
-
-/**
- * What the engine ends with at every store call, for a program it does not run the same at
- * every fault point: each ending, and the calls at which an outage ends the run that way (0 is
- * the run with no fault). The test runs every store call and fails on any other table, so a
- * program that comes to end another way, or at another call, is seen whichever way it moved.
- */
-type PinnedEndings = Record<string, readonly number[]>
-
-/**
- * Programs in which one step name is used by two flows, which the engine does NOT refuse
- * (DESIGN.md section 3.10). The engine numbers the uses of a name in the order the calls
- * arrive (`record`, then `record#2`), and two flows reach their calls in an order that a
- * store call decides on one pass and that a replay from memos decides again, in lockstep. The
- * flow that arrived second on the pass that ran the steps can arrive first on the pass that
- * replays them, and then each flow is handed the other's value: the task completes with two
- * values swapped, and nothing says so. A refusal was built, and rejected: it refuses ordinary
- * programs (a poll loop beside an await), and a task that catches it still completes swapped,
- * which the last two programs pin. The result of each ending shows the values: the flow that
- * awaited the first event or child, then the flow that awaited the second.
- */
-const SHARED_NAME_PROGRAMS: Record<
-  string,
-  { ops: ProgramOp[]; calls: number; endings: PinnedEndings }
-> = {
   'flows that each await a child and then record it in a step under one name, and then a sleep': {
-    calls: 30,
-    endings: {
-      'completed ["child:completed:42","number:42","child:completed:\\"plain\\"","string:plain"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
-        [
-          0, 1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 25, 26, 27, 28, 29,
-          30,
-        ],
-      'completed ["child:completed:42","string:plain","child:completed:\\"plain\\"","number:42"] $spawn:child -> {"valueIndex":0,"fails":false},$spawn:child#2 -> {"valueIndex":1,"fails":false}':
-        [5, 8, 21],
-      "refused ctx.step('record')": [6, 7, 24],
-    },
+    answers: ['child:completed:42', 'number:42', 'child:completed:"plain"', 'string:plain'],
     ops: [
       group<ProgramOp>(inAFlow({ kind: 'spawn' }, 0), inAFlow({ kind: 'spawn' }, 1)),
       flowsOf(
@@ -1175,12 +1123,7 @@ const SHARED_NAME_PROGRAMS: Record<
   },
   'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep':
     {
-      calls: 11,
-      endings: {
-        "refused ctx.step('record')": [0, 1, 2, 3, 4, 5, 10],
-        'completed ["ev:e1:42","string:plain","ev:e2:\\"plain\\"","number:42"] ': [6, 8],
-        'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [7, 9, 11],
-      },
+      answers: ['ev:e1:42', 'number:42', 'ev:e2:"plain"', 'string:plain'],
       ops: [
         inAFlow({ kind: 'emit', eventName: 'e1' }),
         inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
@@ -1198,12 +1141,7 @@ const SHARED_NAME_PROGRAMS: Record<
       ],
     },
   'the same flows, each catching what its step throws': {
-    calls: 11,
-    endings: {
-      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","caught"] ': [0, 1, 2, 3, 4, 5],
-      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [6, 7, 8, 9, 11],
-      'completed ["ev:e1:42","caught","ev:e2:\\"plain\\"","caught"] ': [10],
-    },
+    answers: ['ev:e1:42', 'number:42', 'ev:e2:"plain"', 'string:plain'],
     ops: [
       inAFlow({ kind: 'emit', eventName: 'e1' }),
       inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
@@ -1220,13 +1158,7 @@ const SHARED_NAME_PROGRAMS: Record<
     ],
   },
   'the same flows, gathered with allSettled': {
-    calls: 11,
-    endings: {
-      'completed ["ev:e1:42","number:42","REJ"] ': [0, 1, 2, 3, 4, 5, 7, 9],
-      'completed ["REJ","ev:e2:\\"plain\\"","string:plain"] ': [6, 8],
-      'completed ["REJ","REJ"] ': [10],
-      'completed ["ev:e1:42","number:42","ev:e2:\\"plain\\"","string:plain"] ': [11],
-    },
+    answers: ['ev:e1:42', 'number:42', 'ev:e2:"plain"', 'string:plain'],
     ops: [
       inAFlow({ kind: 'emit', eventName: 'e1' }),
       inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
@@ -1245,6 +1177,150 @@ const SHARED_NAME_PROGRAMS: Record<
       },
     ],
   },
+  'flows that each await an event the program has emitted and then spawn and await a child under one task name':
+    {
+      answers: ['ev:e1:42', 'own:completed:42', 'ev:e2:"plain"', 'own:completed:"plain"'],
+      ops: [
+        inAFlow({ kind: 'emit', eventName: 'e1' }),
+        inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+        flowsOf(
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+            inAFlow({ kind: 'spawn-own', name: 'child' }, 0),
+          ],
+          [
+            inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+            inAFlow({ kind: 'spawn-own', name: 'child' }, 1),
+          ],
+        ),
+      ],
+    },
+  'flows that each await a child and then spawn and await a second child under one task name': {
+    answers: [
+      'child:completed:42',
+      'own:completed:42',
+      'child:completed:"plain"',
+      'own:completed:"plain"',
+    ],
+    ops: [
+      group<ProgramOp>(
+        inAFlow({ kind: 'spawn', name: 'first' }, 0),
+        inAFlow({ kind: 'spawn', name: 'first' }, 1),
+      ),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-child', childIndex: 0 }),
+          inAFlow({ kind: 'spawn-own', name: 'second' }, 0),
+        ],
+        [
+          inAFlow({ kind: 'await-child', childIndex: 1 }),
+          inAFlow({ kind: 'spawn-own', name: 'second' }, 1),
+        ],
+      ),
+    ],
+  },
+  'flows whose work between a result and the next call takes a different number of promise turns': {
+    answers: ['ev:e1:42', 'number:42', 'ev:e2:"plain"', 'string:plain'],
+    ops: [
+      inAFlow({ kind: 'emit', eventName: 'e1' }),
+      inAFlow({ kind: 'emit', eventName: 'e2' }, 1),
+      flowsOf(
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e1' }),
+          inAFlow({ kind: 'wait', hops: 8 }),
+          inAFlow({ kind: 'step', name: 'record' }),
+        ],
+        [
+          inAFlow({ kind: 'await-inline', eventName: 'e2' }),
+          inAFlow({ kind: 'step', name: 'record' }, 1),
+        ],
+      ),
+    ],
+  },
+}
+
+/**
+ * Generated flows over shared names, checked by what each flow observes. A flow awaits an
+ * event of its own, and then makes calls whose names are drawn from a pool that every flow
+ * shares, and a flow's values are its own (flow N carries value N). The events are ones the
+ * program emitted or ones that arrive from outside after the run has parked, and a flow may
+ * sleep, so a run spans several passes. The first attempt may fail after the flows, so the
+ * second replays what the first stored.
+ */
+const FLOW_VALUES = [0, 1, 2] // 42, 'plain', and an object: each with a plain JSON form
+
+function drawSharedNameFlows(rng: Rng): { ops: ProgramOp[]; answers: string[] } {
+  const flowCount = 2 + rng.int(2)
+  const ops: ProgramOp[] = []
+  const flows: ProgramOp[][] = []
+  const answers: string[] = []
+  const anyOf = <T>(list: readonly [T, ...T[]]): T => list[rng.int(list.length)] ?? list[0]
+  for (let flow = 0; flow < flowCount; flow++) {
+    const value = FLOW_VALUES[flow] ?? 0
+    const json = JSON.stringify(VALUES[value]) ?? 'null'
+    const name = `flow${flow}`
+    const external = rng.next() < 0.3
+    if (!external) ops.push(inAFlow({ kind: 'emit', eventName: name }, value))
+    const mine: ProgramOp[] = [
+      inAFlow({ kind: external ? 'await-external' : 'await-inline', eventName: name }, value),
+    ]
+    answers.push(`ev:${name}:${external ? JSON.stringify({ ext: name }) : json}`)
+    for (let at = 1 + rng.int(3); at > 0; at--) {
+      const pick = rng.int(5)
+      if (pick === 0) {
+        mine.push(inAFlow({ kind: 'wait', hops: rng.int(12) }, value))
+      } else if (pick === 1) {
+        mine.push(inAFlow({ kind: 'spawn-own', name: anyOf(['kid', 'kid', 'other']) }, value))
+        answers.push(`own:completed:${json}`)
+      } else if (pick === 2) {
+        mine.push(inAFlow({ kind: 'sleep', sleepSeconds: 5 + rng.int(20) }, value))
+      } else {
+        mine.push(inAFlow({ kind: 'step', name: anyOf(['rec', 'rec', 'job']) }, value))
+        answers.push(fingerprint(VALUES[value]))
+      }
+    }
+    flows.push(mine)
+  }
+  ops.push(flowsOf(...flows))
+  // The first attempt fails after the flows, and the second replays them from what they stored.
+  if (rng.next() < 0.4) ops.push({ kind: 'fail-once', valueIndex: 0, nameIndex: 0 })
+  return { ops, answers }
+}
+
+/** Every checkpoint write waits a turn of the event loop, as a store over a network does. */
+const overANetwork = (store: SchedulerStore): SchedulerStore =>
+  withStoreOverrides(store, {
+    setCheckpoint: async (...args) => {
+      await new Promise((resolve) => setImmediate(resolve))
+      return store.setCheckpoint(...args)
+    },
+  })
+
+/**
+ * Run a program of flows with an outage, and then a permanent answer, at EVERY store call. A
+ * task must complete, and with `answers`. Answers how many runs there were.
+ */
+async function everyFaultPointKeepsEachFlowsResult(
+  label: string,
+  ops: ProgramOp[],
+  answers: string[],
+  tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
+): Promise<number> {
+  const reference = await runProgram(ops, `flows-${label}`, 0, { tamper })
+  expect(JSON.parse(reference.result ?? 'null'), `${label}: the run with no fault`).toEqual(answers)
+  let runs = 1
+  for (const call of everyCall(reference.calls)) {
+    for (const fault of FAULT_KINDS) {
+      const run = await landing(fault, () =>
+        runProgram(ops, faultSeed(`flows-${label}-${call}`, fault), call, { fault, tamper }),
+      )
+      expect(JSON.parse(run.result ?? 'null'), `${label}: ${fault} at call ${call}`).toEqual(
+        answers,
+      )
+      runs++
+    }
+  }
+  return runs
 }
 
 /** Every store call of a run, where the sample of `faultPoints` takes every other one. */
@@ -1444,8 +1520,7 @@ describe('context-method enrollment (the inventory gate)', () => {
       plain: PROGRAM_SHAPE_NAMES,
       saga: SAGA_SHAPE_NAMES,
       flows: Object.keys(FLOW_PROGRAMS),
-      sharedName: Object.keys(SHARED_NAME_PROGRAMS),
-      sharedTaskName: Object.keys(SHARED_TASK_NAME_PROGRAMS),
+      orderedFlows: Object.keys(ORDERED_FLOW_PROGRAMS),
     }).toEqual({
       plain: [
         'two awaits of one event, which park the run',
@@ -1466,19 +1541,18 @@ describe('context-method enrollment (the inventory gate)', () => {
         'two registered steps started together, which the engine refuses',
       ],
       flows: [
-        'flows that each await a child and then record it in a step under its own name, and then a sleep',
-        'flows that each await an event the program has emitted and then record it in a step, and then a sleep',
         'flows that each wait on a timer of its own length and then run a step whose body takes time',
       ],
-      sharedName: [
+      orderedFlows: [
+        'flows that each await a child and then record it in a step under its own name, and then a sleep',
+        'flows that each await an event the program has emitted and then record it in a step, and then a sleep',
         'flows that each await a child and then record it in a step under one name, and then a sleep',
         'flows that each await an event the program has emitted and then record it in a step under one name, and then a sleep',
         'the same flows, each catching what its step throws',
         'the same flows, gathered with allSettled',
-      ],
-      sharedTaskName: [
-        'flows that each await an event the program has emitted and then spawn a child under one task name',
-        'flows that each await a child and then spawn a second child under one task name',
+        'flows that each await an event the program has emitted and then spawn and await a child under one task name',
+        'flows that each await a child and then spawn and await a second child under one task name',
+        'flows whose work between a result and the next call takes a different number of promise turns',
       ],
     })
   })
@@ -1599,7 +1673,7 @@ describe('the harness itself (a comparison nobody has seen fail proves nothing)'
     })
     expect({
       spawned: reference.spawned,
-      writtenFirst: written.slice(0, 2),
+      writtenFirst: written.filter((name) => !name.startsWith(ORDER_MARKER)).slice(0, 2),
       reversed: { ...reversed, calls: reference.calls },
     }).toEqual({
       spawned: inWrittenOrder,
@@ -1635,19 +1709,37 @@ describe('replay equivalence (generated programs x fault points x adversarial va
     }, 60_000)
   }
 
-  for (const [title, program] of Object.entries({
-    ...FLOW_PROGRAMS,
-    ...SHARED_TASK_NAME_PROGRAMS,
-  })) {
+  for (const [title, program] of Object.entries(FLOW_PROGRAMS)) {
     it(`${title}: an outage at every store call ends as the known gap says`, async () => {
       await theEngineDoesWhatTheGapSays(program.ops, program.gap)
     }, 120_000)
   }
 
-  for (const [title, program] of Object.entries(SHARED_NAME_PROGRAMS)) {
-    it(`${title}: an outage at every store call ends as pinned`, async () => {
-      await theEngineEndsAsPinned(program.ops, program.calls, program.endings)
-    }, 120_000)
+  for (const [title, program] of Object.entries(ORDERED_FLOW_PROGRAMS)) {
+    for (const network of [false, true]) {
+      it(`${title}${network ? ', over a network' : ''}: an outage at every store call ends with each flow's own result`, async () => {
+        await everyFaultPointKeepsEachFlowsResult(
+          title,
+          program.ops,
+          program.answers,
+          network ? overANetwork : undefined,
+        )
+      }, 300_000)
+    }
+  }
+
+  for (const drawing of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    for (const network of [false, true]) {
+      it(`generated flows over shared names ${drawing}${network ? ', over a network' : ''}: an outage at every store call ends with each flow's own result`, async () => {
+        const { ops, answers } = drawSharedNameFlows(new Rng(`shared-name-flows-${drawing}`))
+        await everyFaultPointKeepsEachFlowsResult(
+          `${drawing}${network ? 'n' : ''}`,
+          ops,
+          answers,
+          network ? overANetwork : undefined,
+        )
+      }, 300_000)
+    }
   }
 })
 
@@ -1683,25 +1775,6 @@ async function theEngineDoesWhatTheGapSays(ops: ProgramOp[], gap: KnownGap): Pro
   ).toEqual([...gap.otherwiseAt])
   // Every one of them ends the same one other way.
   expect(new Set(otherwise.map((run) => run.ending)).size).toBeLessThanOrEqual(1)
-}
-
-/**
- * The witness of a pinned program: how each run ended, by the store call the outage took, is
- * exactly the table. Each run is seeded and each outage is at a fixed store call, so the table
- * is the same on every machine.
- */
-async function theEngineEndsAsPinned(
-  ops: ProgramOp[],
-  calls: number,
-  endings: PinnedEndings,
-): Promise<void> {
-  const reference = await runProgram(ops, 'pinned-ref', 0, { ends: 'either' })
-  const seen = new Map<string, number[]>([[endingOf(reference), [0]]])
-  for (const call of everyCall(reference.calls)) {
-    const ending = endingOf(await runProgram(ops, `pinned-${call}`, call, { ends: 'either' }))
-    seen.set(ending, [...(seen.get(ending) ?? []), call])
-  }
-  expect({ calls: reference.calls, endings: Object.fromEntries(seen) }).toEqual({ calls, endings })
 }
 
 /**
@@ -2328,7 +2401,7 @@ async function runSagaProgram(
       state: result?.state,
       failure: result?.failureReasonJson,
       outcome: result?.rollback?.outcome,
-      checkpoints: (cps?.rows ?? []).map(
+      checkpoints: withoutOrderMarkers(cps?.rows ?? []).map(
         (row): Row => ({ checkpoint_name: String(row.checkpoint_name), state: String(row.state) }),
       ),
       /** Each rollback in the order it first succeeded, and how often each ran. */
