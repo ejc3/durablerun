@@ -366,6 +366,7 @@ jobs:
                   "mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began",
                   "mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release",
                   "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
+                  "mutation-verdict:behavior:a-permanent-answer-of-the-store-does-not-end-the-pass",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

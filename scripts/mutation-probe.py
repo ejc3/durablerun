@@ -14788,8 +14788,8 @@ MUTATION_SPECS.extend(
         (
             "the-heartbeat-gives-up-on-a-result-nobody-asks-for",
             "packages/sdk/src/run-worker.ts",
-            "        if (passContext !== undefined) beatOrder(passContext)\n",
-            "        // MUTATION: the heartbeat never looks at the order\n",
+            "      if (passContext !== undefined) beatOrder(passContext)\n",
+            "      // MUTATION: the heartbeat never looks at the order\n",
             "a replay that waits for a recorded result whose call the task never makes, a step named after the attempt beside another call, waits for ever while its heartbeat keeps the lease",
         ),
         (
@@ -14988,7 +14988,7 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/sdk/test/ordered-replay.test.ts",
-            "a replay that waits for a call the task does not make lets every call go when the lease ends while the replay waits",
+            "a replay that waits for a call the task does not make lets every call go when the lease ends, though a beat gives up on no number of this pass",
             "mutation-verdict:behavior:a-pass-whose-lease-ended-lets-every-call-go",
         ),
         ("a-pass-whose-lease-ended-lets-every-call-go",),
@@ -14997,7 +14997,7 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/sdk/test/ordered-replay.test.ts",
-            "a replay that waits for a call the task does not make lets every call go when the heartbeat stops while the replay waits",
+            "a replay that waits for a call the task does not make lets every call go when the heartbeat stops, though a beat gives up on no number of this pass",
             "mutation-verdict:behavior:a-pass-whose-heartbeat-stopped-lets-every-call-go",
         ),
         ("a-pass-whose-heartbeat-stopped-lets-every-call-go",),
@@ -15104,9 +15104,16 @@ MUTATION_SPECS.extend(
         (
             "a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
             "packages/sdk/src/context.ts",
-            "      if (trustedStoreControl(error) !== undefined) this.#order.end(error as object)\n",
-            "      if (this.#callsPending > 1 && trustedStoreControl(error) !== undefined) this.#order.end(error as object)\n",
+            "      if (control !== undefined && control.kind !== 'store-permanent') {\n",
+            "      if (this.#callsPending > 1 && control !== undefined && control.kind !== 'store-permanent') {\n",
             "a flow that has not yet made its first call when another flow's call fails goes on after the error, and stores results that a replay reads ahead of the flow that failed, so a task that caught the error completes on that pass",
+        ),
+        (
+            "a-permanent-answer-of-the-store-does-not-end-the-pass",
+            "packages/sdk/src/context.ts",
+            "      if (control !== undefined && control.kind !== 'store-permanent') {\n",
+            "      if (control !== undefined) {\n",
+            "a task that catches a permanent answer of the store is aborted and retried for ever: the retry repeats the refused write, an aborted pass spends no attempt, and main completes such a task in one pass",
         ),
     )
 )
@@ -15155,6 +15162,15 @@ for _verdict, _names in (
             "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
         ),
         ("a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/ordered-replay.test.ts",
+            "a permanent answer of the store is not an error a retry can fix reaches the task, which completes with its fallback in the pass it met it in",
+            "mutation-verdict:behavior:a-permanent-answer-of-the-store-does-not-end-the-pass",
+        ),
+        ("a-permanent-answer-of-the-store-does-not-end-the-pass",),
     ),
 ):
     for _name in _names:
@@ -21205,7 +21221,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1124:
+        if len(MUTATIONS) != 1125:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

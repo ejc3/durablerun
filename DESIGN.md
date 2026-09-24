@@ -953,20 +953,24 @@ One invocation executes one claimed run to its next suspension point:
       rollbacks are owed, because the replay ends at the first call that has no
       memo, and a flow that was held for its turn registers its rollback after
       that. It waits on a release, and does not poll the event loop.
-    - **After an infrastructure error.** A store call that fails with a lost
-      lease, a cancelled run, or an outage or a permanent answer of the store is
-      thrown into the task function. A flow of the task that has yet to make a
-      call is beside nothing when the error lands, and what it stores afterwards
-      would be read by a replay with no marker to order it against what the
-      failed call stored. So the pass stores nothing after the first such error,
-      it lets every waiting call go, and it does not complete a task that caught
-      the error and returned: a handler that swallows every rejection, with an
-      empty `catch` or `Promise.allSettled`, ends its pass as aborted and the run
-      is retried, where it used to complete with the error in its result. This
-      holds for an error from any store call of the pass, on the last call of a
-      run as on the first. An error raised at the top of a durable operation for
-      a lease that the heartbeat found ended is not a store call's, and that run
-      is refused at `complete` by its fences.
+    - **After an infrastructure error.** A store call that fails with an outage
+      of the store, a lost lease or a cancelled run is thrown into the task
+      function. A flow of the task that has yet to make a call is beside nothing
+      when the error lands, and what it stores afterwards would be read by a
+      replay with no marker to order it against what the failed call stored. So
+      the pass stores nothing after the first such error, it lets every waiting
+      call go, and it does not complete a task that caught the error and
+      returned: a handler that swallows every rejection, with an empty `catch` or
+      `Promise.allSettled`, ends its pass as aborted and the run is retried,
+      where it used to complete with the error in its result. This holds for an
+      error from any store call of the pass, on the last call of a run as on the
+      first. The pass is ended only for what a retry can change. A permanent
+      answer of the store repeats on every retry and an aborted pass spends no
+      attempt, so it is not an error of this kind: it reaches the task and is
+      handled as it was before markers, and a task that catches it completes with
+      what it made of it. An error raised at the top of a durable operation for a
+      lease that the heartbeat found ended is not a store call's, and that run is
+      refused at `complete` by its fences.
     - **Compatibility.** The markers are ordinary checkpoints under names no
       task name can take, and the store, its port and its schema do not change.
       A build without markers ignores them, replays in the order its calls
@@ -1083,7 +1087,7 @@ One invocation executes one claimed run to its next suspension point:
     when a shape is in no program the file runs, and when a kind of call is made
     only inside a group. Two registered mutations keep the audit checking that
     these programs can fail: one lowers the guard while a registered step writes
-    its start marker, and one lets a rollback pass keep its own ordinal. Twenty-eight
+    its start marker, and one lets a rollback pass keep its own ordinal. Twenty-nine
     more each remove one line of the order results reach the task in, and the case
     that names it fails.
 - Child tasks: `ctx.spawn` a child, then await it *as an event*. The spawn is
