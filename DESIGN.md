@@ -207,7 +207,11 @@ idempotent dispatcher; claims are atomic so duplicate launches are benign no-ops
 
 Two deliverables, in this order:
 
-**Deliverable A — deploy the WDK's managed path to Vercel now (baseline).** A small
+**Deliverable A — deploy the WDK's managed path to Vercel now (baseline).
+Superseded, never built.** The hosted alpha of durablerun itself (the immutable
+`v0.1.0-alpha.0` and `v0.1.0-alpha.1` releases, with the Vercel and Turso
+example) is what shipped, and no code in the repository uses `workflow@4.6.0`.
+The plan as first written: a small
 Next.js app using `workflow@4.6.0` `"use workflow"` / `"use step"` deployed to
 Vercel with the zero-config Vercel World. This gives immediate durable workflows in
 production, the observability dashboard, and a behavioral reference. Turso can be
@@ -4697,7 +4701,7 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   placement the inspector follows the run row's run-DB pointer to join
   checkpoint/step history, so "why is run X stuck" is answerable across both
   planes from one `/api/inspect` (habitat-style read-only views later; WDK
-  dashboards apply to Deliverable A only). Payloads note: params, checkpoints,
+  dashboards would apply to Deliverable A only, which was not built). Payloads note: params, checkpoints,
   and event payloads are stored plaintext in these DBs — treat them as
   secret-bearing, encrypt sensitive fields app-side if needed, and retention
   (`cleanup`) covers scheduler rows and run DBs alike.
@@ -5555,7 +5559,9 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 
 - **Phase 0 — scaffold + baseline deploy (Deliverable A).** Repo, `workflow@4.6.0`
   demo workflow on managed Vercel World, Turso provisioned (marketplace creds),
-  CI. Proves the deploy pipeline and gives the reference behavior.
+  CI. Proves the deploy pipeline and gives the reference behavior. The repo,
+  Turso and CI were built; the demo workflow on the managed World was not, and
+  the hosted alpha took its place (Deliverable A above).
 - **Phase 1 — scheduler plane on Turso (inline placement).** Schema +
   idempotent migrations with a `schema_version`; the `SchedulerStore` port,
   Turso dialect: spawn / claim (with `claim_gen`) / activate / heartbeat /

@@ -31,9 +31,12 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
+## Completed milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
 
-**Status: IN PROGRESS (named 2026-09-19).** The maintainer asked for every
+**Status: COMPLETE (named 2026-09-19, complete 2026-09-24).** PR3.4e merged as
+PR #94, the last product pull request of the milestone, and main at
+`278c0f0` meets every exit test below, lines 1 to 31. No milestone is current:
+the maintainer names the next one. The maintainer asked for every
 tractable follow-up that the reviews of the milestone named on 2026-09-16
 deferred or recorded as an option. Tractable means the repository and a
 development machine are enough: no account, secret, or decision that only the
@@ -48,8 +51,20 @@ change the two server executors, so the second of them to merge rebases onto
 the first. The list below is the first ten. A follow-up planned later adds its
 exit test here, as the next numbered line, in the PR that builds it. Each PR
 also takes its own bullets out from under the merged entry that holds them, and
-a last docs PR gives a live owner to every open bullet that is left. One line
-is left: line 18, held for the maintainer's choice.
+a last docs PR gives a live owner to every open bullet that is left. Line 18
+waited for the maintainer's choice on how to close the same-name swap of
+concurrent flows: PR #75 landed the harness and its pins, review rejected the
+refusal of a repeated step name it had built, and PR3.4e (line 31) closed the
+swap by recorded order. The maintainer approved on 2026-09-21 the five changes
+of the milestone that a caller of a published package can see (PR3.3d's
+`PortRefusalError`, PR3.4c's `failRollback` signature, the 255 code point cap on
+a claim token, PR2.5a's 500 for a permanent store error, and PR3.3c's 400 for
+a task id with a NUL in it), and each is recorded in its entry. Dependabot
+alerts were enabled on 2026-09-23, and the Dependabot page then listed five
+open medium alerts in the test toolchain and a `nanoid` high alert that GitHub
+had dismissed automatically without a fix. PR #93 (vitest 4.1.11) cleared the
+five and moved `nanoid` from 3.3.16 to 3.3.19. New alerts are read from the
+repository's Dependabot page.
 
 **Exit test:**
 
@@ -371,7 +386,8 @@ is left: line 18, held for the maintainer's choice.
     flow catching what its step throws, and gathered with `allSettled`. The
     two programs of a shared step name were committed failing by name against
     a refusal, and the pins fail by name when the refusal is put back, which
-    was run. The SDK is unchanged from main.
+    was run. The SDK is unchanged from main. PR3.4e (line 31) then closed the
+    swaps these pins recorded, and the pins now expect each flow's own answers.
 19. PR3.9g: a fragment or a store statement that calls PostgreSQL's `age` is
     refused, by the tree rule and by `clock-lint`, which read one list of clock
     spellings, and `clock-lint` refuses to run on a list it cannot read in
@@ -603,16 +619,9 @@ is left: line 18, held for the maintainer's choice.
 **Held for the maintainer:** each of these needs a decision, an account or an
 administrator's right that only the maintainer has, and this plan schedules
 none of them. Whether the SDK admits the concurrency of sibling flows, which
-would end the refusal of a flow whose step body waits on a timer and would
-reverse DESIGN.md section 3.10, is an option with its trigger under PR3.4d. Five changes that a caller of a published package can
-see were approved by the maintainer on 2026-09-21, and each is recorded in its
-entry: PR3.3d changed `error.name` at the port's bare refusals from
-`RangeError` to `PortRefusalError`, PR3.4c changed the signature of
-`failRollback` in one step, PR3.14b held a claim token to an identifier's
-width, which PR3.3c's one check now does at every entry that takes a token,
-PR2.5a answers a permanent store error 500 at the hosted routes, where the
-same failure answered 503, and PR3.3c answers 400 at the inspect route for a
-task id with a NUL in it, where it answered 404. PR3.15 decided the shape of
+would end the refusal of a flow whose step body waits on a timer or that starts
+flows of its own, and would reverse DESIGN.md section 3.10, is an option with
+its trigger under PR3.4d. PR3.15 decided the shape of
 its fix without the maintainer: after a failed batch a libSQL file executor
 asks its connection with an empty read transaction, reconnects only a
 connection that refuses, and runs a file's batches one at a time, and the two
@@ -622,15 +631,30 @@ their triggers (the PR3.15 entry). Two design questions are recorded as the
 maintainer's, each an option with its trigger: a way for a batch of reads to
 say it needs a current answer (under PR3.4), and what ends a run whose store
 call fails permanently (under PR2.5a). The client library's open
-issue upstream, tursodatabase/libsql-client-ts#352, has the comment posted, and
-a fix is proposed upstream (the PR3.15 entry names the bug). A stated oldest
+issue upstream, tursodatabase/libsql-client-ts#352, has our comment, posted on
+2026-09-21. A fix is proposed upstream and not yet released: our pull request
+libsql-js#237 was closed in favour of #238, which the library's maintainer
+wrote on top of our commit and which resets the statement after `run()`
+succeeds or fails. Once a libsql release carries it and the client takes that
+release, the canary case fails and names what to delete (the PR3.15 entry names
+the bug and the deletion). A stated oldest
 supported build, which dropping the row lock of a caller's event waits for, is
 under PR3.3 and in the non-goals below. One base class for the whole refusal
 family is under PR3.3d. The PlanetScale smoke job is in the non-goals below and
 in the PR4.3 entry. The five cleanups of the published API that the
 simplification sweep turned down, the unimplemented `WakeSignals` port among
 them, are the bullets marked Rejected under PR3.5 that would change a published
-export. Review configuration owned outside the repository is PR0.2. A drive of
+export. Review configuration owned outside the repository is PR0.2. Cutting the next
+release, alpha.2 or later, is the maintainer's. The two releases so far were
+immutable GitHub pre-releases with four package tarballs, a clean external
+install, and a live Vercel and Turso receipt in `receipts/` (the latest is
+`hosted-alpha-v0.1.0-alpha.1.json`). alpha.1 also had a full mutation audit;
+alpha.0 is the disclosed exception, published without the full pre-release
+sweep (PRA.1 and PRH.2). Twenty-two released
+declarations have changed since alpha.1, and
+`scripts/published-surface-v0.1.0-alpha.1.json` lists each in its `changed`
+table, so those two files are the inputs, and the live receipt needs the
+maintainer's Vercel and Turso accounts. A drive of
 the real flow on a preview deployment is what the standing verification
 discipline at the end of this plan asks of every phase.
 
@@ -1503,7 +1527,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     to the RAW client and requires that it is still there. It fails, with a
     message that says so, when a release of the library finishes a statement
     whose step failed busy. Upstream: tursodatabase/libsql-client-ts#352, which
-    points at tursodatabase/libsql-js#228. Delete then, from the executor, the
+    points at tursodatabase/libsql-js#228, and carries our comment (posted
+    2026-09-21). The fix is proposed and not yet released: our libsql-js#237
+    was closed in favour of #238, which the library's maintainer built on our
+    commit, and which resets the statement after `run()` succeeds or fails.
+    Delete then, from the executor, the
     question, the close and the reconnect, the recorded file and its two checks,
     and the canary with them, and the queue unless something else has come to
     rely on it, with the registered mutations of the question and of the check
@@ -1961,7 +1989,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   remain public, and the generated wake-witness surface remains their defense.
   Activate this work only when the product supports an in-place v5 upgrade or
   mixed-version writers, accepts external writers or partial restores, or gains
-  a public-API counterexample. Until then it is outside the current milestone.
+  a public-API counterexample. Until then this plan does not schedule it.
 
   Everything above makes a wait row hard to misuse; none of it lets one PROVE
   it is current. Emit infers that
@@ -3542,9 +3570,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     2. A swap is the same sequence of durable calls as an ordinary program, and
     only the identity of the flow a call belongs to tells them apart. The
     maintainer decided on 2026-09-23 that nothing that completes today may
-    start failing, so the swap is a pinned, documented limitation. DESIGN.md
-    section 3.2 says what it is, when it happens and what to do: use distinct
-    step names in flows that run concurrently, or one flow at a time.
+    start failing, so the swap was left as a pinned limitation, until PR3.4e
+    closed it by recorded order (below).
   - **Pinned, not closed.** (PR3.4e closed (iii) and (iv), and (ii) for flows whose steps take no time.) Each is a program the harness runs with an outage at
     every store call and a test that says exactly what the engine does, so a
     limitation closed by accident or made worse fails the test. (i) A group that
@@ -4340,7 +4367,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   until its entry is edited. What the reason says is a convention that review
   holds: why the declaration changed, with the pull request, and what a
   consumer does about it. A refusal names the snapshot file and where in it the
-  entry goes. Twenty-one released names differ on main, each traced to the pull
+  entry goes. Twenty-two released names differ on main, each traced to the pull
   request that changed it, and the table lists them.
   `--write <release> <tarball-dir> <snapshot>` writes the snapshot of the next
   release, laid out by the repository's formatter from whatever directory the
@@ -4413,7 +4440,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR4.2 store-postgres**: native executor/schema, `SKIP LOCKED` claim, closed
   event and same-token claim lock preludes, and the identical six-surface
   conformance suite against PostgreSQL 17. Upstream Absurd oracle parity
-  remains deferred by the current milestone.
+  remains deferred, and no milestone of this plan schedules it.
 - **PR4.3 store-mysql**: `packages/store-mysql` passes the identical
   six-surface conformance suite against MySQL 8.4, in its own CI job,
   `conformance-mysql`, beside `verify`. READ COMMITTED, BIGINT epoch-ms, one
