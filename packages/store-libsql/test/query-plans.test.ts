@@ -1377,6 +1377,28 @@ describe('every statement a store ships, by the nests of its plan', () => {
     ])
   })
 
+  it('judges a leg of a multi-index OR against the loops that drive it, and an automatic index as a walk', () => {
+    // The surface measures shipped statements and reaches neither shape: no shipped plan has a
+    // leg of a MULTI-INDEX OR under a driver, or a seek through an automatic index. These are
+    // plans written by hand, so the reader's reading of each is held here and not measured.
+    const faultsOf = (...details: [number, number, string][]) =>
+      readNests(
+        details.map(([id, parent, detail]) => ({ id, parent, detail })),
+        'select 1',
+      ).faults
+    const keyed = 'SEARCH r USING INDEX runs_task_attempt (task_id=?)'
+    const due = 'SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>? AND cancel_at_ms<?)'
+    // A leg that is a due range runs once for each row of the keyed step before the OR. A leg
+    // read with no drivers would find nothing wrong with a due range that drives nothing.
+    expect(
+      faultsOf([1, 0, keyed], [2, 0, 'MULTI-INDEX OR'], [3, 2, 'INDEX 1'], [4, 3, due]),
+    ).toEqual([`${due} :: is not keyed, and runs once for each row of ${keyed}`])
+    // A seek through an automatic index builds the index by scanning, whatever it is keyed on.
+    expect(faultsOf([1, 0, 'SEARCH t USING AUTOMATIC COVERING INDEX (task_id=?)'])).toEqual([
+      'SEARCH t USING AUTOMATIC COVERING INDEX (task_id=?) :: is a walk of t: neither keyed nor a due range',
+    ])
+  })
+
   it('reads a constraint list wherever it stands in its line', async () => {
     // A left join by the primary key: the plan ends that line in LEFT-JOIN, after the list.
     const sql = `select r.run_id, t.task_name from runs r

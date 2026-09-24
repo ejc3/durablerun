@@ -23,7 +23,7 @@ import type { PlanRow } from './plan-nests.js'
  */
 
 /** A column that names one entity, or refers to a row that does. */
-const IDENTITY_COLUMNS = [
+export const IDENTITY_COLUMNS = [
   'task_id',
   'run_id',
   'event_name',
