@@ -1064,9 +1064,11 @@ One invocation executes one claimed run to its next suspension point:
     the test runs an outage at every store call and fails on any other ending,
     so a gap that is closed by accident, or that gets worse, fails until it is
     changed on purpose. The order results reach the task in is held by programs
-    of concurrent flows, each run with an outage and then a permanent answer at
-    every store call, on a store that answers at once and on one that answers a
-    turn later. `ORDERED_FLOW_PROGRAMS` has nine, written out with their
+    of concurrent flows, each run with an outage at every store call, on a store
+    that answers at once and on one that answers a turn later. A permanent
+    answer is not injected into them: it is held by `permanent-answer.test.ts`,
+    three programs that catch one at every store call, whose table is the same
+    on a build without the order. `ORDERED_FLOW_PROGRAMS` has nine, written out with their
     answers: flows over a shared step name, over a shared task name (each flow
     awaits the child it spawned, so a flow handed another's child says so),
     flows that catch what their step throws, flows gathered with
