@@ -1,0 +1,83 @@
+# Postmortem: PR3.4e, the order results reach the task in (the review's round)
+
+PR3.4e records the order in which the results of calls that were pending together reach a task function, and a replay hands them over in that order, so two flows that share a step or task name are no longer handed each other's result. Its review found no swap and no deadlock in eleven probe programs, and five defects: two that slow or misdescribe what the change does (a replay that skips recorded calls was held for several beats, and the body called one sibling-flow refusal the only one left when a second exists), one busy loop, one overbroad claim about swallowed errors, and one that the fold's own probe found: a flow that starts after another flow's first call failed could still be handed the other flow's child. The verdict: the mechanism holds, and every defect was in the guards around it, in what each guard could see, and in what the text said it covered.
+
+**This document is adversarial toward the MACHINERY and blameless toward people.** It asks what would have made each defect unwritable, or caught it without a human looking.
+
+## Severity
+
+The worst finding is the last one, which no reviewer reported and this round's own probe found while checking the fourth. The pass stopped a flow after an infrastructure error only when another call was pending beside the call that failed. A flow that had yet to make its first call was pending beside nothing, so it went on after the error, stored a result with no marker, and a replay then numbered its call ahead of the flow that had failed: two flows that spawn under one task name were handed each other's child, at an outage on the first await. Main does the same, at 4 of 132 runs of that program, so it is not a regression. It is a swap that the change claimed to have closed, on a shape that the harness did not draw.
+
+The two MEDIUM findings would have shipped a false statement and a slowdown. A replay that skips a recorded call cost one to several beats of the heartbeat, seven beats (210 seconds at a lease of 60) for three flows with two skipped calls, where main finishes at once, and DESIGN.md said it was at most two beats. And the body and BUILD.md named one sibling-flow refusal as the only gap left in the handling of concurrent flows, when a flow that starts flows of its own is refused at one of 22 store calls of the review's program.
+
+## Findings
+
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | A replay that skips recorded calls is held one to several beats: giving up on a number raised the progress counter, so the next beat saw progress (MEDIUM) | A task function that differs between passes, which completes at once on main, waits up to 210 seconds at a lease of 60, and DESIGN.md's "at most two beats" was false | The give-up case | It skipped one call and asked whether the pass ended, and never asked how long it took or how many calls were skipped | Three replays with a fake clock and a bound of one beat (rung 3); a wait is judged from the moment it began; giving up hands nothing over and is no sign of life; a number nobody asks for is given up as it reaches the head |
+| 2 | A flow that starts flows of its own is refused as nested at one store call, and the text said the timer-bodied program was the only gap (MEDIUM) | A false claim in DESIGN.md, BUILD.md and the body; no engine change | The harness's grammar | A flow could not hold a flow | The grammar draws a flow inside a flow; the program is pinned in `FLOW_PROGRAMS` as a witness of the gap, and the text names both programs (rung 3) |
+| 3 | `replaySettled` polled the event loop with one turn after another until a beat released the replay (LOW, reproduced) | 101 clock turns in 100 turns of the loop: a full core for as long as the replay is held, up to half a lease | Any test of a held rollback replay | The case that holds one ended the replay at once | A case counts the turns while the replay is held, and the wait is on a promise that a release, a beat or the end of the lease resolves (rung 3) |
+| 4 | A call that began alone and was joined while its result was stored gets its marker after the result (LOW, plausible) | A crash between the two leaves an unmarked result | The write-order argument | It argued the window was harmless, and no case held it | Not reproduced as harm: nothing had reached the task, so any replay order is a first run of that call. A program that starts a flow a few promise turns after another's first call runs at every store call (rung 3) |
+| 5 | "A swallowed outage beside another call is retried" covers only faults that land while another call is pending (LOW) | With `Promise.allSettled`, a fault on the last call of a run, when the sibling had finished, was swallowed and the task completed with a `rej` entry | The wording | The claim was tested at the faults that were drawn | Any error that a store call throws into the task ends the pass, so the claim is now the fact and not a subset of it (rung 2) |
+| 6 | A flow that starts after another flow's first call failed is not stopped by the fence, and is handed the other flow's child (found by this round's probe of 4) | Two flows under one task name swapped at an outage on the first await; main does the same at 4 of 132 runs | The fence | It stopped a flow only when a call was pending beside the failed one, which is a property of the moment and not of the task | The fence is the pass's, not the moment's: any store error ends the pass, and the program is in the harness (rung 2 and 3) |
+
+## Detection ledger
+
+Finding 6 was found by this project's own machinery: a program written to probe finding 4 failed at a fault point, and the fix followed from its trace. Findings 1, 2, 3 and 5 were found by an outside review, and finding 4 was raised by it and did not reproduce as harm.
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| The review, by reading and by its own probes (findings 1, 2, 3, 4, 5) | 5 | No |
+| A program of the fold's own, written to probe finding 4 (finding 6) | 1 | Yes |
+
+Self-catch rate: 17 percent, 1 of 6, counting finding 4 as raised and not reproduced (previous round, PR3.4d: 8 percent, 1 of 13). Both rounds have the same shape: the harness found the defect it had a program for, and a reviewer found the ones it had no way to draw.
+
+## Recurrence
+
+One class recurs from PR3.4d and from this pull request's own first round: a check standing for a property the SDK cannot observe. PR3.4d's guard checked that a step was pending, and its refusal checked that another call was pending, and the property was the identity of the flow a call belongs to. Here the hold checks that a lower recorded number has not been handed over, and the property is that the task will make the call that number was recorded for. The SDK cannot see it, because a flow that waits on a timer of its own, outside the SDK, has no pending call and may still make that call. The property is observable only at the beat: a beat that finds a call waiting and nothing handed over since it began can conclude that the wait is stuck, with the price that a flow still on a timer is cut and its calls are numbered in call order as they were before markers. The fence has the same shape: "another call is pending" stood for "another flow may store", and the first is a fact of a moment where the second is a fact of the task.
+
+Neither class was instituted against a mechanism of an earlier round before this pull request. Both recurred within it, and the answer both times was to move the check from what the SDK can see at a moment to what the pass has been told.
+
+## Mechanism audit — the false negative of each
+
+| Mechanism | Rung | Code that still has the bug and still passes it |
+|-----------|------|-------------------------------------------------|
+| A wait is judged by the results handed over since it began, and a beat gives up on every number nobody asks for (syntactic: a counter of deliveries stands for "the task will not make the call") | 3, and a proxy | A flow on a timer that outlasts the next beat: `await new Promise((r) => setTimeout(r, 40_000))` before a step under a recorded name, in a replay whose lower recorded number is that step's. The beat at 30 seconds finds one call waiting and nothing handed over, gives up on the number, and the flow's step is numbered in call order. Not written as a case, because the result is the order the pass had before markers, which is the documented price |
+| The fence: any store error ends the pass (a fact of the pass) | 2 | An error that is not a store call's: a lease found ended by the heartbeat and raised at the top of a durable operation. That path is refused at `complete` by the run's fences, and a flow that goes on stores nothing the store accepts. No task completes wrongly, and the pass is not ended by the SDK's own flag |
+| A rollback pass waits on a release (rung 2) | 2 | A clock whose virtual time never advances, so that no beat comes and a replay is held on a number nobody asks for: the pass waits for ever. That is the clock's behaviour for every pump; the case advances the clock |
+| The nested program pinned in `FLOW_PROGRAMS` (rung 3, a witness, not a fix) | 3 | A nested shape with three levels, or a sibling at another position: the harness draws one nested shape, and the witness fails only if that shape's ending changes |
+| Programs of flows with values of their own (rung 3) | 3 | A shape not drawn: three flows that share a name across two steps and a sleep at once. The generated programs draw three flows and one sleep, and none drew a flow inside a flow |
+
+## Fix-induced defects
+
+One. Finding 6 exists because of the fold's predecessor: the first round scoped the fence to calls that were pending beside the failed one, to leave a sequential task that catches a store error and calls again as it was on main. That scoping made a task that catches an error and continues a special case and left the flow that has not started as a hole. The fold removes the scoping, and the sequential task now ends its pass at the error and completes on its next pass, which infrastructure retries do not charge to its attempts. The fold was re-tested by the programs above at every store call and by the case that holds the sequential task; the narrow re-review that follows is its re-review as new code.
+
+## Evidence
+
+- Red test: commit `eb4c649`, probe `packages/sdk/test/ordered-replay.test.ts` `skips two of three flows` — run and seen failing against `f1989b0`, where a replay of three flows that keeps one ended after 5 beats.
+- Fix: commit `66493a9`, which turns the red test green; gate after the fix: typecheck, lint, format, the source checkers, the registry count by import, `lint:mutation-verdicts`, `verify:packages`, the SDK suite, conformance on three dialects, the unfiltered mutation audit and the base gate, on the head that contains main.
+- Finder: a review at high effort of the first round's head, quoted verdict: "no swap and no deadlock found", with two MEDIUM and three LOW findings, and its own probes on eleven programs.
+- Reproduced, three beats to seven: the three cases of a replay that skips recorded calls fail on `f1989b0` with 3, 5 and 7 beats (the bound is one). The held rollback replay fails there with 101 clock turns in 100 turns of the event loop. The flow that starts after another flow's first call failed fails there at an outage at store call 6, with the children swapped. Five of 124 tests fail at the red commit.
+- Did not reproduce: a marker written after its result leaves a result that hands a flow another flow's value (finding 4): the program that starts a flow three promise turns after another's first call, run at every store call with both kinds of fault, on a store that answers at once and on one that answers a turn later, completes with each flow's own answers at all of them. `#settling` reentry, orphan markers skipped by `highest`, and a rejecting clock were not reproduced by the review either.
+
+## Root cause
+
+Every guard of the change was written against a fact that the SDK could see at a moment, and the property each stands for is a fact about the task or the pass. The hold used the recorded numbers to decide a call was owed, and the beat's counter to decide it was not; giving up on a number counted as progress, which is the counter's own blind spot. The fence used a call pending beside the failed one to decide that a sibling might store, and a sibling that has not begun is invisible at that moment. The clocks the tests use hide the cost of both: a fake clock that advances by one beat at a time makes a skipped call look like one beat, and a program whose flows all begin in one turn makes the fence look complete. The harness draws the shapes its grammar has, and it could not draw a flow inside a flow, a flow that begins late, a replay that differs between passes, or a clock with the beats counted.
+
+## Mechanisms
+
+Built in this PR:
+
+- The bound of one beat, as three cases with a fake clock and a fourth for a skipped call after results were handed over, each owning a registered mutation (rung 3).
+- A wait judged from its own start, and a number given up hands nothing over (rung 2, in `delivery-order.ts`).
+- The wait of a held rollback replay is on a promise, with a case that counts clock turns (rung 3).
+- The fence is the pass's: any store error ends the pass, with a case for a sequential task that catches the error and one for a flow that begins late (rung 2 and 3).
+- The grammar draws a flow inside a flow, and the program is a pinned witness (rung 3).
+
+Deferred (recorded in BUILD.md):
+
+- The sibling-flow refusal, both programs: it needs the identity of the flow a call belongs to, which is the PR3.4d option, restated there.
+
+## What this round still would not catch
+
+A task whose function differs between passes and whose flows sit on a timer of their own longer than the beat would have its recorded order given up at the beat and its calls numbered in call order, which is the swap the change closes for every other program. A nested shape of three levels, and a nested flow that begins late, are not drawn. An error that a store call does not throw, a lease found ended at the top of a durable operation, does not end the pass by the SDK's flag and relies on the run's fences at `complete`. The harness draws its flows with values that JSON round-trips: a value whose canonical form differs (a `NaN`, a `Date`) is drawn by the plain generator and not by the flows.
