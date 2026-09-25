@@ -69,6 +69,20 @@ describe('migrate on libSQL', () => {
     }
   })
 
+  it('refuses a write to a URL that names no host, whatever --target says, and opens nothing', async () => {
+    const { opener, sent } = recordingOpener()
+    const run = await runCli(
+      ['migrate', '--yes', '--target', '', '--json'],
+      { DURABLERUN_STORE_URL: 'postgres:///app?host=/nonexistent-socket-dir' },
+      opener,
+    )
+    expect(
+      { exit: run.exit, sent: sent().length },
+      'mutation-verdict:behavior:cli-write-refuses-an-empty-target',
+    ).toEqual({ exit: 2, sent: 0 })
+    expect(JSON.parse(run.stdout)).toMatchObject({ error: { kind: 'target-mismatch' } })
+  })
+
   it('refuses a database over a stored NULL payload with exit 7, and leaves version 9', async () => {
     const db = await openCliDb('libsql', 'migrate-null', 9)
     try {

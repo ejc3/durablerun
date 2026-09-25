@@ -116,6 +116,12 @@ export async function main(
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
     throw error
   }
+  if (spec.writes && target === '') {
+    return usageAnswer(
+      'target-mismatch',
+      'DURABLERUN_STORE_URL names no host or file, so --target cannot name the store it opens; nothing was changed',
+    )
+  }
   if (spec.writes && invocation.strings.target !== target) {
     return usageAnswer(
       'target-mismatch',

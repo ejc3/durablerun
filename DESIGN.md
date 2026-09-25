@@ -5558,13 +5558,14 @@ percent-decoded and cut at the query, so the file it checks is the file the clie
 opens; a fragment, which the client refuses, is refused. `migrate` is the only command
 that changes the schema. It must name its store again with `--target`, the URL's host
 with its port or the decoded path of a `file:` URL, and a mismatch exits 2 before
-anything is opened. A store client that refuses the URL as it is made is answered with
-exit 2 too, without the client's message, which can quote the URL. Without `--yes` it
-prints the versions it would apply and exits 2 with `confirmation-required`, and for a
-`file:` URL that names no file yet it plans every version and opens nothing. Before each
-version it would apply, it prints the note the store package exports for that version in
-`SCHEMA_VERSION_NOTES`, so what a version costs on each dialect is said by that
-dialect's package and the CLI holds none of it; every store has one for version 10
+anything is opened, as does a write to a URL with no host, such as a socket URL, which
+`--target` cannot name. A store client that refuses the URL as it is made is answered
+with exit 2 too, without the client's message, which can quote the URL. Without `--yes`
+it prints the versions it would apply and exits 2 with `confirmation-required`, and for
+a `file:` URL that names no file yet it plans every version and opens nothing. Before
+each version it would apply, it prints the note the store package exports for that
+version in `SCHEMA_VERSION_NOTES`, so what a version costs on each dialect is said by
+that dialect's package and the CLI holds none of it; every store has one for version 10
 today, and a database that was never initialized, which holds no rows, gets none. With
 `--yes` it prints each version applied. `--queue` and `--target` are read from the
 arguments only.
