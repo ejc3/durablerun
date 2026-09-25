@@ -109,8 +109,16 @@ describe('the store opener', () => {
         },
         'mutation-verdict:behavior:cli-file-url-reads-the-client-path',
       ).toEqual({ space: 0, question: 0, hash: 0 })
-      // An unencoded # starts a fragment, which the client refuses, so the URL is refused.
-      expect(await doctor(`file:${join(dir, 'a')}#b.sqlite`)).toBe(2)
+      // An unencoded # starts a fragment, which the client refuses, so the URL is refused, and
+      // so is a query parameter the client refuses as it is made.
+      expect(
+        await doctor(`file:${join(dir, 'a')}#b.sqlite`),
+        'mutation-verdict:behavior:cli-file-url-refuses-a-fragment',
+      ).toBe(2)
+      expect(
+        await doctor(`file:${join(dir, 'a b.sqlite')}?mode=rw`),
+        'mutation-verdict:behavior:cli-refuses-a-url-its-store-client-refuses',
+      ).toBe(2)
 
       // Only a file whose name holds the text %41 is there, so the database the client
       // would open, aA.sqlite, is missing, and a read refuses it without creating it.

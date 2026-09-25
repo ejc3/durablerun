@@ -195,24 +195,30 @@ export async function storeTarget(url: string): Promise<string> {
     }
     return file.path
   }
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-    // A driver percent-decodes the user name and the password, so one that does not decode
-    // fails there, with no message this CLI chose.
-    decodeURIComponent(parsed.username)
-    decodeURIComponent(parsed.password)
-  } catch {
-    throw new StoreUrlError(
-      'DURABLERUN_STORE_URL does not parse as a URL. It is not printed, because it can hold a password; a password must percent-encode every character a URL reserves, such as # / ? @ % and a space',
-    )
-  }
+  const parsed = serverUrl(url)
   if (LOADERS[scheme] === libsql && (parsed.username !== '' || parsed.password !== '')) {
     throw new StoreUrlError(
       'a libSQL URL carries no user name or password, and its client would quote one in its errors; the URL is not printed. Put the token in DURABLERUN_STORE_TOKEN',
     )
   }
   return parsed.host
+}
+
+const UNPARSED_URL =
+  'DURABLERUN_STORE_URL does not parse as a URL. It is not printed, because it can hold a password; a password must percent-encode every character a URL reserves, such as # / ? @ % and a space'
+
+/** A server's URL as it parses, or a refusal that does not quote it. */
+function serverUrl(url: string): URL {
+  try {
+    const parsed = new URL(url)
+    // A driver percent-decodes the user name and the password, so one that does not decode
+    // fails there, with no message this CLI chose.
+    decodeURIComponent(parsed.username)
+    decodeURIComponent(parsed.password)
+    return parsed
+  } catch {
+    throw new StoreUrlError(UNPARSED_URL)
+  }
 }
 
 function unknownScheme(): string {

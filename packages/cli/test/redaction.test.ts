@@ -18,6 +18,7 @@ import {
   SENTINEL,
   type SeededTasks,
   openCliDb,
+  recordingOpener,
   runCli,
   seedTasks,
 } from './support.js'
@@ -181,6 +182,27 @@ describe('redaction', () => {
       }
     }
   }, 120_000)
+
+  it("refuses a store URL that does not parse, a password that does not percent-decode, and a libSQL server's URL with a password, with exit 2", async () => {
+    for (const url of [
+      `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
+      `postgres://admin:${CREDENTIAL}@[bad/app`,
+      `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,
+      `libsql://tok:${CREDENTIAL}@127.0.0.1:1`,
+      `https://tok:${CREDENTIAL}@127.0.0.1:1`,
+    ]) {
+      const { opener, sent } = recordingOpener()
+      const run = await runCli(
+        ['doctor', '--queue', QUEUE, '--json'],
+        { DURABLERUN_STORE_URL: url },
+        opener,
+      )
+      expect(
+        { url: url.replaceAll(CREDENTIAL, '<credential>'), exit: run.exit, sent: sent().length },
+        'mutation-verdict:behavior:cli-refuses-a-store-url-it-cannot-read',
+      ).toEqual({ url: url.replaceAll(CREDENTIAL, '<credential>'), exit: 2, sent: 0 })
+    }
+  })
 
   it("the bin's last catch prints an unexpected error's name and nothing of its message or fields", async () => {
     let printed = ''
