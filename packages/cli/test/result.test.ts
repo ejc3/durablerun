@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { QUEUE, openCliDb, runCli, seedTasks } from './support.js'
 
 describe('result and checkpoints on libSQL', () => {
-  it("shows a row the store's decoders refuse as unreadable, and prints what refused it", async () => {
+  it("exits 10 on a row the store's decoders refuse, and prints what refused it only with --reveal", async () => {
     const db = await openCliDb('libsql', 'unreadable')
     try {
       const seeded = await seedTasks(db)
@@ -14,8 +14,17 @@ describe('result and checkpoints on libSQL', () => {
         },
       ])
       const run = await runCli(['result', seeded.completed, '--queue', QUEUE, '--json'], db.env)
-      expect(run.exit).toBe(0)
-      expect(JSON.parse(run.stdout)).toMatchObject({
+      const answer = JSON.parse(run.stdout) as Record<string, unknown>
+      expect(
+        { exit: run.exit, state: answer.state, reason: answer.reason },
+        'mutation-verdict:behavior:cli-unreadable-row-exits-10',
+      ).toEqual({ exit: 10, state: 'unreadable', reason: undefined })
+      const revealed = await runCli(
+        ['result', seeded.completed, '--queue', QUEUE, '--json', '--reveal'],
+        db.env,
+      )
+      expect(revealed.exit).toBe(10)
+      expect(JSON.parse(revealed.stdout)).toMatchObject({
         state: 'unreadable',
         reason: `task ${seeded.completed} is completed but has no completed payload`,
       })

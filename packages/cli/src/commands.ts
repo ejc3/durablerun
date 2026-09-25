@@ -154,7 +154,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     writes: false,
     repeat: 'read',
     ports: [SCHEMA_VERSION, TASK_RESULT],
-    exits: [...STORE_EXITS, 'refused', 'not-found'],
+    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
     faults: READ_FAULTS,
   },
   checkpoints: {
@@ -177,7 +177,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
       TASK_RESULT,
       { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] },
     ],
-    exits: [...STORE_EXITS, 'refused', 'not-found'],
+    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
     faults: READ_FAULTS,
   },
 } satisfies Record<Verb, CommandSpec>)

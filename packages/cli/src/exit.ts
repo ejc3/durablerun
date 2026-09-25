@@ -42,6 +42,12 @@ export const EXITS = Object.freeze([
     name: 'found',
     meaning: 'reserved for a later stuck --fail-if-any that finds rows; no command gives it yet',
   },
+  {
+    code: 10,
+    name: 'unreadable',
+    meaning:
+      "a stored row the store's decoders refuse; what refused it prints only with --reveal, because it can quote the row",
+  },
 ] as const)
 
 export type ExitName = (typeof EXITS)[number]['name']

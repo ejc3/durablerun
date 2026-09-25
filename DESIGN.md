@@ -5575,9 +5575,11 @@ prints only with `--reveal`: params, headers, a checkpoint's state, an event pay
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
 an idempotency key. The four failure reasons the engine writes print by name
 (`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`). Task
-ids, task names, event names, checkpoint names and queue names print. A store's own error
-message prints only with `--reveal`, because a driver can quote a stored value in it; a
-port's refusal names only what the caller passed, and prints.
+ids, task names, event names, checkpoint names and queue names print. A store's own
+error message prints only with `--reveal`, because a driver can quote a stored value in
+it, and so does what refused a stored row the store's decoders cannot read, which
+`result` and `checkpoints` answer with exit 10; a port's refusal names only what the
+caller passed, and prints.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document with every object's keys in code point order, which is the same on
@@ -5599,6 +5601,7 @@ same table, which a test holds equal to this one.
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
 | 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
+| 10 | unreadable | a stored row the store's decoders refuse; what refused it prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
 nothing. For `migrate` it holds because each version's write is fenced by the version

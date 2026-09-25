@@ -334,7 +334,9 @@ const result: Handler = async (context) => {
   const found = await readTask(context)
   if ('exit' in found) return found
   const { queue, taskId } = found
-  if ('unreadable' in found) return { exit: 'done', view: { queue, taskId, ...found.unreadable } }
+  if ('unreadable' in found) {
+    return unreadable({ queue, taskId, state: 'unreadable' }, found.unreadable, context.reveal)
+  }
   return { exit: 'done', view: { queue, taskId, ...resultView(found.result, context.reveal) } }
 }
 
@@ -366,10 +368,17 @@ const checkpoints: Handler = async (context) => {
     view.checkpoints = rows.map((row) => checkpointView(row, reveal))
   } catch (error) {
     if (!isUnreadableRow(error)) throw error
-    view.checkpoints = 'unreadable'
-    view.reason = error.message
+    return unreadable({ ...view, checkpoints: 'unreadable' }, error.message, reveal)
   }
   return { exit: 'done', view }
+}
+
+/**
+ * A stored row the store's decoders refused, which exits `unreadable`. Its reason names what
+ * was refused and can quote a value the row holds, so it prints only with --reveal.
+ */
+function unreadable(view: Record<string, unknown>, reason: string, reveal: boolean): Answer {
+  return { exit: 'unreadable', view: reveal ? { ...view, reason } : view }
 }
 
 /**
@@ -383,7 +392,7 @@ function isUnreadableRow(error: unknown): error is RangeError {
 type TaskResult = NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>>
 type ReadTask = { readonly queue: string; readonly taskId: string } & (
   | { readonly result: TaskResult }
-  | { readonly unreadable: { readonly state: 'unreadable'; readonly reason: string } }
+  | { readonly unreadable: string }
 )
 
 /**
@@ -401,7 +410,7 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
     if (found !== null) return { queue, taskId, result: found }
   } catch (error) {
     if (!isUnreadableRow(error)) throw error
-    return { queue, taskId, unreadable: { state: 'unreadable', reason: error.message } }
+    return { queue, taskId, unreadable: error.message }
   }
   return {
     exit: 'not-found',
