@@ -17,17 +17,31 @@ export const EXITS = Object.freeze([
     meaning: 'usage, confirmation-required or target-mismatch; nothing was changed',
   },
   { code: 3, name: 'refused', meaning: 'the engine refused the call, and says why' },
-  { code: 4, name: 'unauthorized', meaning: 'unauthenticated or forbidden' },
+  {
+    code: 4,
+    name: 'unauthorized',
+    meaning:
+      'reserved for unauthenticated or forbidden; no command gives it yet, and a wrong credential exits 6',
+  },
   {
     code: 5,
     name: 'schema',
     meaning:
       "the database's schema version is outside the store's readable window, or the database is not initialized",
   },
-  { code: 6, name: 'unavailable', meaning: 'the store is unavailable; safe to repeat' },
+  {
+    code: 6,
+    name: 'unavailable',
+    meaning:
+      'the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too',
+  },
   { code: 7, name: 'permanent', meaning: 'the store answered with a permanent error' },
   { code: 8, name: 'not-found', meaning: 'no such task in the queue' },
-  { code: 9, name: 'found', meaning: 'stuck --fail-if-any found rows' },
+  {
+    code: 9,
+    name: 'found',
+    meaning: 'reserved for a later stuck --fail-if-any that finds rows; no command gives it yet',
+  },
 ] as const)
 
 export type ExitName = (typeof EXITS)[number]['name']

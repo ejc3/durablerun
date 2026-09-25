@@ -5587,18 +5587,24 @@ same table, which a test holds equal to this one.
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
 | 2 | usage | usage, confirmation-required or target-mismatch; nothing was changed |
 | 3 | refused | the engine refused the call, and says why |
-| 4 | unauthorized | unauthenticated or forbidden |
+| 4 | unauthorized | reserved for unauthenticated or forbidden; no command gives it yet, and a wrong credential exits 6 |
 | 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
-| 6 | unavailable | the store is unavailable; safe to repeat |
+| 6 | unavailable | the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too |
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
-| 9 | found | stuck --fail-if-any found rows |
+| 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
 nothing. For `migrate` it holds because each version's write is fenced by the version
 before it, and after a failed version write the admin reads the version again and carries
 on when the write landed, so a lost answer to a version write the store committed ends in
-0 and a rerun resumes from the version reached.
+0 and a rerun resumes from the version reached. Safe to repeat is not sure to succeed. A
+wrong credential exits 6 today on every store: both server executors type an
+authentication failure as an outage (a test measures it on PostgreSQL and MySQL), and the
+libSQL executor types every client error but a constraint or a type mismatch as one. It
+fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is reserved
+for it: typing an authentication failure apart from an outage changes the executors and
+core, and is the maintainer's decision.
 
 The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
 executor, as the CLI sees it: crash-before (the executor rejects with

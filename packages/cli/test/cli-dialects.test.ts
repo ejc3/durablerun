@@ -146,6 +146,27 @@ describe('the CLI on every selected dialect', () => {
         }
       })
 
+      if (dialect !== 'libsql') {
+        it('a wrong password exits 6 today, and prints in no stream', async () => {
+          const db = await openCliDb(dialect, 'wrong-password')
+          try {
+            const url = new URL(db.url)
+            url.password = 'wrong-pw-9c1e'
+            for (const extra of [[], ['--reveal']]) {
+              const run = await runCli(['doctor', '--queue', QUEUE, '--json', ...extra], {
+                DURABLERUN_STORE_URL: url.href,
+              })
+              expect({
+                exit: run.exit,
+                printed: `${run.stdout}${run.stderr}`.includes('wrong-pw-9c1e'),
+              }).toEqual({ exit: 6, printed: false })
+            }
+          } finally {
+            await db.close()
+          }
+        })
+      }
+
       it('bin/durablerun.ts exits with the code the exit table names for each outcome', async () => {
         const db = await openCliDb(dialect, 'bin')
         const older = await openCliDb(dialect, 'bin-null-payload', 9)
