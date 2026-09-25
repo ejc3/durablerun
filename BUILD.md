@@ -51,15 +51,15 @@ section 3.12 (retention) will hold the design, written by the PRs named below;
 this section is the plan.
 
 **Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
-The exit test is lines 32 to 44 below, and none is met. Each PR marks its own
-lines met, with the evidence in its own diff. The milestone is complete when
-lines 32 to 44 are all met, which PR5.5 records. The maintainer's live week on
-the deployed alpha is receipt M1, outside the numbered lines, and M1 is recorded
-met only when its receipt exists and line 44's checker accepts it.
+The exit test is lines 32 to 44 below, and each line says whether it is met.
+Each PR marks its own lines met, with the evidence in its own diff. The
+milestone is complete when lines 32 to 44 are all met, which PR5.5 records. The
+maintainer's live week on the deployed alpha is receipt M1, outside the numbered
+lines, and M1 is recorded met only when its receipt exists and line 44's checker
+accepts it.
 
 **Exit test:**
 
-32. PR5.3a (its cases stay current in every later PR that adds a verb): one
 32. PR5.3a (its cases stay current in every later PR that adds a verb): one
     tool, with no SQL in it, reads a store across that store's schema window.
     `doctor`, `result` and `checkpoints` run through `main(argv, env, io, ids,
