@@ -170,7 +170,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   const scheduler = opened.scheduler(db, ids)
   return {
     scheme,
-    window: Object.freeze({ oldest: opened.window.oldest, newest: opened.window.newest }),
+    window: opened.window,
     admin: Object.freeze({
       schemaVersion: () => admin.schemaVersion(),
       nowEpochMs: () => admin.nowEpochMs(),

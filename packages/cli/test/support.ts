@@ -10,7 +10,7 @@ import {
   type StoreAdmin,
   StoreUnavailableError,
 } from '@durablerun/core'
-import { testIdSource } from '@durablerun/core/testing'
+import { type RecordedBatch, RecordingExecutor, testIdSource } from '@durablerun/core/testing'
 import {
   CURRENT_SCHEMA_VERSION,
   LibsqlExecutor,
@@ -322,6 +322,19 @@ async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<strin
     lines.push(`${table} ${JSON.stringify(rows)}`)
   })
   return lines.join('\n')
+}
+
+/** A store opener that records every batch every executor it makes is sent. */
+export function recordingOpener(): { opener: StoreOpener; sent(): RecordedBatch[] } {
+  const recorders: RecordingExecutor[] = []
+  return {
+    opener: openerWrapping((real) => {
+      const recorder = new RecordingExecutor(real)
+      recorders.push(recorder)
+      return recorder
+    }),
+    sent: () => recorders.flatMap((recorder) => recorder.batches),
+  }
 }
 
 /** A store opener over the real one, with every executor it makes wrapped. */

@@ -41,8 +41,6 @@ interface Answer {
   readonly view: Record<string, unknown>
   /** Human lines that replace the generic rendering of the view. */
   readonly text?: readonly string[]
-  /** Printed to stderr before the answer, in both output modes. */
-  readonly notes?: readonly string[]
 }
 
 interface Context {
@@ -131,7 +129,6 @@ function emit(
   store: OpenedStore | undefined,
   answer: Answer,
 ): number {
-  for (const note of answer.notes ?? []) io.err(`${note}\n`)
   const document: Record<string, unknown> = { command: verb, exit: answer.exit, ...answer.view }
   if (store !== undefined) {
     document.dialect = { scheme: store.scheme, schemaWindow: store.window }
@@ -178,21 +175,8 @@ function help(json: boolean): Answer {
       exit: 'done',
       view: {
         commands: VERBS.map((verb) => {
-          const spec: CommandSpec = COMMANDS[verb]
-          return {
-            name: verb,
-            usage: usage(spec),
-            summary: spec.summary,
-            positionals: spec.positionals,
-            flags: spec.flags,
-            opensStore: spec.opensStore,
-            writes: spec.writes,
-            repeat: spec.repeat,
-            ports: spec.ports,
-            exits: spec.exits,
-            faults: spec.faults,
-            faultsAt: spec.faultsAt,
-          }
+          const { verb: name, ...entry }: CommandSpec = COMMANDS[verb]
+          return { name, usage: usage(COMMANDS[verb]), ...entry }
         }),
         exits: EXITS,
         environment: {
@@ -283,11 +267,13 @@ const migrate: Handler = async ({ invocation, store, note }) => {
       text: [`the schema is at version ${from}, the newest this build has; nothing to apply`],
     }
   }
-  const warnings = plan.flatMap((version) => SLOW_VERSIONS[version] ?? [])
+  for (const version of plan) {
+    const warning = SLOW_VERSIONS[version]
+    if (warning !== undefined) note(warning)
+  }
   if (invocation.booleans.yes !== true) {
     return {
       exit: 'usage',
-      notes: warnings,
       view: {
         from,
         wouldApply: plan,
@@ -298,7 +284,6 @@ const migrate: Handler = async ({ invocation, store, note }) => {
       },
     }
   }
-  for (const warning of warnings) note(warning)
   await store.admin.migrate()
   const to = await store.admin.schemaVersion()
   const applied = plan.filter((version) => version <= to)
@@ -309,20 +294,16 @@ const migrate: Handler = async ({ invocation, store, note }) => {
   }
 }
 
-const result: Handler = async ({ invocation, store, reveal }) => {
-  const queue = invocation.strings.queue ?? ''
-  const taskId = invocation.args.taskId ?? ''
-  const version = await readableVersion(store)
-  if (typeof version !== 'number') return { ...version, view: { queue, taskId, ...version.view } }
-  const found = await readTask(store, queue, taskId)
-  if (found === null) return notFound(queue, taskId)
+const result: Handler = async (context) => {
+  const found = await readTask(context)
+  if ('exit' in found) return found
+  const { queue, taskId } = found
   if ('unreadable' in found) return { exit: 'done', view: { queue, taskId, ...found.unreadable } }
-  return { exit: 'done', view: { queue, taskId, ...resultView(found.result, reveal) } }
+  return { exit: 'done', view: { queue, taskId, ...resultView(found.result, context.reveal) } }
 }
 
-const checkpoints: Handler = async ({ invocation, store, reveal }) => {
-  const queue = invocation.strings.queue ?? ''
-  const taskId = invocation.args.taskId ?? ''
+const checkpoints: Handler = async (context) => {
+  const { invocation, store, reveal } = context
   const shown = invocation.strings.attempt
   if (shown !== undefined && !(/^[1-9][0-9]*$/.test(shown) && Number(shown) <= MAX_RUN_ORDINAL)) {
     return {
@@ -335,9 +316,9 @@ const checkpoints: Handler = async ({ invocation, store, reveal }) => {
       },
     }
   }
-  const version = await readableVersion(store)
-  if (typeof version !== 'number') return { ...version, view: { queue, taskId, ...version.view } }
-  if ((await readTask(store, queue, taskId)) === null) return notFound(queue, taskId)
+  const found = await readTask(context)
+  if ('exit' in found) return found
+  const { queue, taskId } = found
   const attempt = shown === undefined ? MAX_RUN_ORDINAL : Number(shown)
   const view: Record<string, unknown> = {
     queue,
@@ -348,37 +329,44 @@ const checkpoints: Handler = async ({ invocation, store, reveal }) => {
     const rows = await store.scheduler.getCheckpoints(queue, taskId, attempt)
     view.checkpoints = rows.map((row) => checkpointView(row, reveal))
   } catch (error) {
-    if (isPortRefusal(error) || !(error instanceof RangeError)) throw error
+    if (!isUnreadableRow(error)) throw error
     view.checkpoints = 'unreadable'
     view.reason = error.message
   }
   return { exit: 'done', view }
 }
 
-type ReadTask =
-  | { readonly result: NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>> }
-  | { readonly unreadable: { readonly state: 'unreadable'; readonly reason: string } }
-
 /**
- * The task's outcome through the store's own decoders, null when no such task exists, and
- * `unreadable` when the row contradicts itself: the decoders refuse it with RangeError, and
- * the row is shown as what it is.
+ * A stored row the store's own decoders refused. They refuse with RangeError, and a port's
+ * refusal of what the caller passed is a RangeError too, so that is told apart first.
  */
-async function readTask(
-  store: OpenedStore,
-  queue: string,
-  taskId: string,
-): Promise<ReadTask | null> {
-  try {
-    const found = await store.scheduler.getTaskResult(queue, taskId)
-    return found === null ? null : { result: found }
-  } catch (error) {
-    if (isPortRefusal(error) || !(error instanceof RangeError)) throw error
-    return { unreadable: { state: 'unreadable', reason: error.message } }
-  }
+function isUnreadableRow(error: unknown): error is RangeError {
+  return error instanceof RangeError && !isPortRefusal(error)
 }
 
-function notFound(queue: string, taskId: string): Answer {
+type TaskResult = NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>>
+type ReadTask = { readonly queue: string; readonly taskId: string } & (
+  | { readonly result: TaskResult }
+  | { readonly unreadable: { readonly state: 'unreadable'; readonly reason: string } }
+)
+
+/**
+ * The task a command names, read after the schema window is checked, through the store's
+ * own decoders. A task that does not exist, or a schema outside the window, answers with the
+ * exit that says so, and a row the decoders refuse is shown as unreadable.
+ */
+async function readTask({ invocation, store }: Context): Promise<ReadTask | Answer> {
+  const queue = invocation.strings.queue ?? ''
+  const taskId = invocation.args.taskId ?? ''
+  const version = await readableVersion(store)
+  if (typeof version !== 'number') return { ...version, view: { queue, taskId, ...version.view } }
+  try {
+    const found = await store.scheduler.getTaskResult(queue, taskId)
+    if (found !== null) return { queue, taskId, result: found }
+  } catch (error) {
+    if (!isUnreadableRow(error)) throw error
+    return { queue, taskId, unreadable: { state: 'unreadable', reason: error.message } }
+  }
   return {
     exit: 'not-found',
     view: {

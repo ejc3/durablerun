@@ -1,6 +1,5 @@
-import { RecordingExecutor } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
-import { openCliDb, openerWrapping, runCli } from './support.js'
+import { openCliDb, recordingOpener, runCli } from './support.js'
 
 /**
  * migrate is the one command that changes the schema, so it names its store again and asks
@@ -32,21 +31,16 @@ describe('migrate on libSQL', () => {
     const db = await openCliDb('libsql', 'migrate-target', 9)
     try {
       const before = await db.dump()
-      const opened: RecordingExecutor[] = []
-      const opener = openerWrapping((real) => {
-        const recorder = new RecordingExecutor(real)
-        opened.push(recorder)
-        return recorder
-      })
+      const { opener, sent } = recordingOpener()
       const run = await runCli(
         ['migrate', '--yes', '--target', `${db.target}.other`, '--json'],
         db.env,
         opener,
       )
       expect(
-        { exit: run.exit, opened: opened.length, dumpUnchanged: (await db.dump()) === before },
+        { exit: run.exit, sent: sent().length, dumpUnchanged: (await db.dump()) === before },
         'mutation-verdict:behavior:cli-migrate-needs-its-target',
-      ).toEqual({ exit: 2, opened: 0, dumpUnchanged: true })
+      ).toEqual({ exit: 2, sent: 0, dumpUnchanged: true })
       expect(JSON.parse(run.stdout)).toMatchObject({ error: { kind: 'target-mismatch' } })
     } finally {
       await db.close()

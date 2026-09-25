@@ -1,5 +1,4 @@
 import type { MatrixFault } from '@durablerun/conformance'
-import { RecordingExecutor } from '@durablerun/core/testing'
 import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
@@ -22,6 +21,7 @@ import {
   faulting,
   openCliDb,
   openerWrapping,
+  recordingOpener,
   runCli,
   seedTasks,
 } from './support.js'
@@ -88,28 +88,20 @@ async function faultSurface(
 ): Promise<number> {
   const spec = COMMANDS[verb]
   const clean = await prepared(dialect, verb)
-  const recorders: RecordingExecutor[] = []
+  const recording = recordingOpener()
   let untouched: string
   let settled: string
   let answer: string
   try {
     untouched = await clean.db.dump()
-    const run = await runCli(
-      clean.line,
-      clean.db.env,
-      openerWrapping((real) => {
-        const recorder = new RecordingExecutor(real)
-        recorders.push(recorder)
-        return recorder
-      }),
-    )
+    const run = await runCli(clean.line, clean.db.env, recording.opener)
     expect(run.exit, run.stdout).toBe(0)
     settled = await clean.db.dump()
     answer = run.stdout
   } finally {
     await clean.db.close()
   }
-  const labels = recorders.flatMap((recorder) => recorder.labels)
+  const labels = recording.sent().map((batch) => batch.label)
   for (const label of labels) expect(declaresLabel(spec, label), `${verb} sent ${label}`).toBe(true)
   let cases = 0
   for (const site of sitesOf(labels)) {

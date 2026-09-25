@@ -42,8 +42,8 @@ export type RepeatSafety = 'no-store' | 'read' | 'resumes'
  * reaches it, the batch commits and the answer is lost, or the batch is applied twice. The
  * fault matrix's kinds (packages/conformance/src/fault-matrix.ts), as the CLI meets them.
  */
-export type CliFault = 'unavailable-before' | 'crash-after' | 'duplicate'
-export const CLI_FAULTS: readonly CliFault[] = ['unavailable-before', 'crash-after', 'duplicate']
+export const CLI_FAULTS = ['unavailable-before', 'crash-after', 'duplicate'] as const
+export type CliFault = (typeof CLI_FAULTS)[number]
 
 export interface CommandSpec {
   readonly verb: Verb

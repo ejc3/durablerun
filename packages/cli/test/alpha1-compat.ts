@@ -21,11 +21,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { testIdSource } from '@durablerun/core/testing'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
-import { main } from '../src/main.js'
-import { openStore } from '../src/open-store.js'
-import { REFUSING_CLOCK, faulting } from './support.js'
+import { faulting, openerWrapping, runCli } from './support.js'
 
 interface Alpha1Result {
   state: string
@@ -165,16 +162,11 @@ async function cycle(alpha1: Alpha1, file: string, round: string): Promise<strin
 
 /** What the CLI's `result --json --reveal` says of a task, as alpha.1's TaskResult. */
 async function cliResult(file: string, taskId: string): Promise<Alpha1Result> {
-  let stdout = ''
-  const exit = await main(
-    ['result', taskId, '--queue', QUEUE, '--json', '--reveal'],
-    { DURABLERUN_STORE_URL: `file:${file}` },
-    { out: (text) => (stdout += text), err: () => undefined },
-    testIdSource('alpha1'),
-    REFUSING_CLOCK,
-  )
-  if (exit !== 0) throw new Error(`result ${taskId} exited ${exit}: ${stdout}`)
-  const view = JSON.parse(stdout) as {
+  const run = await runCli(['result', taskId, '--queue', QUEUE, '--json', '--reveal'], {
+    DURABLERUN_STORE_URL: `file:${file}`,
+  })
+  if (run.exit !== 0) throw new Error(`result ${taskId} exited ${run.exit}: ${run.stdout}`)
+  const view = JSON.parse(run.stdout) as {
     state: string
     completedPayload?: { text: string }
     failureReason?: { text?: string; engine?: string }
@@ -201,32 +193,22 @@ async function cliMigrate(file: string, version: number): Promise<void> {
     return
   }
   // The same command, meeting an outage at the next version's batch.
-  const exit = await main(
+  const run = await runCli(
     ['migrate', '--yes', '--target', file],
     { DURABLERUN_STORE_URL: `file:${file}` },
-    { out: () => undefined, err: () => undefined },
-    testIdSource('alpha1'),
-    REFUSING_CLOCK,
-    (url, token, ids, options) =>
-      openStore(url, token, ids, {
-        ...options,
-        wrapExecutor: (real) =>
-          faulting(real, { label: `migrate:v${version + 1}`, occurrence: 1 }, 'unavailable-before'),
-      }),
+    openerWrapping((real) =>
+      faulting(real, { label: `migrate:v${version + 1}`, occurrence: 1 }, 'unavailable-before'),
+    ),
   )
-  if (exit !== 6) throw new Error(`migrate stopped before version ${version + 1} exited ${exit}`)
+  if (run.exit !== 6)
+    throw new Error(`migrate stopped before version ${version + 1} exited ${run.exit}`)
 }
 
 async function recordedVersion(file: string): Promise<number> {
-  let stdout = ''
-  await main(
-    ['doctor', '--queue', QUEUE, '--json'],
-    { DURABLERUN_STORE_URL: `file:${file}` },
-    { out: (text) => (stdout += text), err: () => undefined },
-    testIdSource('alpha1'),
-    REFUSING_CLOCK,
-  )
-  return (JSON.parse(stdout) as { recordedSchemaVersion: number }).recordedSchemaVersion
+  const run = await runCli(['doctor', '--queue', QUEUE, '--json'], {
+    DURABLERUN_STORE_URL: `file:${file}`,
+  })
+  return (JSON.parse(run.stdout) as { recordedSchemaVersion: number }).recordedSchemaVersion
 }
 
 /** Every step at one version. A failure names the version and alpha.1's step. */

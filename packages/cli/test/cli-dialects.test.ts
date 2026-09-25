@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { RecordingExecutor } from '@durablerun/core/testing'
 import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
@@ -13,8 +12,8 @@ import {
   commandLine,
   comparedLines,
   openCliDb,
-  openerWrapping,
   plantNullPayload,
+  recordingOpener,
   runCli,
   seedTasks,
   withoutDialect,
@@ -70,15 +69,10 @@ describe('the CLI on every selected dialect', () => {
         try {
           const seeded = await seedTasks(db)
           for (const spec of STORE_COMMANDS.filter((command) => !command.writes)) {
-            const recorders: RecordingExecutor[] = []
-            const opener = openerWrapping((real) => {
-              const recorder = new RecordingExecutor(real)
-              recorders.push(recorder)
-              return recorder
-            })
+            const { opener, sent: batches } = recordingOpener()
             const run = await runCli(commandLine(spec, db, seeded.completed), db.env, opener)
             expect(run.exit, `${spec.verb}: ${run.stdout}`).toBe(0)
-            const sent = recorders.flatMap((recorder) => recorder.batches)
+            const sent = batches()
             expect(sent.length, spec.verb).toBeGreaterThan(0)
             for (const batch of sent) {
               expect({ verb: spec.verb, label: batch.label, mode: batch.mode }).toEqual({
@@ -127,12 +121,7 @@ describe('the CLI on every selected dialect', () => {
           expect(wrongTarget.exit).toBe(2)
           expect(await db.dump()).toBe(before)
 
-          const recorder: RecordingExecutor[] = []
-          const opener = openerWrapping((real) => {
-            const next = new RecordingExecutor(real)
-            recorder.push(next)
-            return next
-          })
+          const { opener, sent } = recordingOpener()
           const applied = await runCli(
             ['migrate', '--yes', '--target', db.target, '--json'],
             db.env,
@@ -146,7 +135,7 @@ describe('the CLI on every selected dialect', () => {
             applied: versions,
           })
           expect(applied.stderr).toContain('version 10')
-          for (const batch of recorder.flatMap((next) => next.batches)) {
+          for (const batch of sent()) {
             expect(declaresLabel(COMMANDS.migrate, batch.label), batch.label).toBe(true)
           }
           const text = await runCli(['migrate', '--yes', '--target', db.target], db.env)
