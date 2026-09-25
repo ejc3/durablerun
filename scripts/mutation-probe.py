@@ -17316,6 +17316,142 @@ for _verdict, _names in (
     for _name in _names:
         VERDICTS[_name] = _verdict
 
+# The operator CLI (packages/cli): the schema window, migrate's two confirmations, an outage's
+# exit, a read that must not create a database file, and the redaction of every renderer.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-refuses-a-newer-schema",
+            "packages/cli/src/main.ts",
+            "  if (version > window.newest) {\n",
+            "  if (false) { // MUTATION: a read answers on a schema a newer build migrated\n",
+            "a read answers on a database a newer build migrated, whose rows this build may misread",
+        ),
+        (
+            "cli-migrate-refuses-a-newer-schema",
+            "packages/cli/src/main.ts",
+            "  if (from > store.window.newest) {\n",
+            "  if (false) { // MUTATION: migrate plans from a schema a newer build migrated\n",
+            "migrate finds nothing to apply on a database a newer build migrated and exits 0, saying the schema is the newest this build has",
+        ),
+        (
+            "cli-refuses-an-older-schema",
+            "packages/cli/src/main.ts",
+            "  if (version < window.oldest) {\n",
+            "  if (false) { // MUTATION: a read answers on a schema older than the window\n",
+            "a read answers on a database older than every version the store's reads accept",
+        ),
+        (
+            "cli-unavailable-store-exits-6",
+            "packages/cli/src/main.ts",
+            "  if (error instanceof StoreUnavailableError) return hidden('store-unavailable', 'unavailable')\n",
+            "  if (error instanceof StoreUnavailableError) return hidden('store-unavailable', 'done') // MUTATION: an outage exits 0\n",
+            "a command whose store was unavailable exits 0, so a caller takes a read that never happened for an answer and does not repeat it",
+        ),
+        (
+            "cli-migrate-needs-yes",
+            "packages/cli/src/main.ts",
+            "  if (invocation.booleans.yes !== true) {\n",
+            "  if (false) { // MUTATION: migrate applies without --yes\n",
+            "migrate changes the schema without --yes",
+        ),
+        (
+            "cli-migrate-needs-its-target",
+            "packages/cli/src/main.ts",
+            "  if (spec.writes && invocation.strings.target !== target) {\n",
+            "  if (false) { // MUTATION: a write goes to a store its --target does not name\n",
+            "migrate changes a store that --target does not name",
+        ),
+        (
+            "cli-redacts-result",
+            "packages/cli/src/render.ts",
+            "    view.completedPayload = userValue(result.completedPayloadJson, reveal)\n",
+            "    view.completedPayload = userValue(result.completedPayloadJson, true) // MUTATION: a result prints\n",
+            "result prints a completed task's result without --reveal",
+        ),
+        (
+            "cli-redacts-checkpoints",
+            "packages/cli/src/render.ts",
+            "    state: userValue(checkpoint.stateJson, reveal),\n",
+            "    state: userValue(checkpoint.stateJson, true), // MUTATION: checkpoint state prints\n",
+            "checkpoints prints each checkpoint's state without --reveal",
+        ),
+        (
+            "cli-redacts-failure-reasons",
+            "packages/cli/src/render.ts",
+            "  return engine === undefined ? userValue(json, reveal) : { engine }\n",
+            "  return engine === undefined ? userValue(json, true) : { engine } // MUTATION: a user's failure text prints\n",
+            "result prints a failure reason the task's own code wrote without --reveal",
+        ),
+        (
+            "cli-read-creates-no-file",
+            "packages/cli/src/open-store.ts",
+            "  if (!mayCreate && storeScheme(url) === 'file:' && !existsSync(storeTarget(url))) {\n",
+            "  if (false) { // MUTATION: a read opens a file: URL that names no file\n",
+            "a read of a file: URL that names no file creates an empty database there",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-refuses-a-newer-schema": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/schema-window.test.ts",
+            "the schema window on libSQL every store command exits 5 on a database a newer build migrated, and changes no table",
+            "mutation-verdict:behavior:cli-refuses-a-newer-schema",
+        ),
+        "cli-refuses-an-older-schema": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/schema-window.test.ts",
+            "the schema window on libSQL a read exits 5 on a database older than the window, and changes no table",
+            "mutation-verdict:behavior:cli-refuses-an-older-schema",
+        ),
+        "cli-read-creates-no-file": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/schema-window.test.ts",
+            "the schema window on libSQL a read exits 5 on a database that was never initialized, and creates no file",
+            "mutation-verdict:behavior:cli-read-creates-no-file",
+        ),
+        "cli-unavailable-store-exits-6": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/fault-surface.test.ts",
+            "the CLI fault surface a read that meets an unavailable store before its batch exits 6 and changes nothing",
+            "mutation-verdict:behavior:cli-unavailable-store-exits-6",
+        ),
+        "cli-redacts-result": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction result prints no value a user wrote without --reveal",
+            "mutation-verdict:behavior:cli-redacts-result",
+        ),
+        "cli-redacts-checkpoints": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction checkpoints prints no checkpoint state without --reveal",
+            "mutation-verdict:behavior:cli-redacts-checkpoints",
+        ),
+        "cli-redacts-failure-reasons": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction result prints a failure reason the task's code wrote as its length and sha256",
+            "mutation-verdict:behavior:cli-redacts-failure-reasons",
+        ),
+        "cli-migrate-needs-yes": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/migrate.test.ts",
+            "migrate on libSQL without --yes prints the versions it would apply and changes nothing",
+            "mutation-verdict:behavior:cli-migrate-needs-yes",
+        ),
+        "cli-migrate-needs-its-target": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/migrate.test.ts",
+            "migrate on libSQL with a --target that is not its store opens nothing and changes nothing",
+            "mutation-verdict:behavior:cli-migrate-needs-its-target",
+        ),
+    }
+)
+VERDICTS["cli-migrate-refuses-a-newer-schema"] = VERDICTS["cli-refuses-a-newer-schema"]
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -21221,7 +21357,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1125:
+        if len(MUTATIONS) != 1135:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

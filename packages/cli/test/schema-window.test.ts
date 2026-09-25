@@ -65,7 +65,7 @@ describe('the schema window on libSQL', () => {
         })
         expect({ command: spec.verb, exit: run.exit }).toEqual({ command: spec.verb, exit: 5 })
       }
-      expect(existsSync(file)).toBe(false)
+      expect(existsSync(file), 'mutation-verdict:behavior:cli-read-creates-no-file').toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
