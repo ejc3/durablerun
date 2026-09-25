@@ -103,8 +103,8 @@
 \*    saga.  Neither reads its child again (retry-task refuses a task whose saga
 \*    began), and admitting both stays green on every configuration.  The first
 \*    release keeps the stricter rule, which stays right if a saga ever becomes
-\*    revivable.  The barrier grid's saga-failed parent cell holds the second
-\*    half (PR5.2c2), and the grid has no rolling-back parent state yet.
+\*    revivable.  The barrier grid's rolling-back and saga-failed parent cells
+\*    hold both halves (PR5.2c2).
 \*  - B5 admits a completed or cancelled parent.  A rule that waited for such a
 \*    parent's own purge would only delay the child's: every policy the policy
 \*    type can express names completed and cancelled, so the parent is purged

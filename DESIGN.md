@@ -5594,14 +5594,13 @@ them is built.
     saga-failed parent stays green on every configuration,
     and a rule that waited for a completed or cancelled parent's own purge
     would only delay the child's under any policy the type can express. The
-    barrier grid's completed, cancelled, and saga-failed parent cells hold
-    those parts (PR5.2c2). The grid has no rolling-back parent state, so that
-    block needs one before anything holds it. The lookup assumes that one
-    database holds every task, so a parent it cannot find by `task_id` reads as
-    absent. That holds while `ctx.spawn` writes to the store the parent runs
-    on. Once tasks are sharded across databases (§3.7), a spawn routed to
-    another shard would leave a live parent that reads as absent, and B5 must
-    then keep a unit whose parent it cannot find.
+    barrier grid's completed, cancelled, saga-failed, and rolling-back parent
+    cells hold those parts (PR5.2c2, BUILD.md exit test line 42). The lookup
+    assumes that one database holds every task, so a parent it cannot find by
+    `task_id` reads as absent. That holds while `ctx.spawn` writes to the store
+    the parent runs on. Once tasks are sharded across databases (§3.7), a spawn
+    routed to another shard would leave a live parent that reads as absent, and
+    B5 must then keep a unit whose parent it cannot find.
 - **The batch.** The compare-and-set stamps the task row, then deletes keyed on
   that stamp remove the checkpoints, the waits, the runs, and the completion
   event, and the task row goes last. The batch is atomic, so no reader sees it
