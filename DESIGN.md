@@ -5527,22 +5527,25 @@ batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all 
 table. The commands so far are `help`, `doctor`, `migrate`, `result` and `checkpoints`.
 
 **Transport.** Every command but `help` opens a store directly, from
-`DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs one.
-There is no fallback to any other variable. `src/open-store.ts` picks the store by the
-URL's scheme: `file:`, `:memory:`, `libsql:`, `https:` and `wss:` open libSQL,
+`DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
+one. There is no fallback to any other variable. `src/open-store.ts` picks the store by
+the URL's scheme: `file:`, `:memory:`, `libsql:`, `https:` and `wss:` open libSQL,
 `postgres:` and `postgresql:` PostgreSQL, and `mysql:` MySQL. It is the one file of the
-CLI that imports a store package, which biome's `noRestrictedImports` holds with an
-override for that file, and it returns ports narrowed to the calls a command may make,
-never an executor: the fake clock's setter and `claim` cannot be written. A database
-credential is full admin: it bypasses section 3.5's hosted authorization port, which
-decides only the hosted routes' four operations, and the rows it reaches hold params,
-checkpoints and event payloads in plaintext (section 3.5, observability). So the CLI's
-own messages never quote the store URL or the token. A URL that does not parse, one whose
-user name or password does not percent-decode, and a libSQL server's URL that carries a
-user name or password, which its client would quote in an error, are refused with exit 2
-before anything opens. The bin's last catch prints only the name of an error nothing
-answered, beside a fixed sentence, and exits 1, because a foreign error's message and
-fields can quote the URL it was given.
+CLI that imports a store package. biome's `noRestrictedImports` holds that with an
+override for that file, and because the rule matches a specifier's spelling, a test also
+resolves every import of `src` and `bin` as the compiler does, relative paths and
+`typeof import(...)` included, and fails on one that lands in a store package. The
+opener returns ports narrowed to the calls a command may make, never an executor: the
+fake clock's setter and `claim` cannot be written. A database credential is full admin:
+it bypasses section 3.5's hosted authorization port, which decides only the hosted
+routes' four operations, and the rows it reaches hold params, checkpoints and event
+payloads in plaintext (section 3.5, observability). So the CLI's own messages never
+quote the store URL or the token. A URL that does not parse, one whose user name or
+password does not percent-decode, and a libSQL server's URL that carries a user name or
+password, which its client would quote in an error, are refused with exit 2 before
+anything opens. The bin's last catch prints only the name of an error nothing answered,
+beside a fixed sentence, and exits 1, because a foreign error's message and fields can
+quote the URL it was given.
 
 **Safety defaults.** Each store package exports `READABLE_SCHEMA_WINDOW`, the schema
 versions its reads accept: 5 to the current version for libSQL, because the release
