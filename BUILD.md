@@ -52,10 +52,10 @@ this section is the plan.
 
 **Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
 The exit test is lines 32 to 44 below, and none is met. Each PR marks its own
-lines met, with the evidence in its own diff. The milestone is recorded complete
-when line 44 is met. The maintainer's live week on the deployed alpha is receipt
-M1, outside the numbered lines: the repository's work ends at line 44, and M1 is
-recorded met only when its receipt exists and line 44's checker accepts it.
+lines met, with the evidence in its own diff. The milestone is complete when
+lines 32 to 44 are all met, which PR5.5 records. The maintainer's live week on
+the deployed alpha is receipt M1, outside the numbered lines, and M1 is recorded
+met only when its receipt exists and line 44's checker accepts it.
 
 **Exit test:**
 
@@ -70,16 +70,17 @@ recorded met only when its receipt exists and line 44's checker accepts it.
     `CURRENT_SCHEMA_VERSION` and `MIGRATIONS`, and the CLI holds no dialect
     branch. On a libSQL database migrated only through the first five entries of
     `MIGRATIONS`, each read verb answers with the JSON it gives at the current
-    version. On a database recorded above the build's version, every verb exits
-    5 and a dump of every table is identical before and after. A spy on the
-    executor sees only read-mode batches from a read verb. Only `open-store.ts`
-    under packages/cli/src imports a store package, held by biome's
-    `noRestrictedImports` with an override for that file (control: a planted
-    import elsewhere fails `pnpm lint`), and the opener returns typed ports,
-    never an executor. `migrate` without `--yes` changes nothing, and with it
-    prints each version applied. The alpha.1 release assets, installed into a
-    temporary consumer the way package-smoke installs the current tarballs and
-    checked against the sha256 values in
+    version, apart from the schema version `doctor` reports as recorded. On a
+    database recorded above the build's version, every verb that opens a store
+    exits 5 and a dump of every table is identical before and after. A spy on
+    the executor sees only read-mode batches from a read verb. Only
+    `open-store.ts` under packages/cli/src imports a store package, held by
+    biome's `noRestrictedImports` with an override for that file (control: a
+    planted import elsewhere fails `pnpm lint`), and the opener returns typed
+    ports, never an executor. `migrate` without `--yes` changes nothing, and
+    with it prints each version applied. The alpha.1 release assets, installed
+    into a temporary consumer the way package-smoke installs the current
+    tarballs and checked against the sha256 values in
     scripts/published-surface-v0.1.0-alpha.1.json, run a spawn, claim, complete,
     emit and await cycle through alpha.1's LibsqlSchedulerStore on a libSQL file
     that `pnpm cli migrate --yes` took to each version from 5 to the build's,
@@ -89,11 +90,14 @@ recorded met only when its receipt exists and line 44's checker accepts it.
 33. PR5.3a (extended by every later PR that adds a command): nothing
     user-authored prints without `--reveal`. A sentinel planted in a task's
     params and headers, a checkpoint's state, an event payload, a completed
-    result, a user-authored failure reason and an idempotency key appears in no
-    stdout or stderr of any command, in human text or `--json`, and a key prints
-    as its length and sha256. The four engine-authored failure reasons
-    (`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`,
-    `$Cancelled`) do print. A test walks the command table and fails for any
+    result, a user-authored failure reason, an idempotency key and a step key
+    that a rollback halt's message embeds appears in no stdout or stderr of any
+    command, in human text or `--json`, and a key prints as its length and
+    sha256. The four engine-authored failure reasons (`$ClaimTimeout`,
+    `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`) do print,
+    and so do the two SDK-authored rollback halt names, `$SagaStateCorrupt` and
+    `$RollbackNotRegistered`, whose messages print with the user-authored step
+    keys they embed redacted. A test walks the command table and fails for any
     command that has no sentinel case. Red: removing redaction from one renderer
     fails that command's case by name. NOT MET.
 34. PR5.3a (extended by every later PR that adds a command): the CLI has its own
@@ -110,10 +114,12 @@ recorded met only when its receipt exists and line 44's checker accepts it.
     dump of every table, and prints the state it finds as of that read: a
     repeated `cancel` reports the task cancelled, and a repeated `retry` reports
     the pending run it finds. Exit 6 (store unavailable) is declared safe to
-    repeat for every verb, which holds because `enqueue` requires `--key`. Red
-    in PR5.3a: a read verb that maps a StoreUnavailableError to exit 0 fails its
-    crash-before case. Red in PR5.3d: making `--key` optional fails the enqueue
-    crash-after case by name, with two tasks in the dump. NOT MET.
+    repeat for every verb, which holds because `enqueue` requires `--key`;
+    `selftest` refuses a queue that already holds tasks, so the table gives it
+    its own repeat class, a fresh queue for each run. Red in PR5.3a: a read verb
+    that maps a StoreUnavailableError to exit 0 fails its crash-before case. Red
+    in PR5.3d: making `--key` optional fails the enqueue crash-after case by
+    name, with two tasks in the dump. NOT MET.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -185,46 +191,47 @@ recorded met only when its receipt exists and line 44's checker accepts it.
     through `main()` on all three dialects, and line 32's child-process runs
     cover the bin. `emit`, `cancel` and `retry` without `--yes` change nothing,
     exit 2 with `confirmation-required`, and print what they would do (control:
-    with `--yes` the dump changes). Every write without a `--target` equal to
-    the opened URL's host (or its path for `file:`) exits 2 and changes nothing
-    (dump control). Nothing falls back to TURSO_* or DURABLERUN_QUEUE, and
-    `enqueue` without `--key` exits 2. `cancel` on a task whose saga began
-    refuses without `--halt-rollback` and prints the rollback facts taskFacts
-    carries, because cancelling a rolling-back task halts the saga (DESIGN.md
-    section 3.10). Every refusal names its cause from a read of the post-state.
-    `retry`'s naming read is built from the retry guard's own conjuncts, one
-    boolean per conjunct, and the test enumerates the conjuncts and plants each
-    cause they give, by engine drive where one reaches it and by raw fixture SQL
-    otherwise, so a conjunct with no cause fails by name. The causes are the
-    nine the comment on `retryTask` in packages/core/src/ports.ts lists, and a
-    saga that began, which the guard also refuses (DESIGN.md section 3.10) and
-    the comment does not list. A `cancelTask` false separates an absent task
-    from an already-terminal one by state, and an `emit` of a `$` name answers
-    `reserved-name`. The exit-code table in DESIGN.md equals the one in the code
-    (a test parses both). On the v5-only fixture, each drive verb either passes
-    the twin-dump comparison or exits 5 naming both versions, and the list of
-    verbs allowed at v5 is data the test enumerates. `tick --url` against a
-    loopback hosted router returns the router's tick body, sends the token only
-    in the Authorization header, only to the origin of DURABLERUN_BASE_URL and
-    only over https (loopback excepted), and exits 4 on a wrong token. A
-    mismatched `--url` sends nothing: a loopback listener records no connection.
-    Red: removing the naming read fails the retry cases by name, a write without
-    `--yes` fails the dump control, and dropping the target check fails its
-    case. NOT MET.
+    with `--yes` the dump changes). Every write that opens a store and has no
+    `--target` equal to the opened URL's host (or its path for `file:`) exits 2
+    and changes nothing (dump control); `tick` opens no store, and its origin
+    check below is its target check. Nothing falls back to TURSO_* or
+    DURABLERUN_QUEUE, and `enqueue` without `--key` exits 2. `cancel` on a task
+    whose saga began refuses without `--halt-rollback` and prints the rollback
+    facts taskFacts carries, because cancelling a rolling-back task halts the
+    saga (DESIGN.md section 3.10). Every refusal names its cause from a read of
+    the post-state. `retry`'s naming read is built from the retry guard's own
+    conjuncts, one boolean per conjunct, and the test enumerates the conjuncts
+    and plants each cause they give, by engine drive where one reaches it and by
+    raw fixture SQL otherwise, so a conjunct with no cause fails by name. The
+    causes are the nine the comment on `retryTask` in packages/core/src/ports.ts
+    lists, and a saga that began, which the guard also refuses (DESIGN.md
+    section 3.10) and the comment does not list; PR5.3d corrects that comment. A
+    `cancelTask` false separates an absent task from an already-terminal one by
+    state, and an `emit` of a `$` name answers `reserved-name`. The exit-code
+    table in DESIGN.md equals the one in the code (a test parses both). On the
+    v5-only fixture, each drive verb either passes the twin-dump comparison or
+    exits 5 naming both versions, and the list of verbs allowed at v5 is data
+    the test enumerates. `tick --url` against a loopback hosted router returns
+    the router's tick body, sends the token only in the Authorization header,
+    only to the origin of DURABLERUN_BASE_URL and only over https (loopback
+    excepted), and exits 4 on a wrong token. A mismatched `--url` sends nothing:
+    a loopback listener records no connection. Red: removing the naming read
+    fails the retry cases by name, a write without `--yes` fails the dump
+    control, and dropping the target check fails its case. NOT MET.
 39. PR5.3d: the operator drill. A script holding only `runCli(argv, env)`, a
     store URL and a loopback hosted-router URL finds each planted cause without
     being handed a task id, and `explain` names the cause the builder wrote down
     before the CLI ran. For verdict `stuck`, the script appends `--yes` itself
-    to the suggested command, runs it, and the run moves to a terminal or
-    healthy verdict. The stuck causes planted are lease lapsed and cancellation
-    overdue (cleared by `sweep`), and due but unclaimed (cleared by `tick --url`
-    against the router). Two causes are found without an id and named `waiting`:
-    never-started, built by a real worker that lacks the handler, and an await
-    on an untimed event nobody emits. For those two, the script acts as the
-    human, runs `cancel --yes`, and each run ends cancelled. No healthy control
-    comes back `stuck`. Red: dropping the aged-live leg makes the never-started
-    and awaiting cases fail by name (not found), and a suggestion the command
-    table cannot parse fails. NOT MET.
+    to the suggested command where the command table requires it, runs it, and
+    the run moves to a terminal or healthy verdict. The stuck causes planted are
+    lease lapsed and cancellation overdue (cleared by `sweep`), and due but
+    unclaimed (cleared by `tick --url` against the router). Two causes are found
+    without an id and named `waiting`: never-started, built by a real worker
+    that lacks the handler, and an await on an untimed event nobody emits. For
+    those two, the script acts as the human, runs `cancel --yes`, and each run
+    ends cancelled. No healthy control comes back `stuck`. Red: dropping the
+    aged-live leg makes the never-started and awaiting cases fail by name (not
+    found), and a suggestion the command table cannot parse fails. NOT MET.
 40. PR5.2a (spec first, no SQL): specs/Retention.tla passes TLC on each config:
     a spawning parent in the child's queue, one in another queue, a task with no
     parent, and a liveness config under weak fairness. It holds WholeUnit,
@@ -360,15 +367,16 @@ recorded met only when its receipt exists and line 44's checker accepts it.
 hours on the deployed alpha. Before the week, `pnpm cli selftest` passes on a
 branch or snapshot of the production database, and its output goes in the
 receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
-digest-<period>` hourly on a queue of its own, and `purge --execute` runs at
-least daily under the maintainer's policy. `stats --json` and `sizes --json` are
-recorded at the start, once a day and at the end, each at or below line 44's
-bound. A second person injects one cause (an unregistered task name, or an await
-nobody emits) and publishes the sha256 of its task id, cause and a nonce before
-the operator starts, and the maintainer attests that ordering, since the checker
-can prove only the hash. The operator, holding the CLI and the store URL, finds
-the cause with `stuck --older-than`, names it with `explain`, and clears it,
-adding `--yes` themselves. Line 44's checker accepts the receipt.
+digest-<period> --queue digest --target <host>` hourly, on a queue of its own,
+and `purge --execute` runs at least daily under the maintainer's policy. `stats
+--json --queue digest` and `sizes --json --queue digest` are recorded at the
+start, once a day and at the end, each at or below line 44's bound. A second
+person injects one cause (an unregistered task name, or an await nobody emits)
+and publishes the sha256 of its task id, cause and a nonce before the operator
+starts, and the maintainer attests that ordering, since the checker can prove
+only the hash. The operator, holding the CLI and the store URL, finds the cause
+with `stuck --older-than`, names it with `explain`, and clears it, adding
+`--yes` themselves. Line 44's checker accepts the receipt.
 
 **Order:** PR5.0, this record, and then PR5.3a come first, and together they
 give a read-only tool for the deployed alpha and the harness that says whether
@@ -403,8 +411,9 @@ operators who hold no database credential); `enqueue`, `emit` and `result` over
 HTTP, since every verb but `tick` runs over a direct store URL and refuses
 `--url` (trigger: an operator who holds only the app URL and API token needs to
 drive the deployment); an audit trail of who cancelled, retried or emitted,
-which the engine does not record; retention of caller events and removal of
-PostgreSQL's `event_locks`, which need a stated oldest supported build, so the
+which the engine does not record; retention of caller events, which would
+re-open first-write-wins for names an operator emits, and removal of
+PostgreSQL's `event_locks`, which needs a stated oldest supported build, so the
 week's workflow emits no caller event; trimming a live task's checkpoints,
 continue-as-new, and any schedule or cron primitive, so the recurring workflow
 is one task per period; a recurring workflow built as a chain of `ctx.spawn`
@@ -438,42 +447,49 @@ secrets for the week's workflow, a second person for the sealed injection, and a
 calendar week. The migration of the deployed database: the CLI migrates it with
 the alpha.1 host left running, only after line 32's harness is green at the
 build's version, after a snapshot or branch on which `pnpm cli selftest` ran, in
-a quiet window because crossing version 10 held the libSQL writer 14.9 seconds
-on a cold 4.5 GB file, with a dry-run `purge` read before the first `purge
---execute`, and never followed by the example's own migrate or receipt script
-from an alpha.1 checkout, whose `migrate()` refuses any version but 5; if the
-harness fails at some version, the deployed database stays at 5 and retention
-there needs an alpha.2 release. Retention numbers and two contract changes: the
-completed and cancelled windows, whether failed tasks are ever purged (the plan
-keeps them, so a failed parent keeps its children), the producer's redelivery
-horizon, the 3,600 second floor and the 5,000 checkpoint unit cap, and approval
-of the two contract changes PR5.2a writes into DESIGN.md section 3.12, that an
-idempotency key dedupes for the window of its task's terminal state and that a
-child handle is valid until its unit is purged, after which an await is refused
-loudly. The one released-surface change: `FENCE_RELATIONS` in @durablerun/core
-gains the relations from tasks to checkpoints and to events, which needs a
-`changed` entry in scripts/published-surface-v0.1.0-alpha.1.json and the
-maintainer's approval before PR5.2c2 adds it. The metric definitions, above all
-that claim latency is the age of the oldest due run plus per-task start latency,
-with no `claimed_at_ms` column. Two `gate-changes:` entries for the libSQL plan
-reader, adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
+a quiet window with the finding query from the version 10 comment in
+packages/store-libsql/src/schema.ts run first (crossing version 10 held the
+libSQL writer 14.9 seconds on a cold 4.5 GB file, and under half a second with
+no call failing when that query ran first under no write lock), with a dry-run
+`purge` read before the first `purge --execute`, and never followed by the
+example's own migrate or receipt script from an alpha.1 checkout, whose
+`migrate()` takes a database at versions 0 to 4 up to 5 and refuses one recorded
+above 5; if the harness fails at some version, the deployed database stays at 5
+and retention there needs an alpha.2 release. Retention numbers and two contract
+changes: the completed and cancelled windows, whether failed tasks are ever
+purged (the plan keeps them, so a failed parent keeps its children), the
+producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
+unit cap, and approval of the two contract changes PR5.2a writes into DESIGN.md
+section 3.12, that an idempotency key dedupes for the window of its task's
+terminal state and that a child handle is valid until its unit is purged, after
+which an await is refused loudly. The one released-surface change:
+`FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
+checkpoints and to events, which needs a `changed` entry in
+scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
+before PR5.2c2 adds it. The metric definitions, above all that claim latency is
+the age of the oldest due run plus per-task start latency, with no
+`claimed_at_ms` column. Two `gate-changes:` entries for the libSQL plan reader,
+adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
 PR5.2c2, and a third if `sizes` falls back to a text statement. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write and loads no `.env`, and the alternative, hosted
-operator routes with their own credential, is a non-goal here. Decisions the
-plan made that the maintainer may reverse: `purge` is a dry run unless
-`--execute`, with required windows and no defaults; `enqueue` requires `--key`;
-every write requires `--target`, and `--queue` comes from argv only, with no
-TURSO_* or DURABLERUN_QUEUE fallback; suggestions never carry `--yes`, and
-`explain` never suggests `emit`; never-started tasks and untimed awaits are
-`waiting`, not `stuck`; `cancel` on a saga needs `--halt-rollback`; idempotency
-keys and user-authored failure text are redacted like other user values, while
-task ids, task names and event names print; each new port is one core
-implementation reached through store factories; `sizes` counts one queue; only
-`tick` uses HTTP; the week's workflow is one task per period produced by an
-external cron; a failed parent keeps its children in this first release; and
-there is no operator audit trail.
+operator routes with their own credential, is a non-goal here. Whether to type a
+store authentication failure apart from an outage: today a rejected password or
+token reaches the caller as a StoreUnavailableError, so under the plan it exits
+6, which the table calls safe to repeat, while the table reserves exit 4 for
+unauthenticated or forbidden. Decisions the plan made that the maintainer may
+reverse: `purge` is a dry run unless `--execute`, with required windows and no
+defaults; `enqueue` requires `--key`; every write requires `--target`, and
+`--queue` comes from argv only, with no TURSO_* or DURABLERUN_QUEUE fallback;
+suggestions never carry `--yes`, and `explain` never suggests `emit`;
+never-started tasks and untimed awaits are `waiting`, not `stuck`; `cancel` on a
+saga needs `--halt-rollback`; idempotency keys and user-authored failure text
+are redacted like other user values, while task ids, task names and event names
+print; each new port is one core implementation reached through store factories;
+`sizes` counts one queue; only `tick` uses HTTP; the week's workflow is one task
+per period produced by an external cron; a failed parent keeps its children in
+this first release; and there is no operator audit trail.
 
 ## Completed milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
 
