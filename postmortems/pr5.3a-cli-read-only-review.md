@@ -104,7 +104,8 @@ Built in this PR:
 
 Deferred (recorded in BUILD.md):
 
-- None. A stronger rung for the credential property would be a URL type the CLI can only print through a redacting formatter; every message that names a target already builds from `storeTarget`'s answer, so the remaining gap is a driver's own output, which a type in the CLI cannot reach.
+- Four shapes of the last section, each an option with a trigger in BUILD.md's PR5.3a entry: a message that prints part of a password, a print of the store URL on a path that runs only after a store opens, a store client that parses a URL by a rule other than WHATWG's, and an import of a store package through a computed specifier.
+- A stronger rung for the credential property would be a URL type the CLI can only print through a redacting formatter; every message that names a target already builds from `storeTarget`'s answer, so the remaining gap is a driver's own output, which a type in the CLI cannot reach.
 
 ## What this round still would not catch
 
