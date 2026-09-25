@@ -326,3 +326,15 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
+/**
+ * The schema versions this build's reads accept. A read-only tool, such as the operator
+ * CLI, answers against any version in the window and refuses one outside it, and it never
+ * migrates. This store was never released, so no deployed database is known to be at an
+ * older version, and the window is the current version alone. A database recorded past
+ * `newest` was migrated by a newer build and is refused.
+ */
+export const READABLE_SCHEMA_WINDOW = Object.freeze({
+  oldest: CURRENT_SCHEMA_VERSION,
+  newest: CURRENT_SCHEMA_VERSION,
+})

@@ -309,3 +309,16 @@ export const MIGRATIONS: Migration[] = [
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
+/**
+ * The schema versions this build's reads accept. A read-only tool, such as the operator
+ * CLI, answers against any version in the window and refuses one outside it, and it never
+ * migrates. The window starts at version 5 because the release alpha.1 migrated its
+ * databases to version 5 and nothing later: versions 6 to 10 add indexes, empty versions and
+ * triggers, and no read selects a column that a later version adds. A database recorded
+ * past `newest` was migrated by a newer build and is refused.
+ */
+export const READABLE_SCHEMA_WINDOW = Object.freeze({
+  oldest: 5,
+  newest: CURRENT_SCHEMA_VERSION,
+})
