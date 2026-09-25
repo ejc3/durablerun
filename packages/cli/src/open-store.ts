@@ -207,18 +207,27 @@ export async function storeTarget(url: string): Promise<string> {
 const UNPARSED_URL =
   'DURABLERUN_STORE_URL does not parse as a URL. It is not printed, because it can hold a password; a password must percent-encode every character a URL reserves, such as # / ? @ % and a space'
 
+const AUTHORITY_CUT_SHORT =
+  "DURABLERUN_STORE_URL has an @ outside its user name and password, so a reserved character in the password ended the URL's host part early. It is not printed, because what parsed as its host can hold the start of the password; percent-encode every # / ? @ % and space in the password"
+
 /** A server's URL as it parses, or a refusal that does not quote it. */
 function serverUrl(url: string): URL {
+  let parsed: URL
   try {
-    const parsed = new URL(url)
+    parsed = new URL(url)
     // A driver percent-decodes the user name and the password, so one that does not decode
     // fails there, with no message this CLI chose.
     decodeURIComponent(parsed.username)
     decodeURIComponent(parsed.password)
-    return parsed
   } catch {
     throw new StoreUrlError(UNPARSED_URL)
   }
+  // An @ outside the user name and password is one a reserved character in the password cut
+  // off from the authority, and the host and port parsed before it are the password's start.
+  if (parsed.username === '' && parsed.password === '' && url.includes('@')) {
+    throw new StoreUrlError(AUTHORITY_CUT_SHORT)
+  }
+  return parsed
 }
 
 function unknownScheme(): string {

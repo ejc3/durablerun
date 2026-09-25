@@ -17479,6 +17479,13 @@ MUTATION_SPECS.extend(
             "a PostgreSQL password that does not percent-decode reaches the driver, which fails on it as it connects, and the CLI answers exit 6, safe to repeat, for a URL no repeat can fix",
         ),
         (
+            "cli-store-url-refuses-an-at-outside-its-authority",
+            "packages/cli/src/open-store.ts",
+            "  if (parsed.username === '' && parsed.password === '' && url.includes('@')) {\n",
+            "  if (false) { // MUTATION: an @ outside the user name and password is let through\n",
+            "a password cut short by an unencoded # / or ? parses with its leading digits as the port, and migrate's --target mismatch message quotes them",
+        ),
+        (
             "cli-libsql-url-refuses-a-password",
             "packages/cli/src/open-store.ts",
             "  if (LOADERS[scheme] === libsql && (parsed.username !== '' || parsed.password !== '')) {\n",
@@ -17615,6 +17622,7 @@ VERDICTS.update(
     }
 )
 VERDICTS["cli-libsql-url-refuses-a-password"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
+VERDICTS["cli-store-url-refuses-an-at-outside-its-authority"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
 VERDICTS["cli-unreadable-reason-needs-reveal"] = VERDICTS["cli-unreadable-row-exits-10"]
 
 MUTATIONS = [
@@ -21525,7 +21533,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1147:
+        if len(MUTATIONS) != 1148:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
