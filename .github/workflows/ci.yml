@@ -337,9 +337,9 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == 'eddaa5bd75fcb6db18681e020eae253a314fb2c34042f1d01ef03a1ea9fec7a9':
-              # The operator CLI (packages/cli) registers ten mutations of its own guards, and
-              # every verdict marker of their cases is newer than the base registry, so each is
-              # exempted there. No base entry is re-aimed.
+              # The operator CLI (packages/cli) registers twenty-two mutations of its own guards,
+              # and every verdict marker of their cases is newer than the base registry, so each
+              # is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:cli-refuses-a-newer-schema",
                   "mutation-verdict:behavior:cli-refuses-an-older-schema",
@@ -350,6 +350,16 @@ jobs:
                   "mutation-verdict:behavior:cli-redacts-failure-reasons",
                   "mutation-verdict:behavior:cli-migrate-needs-yes",
                   "mutation-verdict:behavior:cli-migrate-needs-its-target",
+                  "mutation-verdict:behavior:cli-store-url-prints-no-credential",
+                  "mutation-verdict:behavior:cli-refuses-a-store-url-it-cannot-read",
+                  "mutation-verdict:behavior:cli-last-catch-prints-only-a-name",
+                  "mutation-verdict:behavior:cli-file-url-reads-the-client-path",
+                  "mutation-verdict:behavior:cli-file-url-refuses-a-fragment",
+                  "mutation-verdict:behavior:cli-refuses-a-url-its-store-client-refuses",
+                  "mutation-verdict:behavior:cli-write-refuses-an-empty-target",
+                  "mutation-verdict:behavior:cli-unreadable-row-exits-10",
+                  "mutation-verdict:behavior:cli-every-declared-label-is-sent",
+                  "mutation-verdict:behavior:cli-imports-resolve-outside-the-stores",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

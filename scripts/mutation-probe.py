@@ -17452,6 +17452,165 @@ VERDICTS.update(
 )
 VERDICTS["cli-migrate-refuses-a-newer-schema"] = VERDICTS["cli-refuses-a-newer-schema"]
 
+# The operator CLI's second round: a store URL and its credential never print, a file: URL
+# is read as the libSQL client reads it, a write needs a target it can name, an unreadable
+# row has its own exit, every declared batch label is sent, and imports are held by where
+# they resolve.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-store-url-prints-no-credential",
+            "packages/cli/src/open-store.ts",
+            "    throw new StoreUrlError(UNPARSED_URL)\n",
+            "    throw Object.assign(new TypeError('Invalid URL'), { input: url }) // MUTATION: a URL that does not parse is refused by its own parse error, which holds the URL\n",
+            "a store URL that does not parse throws out of main, and the bin prints the error with the whole URL, its password included",
+        ),
+        (
+            "cli-refuses-a-store-url-it-cannot-read",
+            "packages/cli/src/open-store.ts",
+            "    decodeURIComponent(parsed.password)\n",
+            "    // MUTATION: a password that does not percent-decode reaches the driver\n",
+            "a password that does not percent-decode reaches the driver, which fails on it with an error the CLI answers as a defect",
+        ),
+        (
+            "cli-libsql-url-refuses-a-password",
+            "packages/cli/src/open-store.ts",
+            "  if (LOADERS[scheme] === libsql && (parsed.username !== '' || parsed.password !== '')) {\n",
+            "  if (false) { // MUTATION: a libSQL server's URL may carry a password, which its client quotes\n",
+            "a libSQL server's URL with a password reaches its client, whose fetch quotes the whole URL in an error --reveal prints",
+        ),
+        (
+            "cli-last-catch-prints-only-a-name",
+            "packages/cli/src/main.ts",
+            "    `durablerun: an unexpected ${shown} ended the command. Its message is not printed, because it can quote the store URL and its password. This is a defect of the CLI.\\n`,\n",
+            "    `durablerun: ${String(error)}\\n`, // MUTATION: the last catch prints the error's message\n",
+            "the bin's last catch prints an unexpected error's message, which can quote the store URL and its password",
+        ),
+        (
+            "cli-file-url-reads-the-client-path",
+            "packages/cli/src/open-store.ts",
+            "    return file.path\n",
+            "    return url.slice('file:'.length).split('?')[0] ?? '' // MUTATION: a file: URL's path is read undecoded\n",
+            "the read guard and --target read a file: URL's path undecoded, so a read checks one file and the client opens another",
+        ),
+        (
+            "cli-file-url-refuses-a-fragment",
+            "packages/cli/src/open-store.ts",
+            "    if (file === undefined || file.rest.startsWith('#')) {\n",
+            "    if (file === undefined) { // MUTATION: a file: URL may carry a fragment\n",
+            "a file: URL with a fragment, which the client refuses, is checked by the path before the fragment and answered as a missing database",
+        ),
+        (
+            "cli-refuses-a-url-its-store-client-refuses",
+            "packages/cli/src/open-store.ts",
+            "  const executor = openedBy(() => store.LibsqlExecutor.open(url, token))\n",
+            "  const executor = store.LibsqlExecutor.open(url, token) // MUTATION: a URL the client refuses is answered as a defect\n",
+            "a URL the libSQL client refuses as it is made is answered with exit 1, a defect, and its message can quote the URL",
+        ),
+        (
+            "cli-write-refuses-an-empty-target",
+            "packages/cli/src/main.ts",
+            "  if (spec.writes && target === '') {\n",
+            "  if (false) { // MUTATION: a write goes to a URL whose target is empty\n",
+            "migrate --target '' writes to a URL that names no host, which --target cannot name",
+        ),
+        (
+            "cli-unreadable-row-exits-10",
+            "packages/cli/src/main.ts",
+            "  return { exit: 'unreadable', view: reveal ? { ...view, reason } : view }\n",
+            "  return { exit: 'done', view: reveal ? { ...view, reason } : view } // MUTATION: an unreadable row exits 0\n",
+            "result answers a row the store's decoders refuse with exit 0, so a script reads it as a clean answer",
+        ),
+        (
+            "cli-unreadable-reason-needs-reveal",
+            "packages/cli/src/main.ts",
+            "  return { exit: 'unreadable', view: reveal ? { ...view, reason } : view }\n",
+            "  return { exit: 'unreadable', view: { ...view, reason } } // MUTATION: what refused a row prints without --reveal\n",
+            "what refused a stored row, which can quote the row, prints without --reveal",
+        ),
+        (
+            "cli-every-declared-label-is-sent",
+            "packages/cli/src/commands.ts",
+            "      { call: 'admin.migrate', labels: ['migrate:version', 'migrate:bootstrap', 'migrate:v<N>'] },\n",
+            "      { call: 'admin.migrate', labels: ['migrate:version', 'migrate:bootstrap', 'migrate:v<N>', 'migrate:stale'] }, // MUTATION: a label nothing sends\n",
+            "the command table declares a batch label no command sends, so its fault exits are declared and never met",
+        ),
+        (
+            "cli-imports-resolve-outside-the-stores",
+            "packages/cli/src/main.ts",
+            "import { canonicalJson, checkpointView, humanText, resultView } from './render.js'\n",
+            "import '../../store-libsql/src/index.js' // MUTATION: a file of the CLI imports a store by a relative path\nimport { canonicalJson, checkpointView, humanText, resultView } from './render.js'\n",
+            "a file of the CLI but the opener imports a store package's source by a relative path, which biome's rule does not match",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-store-url-prints-no-credential": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction a credential in the store URL or its token prints in no stream of any command, and every command answers with an exit code",
+            "mutation-verdict:behavior:cli-store-url-prints-no-credential",
+        ),
+        "cli-refuses-a-store-url-it-cannot-read": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction refuses a store URL that does not parse, a password that does not percent-decode, and a libSQL server's URL with a password, with exit 2",
+            "mutation-verdict:behavior:cli-refuses-a-store-url-it-cannot-read",
+        ),
+        "cli-last-catch-prints-only-a-name": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction the bin's last catch prints an unexpected error's name and nothing of its message or fields",
+            "mutation-verdict:behavior:cli-last-catch-prints-only-a-name",
+        ),
+        "cli-file-url-reads-the-client-path": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/open-store.test.ts",
+            "the store opener reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target",
+            "mutation-verdict:behavior:cli-file-url-reads-the-client-path",
+        ),
+        "cli-file-url-refuses-a-fragment": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/open-store.test.ts",
+            "the store opener reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target",
+            "mutation-verdict:behavior:cli-file-url-refuses-a-fragment",
+        ),
+        "cli-refuses-a-url-its-store-client-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/open-store.test.ts",
+            "the store opener reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target",
+            "mutation-verdict:behavior:cli-refuses-a-url-its-store-client-refuses",
+        ),
+        "cli-write-refuses-an-empty-target": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/migrate.test.ts",
+            "migrate on libSQL refuses a write to a URL that names no host, whatever --target says, and opens nothing",
+            "mutation-verdict:behavior:cli-write-refuses-an-empty-target",
+        ),
+        "cli-unreadable-row-exits-10": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/result.test.ts",
+            "result and checkpoints on libSQL exits 10 on a row the store's decoders refuse, and prints what refused it only with --reveal",
+            "mutation-verdict:behavior:cli-unreadable-row-exits-10",
+        ),
+        "cli-every-declared-label-is-sent": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/fault-surface.test.ts",
+            "the CLI fault surface [libsql] every batch label and faultsAt entry the command table declares is sent from some starting state",
+            "mutation-verdict:behavior:cli-every-declared-label-is-sent",
+        ),
+        "cli-imports-resolve-outside-the-stores": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/import-boundary.test.ts",
+            "the CLI reaches a store only through its opener, by where its imports resolve no file of packages/cli/src or bin but open-store.ts names a module inside a store package",
+            "mutation-verdict:behavior:cli-imports-resolve-outside-the-stores",
+        ),
+    }
+)
+VERDICTS["cli-libsql-url-refuses-a-password"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
+VERDICTS["cli-unreadable-reason-needs-reveal"] = VERDICTS["cli-unreadable-row-exits-10"]
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -21357,7 +21516,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1135:
+        if len(MUTATIONS) != 1147:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
