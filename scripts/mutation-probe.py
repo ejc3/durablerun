@@ -16319,6 +16319,12 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "cli-file-url-reads-the-client-path": (
+        "replacement adds a TypeScript default operator and a string holding a question mark, not a SQL bind"
+    ),
+    "cli-unreadable-reason-needs-reveal": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
+    ),
     "port-required-string-left-out-is-refused": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
@@ -18944,6 +18950,9 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "cli-every-declared-label-is-sent": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
     "replay-settles-before-the-rollback-decides": (
         "the suite runs once for each dialect, and its describe title carries the dialect"
     ),
