@@ -29,7 +29,7 @@ import {
   type EnrolledDialect,
   parseDialectSelection,
 } from '../../conformance/test/dialect-selection.js'
-import { COMMANDS, type CommandSpec, VERBS } from '../src/commands.js'
+import { COMMANDS, type CliFault, type CommandSpec, VERBS } from '../src/commands.js'
 import { type Io, main } from '../src/main.js'
 import { type StoreOpener, openStore } from '../src/open-store.js'
 
@@ -370,11 +370,7 @@ export interface FaultSite {
  * delivers the batch twice. A batch that fails on its own commits nothing, so after it the
  * crash rejects all the same, as a lost answer does, and a second delivery answers for both.
  */
-export function faulting(
-  real: SqlExecutor,
-  site: FaultSite,
-  fault: 'crash-before' | 'crash-after' | 'duplicate',
-): SqlExecutor {
+export function faulting(real: SqlExecutor, site: FaultSite, fault: CliFault): SqlExecutor {
   let seen = 0
   return {
     batch: async (label, statements, control) => {

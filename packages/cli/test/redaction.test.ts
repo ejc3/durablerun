@@ -187,6 +187,15 @@ function targetOf(url: string): string {
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
+/** The bin as a child process, with only PATH and the store URL in its environment. */
+function runBin(url: string, argv: readonly string[]) {
+  return spawnSync(process.execPath, ['--import', 'tsx', BIN, ...argv], {
+    cwd: ROOT,
+    env: { PATH: process.env.PATH ?? '', DURABLERUN_STORE_URL: url },
+    encoding: 'utf8',
+  })
+}
+
 describe('redaction', () => {
   it('a credential in the store URL or its token prints in no stream of any command, and every command answers with an exit code', async () => {
     expect(Object.keys(CREDENTIAL_LINES).sort()).toEqual([...VERBS].sort())
@@ -289,15 +298,7 @@ describe('redaction', () => {
       `postgres://admin:${CREDENTIAL}@[bad/app`,
       `libsql://tok:${CREDENTIAL}@exa mple.io`,
     ]) {
-      const child = spawnSync(
-        process.execPath,
-        ['--import', 'tsx', BIN, 'doctor', '--queue', QUEUE, '--json'],
-        {
-          cwd: ROOT,
-          env: { PATH: process.env.PATH ?? '', DURABLERUN_STORE_URL: url },
-          encoding: 'utf8',
-        },
-      )
+      const child = runBin(url, ['doctor', '--queue', QUEUE, '--json'])
       expect({
         url: url.replaceAll(CREDENTIAL, '<credential>'),
         exit: child.status,
@@ -309,15 +310,7 @@ describe('redaction', () => {
   it('the bin prints no credential in any stream, --reveal included, for any URL of the credential sweep', () => {
     for (const url of CREDENTIAL_URLS) {
       for (const extra of [[], ['--reveal']]) {
-        const child = spawnSync(
-          process.execPath,
-          ['--import', 'tsx', BIN, 'doctor', '--queue', QUEUE, ...extra],
-          {
-            cwd: ROOT,
-            env: { PATH: process.env.PATH ?? '', DURABLERUN_STORE_URL: url },
-            encoding: 'utf8',
-          },
-        )
+        const child = runBin(url, ['doctor', '--queue', QUEUE, ...extra])
         const printed = `${child.stdout}${child.stderr}`
         expect({
           url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),

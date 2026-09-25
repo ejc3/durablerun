@@ -10,6 +10,7 @@ import { SCHEMA_VERSION_NOTES as POSTGRES_NOTES } from '@durablerun/store-postgr
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
+import type { SchemaVersionNotes } from '../src/open-store.js'
 import {
   QUEUE,
   SELECTED,
@@ -24,7 +25,7 @@ import {
   withoutDialect,
 } from './support.js'
 
-const NOTES: Readonly<Record<(typeof SELECTED)[number], Readonly<Record<number, string>>>> = {
+const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
   libsql: LIBSQL_NOTES,
   postgres: POSTGRES_NOTES,
   mysql: MYSQL_NOTES,

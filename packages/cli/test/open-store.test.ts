@@ -30,6 +30,14 @@ function databaseFiles(dir: string): string[] {
     .sort()
 }
 
+/** What storeTarget answers for `url`: a StoreUrlError's message, or 'accepted'. */
+function refusalOf(url: string): Promise<string> {
+  return storeTarget(url).then(
+    () => 'accepted',
+    (error: unknown) => (error instanceof StoreUrlError ? error.message : String(error)),
+  )
+}
+
 describe('the store opener', () => {
   it('returns ports narrowed to the calls a command may make, and no executor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-opener-'))
@@ -92,10 +100,7 @@ describe('the store opener', () => {
     expect(await storeTarget('file:/var/data/a%20b.sqlite')).toBe('/var/data/a b.sqlite')
     // store-libsql reads a path that holds :memory: as no file, so the refusal names that.
     for (const url of ['file::memory:', 'file::memory:?cache=shared']) {
-      const refusal = await storeTarget(url).then(
-        () => 'accepted',
-        (error: unknown) => (error instanceof StoreUrlError ? error.message : String(error)),
-      )
+      const refusal = await refusalOf(url)
       expect({ url, says: refusal.includes('holds no :memory:') }).toEqual({ url, says: true })
     }
   })
@@ -174,10 +179,7 @@ describe('the store opener', () => {
       'postgres:///app?host=/run/pg&user=me@corp',
       'postgres:admin:secret@db.example.io/app',
     ]) {
-      const refusal = await storeTarget(url).then(
-        () => 'accepted',
-        (error: unknown) => (error instanceof StoreUrlError ? error.message : String(error)),
-      )
+      const refusal = await refusalOf(url)
       expect({
         url,
         says: refusal.includes(

@@ -282,6 +282,11 @@ function pending(from: number, window: SchemaWindow): number[] {
   return plan
 }
 
+/** The versions of `plan` a database recorded at version `to` holds. */
+function appliedBy(plan: readonly number[], to: number): number[] {
+  return plan.filter((version) => version <= to)
+}
+
 /** migrate's answer without --yes: the versions it would apply, and nothing changed. */
 function confirmationRequired(from: number, plan: readonly number[]): Answer {
   return {
@@ -327,11 +332,11 @@ const migrate: Handler = async ({ invocation, store, reveal, note }) => {
     // versions before it applied, and says which, with the version now recorded.
     const failed = failure(error, reveal)
     const to = await store.admin.schemaVersion().catch(() => null)
-    const applied = to === null ? null : plan.filter((version) => version <= to)
+    const applied = to === null ? null : appliedBy(plan, to)
     return { exit: failed.exit, view: { from, to, applied, ...failed.view } }
   }
   const to = await store.admin.schemaVersion()
-  const applied = plan.filter((version) => version <= to)
+  const applied = appliedBy(plan, to)
   return {
     exit: 'done',
     view: { from, to, applied },

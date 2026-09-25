@@ -78,11 +78,17 @@ interface Opened {
   close(): Promise<void>
 }
 
-type Loader = (url: string, token: string | undefined, mayCreate: boolean) => Promise<Opened>
+/** A store's loader, given the URL, the token, whether it may create, and what storeTarget named. */
+type Loader = (
+  url: string,
+  token: string | undefined,
+  mayCreate: boolean,
+  target: string,
+) => Promise<Opened>
 
-const libsql: Loader = async (url, token, mayCreate) => {
+const libsql: Loader = async (url, token, mayCreate, target) => {
   const store = await import('@durablerun/store-libsql')
-  const file = storeScheme(url) === 'file:' ? await storeTarget(url) : undefined
+  const file = storeScheme(url) === 'file:' ? target : undefined
   if (!mayCreate && file !== undefined && !existsSync(file)) {
     throw new MissingDatabaseError(
       `no database file is at ${file}; migrate --yes creates and initializes one`,
@@ -252,11 +258,11 @@ function unknownScheme(): string {
 }
 
 export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
-  await storeTarget(url)
+  const target = await storeTarget(url)
   const scheme = storeScheme(url)
   const loader = scheme === undefined ? undefined : LOADERS[scheme]
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())
-  const opened = await loader(url, token, options.mayCreate === true)
+  const opened = await loader(url, token, options.mayCreate === true, target)
   const db = options.wrapExecutor?.(opened.executor) ?? opened.executor
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)
