@@ -183,13 +183,16 @@ VARIABLES
   aw,           \* per holder: its await of C
   carry,        \* per holder: "none"; "live", its current run parks C's outcome;
                 \* "stuck", a failed or cancelled run of it does, until its unit goes
+  named,        \* per holder: "none"; "live", its current run names C's completion
+                \* event with no outcome parked on it (its timed await came due);
+                \* "stuck", a failed or cancelled run of it does, until its unit goes
   legacy,       \* ghost: C's latest ending was an older build's, which recorded nothing
   second,       \* ghost: a replay of P's spawn found C's key free and created a second child
   redelivered,  \* ghost: a producer redelivered C's key after C's unit went, and got a fresh task
   purging       \* probe only: a purge deleted C's rows and not yet its task row
 
 vars == <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry,
-          legacy, second, redelivered, purging>>
+          named, legacy, second, redelivered, purging>>
 
 Init ==
   /\ st = [t \in Tasks |-> IF t = "H" \/ (t = "P" /\ ParentQueue # "none") THEN "live" ELSE "none"]
@@ -200,6 +203,7 @@ Init ==
   /\ spawned = FALSE /\ memo = FALSE
   /\ aw = [x \in Holders |-> "idle"]
   /\ carry = [x \in Holders |-> "none"]
+  /\ named = [x \in Holders |-> "none"]
   /\ legacy = FALSE /\ second = FALSE /\ redelivered = FALSE /\ purging = FALSE
 
 Lifted(c) == c \in Lift
@@ -219,7 +223,7 @@ Create ==
 Enqueue ==
   /\ ParentQueue = "none" /\ st["C"] = "none"
   /\ Create
-  /\ UNCHANGED <<saga, retries, cEvent, spawned, memo, aw, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<saga, retries, cEvent, spawned, memo, aw, carry, named, legacy, second, redelivered, purging>>
 
 \* The producer redelivers C's key.  A key whose task exists dedupes and changes
 \* nothing, so only the other case is a step: the key was freed by the purge and
@@ -227,7 +231,7 @@ Enqueue ==
 Redeliver ==
   /\ ParentQueue = "none" /\ st["C"] = "absent" /\ ~redelivered
   /\ redelivered' = TRUE
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, legacy, second, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, named, legacy, second, purging>>
 
 \* P's spawn, under its live claim in the forward phase.  With no memo it may be a
 \* replay after a pass that died between the spawn and its memo.  A key that
@@ -239,19 +243,19 @@ PSpawn ==
   /\ IF st["C"] = "none"
      THEN Create /\ spawned' = TRUE /\ UNCHANGED second
      ELSE second' = TRUE /\ UNCHANGED <<st, age, cRuns, cCkpts, spawned>>
-  /\ UNCHANGED <<saga, retries, cEvent, memo, aw, carry, legacy, redelivered, purging>>
+  /\ UNCHANGED <<saga, retries, cEvent, memo, aw, carry, named, legacy, redelivered, purging>>
 
 PMemo ==
   /\ Running("P") /\ spawned /\ ~memo
   /\ memo' = TRUE
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, aw, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, aw, carry, named, legacy, second, redelivered, purging>>
 
 \* C's completion event and the waiters' wake, as follow-ons of its terminal
 \* batch.  First write wins: an event that exists is left alone.  A woken run
 \* carries C's outcome until complete or suspend clears it.
 Emit ==
   IF cEvent
-  THEN UNCHANGED <<cEvent, aw, carry>>
+  THEN UNCHANGED <<cEvent, aw, carry, named>>
   ELSE /\ cEvent' = TRUE
        /\ aw' = [x \in Holders |-> IF aw[x] = "waiting" THEN "woken" ELSE aw[x]]
        /\ carry' = [x \in Holders |-> IF aw[x] = "waiting" THEN "live" ELSE carry[x]]
@@ -266,7 +270,7 @@ ChildEnds(o) ==
   /\ Stamp("C")
   /\ Emit
   /\ legacy' = FALSE
-  /\ UNCHANGED <<retries, cRuns, cCkpts, spawned, memo, second, redelivered, purging>>
+  /\ UNCHANGED <<retries, cRuns, cCkpts, spawned, memo, named, second, redelivered, purging>>
 
 \* An older build ends C.  It stamps the row, writes no event, and wakes nobody.
 \* The deploy rule keeps it away from a registered wait, and LegacyEndWhileWaiting
@@ -277,7 +281,7 @@ LegacyEnds(o) ==
   /\ st' = [st EXCEPT !["C"] = o]
   /\ Stamp("C")
   /\ legacy' = TRUE
-  /\ UNCHANGED <<saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, second, redelivered, purging>>
+  /\ UNCHANGED <<saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, named, second, redelivered, purging>>
 
 \* A terminal failure of C or P that enters a saga.  The task stays live while it
 \* rolls back.  A failing run of P keeps the wake columns it carried.
@@ -285,6 +289,7 @@ EnterRollback(t) ==
   /\ t \in {"C", "P"} /\ st[t] = "live" /\ (t = "P" => Running("P"))
   /\ st' = [st EXCEPT ![t] = "rolling"]
   /\ carry' = [x \in Holders |-> IF x = t /\ carry[x] = "live" THEN "stuck" ELSE carry[x]]
+  /\ named' = [x \in Holders |-> IF x = t /\ named[x] = "live" THEN "stuck" ELSE named[x]]
   /\ UNCHANGED <<saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
 \* retry-task revives a failed task that began no saga.  Its checkpoints are
@@ -296,7 +301,7 @@ Revive(t) ==
   /\ retries' = [retries EXCEPT ![t] = @ + 1]
   /\ Stamp(t)
   /\ aw' = [x \in Holders |-> IF x = t /\ aw[x] # "resolved" THEN "idle" ELSE aw[x]]
-  /\ UNCHANGED <<saga, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<saga, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* A holder's await of C: P's from its memo, H's from the handle it was given.
 MayAwait(x) ==
@@ -307,13 +312,13 @@ MayAwait(x) ==
 AwaitHit(x) ==
   /\ MayAwait(x) /\ Present("C") /\ cEvent
   /\ aw' = [aw EXCEPT ![x] = "resolved"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* Register and sleep in one step, only on a live child with no event.
 AwaitMiss(x) ==
   /\ MayAwait(x) /\ IsLive("C") /\ ~cEvent
   /\ aw' = [aw EXCEPT ![x] = "waiting"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* C ended and nothing recorded it.  The await writes the event from C's row and
 \* answers as a hit, in one batch fenced on the stamp of the row it read.
@@ -322,49 +327,56 @@ AwaitMaterialize(x) ==
   /\ IF Lifted("materialize")
      THEN aw' = [aw EXCEPT ![x] = "reading"] /\ UNCHANGED cEvent
      ELSE cEvent' = TRUE /\ aw' = [aw EXCEPT ![x] = "resolved"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* Probe only: the materializing write as a batch of its own, fenced on nothing.
 MaterializeWrite(x) ==
   /\ aw[x] = "reading" /\ st[x] = "live"
   /\ cEvent' = TRUE /\ aw' = [aw EXCEPT ![x] = "resolved"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* C's task row is gone, so nothing will ever end the await: it is refused, and
 \* registers nothing.
 AwaitUnknown(x) ==
   /\ MayAwait(x) /\ st["C"] = "absent"
   /\ aw' = [aw EXCEPT ![x] = IF Lifted("await") THEN "waiting" ELSE "refused"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* P in another queue: its await of C is refused, whatever C's state.
 AwaitRefused ==
   /\ ParentQueue = "other" /\ Running("P") /\ aw["P"] = "idle" /\ memo
   /\ aw' = [aw EXCEPT !["P"] = "refused"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* The woken run is claimed, and its await returns the outcome parked on it.
 ClaimWoken(x) ==
   /\ st[x] = "live" /\ aw[x] = "woken"
   /\ aw' = [aw EXCEPT ![x] = "resolved"]
-  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, named, legacy, second, redelivered, purging>>
 
 \* A timed wait comes due, and the claim that finds it consumes the wait row.
+\* The claim leaves wake_event on the run, which names C's completion event with
+\* no outcome until the run suspends again or completes.  A run that already
+\* holds a stuck name keeps it.
 Timeout(x) ==
   /\ st[x] = "live" /\ aw[x] = "waiting"
   /\ aw' = [aw EXCEPT ![x] = "timedout"]
+  /\ named' = [named EXCEPT ![x] = IF @ = "stuck" THEN "stuck" ELSE "live"]
   /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, carry, legacy, second, redelivered, purging>>
 
-\* The run that carries C's outcome suspends again, which clears the columns.
+\* The run that carries C's outcome, or names its event, suspends again, which
+\* clears the columns.
 MoveOn(x) ==
-  /\ Running(x) /\ carry[x] = "live"
-  /\ carry' = [carry EXCEPT ![x] = "none"]
+  /\ Running(x) /\ (carry[x] = "live" \/ named[x] = "live")
+  /\ carry' = [carry EXCEPT ![x] = IF @ = "live" THEN "none" ELSE @]
+  /\ named' = [named EXCEPT ![x] = IF @ = "live" THEN "none" ELSE @]
   /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
 HolderCompletes(x) ==
   /\ Running(x)
   /\ st' = [st EXCEPT ![x] = "completed"]
   /\ carry' = [carry EXCEPT ![x] = IF @ = "live" THEN "none" ELSE @]
+  /\ named' = [named EXCEPT ![x] = IF @ = "live" THEN "none" ELSE @]
   /\ Stamp(x)
   /\ UNCHANGED <<saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
@@ -373,22 +385,27 @@ HolderFails(x) ==
   /\ Running(x)
   /\ st' = [st EXCEPT ![x] = "failed"]
   /\ carry' = [carry EXCEPT ![x] = IF @ = "live" THEN "stuck" ELSE @]
+  /\ named' = [named EXCEPT ![x] = IF @ = "live" THEN "stuck" ELSE @]
   /\ Stamp(x)
   /\ UNCHANGED <<saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
-\* An attempt of the holder that carries C's outcome fails and is retried.  The
-\* failed run keeps the columns, and its successor carries them on.
+\* An attempt of the holder that carries C's outcome, or names its event, fails
+\* and is retried.  The failed run keeps the columns, and its successor carries
+\* them on.
 HolderAttemptFails(x) ==
-  /\ Running(x) /\ carry[x] = "live"
-  /\ carry' = [carry EXCEPT ![x] = "stuck"]
+  /\ Running(x) /\ (carry[x] = "live" \/ named[x] = "live")
+  /\ carry' = [carry EXCEPT ![x] = IF @ = "live" THEN "stuck" ELSE @]
+  /\ named' = [named EXCEPT ![x] = IF @ = "live" THEN "stuck" ELSE @]
   /\ UNCHANGED <<st, saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
-\* Cancelling a holder deletes its wait rows.  Its runs keep the columns they carried.
+\* Cancelling a holder deletes its wait rows.  Its runs keep the columns they
+\* carried, and a run parked on C keeps wake_event naming C's event.
 HolderCancelled(x) ==
   /\ IsLive(x)
   /\ st' = [st EXCEPT ![x] = "cancelled"]
   /\ aw' = [aw EXCEPT ![x] = IF @ \in {"waiting", "woken", "reading"} THEN "cancelled" ELSE @]
   /\ carry' = [carry EXCEPT ![x] = IF @ = "live" THEN "stuck" ELSE @]
+  /\ named' = [named EXCEPT ![x] = IF @ = "live" \/ aw[x] = "waiting" THEN "stuck" ELSE @]
   /\ Stamp(x)
   /\ UNCHANGED <<saga, retries, cRuns, cCkpts, cEvent, spawned, memo, legacy, second, redelivered, purging>>
 
@@ -397,7 +414,7 @@ FinishSaga ==
   /\ st["P"] = "rolling"
   /\ st' = [st EXCEPT !["P"] = "failed"] /\ saga' = [saga EXCEPT !["P"] = TRUE]
   /\ Stamp("P")
-  /\ UNCHANGED <<retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, named, legacy, second, redelivered, purging>>
 
 \* B1, the policy's half: the task is in a state the policy names.
 Admitted(t) ==
@@ -426,13 +443,13 @@ PurgeChild ==
   /\ IF Lifted("whole")
      THEN purging' = TRUE /\ UNCHANGED st
      ELSE st' = [st EXCEPT !["C"] = "absent"] /\ UNCHANGED purging
-  /\ UNCHANGED <<saga, age, retries, spawned, memo, aw, carry, legacy, second, redelivered>>
+  /\ UNCHANGED <<saga, age, retries, spawned, memo, aw, carry, named, legacy, second, redelivered>>
 
 \* Probe only: the task row, deleted by a second batch after the rest of the unit.
 PurgeRow ==
   /\ purging
   /\ st' = [st EXCEPT !["C"] = "absent"] /\ purging' = FALSE
-  /\ UNCHANGED <<saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, legacy, second, redelivered>>
+  /\ UNCHANGED <<saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, named, legacy, second, redelivered>>
 
 \* The parent's or the third party's own unit.  Nothing here awaits either of
 \* them, and neither was spawned by a task, so B1 is their whole barrier.  Their
@@ -443,6 +460,7 @@ PurgeHolder(x) ==
   /\ Aged(x)
   /\ st' = [st EXCEPT ![x] = "absent"]
   /\ carry' = [carry EXCEPT ![x] = "none"]
+  /\ named' = [named EXCEPT ![x] = "none"]
   /\ memo' = (memo /\ x # "P")
   /\ UNCHANGED <<saga, age, retries, cRuns, cCkpts, cEvent, spawned, aw, legacy, second, redelivered, purging>>
 
@@ -450,7 +468,7 @@ PurgeHolder(x) ==
 Tick ==
   /\ \E t \in Tasks : Present(t) /\ age[t] < Window
   /\ age' = [t \in Tasks |-> IF Present(t) /\ age[t] < Window THEN age[t] + 1 ELSE age[t]]
-  /\ UNCHANGED <<st, saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, legacy, second, redelivered, purging>>
+  /\ UNCHANGED <<st, saga, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, carry, named, legacy, second, redelivered, purging>>
 
 Next ==
   \/ Enqueue \/ Redeliver \/ PSpawn \/ PMemo
@@ -489,6 +507,7 @@ TypeOK ==
   /\ spawned \in BOOLEAN /\ memo \in BOOLEAN
   /\ aw \in [Holders -> AwaitStates]
   /\ carry \in [Holders -> {"none", "live", "stuck"}]
+  /\ named \in [Holders -> {"none", "live", "stuck"}]
   /\ legacy \in BOOLEAN /\ second \in BOOLEAN /\ redelivered \in BOOLEAN
   /\ purging \in BOOLEAN
 
@@ -525,6 +544,14 @@ NoStrandedWaiter == \A x \in Holders : aw[x] = "waiting" => Present("C")
 \* A run that carries C's outcome still has the event it was parked from.  Twin:
 \* the invariant library's payload/event-missing condition (wake-payload-mismatch).
 CarrierKeepsEvent == \A x \in Holders : carry[x] # "none" => cEvent
+
+\* A run that names C's completion event with no outcome parked on it keeps C's
+\* unit: a timed-out await's run until it suspends again or completes, and a
+\* failed or cancelled one until its holder's unit goes.  A failed holder can be
+\* revived in place by retry-task and replay its await, and a cancelled one is
+\* inspected.  Twin: the barrier grid's holder leg, a run naming the completion
+\* event in any state (PR5.2c2).
+NameCarrierKeepsChild == \A x \in Holders : named[x] # "none" => Present("C")
 
 \* retry-task revives C only with its whole unit, so the revived task finds every
 \* memo it wrote and runs no step again.  Twin: the purge label's crash-before,
