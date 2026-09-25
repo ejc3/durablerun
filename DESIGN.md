@@ -5509,6 +5509,92 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   - A task the sweeps fail at an infrastructure cap ROLLS BACK like any other
     terminal failure.
 
+### 3.11 The operator CLI
+
+`packages/cli` is the operator's tool: one command, `pnpm cli <verb>`, which runs
+`node --import tsx packages/cli/bin/durablerun.ts` and loads no `.env` file. The package
+is private at version 0.0.0 with no `bin` field, so nothing here is published and
+`scripts/package-smoke.sh` skips it. `main(argv, env, io, ids, clock)` in `src/main.ts` is
+the whole CLI with everything it touches handed in, and the bin hands it the process's
+arguments, environment and streams. No command reads the clock.
+
+**The command table.** `src/commands.ts` holds one entry for each command: its arguments
+and flags, whether it opens a store and whether it writes, what running it again does
+after its answer was lost (`read` prints the state it finds as of that read, `resumes`
+carries on from where the first run stopped), each port call it makes with every batch
+label that call can send, the exit codes it gives, and the exit a fault at each of its
+batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
+table. The commands so far are `help`, `doctor`, `migrate`, `result` and `checkpoints`.
+
+**Transport.** Every command but `help` opens a store directly, from
+`DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs one.
+There is no fallback to any other variable. `src/open-store.ts` picks the store by the
+URL's scheme: `file:`, `:memory:`, `libsql:`, `https:` and `wss:` open libSQL,
+`postgres:` and `postgresql:` PostgreSQL, and `mysql:` MySQL. It is the one file of the
+CLI that imports a store package, which biome's `noRestrictedImports` holds with an
+override for that file, and it returns ports narrowed to the calls a command may make,
+never an executor: the fake clock's setter and `claim` cannot be written. A database
+credential is full admin: it bypasses section 3.5's hosted authorization port, which
+decides only the hosted routes' four operations, and the rows it reaches hold params,
+checkpoints and event payloads in plaintext (section 3.5, observability).
+
+**Safety defaults.** Each store package exports `READABLE_SCHEMA_WINDOW`, the schema
+versions its reads accept: 5 to the current version for libSQL, because the release
+alpha.1 migrated its databases to version 5 and no later version adds a column a read
+selects, and the current version alone for PostgreSQL and MySQL, which were never
+released. Every read checks the recorded version against that window before anything
+else, and exits 5 for a database that is not initialized, older than the window, or
+recorded past the build's newest version, which a newer build migrated. A read never
+migrates, sends only read batches, and refuses a `file:` URL that names no file before a
+client opens, because a libSQL client creates the file it is pointed at. `migrate` is the
+only command that changes the schema. It must name its store again with `--target`, the
+URL's host with its port or the path of a `file:` URL, and a mismatch exits 2 before
+anything is opened. Without `--yes` it prints the versions it would apply and exits 2
+with `confirmation-required`. Before a version that holds the writer for long on a large
+table, version 10 today, it prints a warning. With `--yes` it prints each version
+applied. `--queue` and `--target` are read from the arguments only.
+
+**Redaction.** A value a user wrote prints as its byte length and sha256, and its text
+prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
+completed result, a failure reason the task's code wrote, a failed rollback's error, and
+an idempotency key. The four failure reasons the engine writes print by name
+(`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`). Task
+ids, task names, event names, checkpoint names and queue names print. A store's own error
+message prints only with `--reveal`, because a driver can quote a stored value in it; a
+port's refusal names only what the caller passed, and prints.
+
+**Output.** Human text by default, one `name: value` line for each field. With `--json`
+one JSON document with every object's keys in code point order, which is the same on
+every dialect apart from the object under `dialect`: the URL scheme and the store's
+schema window.
+
+**Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
+same table, which a test holds equal to this one.
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 0 | done | the command did what it says |
+| 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal |
+| 2 | usage | usage, confirmation-required or target-mismatch; nothing was changed |
+| 3 | refused | the engine refused the call, and says why |
+| 4 | unauthorized | unauthenticated or forbidden |
+| 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
+| 6 | unavailable | the store is unavailable; safe to repeat |
+| 7 | permanent | the store answered with a permanent error |
+| 8 | not-found | no such task in the queue |
+| 9 | found | stuck --fail-if-any found rows |
+
+Exit 6 is safe to repeat for every command. For a read that holds because a read changes
+nothing. For `migrate` it holds because each version's write is fenced by the version
+before it, and after a failed version write the admin reads the version again and carries
+on when the write landed, so a lost answer to a version write the store committed ends in
+0 and a rerun resumes from the version reached. The CLI's fault surface
+(`packages/cli/test/fault-surface.test.ts`) meets every batch every store command sends
+with an outage before it, a lost answer after it, and a second copy of it, on each
+dialect, and requires the exit the table declares, a state that is either the state
+before the command or the one a run without a fault leaves, and a repeat that ends at the
+second.
+
 ## 4. What "ticks" mean here — direct answers to the original questions
 
 - **How do ticks drive workflows?** A tick is one pass of the driver: sweep

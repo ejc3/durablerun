@@ -324,10 +324,15 @@ const checkpoints: Handler = async ({ invocation, store, reveal }) => {
   const queue = invocation.strings.queue ?? ''
   const taskId = invocation.args.taskId ?? ''
   const shown = invocation.strings.attempt
-  if (shown !== undefined && !/^[1-9][0-9]*$/.test(shown)) {
+  if (shown !== undefined && !(/^[1-9][0-9]*$/.test(shown) && Number(shown) <= MAX_RUN_ORDINAL)) {
     return {
       exit: 'usage',
-      view: { error: { kind: 'usage', message: '--attempt takes a whole number from 1' } },
+      view: {
+        error: {
+          kind: 'usage',
+          message: `--attempt takes a whole number from 1 to ${MAX_RUN_ORDINAL}`,
+        },
+      },
     }
   }
   const version = await readableVersion(store)
