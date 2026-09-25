@@ -83,21 +83,30 @@ met only when its receipt exists and line 44's checker accepts it.
     tarballs and checked against the sha256 values in
     scripts/published-surface-v0.1.0-alpha.1.json, run a spawn, claim, complete,
     emit and await cycle through alpha.1's LibsqlSchedulerStore on a libSQL file
-    that `pnpm cli migrate --yes` took to each version from 5 to the build's,
-    and `result` reads what alpha.1 wrote exactly as alpha.1's own getTaskResult
-    does. Red: a planted migration that adds a NOT NULL column with no default
-    fails the alpha.1 cycle by name. NOT MET: no CLI package exists.
+    that `pnpm cli migrate --yes --target <its path>` took to each version from
+    5 to the build's, and `result` reads what alpha.1 wrote exactly as alpha.1's
+    own getTaskResult does. Red: a planted migration that adds a NOT NULL column
+    with no default fails the alpha.1 cycle by name. NOT MET: no CLI package
+    exists.
 33. PR5.3a (extended by every later PR that adds a command): nothing
-    user-authored prints without `--reveal`. A sentinel planted in a task's
-    params and headers, a checkpoint's state, an event payload, a completed
-    result, a user-authored failure reason, an idempotency key and a step key
-    that a rollback halt's message embeds appears in no stdout or stderr of any
-    command, in human text or `--json`, and a key prints as its length and
-    sha256. The four engine-authored failure reasons (`$ClaimTimeout`,
-    `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`) do print,
-    and so do the two SDK-authored rollback halt names, `$SagaStateCorrupt` and
-    `$RollbackNotRegistered`, whose messages print with the user-authored step
-    keys they embed redacted. A test walks the command table and fails for any
+    user-authored and no store credential prints without `--reveal`. A sentinel
+    planted in a task's params and headers, a checkpoint's state, an event
+    payload, a completed result, a user-authored failure reason, a failed
+    rollback's error (one named like an SDK halt among them), an idempotency
+    key, a password and a token in the store URL, and the token in
+    DURABLERUN_STORE_TOKEN appears in no stdout or stderr of any command, in
+    human text or `--json`, and a key prints as its length and sha256. The same
+    check holds for every fault case of line 34, every refusal, a URL that does
+    not parse, a store client that refuses the URL, and an error that reaches
+    the bin's last catch. The four failure reasons the engine writes
+    (`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`,
+    `$Cancelled`) print by name when the stored reason equals core's constant
+    byte for byte. A failed rollback's error is redacted whole, since a rollback
+    that throws an error named like an SDK halt is stored in the same shape as
+    the halt, and its name prints only when it equals `$SagaStateCorrupt` or
+    `$RollbackNotRegistered`, the two halt names the SDK writes. Task ids, task
+    names, event names and checkpoint names print, and so do the step keys a
+    checkpoint name holds. A test walks the command table and fails for any
     command that has no sentinel case. Red: removing redaction from one renderer
     fails that command's case by name. NOT MET.
 34. PR5.3a (extended by every later PR that adds a command): the CLI has its own
@@ -106,20 +115,25 @@ met only when its receipt exists and line 44's checker accepts it.
     labels, and each call runs on the three dialects under three faults injected
     at the executor, as the CLI sees it: crash-before (the executor rejects with
     StoreUnavailableError before the batch is sent), crash-after (it rejects
-    after the batch commits) and duplicate (it delivers the batch twice). The
-    command table declares exit 6 for the first two and the exit of a clean run
-    for duplicate, and each case exits as the table declares. It is a CLI-level
-    injection, not SimWorld's SimCrash. After each case, running the same
-    command again reaches the state one successful run leaves, compared as a
-    dump of every table, and prints the state it finds as of that read: a
-    repeated `cancel` reports the task cancelled, and a repeated `retry` reports
-    the pending run it finds. Exit 6 (store unavailable) is declared safe to
-    repeat for every verb, which holds because `enqueue` requires `--key`;
-    `selftest` refuses a queue that already holds tasks, so the table gives it
-    its own repeat class, a fresh queue for each run. Red in PR5.3a: a read verb
-    that maps a StoreUnavailableError to exit 0 fails its crash-before case. Red
-    in PR5.3d: making `--key` optional fails the enqueue crash-after case by
-    name, with two tasks in the dump. NOT MET.
+    after the batch commits) and duplicate (it delivers the batch twice and
+    resolves with the second delivery's result, as SimWorld does). The command
+    table declares exit 6 for the first two and the exit of a clean run for
+    duplicate, and each case exits as the table declares. It is a CLI-level
+    injection, not SimWorld's SimCrash. A duplicated `retry` sees null from its
+    second delivery, so `retry` tells its own revival from a refusal by a read
+    before the write. Exit 6 (store unavailable) means the outcome is unknown,
+    since the write may have committed. After each case, for every verb but
+    `selftest`, running the same command again reaches the state one successful
+    run leaves, compared as a dump of every table, and prints the state it finds
+    as of that read: a repeated `cancel` reports the task cancelled, and a
+    repeated `retry` reports the pending run it finds. This is why exit 6 is
+    declared safe to repeat for every verb but `selftest`, and it holds because
+    `enqueue` requires `--key`. `selftest` refuses a queue that already holds
+    tasks, so its repeat class is a fresh run on a fresh queue, judged by that
+    run's own output and not by the dump. Red in PR5.3a: a read verb that maps a
+    StoreUnavailableError to exit 0 fails its crash-before case. Red in PR5.3d:
+    making `--key` optional fails the enqueue crash-after case by name, with two
+    tasks in the dump. NOT MET.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -254,9 +268,10 @@ met only when its receipt exists and line 44's checker accepts it.
     `sweep:claim-timeout`), with the cases generated from that list so that a
     terminal label added later is covered, a batch that ends the task sets
     `tasks.fence_at_ms` to the ending instant, and no label's cell from a
-    terminal pre-state moves it. `engineHistoryViolations` gains two conditions:
-    a live or revivable task's `$spawn` memo names an existing task, and a wait
-    on a completion event has its task or its event. Each condition has a
+    terminal pre-state moves it, apart from `retry-task`, which revives a failed
+    task and restarts its age. `engineHistoryViolations` gains two conditions: a
+    live or revivable task's `$spawn` memo names an existing task, and a wait on
+    a completion event has its task or its event. Each condition has a
     raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
     terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
     a path exists today, its fix lands in this PR as its own red-then-green
@@ -340,39 +355,43 @@ met only when its receipt exists and line 44's checker accepts it.
     reschedule path, and an await nobody emits), and the run purges. alpha.1
     completes the tasks the CLI spawned, `explain` names each planted cause on
     rows alpha.1 wrote, and the purged set is non-empty, holds at least one unit
-    of each terminal state alpha.1 reached, and equals line 42's oracle. The run
-    gets past the `purge` verb's refusal under an active fake clock and core's
-    3,600 second floor by purging through the same core entry the verb calls,
-    under a test-only policy, named as such, that no verb can select. `pnpm cli
-    selftest` sends every batch label the command table can send, which an
-    executor spy compares against the table, including a `purgeUnit` of its own
-    young unit that the barrier refuses, and it refuses a queue that already
-    holds tasks. The receipt checker in apps/dogfood/src/receipt.ts accepts one
-    well-formed week receipt and refuses each of these by name: 6 days between
-    first and last snapshot; a missing daily snapshot; a `sizes` count one row
-    over the bound; fewer than 160 of 168 periods found; a sealed hash that does
-    not match the sha256 of the injected task id, cause and nonce; an operator
-    explanation that names a different cause than the seal; a week with no
-    `purge --execute` per day; and a receipt with no selftest record. The bound
-    for each counted table is the start sample's count, plus (the completed
-    window in hours plus 25) times the rows per digest unit that line 43's soak
-    measured for this task's shape, plus the rows of the failed units the
-    dry-run purge reports kept. A period counts as found from the union of the
-    per-day `purge --execute` reports, which carry each removed unit's key
-    sha256, and live `taskIdByKey` lookups, and a fixture that drops one day's
-    purge report fails the period count. Red: each doctored fixture exits
-    non-zero and the well-formed one exits zero. NOT MET.
+    of each terminal state alpha.1 reached, and equals line 42's oracle. alpha.1
+    runs under a fake clock set further in the past than the purge windows,
+    which alpha.1 honours because its clock reads the same `fake_now_ms` meta
+    row. The run then clears the clock and purges with the `purge` verb and
+    `--execute` under windows of at least 3,600 seconds, so the verb and its
+    report run on rows alpha.1 wrote. `pnpm cli selftest` sends every batch
+    label the command table can send, which an executor spy compares against the
+    table, including a `purgeUnit` of its own young unit that the barrier
+    refuses, and it refuses a queue that already holds tasks. The receipt
+    checker in apps/dogfood/src/receipt.ts accepts one well-formed week receipt
+    and refuses each of these by name: 6 days between first and last snapshot; a
+    missing daily snapshot; a `sizes` count one row over the bound; fewer than
+    160 of 168 periods found; a sealed hash that does not match the sha256 of
+    the injected task id, cause and nonce; an operator explanation that names a
+    different cause than the seal; a week with no `purge --execute` per day; and
+    a receipt with no selftest record. The bound for each counted table is the
+    start sample's count, plus (the completed window in hours plus 25) times the
+    rows per digest unit that line 43's soak measured for this task's shape,
+    plus the rows of the failed units the dry-run purge reports kept. A period
+    counts as found from the union of the per-day `purge --execute` reports,
+    which carry each removed unit's key sha256, and live `taskIdByKey` lookups,
+    and a fixture that drops one day's purge report fails the period count. Red:
+    each doctored fixture exits non-zero and the well-formed one exits zero. NOT
+    MET.
 
 **Receipt M1 (the maintainer's, outside the exit test):** a week of at least 168
 hours on the deployed alpha. Before the week, `pnpm cli selftest` passes on a
 branch or snapshot of the production database, and its output goes in the
 receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
-digest-<period> --queue digest --target <host>` hourly, on a queue of its own,
-and `purge --execute` runs at least daily under the maintainer's policy. `stats
---json --queue digest` and `sizes --json --queue digest` are recorded at the
-start, once a day and at the end, each at or below line 44's bound. A second
-person injects one cause (an unregistered task name, or an await nobody emits)
-and publishes the sha256 of its task id, cause and a nonce before the operator
+digest-<period> --queue digest --target <host>` hourly, on a queue of its own
+that the redeployed host drives, and `pnpm cli purge --queue digest --target
+<host> --completed-after <window> --cancelled-after <window> --execute --yes`
+runs at least daily with the windows of the maintainer's policy. `stats --json
+--queue digest` and `sizes --json --queue digest` are recorded at the start,
+once a day and at the end, each at or below line 44's bound. A second person
+injects one cause (an unregistered task name, or an await nobody emits) and
+publishes the sha256 of its task id, cause and a nonce before the operator
 starts, and the maintainer attests that ordering, since the checker can prove
 only the hash. The operator, holding the CLI and the store URL, finds the cause
 with `stuck --older-than`, names it with `explain`, and clears it, adding
@@ -392,15 +411,19 @@ PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
 PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
-PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer approves the two
-contract changes of DESIGN.md section 3.12, and PR5.3c does not merge before the
-maintainer approves the `enqueue_at_ms` plan-reader gate change. If a contract
-change is refused, a docs pull request first rewrites lines 40, 42, 43 and 44 so
-that purge keeps every unit whose idempotency key may be presented again (the
-first change refused) or whose handle may still be awaited (the second); if the
-gate change is refused, `stuck --older-than` leaves line 37, and line 39's
-script, line 44's run and receipt M1 are handed the task ids of the
-never-started and awaiting causes, which no clock leg holds.
+PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer decides on the
+two contract changes of DESIGN.md section 3.12, PR5.3c does not merge before the
+maintainer decides on the `enqueue_at_ms` plan-reader gate change, and PR5.2c2
+does not merge before the maintainer decides on the `fence_at_ms` one. A refusal
+is met by a docs pull request that first rewrites the lines it touches. If a
+contract change is refused, that pull request rewrites lines 40, 42, 43 and 44
+so that purge keeps every unit whose idempotency key may be presented again (the
+first change refused) or whose handle may still be awaited (the second). If the
+`enqueue_at_ms` change is refused, it rewrites lines 37, 39 and 44 and receipt
+M1: `stuck --older-than` leaves line 37, and line 39's script, line 44's run and
+receipt M1 are handed the task ids of the never-started and awaiting causes,
+which no clock leg holds. If the `fence_at_ms` change is refused, it rewrites
+line 42 before PR5.2c2 merges.
 
 **Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
 and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
@@ -441,13 +464,16 @@ purge mutant that survives the existing checks.
 the maintainer has, and no PR of this milestone makes it. Supply: a Turso
 database URL and token for the deployed alpha and a branch or snapshot of it for
 the selftest (ideally a read-only token too, which the repository cannot show
-Turso mints), the Vercel project and its CRON_SECRET with one redeploy of the
-example app with `periodic-digest` registered, the repository variable and
-secrets for the week's workflow, a second person for the sealed injection, and a
-calendar week. The migration of the deployed database: the CLI migrates it with
-the alpha.1 host left running, only after line 32's harness is green at the
-build's version, after a snapshot or branch on which `pnpm cli selftest` ran, in
-a quiet window with the finding query from the version 10 comment in
+Turso mints), the Vercel project and its CRON_SECRET with the example app
+redeployed once with `periodic-digest` registered and run with
+`DURABLERUN_QUEUE` set to `digest`, since a host drives only the one queue that
+variable names (so the build runs as a second deployment, unless the maintainer
+moves the alpha's own queue), the repository variable and secrets for the week's
+workflow, a second person for the sealed injection, and a calendar week. The
+migration of the deployed database: the CLI migrates it with the alpha.1 host
+left running, only after line 32's harness is green at the build's version,
+after a snapshot or branch on which `pnpm cli selftest` ran, in a quiet window
+with the finding query from the version 10 comment in
 packages/store-libsql/src/schema.ts run first (crossing version 10 held the
 libSQL writer 14.9 seconds on a cold 4.5 GB file, and under half a second with
 no call failing when that query ran first under no write lock), with a dry-run
@@ -473,23 +499,28 @@ adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
 PR5.2c2, and a third if `sizes` falls back to a text statement. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
-`--target` on every write and loads no `.env`, and the alternative, hosted
-operator routes with their own credential, is a non-goal here. Whether to type a
-store authentication failure apart from an outage: today a rejected password or
-token reaches the caller as a StoreUnavailableError, so under the plan it exits
-6, which the table calls safe to repeat, while the table reserves exit 4 for
+`--target` on every write that opens a store and loads no `.env`, and the
+alternative, hosted operator routes with their own credential, is a non-goal
+here. Whether to type a store authentication or authorization failure apart from
+an outage: today a rejected password or token reaches the caller as a
+StoreUnavailableError, so under the plan it exits 6, which the table calls safe
+to repeat, and a forbidden write reaches the caller as a PermanentStoreError on
+PostgreSQL and MySQL (SQLSTATE class 42) and, by the libSQL executor's map, as a
+StoreUnavailableError on libSQL, while the table reserves exit 4 for
 unauthenticated or forbidden. Decisions the plan made that the maintainer may
 reverse: `purge` is a dry run unless `--execute`, with required windows and no
-defaults; `enqueue` requires `--key`; every write requires `--target`, and
-`--queue` comes from argv only, with no TURSO_* or DURABLERUN_QUEUE fallback;
-suggestions never carry `--yes`, and `explain` never suggests `emit`;
-never-started tasks and untimed awaits are `waiting`, not `stuck`; `cancel` on a
-saga needs `--halt-rollback`; idempotency keys and user-authored failure text
-are redacted like other user values, while task ids, task names and event names
-print; each new port is one core implementation reached through store factories;
-`sizes` counts one queue; only `tick` uses HTTP; the week's workflow is one task
-per period produced by an external cron; a failed parent keeps its children in
-this first release; and there is no operator audit trail.
+defaults; `enqueue` requires `--key`; every write that opens a store requires
+`--target`, and `--queue` comes from argv only, with no TURSO_* or
+DURABLERUN_QUEUE fallback; suggestions never carry `--yes`, and `explain` never
+suggests `emit`; never-started tasks and untimed awaits are `waiting`, not
+`stuck`; `cancel` on a saga needs `--halt-rollback`; idempotency keys,
+user-authored failure text and every failed rollback's error, an SDK halt's
+included, are redacted like other user values, while task ids, task names, event
+names, checkpoint names and the step keys they hold print; each new port is one
+core implementation reached through store factories; `sizes` counts one queue;
+only `tick` uses HTTP; the week's workflow is one task per period produced by an
+external cron; a failed parent keeps its children in this first release; and
+there is no operator audit trail.
 
 ## Completed milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
 
