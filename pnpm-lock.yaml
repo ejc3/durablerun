@@ -42,6 +42,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/store-libsql
 
+  packages/cli:
+    dependencies:
+      '@durablerun/core':
+        specifier: workspace:*
+        version: link:../core
+      '@durablerun/store-libsql':
+        specifier: workspace:*
+        version: link:../store-libsql
+      '@durablerun/store-mysql':
+        specifier: workspace:*
+        version: link:../store-mysql
+      '@durablerun/store-postgres':
+        specifier: workspace:*
+        version: link:../store-postgres
+    devDependencies:
+      '@durablerun/conformance':
+        specifier: workspace:*
+        version: link:../conformance
+
   packages/conformance:
     dependencies:
       '@durablerun/core':

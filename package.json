@@ -9,6 +9,7 @@
   "packageManager": "pnpm@10.29.1",
   "scripts": {
     "build": "pnpm --filter './packages/*' -r --if-present run build",
+    "cli": "node --import tsx packages/cli/bin/durablerun.ts",
     "dogfood:start": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts start",
     "dogfood:tick": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts tick",
     "dogfood:status": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts status",
