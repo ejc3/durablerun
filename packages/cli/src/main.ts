@@ -22,6 +22,7 @@ import { EXITS, type ExitName, exitCode } from './exit.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
+  type SchemaWindow,
   type StoreOpener,
   StoreUrlError,
   openStore,
@@ -217,9 +218,27 @@ function help(json: boolean): Answer {
   }
 }
 
-/** The recorded schema version. */
+/** Why a database's recorded schema version is one the store's reads do not accept, or null. */
+function windowProblem(version: number, window: SchemaWindow): string | null {
+  if (version === 0) return 'the database is not initialized; migrate initializes it'
+  if (version > window.newest) {
+    return `the schema is recorded at version ${version}, and this build reads versions ${window.oldest} to ${window.newest}: a newer build migrated this database, so use that build or a later one`
+  }
+  if (version < window.oldest) {
+    return `the schema is recorded at version ${version}, and this build reads versions ${window.oldest} to ${window.newest}: migrate it first`
+  }
+  return null
+}
+
+/** The recorded schema version when the store's reads accept it, or the answer that refuses. */
 async function readableVersion(store: OpenedStore): Promise<number | Answer> {
-  return store.admin.schemaVersion()
+  const version = await store.admin.schemaVersion()
+  const problem = windowProblem(version, store.window)
+  if (problem === null) return version
+  return {
+    exit: 'schema',
+    view: { recordedSchemaVersion: version, error: { kind: 'schema', message: problem } },
+  }
 }
 
 const doctor: Handler = async ({ invocation, store }) => {
@@ -247,6 +266,13 @@ const SLOW_VERSIONS: Readonly<Record<number, string>> = Object.freeze({
 
 const migrate: Handler = async ({ invocation, store, note }) => {
   const from = await store.admin.schemaVersion()
+  if (from > store.window.newest) {
+    const problem = windowProblem(from, store.window)
+    return {
+      exit: 'schema',
+      view: { recordedSchemaVersion: from, error: { kind: 'schema', message: problem } },
+    }
+  }
   const plan: number[] = []
   for (let version = from + 1; version <= store.window.newest; version++) plan.push(version)
   if (plan.length === 0) {
