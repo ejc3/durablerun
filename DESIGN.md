@@ -5641,7 +5641,7 @@ PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
 
 | Property | What it says | Executable twin |
 |---|---|---|
-| `WholeUnit` | a unit is whole or gone | `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2) |
+| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2); for a task row with no run: a condition PR5.2c1 adds |
 | `PurgeOnlyDeadAndOld` | only a task in a policy state, a window old, is purged | the barrier grid's state and age legs (PR5.2c2) |
 | `ReplayableParentKeepsChild` | a parent that can still run finds its child | a live or revivable task's `$spawn` memo names an existing task (PR5.2c1), and the consequence oracle (PR5.2c2) |
 | `NoStrandedWaiter` | a wait on a completion event has its task | a wait on a completion event has its task or its event (PR5.2c1) |
@@ -5651,6 +5651,16 @@ PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
 | `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
 | `TypeOK` | the variables keep their types | none needed |
+
+`WholeUnit` has two halves, and the invariant library holds one of them today:
+no run, checkpoint, wait, or completion event outlives its task. The other half,
+a terminal task row whose runs were deleted, has no executable twin yet. The
+library flags a task with no run only while the task is live, and its accounting
+conditions skip a task with no run, so a purge that deleted the runs,
+checkpoints, and event but kept the task row would pass `engineHistoryViolations`.
+PR5.2c1 adds the condition that every task row has a run, as issue #103 records.
+The condition holds today, because every task is inserted with its first run and
+nothing deletes a run.
 
 Each mutant in `specs/Retention.mutants.json` deletes or bends one guard of the
 barrier or the batch and is caught by the property it names, and each probe

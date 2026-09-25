@@ -517,10 +517,12 @@ TypeOK ==
   /\ purging \in BOOLEAN
 
 \* The unit is whole or gone: a task row has its runs and its checkpoints' owner,
-\* and no run, checkpoint, or completion event outlives the task row.  Twin: the
-\* invariant library's run-owner-missing, checkpoint-owner-run-missing, and
-\* wait-run-missing conditions, and the contest's rule that every completion
-\* event names an existing task.
+\* and no run, checkpoint, or completion event outlives the task row.  Twin, for
+\* the rows that outlive their task: the invariant library's run-owner-missing,
+\* checkpoint-owner-run-missing, and wait-run-missing conditions, and the
+\* contest's rule that every completion event names an existing task.  The other
+\* half, a task row whose runs were deleted, has no twin yet: the library flags
+\* a task with no run only while it is live.  PR5.2c1 adds that condition.
 WholeUnit ==
   IF Present("C") THEN cRuns /\ cCkpts ELSE ~cRuns /\ ~cCkpts /\ ~cEvent
 
