@@ -190,7 +190,7 @@ export async function storeTarget(url: string): Promise<string> {
     const file = fileUrlPath(url)
     if (file === undefined || file.rest.startsWith('#')) {
       throw new StoreUrlError(
-        'a file: URL must name a database file by a path that percent-decodes, with no fragment: encode a # in a file name as %23, a ? as %3F and a % as %25',
+        'a file: URL must name a database file by a path that percent-decodes, holds no :memory:, and has no fragment: encode a # in a file name as %23, a ? as %3F and a % as %25. The whole URL :memory: names a database held in memory',
       )
     }
     return file.path

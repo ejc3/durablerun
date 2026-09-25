@@ -5567,7 +5567,8 @@ do on every connection, so a read of a file in rollback-journal mode leaves it i
 mode, and no row changes. The CLI reads a `file:` URL's path with store-libsql's own
 `fileUrlPath`, as the client reads it: percent-decoded and cut at the query, so the file
 it checks is the file the client opens; a fragment, which the client refuses, is
-refused. `migrate` is the only command that changes the schema. It must name its store
+refused, and so is a path that holds `:memory:`, which the store reads as no file (the
+whole URL `:memory:` names a database held in memory). `migrate` is the only command that changes the schema. It must name its store
 again with `--target`, the URL's host with its port or the decoded path of a `file:`
 URL, and a mismatch exits 2 before anything is opened, as does a write to a URL with no
 host, such as a socket URL, which `--target` cannot name. A store client that refuses

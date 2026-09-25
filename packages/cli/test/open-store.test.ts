@@ -90,6 +90,14 @@ describe('the store opener', () => {
     await expect(storeTarget('/var/data/db.sqlite')).rejects.toThrow(StoreUrlError)
     await expect(storeTarget('file:/var/data/a%zz.sqlite')).rejects.toThrow(StoreUrlError)
     expect(await storeTarget('file:/var/data/a%20b.sqlite')).toBe('/var/data/a b.sqlite')
+    // store-libsql reads a path that holds :memory: as no file, so the refusal names that.
+    for (const url of ['file::memory:', 'file::memory:?cache=shared']) {
+      const refusal = await storeTarget(url).then(
+        () => 'accepted',
+        (error: unknown) => (error instanceof StoreUrlError ? error.message : String(error)),
+      )
+      expect({ url, says: refusal.includes('holds no :memory:') }).toEqual({ url, says: true })
+    }
   })
 
   it("reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target", async () => {
