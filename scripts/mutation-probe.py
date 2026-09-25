@@ -17351,8 +17351,8 @@ MUTATION_SPECS.extend(
         (
             "cli-migrate-needs-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n",
-            "  if (false) { // MUTATION: migrate applies without --yes\n",
+            "  if (invocation.booleans.yes !== true) return confirmationRequired(from, plan)\n",
+            "  if (false) return confirmationRequired(from, plan) // MUTATION: migrate applies without --yes\n",
             "migrate changes the schema without --yes",
         ),
         (

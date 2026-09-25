@@ -131,6 +131,11 @@ export async function main(
     })
   } catch (error) {
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
+    // migrate without --yes, of a file that is not there yet: every version is planned, and
+    // nothing was opened or created.
+    if (error instanceof MissingDatabaseError && spec.verb === 'migrate') {
+      return emit(io, json, spec.verb, undefined, confirmationRequired(0, pending(0, error.window)))
+    }
     return emit(io, json, spec.verb, undefined, failure(error, reveal))
   }
   let answer: Answer
@@ -264,6 +269,28 @@ const doctor: Handler = async ({ invocation, store }) => {
   }
 }
 
+/** The versions this build has after `from`, in order. */
+function pending(from: number, window: SchemaWindow): number[] {
+  const plan: number[] = []
+  for (let version = from + 1; version <= window.newest; version++) plan.push(version)
+  return plan
+}
+
+/** migrate's answer without --yes: the versions it would apply, and nothing changed. */
+function confirmationRequired(from: number, plan: readonly number[]): Answer {
+  return {
+    exit: 'usage',
+    view: {
+      from,
+      wouldApply: plan,
+      error: {
+        kind: 'confirmation-required',
+        message: `migrate would apply versions ${plan.join(', ')}; run it again with --yes. Nothing was changed`,
+      },
+    },
+  }
+}
+
 const migrate: Handler = async ({ invocation, store, note }) => {
   const from = await store.admin.schemaVersion()
   if (from > store.window.newest) {
@@ -273,8 +300,7 @@ const migrate: Handler = async ({ invocation, store, note }) => {
       view: { recordedSchemaVersion: from, error: { kind: 'schema', message: problem } },
     }
   }
-  const plan: number[] = []
-  for (let version = from + 1; version <= store.window.newest; version++) plan.push(version)
+  const plan = pending(from, store.window)
   if (plan.length === 0) {
     return {
       exit: 'done',
@@ -287,19 +313,7 @@ const migrate: Handler = async ({ invocation, store, note }) => {
     const warning = store.notes[version]
     if (warning !== undefined) note(`warning: ${warning}`)
   }
-  if (invocation.booleans.yes !== true) {
-    return {
-      exit: 'usage',
-      view: {
-        from,
-        wouldApply: plan,
-        error: {
-          kind: 'confirmation-required',
-          message: `migrate would apply versions ${plan.join(', ')}; run it again with --yes. Nothing was changed`,
-        },
-      },
-    }
-  }
+  if (invocation.booleans.yes !== true) return confirmationRequired(from, plan)
   await store.admin.migrate()
   const to = await store.admin.schemaVersion()
   const applied = plan.filter((version) => version <= to)

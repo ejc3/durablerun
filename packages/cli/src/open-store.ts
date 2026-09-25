@@ -55,9 +55,18 @@ export class StoreUrlError extends Error {
   override readonly name = 'StoreUrlError'
 }
 
-/** A read named a database file that does not exist. Nothing was opened or created. */
+/**
+ * A command that may not create a database named a file that does not exist. Nothing was
+ * opened or created. It carries the store's window, so migrate can say what it would apply.
+ */
 export class MissingDatabaseError extends Error {
   override readonly name = 'MissingDatabaseError'
+  constructor(
+    message: string,
+    readonly window: SchemaWindow,
+  ) {
+    super(message)
+  }
 }
 
 interface Opened {
@@ -72,13 +81,14 @@ interface Opened {
 type Loader = (url: string, token: string | undefined, mayCreate: boolean) => Promise<Opened>
 
 const libsql: Loader = async (url, token, mayCreate) => {
+  const store = await import('@durablerun/store-libsql')
   const file = storeScheme(url) === 'file:' ? await storeTarget(url) : undefined
   if (!mayCreate && file !== undefined && !existsSync(file)) {
     throw new MissingDatabaseError(
       `no database file is at ${file}; migrate --yes creates and initializes one`,
+      store.READABLE_SCHEMA_WINDOW,
     )
   }
-  const store = await import('@durablerun/store-libsql')
   const executor = openedBy(() => store.LibsqlExecutor.open(url, token))
   return {
     executor,

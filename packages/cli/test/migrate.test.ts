@@ -1,3 +1,7 @@
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { openCliDb, recordingOpener, runCli } from './support.js'
 
@@ -24,6 +28,24 @@ describe('migrate on libSQL', () => {
       expect(run.stderr).toContain('version 10')
     } finally {
       await db.close()
+    }
+  })
+
+  it('without --yes, of a file that is not there yet, prints every version and creates nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-migrate-'))
+    try {
+      const file = join(dir, 'db.sqlite')
+      const run = await runCli(['migrate', '--target', file, '--json'], {
+        DURABLERUN_STORE_URL: `file:${file}`,
+      })
+      expect({ exit: run.exit, files: readdirSync(dir) }).toEqual({ exit: 2, files: [] })
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        error: { kind: 'confirmation-required' },
+        from: 0,
+        wouldApply: Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, index) => index + 1),
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
