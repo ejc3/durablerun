@@ -7,6 +7,20 @@
     "replace": "  /\\ Lifted(\"carry\")"
   },
   {
+    "name": "purge-holder-ignores-the-age",
+    "guard": "the parent's or the third party's unit is purged only once its stamp is a window old",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  /\\ Aged(x)\n",
+    "replace": ""
+  },
+  {
+    "name": "purge-holder-ignores-the-policy",
+    "guard": "the parent's or the third party's unit is purged only in a state the policy names",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  /\\ Admitted(x)\n",
+    "replace": ""
+  },
+  {
     "name": "purge-ignores-the-policy",
     "guard": "a unit is purged only in a state the policy names",
     "caughtBy": "PurgeOnlyDeadAndOld",
@@ -47,13 +61,6 @@
     "caughtBy": "ReplayableParentKeepsChild",
     "find": "{\"none\", \"absent\", \"completed\", \"cancelled\"}",
     "replace": "{\"none\", \"absent\", \"completed\", \"cancelled\", \"live\"}"
-  },
-  {
-    "name": "parent-must-be-purged-first",
-    "guard": "a completed or cancelled parent does not hold its children",
-    "caughtBy": "AgedUnblockedIsPurged",
-    "find": "{\"none\", \"absent\", \"completed\", \"cancelled\"}",
-    "replace": "{\"none\", \"absent\"}"
   },
   {
     "name": "purge-ignores-a-carrier",
@@ -103,6 +110,13 @@
     "caughtBy": "RevivalSeesWholeUnit",
     "find": "     ELSE st' = [st EXCEPT ![\"C\"] = \"absent\"] /\\ UNCHANGED purging",
     "replace": "     ELSE UNCHANGED <<st, purging>>"
+  },
+  {
+    "name": "purge-of-a-holder-leaves-its-carrier",
+    "guard": "a holder's runs go with its unit, and with them any outcome of the child they carried",
+    "caughtBy": "AgedUnblockedIsPurged",
+    "find": "  /\\ carry' = [carry EXCEPT ![x] = \"none\"]\n",
+    "replace": "  /\\ UNCHANGED carry\n"
   },
   {
     "name": "await-registers-on-a-purged-child",

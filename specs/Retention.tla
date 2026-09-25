@@ -22,10 +22,12 @@
 \*
 \* TIME.  Engine time is database time.  The barrier reads the time since a
 \* task's ending was stamped (tasks.fence_at_ms), so that is what the model
-\* keeps: each task's age in ticks, saturated at the window.  An age is reset by
-\* the batches the model has that write the task row, and it grows while a task
-\* is live too: the stamp of a task that sleeps for days is days old, which is
-\* why the barrier reads the state beside the age.
+\* keeps: each task's age in ticks, saturated at the window.  Every batch that
+\* ends a task resets its age, and so does retry-task.  A live task's other
+\* writes of its row (a park, the entry into a saga's rollback) stamp it in the
+\* SQL and do not reset its age here, which only makes a live task look older.
+\* The age grows while a task is live too: the stamp of a task that sleeps for
+\* days is days old, which is why the barrier reads the state beside the age.
 \*
 \* THE BARRIER.  A unit is purged only when every condition holds, read inside
 \* the purge batch's compare-and-set:
@@ -42,6 +44,18 @@
 \*  B4  no wait names the child's completion event;
 \*  B5  the spawning parent, looked up by its id in every queue, is absent,
 \*      completed, or cancelled.
+\*
+\* A SECOND COPY OF THE ENGINE'S ACTIONS.  Retention re-implements the engine
+\* actions a purge races rather than sharing them, as each side model does.
+\* PSpawn mirrors ChildTasks.tla's SpawnChild, ChildEnds its ChildTerminal,
+\* LegacyEnds its LegacyTerminal, Revive its ReviveChild (and Sagas.tla's
+\* Revive), AwaitHit, AwaitMiss, AwaitMaterialize, AwaitRefused, and
+\* AwaitUnknown its actions of the same names, ClaimWoken its ParentClaimWoken,
+\* Timeout its AwaitTimeout, and HolderCancelled its CancelParent.
+\* EnterRollback mirrors Sagas.tla's UserTerminal and InfraCap where they enter
+\* the rolling-back phase, and FinishSaga its FinishSaga.  A change to either
+\* model's await or wake can leave this copy behind with every model green:
+\* BUILD.md records that as an option with its trigger.
 \*
 \* WHAT THE SQL OWES THIS MODEL, beyond its actions:
 \*  - The purge is one batch, and it takes the event lock of the completion event
@@ -76,6 +90,18 @@
 \* a run of a kept task that failed or was cancelled while naming the child's
 \* completion event, with its outcome or with the name alone (such a run never
 \* clears the columns); and a wait an older build left stranded.  AgedUnblockedIsPurged says nothing else does.
+\*
+\* TWO PARTS OF B5 THAT NO PROPERTY HOLDS, on purpose, so no mutant names them:
+\*  - B5 keeps the children of a parent that is rolling back or failed with a
+\*    saga.  Neither reads its child again (retry-task refuses a task whose saga
+\*    began), and admitting both stays green on every configuration.  The first
+\*    release keeps the stricter rule, which stays right if a saga ever becomes
+\*    revivable.
+\*  - B5 admits a completed or cancelled parent.  A rule that waited for such a
+\*    parent's own purge would only delay the child's: every policy the policy
+\*    type can express names completed and cancelled, so the parent is purged
+\*    in time, and no property here tells a delay from a correct purge.  The
+\*    barrier grid's completed and cancelled parent cells hold it (PR5.2c2).
 \*
 \* NOT MODELED, and why that is sound or what bounds it:
 \*  - Several parents or children, and a chain of ancestors.  Each unit's barrier
@@ -125,8 +151,10 @@
 \*   'fail-rollback' that ends the task -> ChildEnds / FinishSaga  [cas-fenced]
 \*   'cancel-task' -> ChildEnds / HolderCancelled  [cas-fenced]
 \*   'sweep:cancel' -> ChildEnds / HolderCancelled  [cas-fenced]
-\*   'sweep:lost-launch' at its cap -> ChildEnds / HolderFails  [cas-fenced]
-\*   'sweep:claim-timeout' at the infra cap -> ChildEnds / HolderFails  [cas-fenced]
+\*   'sweep:lost-launch' at its cap -> ChildEnds / HolderFails / EnterRollback  [cas-fenced]
+\*   'sweep:claim-timeout' at the infra cap -> ChildEnds / HolderFails / EnterRollback  [cas-fenced]
+\*     (either cap, in the forward phase with a saga, enters the rolling-back
+\*     phase, as Sagas.tla's InfraCap does)
 \*   'retry-task' -> Revive  [cas-fenced]
 \*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]
 \*   'await-event' -> AwaitUnknown / AwaitRefused  [cas-fenced]  (the
@@ -437,8 +465,9 @@ ParentAllows ==
   \/ Lifted("parentQueue") /\ ParentQueue = "other"
   \/ st["P"] \in {"none", "absent", "completed", "cancelled"}
 
+\* Admitted implies that the task is present, so neither purge repeats it.
 PurgeChild ==
-  /\ Present("C") /\ ~purging
+  /\ ~purging
   /\ Admitted("C")
   /\ Aged("C")
   /\ Lifted("carry") \/ \A x \in Holders : carry[x] = "none" /\ named[x] = "none"
@@ -460,7 +489,6 @@ PurgeRow ==
 \* them, and neither was spawned by a task, so B1 is their whole barrier.  Their
 \* runs go with them, and with the runs any outcome of C they carried.
 PurgeHolder(x) ==
-  /\ Present(x)
   /\ Admitted(x)
   /\ Aged(x)
   /\ st' = [st EXCEPT ![x] = "absent"]
@@ -531,7 +559,7 @@ WholeUnit ==
 \* window of its task's terminal state.  Twin: the barrier grid's state and age
 \* legs, at the window and one millisecond either side of it (PR5.2c2).
 PurgeStepIsDeadAndOld ==
-  \A t \in Tasks : (Present(t) /\ st'[t] = "absent") => (st[t] \in Policy /\ age[t] >= Window)
+  \A t \in Tasks : (Present(t) /\ ~Present(t)') => (st[t] \in Policy /\ age[t] >= Window)
 PurgeOnlyDeadAndOld == [][PurgeStepIsDeadAndOld]_vars
 
 \* A parent that can still run its code, live or failed with no saga for
