@@ -5194,6 +5194,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (queue depth, claim latency, lease expiries); usage-API quota alerting +
   BLOCKED runbook; fleet migration sweep. From PR3.3: event cleanup must not
   remove a completion event whose task can still be awaited.
+- **PR5.2a retention spec**: DONE. `specs/Retention.tla` models the purge of
+  whole terminal task units ahead of any SQL (DESIGN.md §3.12): one child, its
+  spawning parent in the child's queue, in another queue, or absent, and a third
+  party holding the child's handle, beside every engine action the purge can
+  race. TLC checks nine properties under weak fairness on four configurations,
+  sixteen mutants are each caught by the property they name, and fourteen probes
+  find their witnesses, all in `pnpm verify:tla`. The model is PR5.2c2's
+  precondition: its ledger block lists `PurgeChild` and `PurgeHolder` as having
+  no batch, and PR5.2c2's purge batch turns that line into a mapping. The two
+  contract changes of §3.12, an idempotency key that dedupes for its task's
+  window and a child handle valid until its unit is purged, await the
+  maintainer's approval. The design recorded an alternative for the parent
+  condition, a `tasks.parent_task_id` column written at spawn, to be taken if
+  TLC refuted the argument that the reserved key names the parent. TLC found no
+  counterexample against the barrier as designed, so the key is parsed and no
+  column is added. One run of the model with the parent condition admitting a
+  parent that is rolling back or failed with a saga also stayed green, because
+  neither reads its child again. The first release keeps the stricter rule.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
