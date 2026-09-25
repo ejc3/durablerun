@@ -111,7 +111,7 @@ export async function main(
   }
   let target: string
   try {
-    target = storeTarget(url)
+    target = await storeTarget(url)
   } catch (error) {
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
     throw error

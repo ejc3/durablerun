@@ -5552,10 +5552,14 @@ released. Every read checks the recorded version against that window before anyt
 else, and exits 5 for a database that is not initialized, older than the window, or
 recorded past the build's newest version, which a newer build migrated. A read never
 migrates, sends only read batches, and refuses a `file:` URL that names no file before a
-client opens, because a libSQL client creates the file it is pointed at. `migrate` is the
-only command that changes the schema. It must name its store again with `--target`, the
-URL's host with its port or the path of a `file:` URL, and a mismatch exits 2 before
-anything is opened. Without `--yes` it prints the versions it would apply and exits 2
+client opens, because a libSQL client creates the file it is pointed at. The CLI reads a
+`file:` URL's path with store-libsql's own `fileUrlPath`, as the client reads it:
+percent-decoded and cut at the query, so the file it checks is the file the client
+opens; a fragment, which the client refuses, is refused. `migrate` is the only command
+that changes the schema. It must name its store again with `--target`, the URL's host
+with its port or the decoded path of a `file:` URL, and a mismatch exits 2 before
+anything is opened. A store client that refuses the URL as it is made is answered with
+exit 2 too, without the client's message, which can quote the URL. Without `--yes` it prints the versions it would apply and exits 2
 with `confirmation-required`. Before a version that holds the writer for long on a large
 table, version 10 today, it prints a warning. With `--yes` it prints each version
 applied. `--queue` and `--target` are read from the arguments only.

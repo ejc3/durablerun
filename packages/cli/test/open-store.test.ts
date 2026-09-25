@@ -65,7 +65,7 @@ describe('the store opener', () => {
     }
   })
 
-  it('picks a store by scheme and names what --target must equal', () => {
+  it('picks a store by scheme and names what --target must equal', async () => {
     expect(STORE_SCHEMES).toEqual([
       ':memory:',
       'file:',
@@ -76,17 +76,19 @@ describe('the store opener', () => {
       'postgresql:',
       'mysql:',
     ])
-    expect(storeTarget('file:/var/data/db.sqlite')).toBe('/var/data/db.sqlite')
-    expect(storeTarget('file:///var/data/db.sqlite?mode=rw')).toBe('/var/data/db.sqlite')
-    expect(storeTarget('file:local.db')).toBe('local.db')
-    expect(storeTarget(':memory:')).toBe(':memory:')
-    expect(storeTarget('libsql://db-name.example.io')).toBe('db-name.example.io')
-    expect(storeTarget('postgresql://user:secret@db.example.io:5433/app')).toBe(
+    expect(await storeTarget('file:/var/data/db.sqlite')).toBe('/var/data/db.sqlite')
+    expect(await storeTarget('file:///var/data/db.sqlite?mode=rw')).toBe('/var/data/db.sqlite')
+    expect(await storeTarget('file:local.db')).toBe('local.db')
+    expect(await storeTarget(':memory:')).toBe(':memory:')
+    expect(await storeTarget('libsql://db-name.example.io')).toBe('db-name.example.io')
+    expect(await storeTarget('postgresql://user:secret@db.example.io:5433/app')).toBe(
       'db.example.io:5433',
     )
-    expect(storeTarget('mysql://root:secret@127.0.0.1:3306/app')).toBe('127.0.0.1:3306')
+    expect(await storeTarget('mysql://root:secret@127.0.0.1:3306/app')).toBe('127.0.0.1:3306')
     expect(storeScheme('sqlite:data/x.db')).toBeUndefined()
-    expect(() => storeTarget('/var/data/db.sqlite')).toThrow(StoreUrlError)
+    await expect(storeTarget('/var/data/db.sqlite')).rejects.toThrow(StoreUrlError)
+    await expect(storeTarget('file:/var/data/a%zz.sqlite')).rejects.toThrow(StoreUrlError)
+    expect(await storeTarget('file:/var/data/a%20b.sqlite')).toBe('/var/data/a b.sqlite')
   })
 
   it("reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target", async () => {

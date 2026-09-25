@@ -67,13 +67,14 @@ interface Opened {
 type Loader = (url: string, token: string | undefined, mayCreate: boolean) => Promise<Opened>
 
 const libsql: Loader = async (url, token, mayCreate) => {
-  if (!mayCreate && storeScheme(url) === 'file:' && !existsSync(storeTarget(url))) {
+  const file = storeScheme(url) === 'file:' ? await storeTarget(url) : undefined
+  if (!mayCreate && file !== undefined && !existsSync(file)) {
     throw new MissingDatabaseError(
-      `no database file is at ${storeTarget(url)}; migrate --yes creates and initializes one`,
+      `no database file is at ${file}; migrate --yes creates and initializes one`,
     )
   }
   const store = await import('@durablerun/store-libsql')
-  const executor = store.LibsqlExecutor.open(url, token)
+  const executor = openedBy(() => store.LibsqlExecutor.open(url, token))
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
@@ -86,7 +87,7 @@ const libsql: Loader = async (url, token, mayCreate) => {
 const postgres: Loader = async (url, token) => {
   refuseToken('PostgreSQL', token)
   const store = await import('@durablerun/store-postgres')
-  const executor = store.PgExecutor.open(url)
+  const executor = openedBy(() => store.PgExecutor.open(url))
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
@@ -99,13 +100,27 @@ const postgres: Loader = async (url, token) => {
 const mysql: Loader = async (url, token) => {
   refuseToken('MySQL', token)
   const store = await import('@durablerun/store-mysql')
-  const executor = store.MysqlExecutor.open(url)
+  const executor = openedBy(() => store.MysqlExecutor.open(url))
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
     admin: (db) => new store.MysqlStoreAdmin(db),
     scheduler: (db, ids) => new store.MysqlSchedulerStore(db, ids),
     close: () => executor.close(),
+  }
+}
+
+/**
+ * A store's client, made from the URL. A client that refuses the URL as it is made says so
+ * in a message that can quote the URL, so its error is replaced by one that does not.
+ */
+function openedBy<T>(open: () => T): T {
+  try {
+    return open()
+  } catch {
+    throw new StoreUrlError(
+      "the store's client refused DURABLERUN_STORE_URL as it opened; the URL is not printed, because it can hold a password",
+    )
   }
 }
 
@@ -140,21 +155,27 @@ export function storeScheme(url: string): string | undefined {
 }
 
 /**
- * What a write names with `--target`: the path of a `file:` URL, the whole of `:memory:`,
- * and the host of every other URL, its port included when it names one. A URL that does not
- * parse is refused, and so is a libSQL server's URL that carries a user name or a password,
- * which the client would quote in its errors. No refusal quotes the URL, because a store URL
- * can hold a password, and a database credential is full admin.
+ * What a write names with `--target`: the whole of `:memory:`, the path of a `file:` URL as
+ * the libSQL client decodes it (store-libsql's own fileUrlPath, so the check that a read
+ * creates no file looks at the file the client opens), and the host of every other URL, its
+ * port included when it names one. A URL that does not parse is refused, and so is a
+ * libSQL server's URL that carries a user name or a password, which the client would quote
+ * in its errors. No refusal quotes the URL, because a store URL can hold a password, and a
+ * database credential is full admin.
  */
-export function storeTarget(url: string): string {
+export async function storeTarget(url: string): Promise<string> {
   const scheme = storeScheme(url)
   if (scheme === undefined) throw new StoreUrlError(unknownScheme())
   if (scheme === ':memory:') return url
   if (scheme === 'file:') {
-    const rest = url.slice('file:'.length).split('?')[0] ?? ''
-    if (!rest.startsWith('//')) return rest
-    const path = rest.indexOf('/', 2)
-    return path < 0 ? '' : rest.slice(path)
+    const { fileUrlPath } = await import('@durablerun/store-libsql')
+    const file = fileUrlPath(url)
+    if (file === undefined || file.rest.startsWith('#')) {
+      throw new StoreUrlError(
+        'a file: URL must name a database file by a path that percent-decodes, with no fragment: encode a # in a file name as %23, a ? as %3F and a % as %25',
+      )
+    }
+    return file.path
   }
   let parsed: URL
   try {
@@ -181,7 +202,7 @@ function unknownScheme(): string {
 }
 
 export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
-  storeTarget(url)
+  await storeTarget(url)
   const scheme = storeScheme(url)
   const loader = scheme === undefined ? undefined : LOADERS[scheme]
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())

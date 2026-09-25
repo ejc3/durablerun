@@ -17386,7 +17386,7 @@ MUTATION_SPECS.extend(
         (
             "cli-read-creates-no-file",
             "packages/cli/src/open-store.ts",
-            "  if (!mayCreate && storeScheme(url) === 'file:' && !existsSync(storeTarget(url))) {\n",
+            "  if (!mayCreate && file !== undefined && !existsSync(file)) {\n",
             "  if (false) { // MUTATION: a read opens a file: URL that names no file\n",
             "a read of a file: URL that names no file creates an empty database there",
         ),
