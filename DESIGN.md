@@ -5560,9 +5560,11 @@ that changes the schema. It must name its store again with `--target`, the URL's
 with its port or the decoded path of a `file:` URL, and a mismatch exits 2 before
 anything is opened. A store client that refuses the URL as it is made is answered with
 exit 2 too, without the client's message, which can quote the URL. Without `--yes` it prints the versions it would apply and exits 2
-with `confirmation-required`. Before a version that holds the writer for long on a large
-table, version 10 today, it prints a warning. With `--yes` it prints each version
-applied. `--queue` and `--target` are read from the arguments only.
+with `confirmation-required`. Before each version it would apply, it prints the note the
+store package exports for that version in `SCHEMA_VERSION_NOTES`, so what a version costs
+on each dialect is said by that dialect's package and the CLI holds none of it; every store
+has one for version 10 today, and a database that was never initialized, which holds no
+rows, gets none. With `--yes` it prints each version applied. `--queue` and `--target` are read from the arguments only.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a

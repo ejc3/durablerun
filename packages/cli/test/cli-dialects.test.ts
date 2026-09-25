@@ -1,7 +1,12 @@
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
+import {
+  CURRENT_SCHEMA_VERSION,
+  SCHEMA_VERSION_NOTES as LIBSQL_NOTES,
+} from '@durablerun/store-libsql'
+import { SCHEMA_VERSION_NOTES as MYSQL_NOTES } from '@durablerun/store-mysql'
+import { SCHEMA_VERSION_NOTES as POSTGRES_NOTES } from '@durablerun/store-postgres'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
@@ -18,6 +23,12 @@ import {
   seedTasks,
   withoutDialect,
 } from './support.js'
+
+const NOTES: Readonly<Record<(typeof SELECTED)[number], Readonly<Record<number, string>>>> = {
+  libsql: LIBSQL_NOTES,
+  postgres: POSTGRES_NOTES,
+  mysql: MYSQL_NOTES,
+}
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
@@ -134,7 +145,8 @@ describe('the CLI on every selected dialect', () => {
             to: CURRENT_SCHEMA_VERSION,
             applied: versions,
           })
-          expect(applied.stderr).toContain('version 10')
+          // A database that was never initialized holds no rows, so no note prints for it.
+          expect(applied.stderr).not.toContain('warning')
           for (const batch of sent()) {
             expect(declaresLabel(COMMANDS.migrate, batch.label), batch.label).toBe(true)
           }
@@ -166,6 +178,18 @@ describe('the CLI on every selected dialect', () => {
           }
         })
       }
+
+      it("migrate prints the store's own note before the version it names", async () => {
+        const db = await openCliDb(dialect, 'notes', CURRENT_SCHEMA_VERSION - 1)
+        try {
+          const asked = await runCli(['migrate', '--target', db.target, '--json'], db.env)
+          expect(asked.exit).toBe(2)
+          const note = NOTES[dialect][CURRENT_SCHEMA_VERSION]
+          expect(asked.stderr).toBe(note === undefined ? '' : `warning: ${note}\n`)
+        } finally {
+          await db.close()
+        }
+      })
 
       it('bin/durablerun.ts exits with the code the exit table names for each outcome', async () => {
         const db = await openCliDb(dialect, 'bin')

@@ -6,6 +6,7 @@ export {
   META_TABLE_SQL,
   MIGRATIONS,
   READABLE_SCHEMA_WINDOW,
+  SCHEMA_VERSION_NOTES,
   SCHEMA_VERSION_READ_SQL,
 } from './schema.js'
 export { MysqlSchedulerStore } from './store.js'

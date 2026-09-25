@@ -19,10 +19,14 @@ export type CliAdmin = Pick<StoreAdmin, 'schemaVersion' | 'nowEpochMs' | 'migrat
 /** The scheduler calls a command may make. A claim cannot be written. */
 export type CliScheduler = Pick<SchedulerStore, 'getTaskResult' | 'getCheckpoints'>
 
+/** What an operator should know before a migration crosses a version, as a store says it. */
+export type SchemaVersionNotes = Readonly<Record<number, string>>
+
 export interface OpenedStore {
   /** The URL scheme the store was picked by, `file:` or `:memory:` for a local libSQL file. */
   readonly scheme: string
   readonly window: SchemaWindow
+  readonly notes: SchemaVersionNotes
   readonly admin: CliAdmin
   readonly scheduler: CliScheduler
   close(): Promise<void>
@@ -59,6 +63,7 @@ export class MissingDatabaseError extends Error {
 interface Opened {
   readonly executor: SqlExecutor
   readonly window: SchemaWindow
+  readonly notes: SchemaVersionNotes
   admin(db: SqlExecutor): StoreAdmin
   scheduler(db: SqlExecutor, ids: IdSource): SchedulerStore
   close(): Promise<void>
@@ -78,6 +83,7 @@ const libsql: Loader = async (url, token, mayCreate) => {
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
+    notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.LibsqlStoreAdmin(db),
     scheduler: (db, ids) => new store.LibsqlSchedulerStore(db, ids),
     close: async () => executor.close(),
@@ -91,6 +97,7 @@ const postgres: Loader = async (url, token) => {
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
+    notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.PostgresStoreAdmin(db),
     scheduler: (db, ids) => new store.PostgresSchedulerStore(db, ids),
     close: () => executor.close(),
@@ -104,6 +111,7 @@ const mysql: Loader = async (url, token) => {
   return {
     executor,
     window: store.READABLE_SCHEMA_WINDOW,
+    notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.MysqlStoreAdmin(db),
     scheduler: (db, ids) => new store.MysqlSchedulerStore(db, ids),
     close: () => executor.close(),
@@ -213,6 +221,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   return {
     scheme,
     window: opened.window,
+    notes: opened.notes,
     admin: Object.freeze({
       schemaVersion: () => admin.schemaVersion(),
       nowEpochMs: () => admin.nowEpochMs(),

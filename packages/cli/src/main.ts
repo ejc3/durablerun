@@ -264,14 +264,6 @@ const doctor: Handler = async ({ invocation, store }) => {
   }
 }
 
-/**
- * Before crossing a version that holds a store's writer for a long time on a large table,
- * what the operator should know. Keyed by the version it is printed before.
- */
-const SLOW_VERSIONS: Readonly<Record<number, string>> = Object.freeze({
-  10: 'warning: version 10 reads every stored event inside its write transaction. On a cold 4.5 GB libSQL file it held the writer for 14.9 seconds, and other connections failed calls meanwhile. Run the finding query of DESIGN.md section 3.4 (schema version 10) first, in a quiet window: it reads the same pages under no write lock.',
-})
-
 const migrate: Handler = async ({ invocation, store, note }) => {
   const from = await store.admin.schemaVersion()
   if (from > store.window.newest) {
@@ -290,9 +282,10 @@ const migrate: Handler = async ({ invocation, store, note }) => {
       text: [`the schema is at version ${from}, the newest this build has; nothing to apply`],
     }
   }
-  for (const version of plan) {
-    const warning = SLOW_VERSIONS[version]
-    if (warning !== undefined) note(warning)
+  // A database that was never initialized holds no rows for a version to hold up.
+  for (const version of from === 0 ? [] : plan) {
+    const warning = store.notes[version]
+    if (warning !== undefined) note(`warning: ${warning}`)
   }
   if (invocation.booleans.yes !== true) {
     return {

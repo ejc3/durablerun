@@ -322,3 +322,12 @@ export const READABLE_SCHEMA_WINDOW = Object.freeze({
   oldest: 5,
   newest: CURRENT_SCHEMA_VERSION,
 })
+
+/**
+ * What an operator should know before a migration crosses a version, keyed by that
+ * version, for a tool that migrates, such as the operator CLI, to print first. A database
+ * that was never initialized holds no rows, and a tool may leave the notes out for it.
+ */
+export const SCHEMA_VERSION_NOTES: Readonly<Record<number, string>> = Object.freeze({
+  10: 'version 10 reads every stored event inside its write transaction. On a cold 4.5 GB libSQL file it held the writer for 14.9 seconds, and other connections failed calls meanwhile. Run the finding query of DESIGN.md section 3.4 (schema version 10) first, in a quiet window: it reads the same pages under no write lock, and a row it finds makes version 10 fail.',
+})

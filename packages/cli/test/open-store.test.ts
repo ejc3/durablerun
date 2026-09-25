@@ -46,6 +46,7 @@ describe('the store opener', () => {
         expect(Object.keys(store).sort()).toEqual([
           'admin',
           'close',
+          'notes',
           'scheduler',
           'scheme',
           'window',
