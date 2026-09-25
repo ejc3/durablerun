@@ -31,12 +31,504 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
+## Current milestone — an operable alpha: run it, inspect it, drive it, keep it small
+
+From one terminal command, `pnpm cli <verb>`, an operator or an agent that holds
+a store URL works a deployment over libSQL, PostgreSQL or MySQL. It inspects a
+task by its id or its idempotency key and gets one cause from a closed table,
+finds what the engine should already have advanced without being handed a task
+id, reads queue depth, head-of-queue lag, lease expiries and a queue's row
+counts, drives the store ports that exist today (`enqueue` with an idempotency
+key, `emit`, `cancel`, `retry`, `sweep`, and one bounded `tick` of a hosted
+deployment), and purges whole terminal task units older than a window the
+operator names. The same commands print the same JSON over the three stores,
+apart from the fields held under `dialect`, read commands send only read batches
+and never migrate, and user-authored values print only with `--reveal`. The
+deployed alpha keeps running alpha.1: no exit test line needs a package release,
+packages/cli stays private, and a harness runs alpha.1's release assets on
+databases the CLI migrated. DESIGN.md section 3.11 (the operator surface) and
+section 3.12 (retention) will hold the design, written by the PRs named below;
+this section is the plan.
+
+**Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
+The exit test is lines 32 to 44 below, and none is met. Each PR marks its own
+lines met, with the evidence in its own diff. The milestone is complete when
+lines 32 to 44 are all met, which PR5.5 records. The maintainer's live week on
+the deployed alpha is receipt M1, outside the numbered lines, and M1 is recorded
+met only when its receipt exists and line 44's checker accepts it.
+
+**Exit test:**
+
+32. PR5.3a (its cases stay current in every later PR that adds a verb): one
+    tool, with no SQL in it, reads a store across that store's schema window.
+    `doctor`, `result` and `checkpoints` run through `main(argv, env, io, ids,
+    clock)` with a seeded IdSource on libSQL, PostgreSQL and MySQL, and print
+    identical JSON apart from the fields under `dialect` (scheme and schema
+    window), which the comparison names. One child-process run of
+    `bin/durablerun.ts` per dialect asserts the exit codes of DESIGN.md's table.
+    Each store package exports its readable window beside
+    `CURRENT_SCHEMA_VERSION` and `MIGRATIONS`, and the CLI holds no dialect
+    branch. On a libSQL database migrated only through the first five entries of
+    `MIGRATIONS`, each read verb answers with the JSON it gives at the current
+    version, apart from the schema version `doctor` reports as recorded. On a
+    database recorded above the build's version, every verb that opens a store
+    exits 5 and a dump of every table is identical before and after. A spy on
+    the executor sees only read-mode batches from a read verb. Only
+    `open-store.ts` under packages/cli/src imports a store package, held by
+    biome's `noRestrictedImports` with an override for that file (control: a
+    planted import elsewhere fails `pnpm lint`), and the opener returns typed
+    ports, never an executor. `migrate` without `--yes` changes nothing, and
+    with it prints each version applied. The alpha.1 release assets, installed
+    into a temporary consumer the way package-smoke installs the current
+    tarballs and checked against the sha256 values in
+    scripts/published-surface-v0.1.0-alpha.1.json, run a spawn, claim, complete,
+    emit and await cycle through alpha.1's LibsqlSchedulerStore on a libSQL file
+    that `pnpm cli migrate --yes --target <its path>` took to each version from
+    5 to the build's, and `result` reads what alpha.1 wrote exactly as alpha.1's
+    own getTaskResult does. Red: a planted migration that adds a NOT NULL column
+    with no default fails the alpha.1 cycle by name. NOT MET: no CLI package
+    exists.
+33. PR5.3a (extended by every later PR that adds a command): nothing
+    user-authored and no store credential prints without `--reveal`. A sentinel
+    planted in a task's params and headers, a checkpoint's state, an event
+    payload, a completed result, a user-authored failure reason, a failed
+    rollback's error (one named like an SDK halt among them), an idempotency
+    key, a password and a token in the store URL, and the token in
+    DURABLERUN_STORE_TOKEN appears in no stdout or stderr of any command, in
+    human text or `--json`, and a key prints as its length and sha256. The same
+    check holds for every fault case of line 34, every refusal, a URL that does
+    not parse, a store client that refuses the URL, and an error that reaches
+    the bin's last catch. The four failure reasons the engine writes
+    (`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`,
+    `$Cancelled`) print by name when the stored reason equals core's constant
+    byte for byte. A failed rollback's error is redacted whole, since a rollback
+    that throws an error named like an SDK halt is stored in the same shape as
+    the halt, and its name prints only when it equals `$SagaStateCorrupt` or
+    `$RollbackNotRegistered`, the two halt names the SDK writes. Task ids, task
+    names, event names and checkpoint names print, and so do the step keys a
+    checkpoint name holds. A test walks the command table and fails for any
+    command that has no sentinel case. Red: removing redaction from one renderer
+    fails that command's case by name. NOT MET.
+34. PR5.3a (extended by every later PR that adds a command): the CLI has its own
+    generated fault surface, as AGENTS.md requires of every new layer. From the
+    command table, each command's port calls are enumerated with their batch
+    labels, and each call runs on the three dialects under three faults injected
+    at the executor, as the CLI sees it: crash-before (the executor rejects with
+    StoreUnavailableError before the batch is sent), crash-after (it rejects
+    after the batch commits) and duplicate (it delivers the batch twice and
+    resolves with the second delivery's result, as SimWorld does). The command
+    table declares exit 6 for the first two and the exit of a clean run for
+    duplicate, and each case exits as the table declares. It is a CLI-level
+    injection, not SimWorld's SimCrash. A duplicated `retry` sees null from its
+    second delivery, so `retry` tells its own revival from a refusal by a read
+    before the write. Exit 6 (store unavailable) means the outcome is unknown,
+    since the write may have committed. After each case, for every verb but
+    `selftest`, running the same command again reaches the state one successful
+    run leaves, compared as a dump of every table, and prints the state it finds
+    as of that read: a repeated `cancel` reports the task cancelled, and a
+    repeated `retry` reports the pending run it finds. This is why exit 6 is
+    declared safe to repeat for every verb but `selftest`, and it holds because
+    `enqueue` requires `--key`. `selftest` refuses a queue that already holds
+    tasks, so its repeat class is a fresh run on a fresh queue, judged by that
+    run's own output and not by the dump. Red in PR5.3a: a read verb that maps a
+    StoreUnavailableError to exit 0 fails its crash-before case. Red in PR5.3d:
+    making `--key` optional fails the enqueue crash-after case by name, with two
+    tasks in the dump. NOT MET.
+35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
+    core implementation over `SqlExecutor` and the store's tree dialect, reached
+    through a factory each store exports. They return identical canonical output
+    on libSQL, PostgreSQL and MySQL for every seeded state, through a new
+    `operator-reads` surface enrolled beside the twelve behind the one
+    enrollment door. taskFacts decodes the outcome with `decodeTaskResult` and
+    `decodeRollbackOutcome`, the two decoders getTaskResult already calls, and
+    for every seeded outcome, a saga's rollback and a row the decoder refuses
+    among them, `inspect`'s outcome equals `result`'s. For each persisted
+    integer a read consumes, a value outside `PERSISTED_INTEGER_BOUNDS`
+    (fractional, negative, past `MAX_EPOCH_MS`) appears in the answer's
+    `corrupt` list: it is never skipped and never throws. `taskIdByKey` recovers
+    a task from its idempotency key. Every count and instant is a JavaScript
+    number on all three dialects, and no list order depends on a text collation.
+    Red: a count returned as a string fails that dialect by name, and deleting
+    one field's guard fails that field's corrupt case. NOT MET.
+36. PR5.3b2: `explain` names the seeded cause. Seeds are built by driving the
+    real engine under fake time wherever an engine path reaches the state, and
+    the states no engine path reaches (unreadable, unexplained, and the corrupt
+    forms) are built with raw fixture SQL, each named fixture-built. There is
+    one seed for every cause in DESIGN.md's cause table: completed; failed with
+    attempts exhausted; failed by an engine reason; cancelled; pending and
+    delayed; pending, due and unclaimed; never-started in the current form
+    (claimed, then deferred through `deferLaunch` before activation);
+    never-started in the alpha.1 form (activated, then rescheduled 15 to 24
+    seconds by alpha.1's worker), fixture-built here and checked on real alpha.1
+    rows by line 44; woken and unclaimed; running under a live lease; lease
+    lapsed and unswept; sleeping on a timer; sleeping past its wake; awaiting a
+    timed event; awaiting an untimed event; awaiting a child, followed to the
+    child's own cause to depth 8; cancellation deadline passed; unreadable; and
+    unexplained. `explain --json` returns the seeded cause and verdict for each.
+    Never-started and an untimed await get the verdict `waiting`, never `stuck`.
+    Six healthy controls never come back `stuck`: a start delay, a sleep, a
+    timed await inside its timeout, a live lease, an untimed await, and a task
+    enqueued ahead of the build that registers it. The default verdict is
+    `unexplained`, never healthy. For each waiting seed that has a clock
+    transition, moving fake now to `nextTransitionAtMs` lets the engine progress
+    the run, and one millisecond earlier does not. Suggestions are generated
+    from the command table and parse, never contain `--yes`, and never name
+    `emit`: for an untimed await, `explain` prints the event name and the tasks
+    waiting on it as facts. Red: deleting any arm of `diagnose` fails the case
+    seeded for it by name, a `diagnose` that answers `stuck` for every live
+    state fails the six controls, and a suggestion that contains `--yes` fails.
+    NOT MET.
+37. PR5.3c: the finder agrees with the engine, and the gauges equal an
+    independent count. On seeded queues with grace 0, the runs `stuck` lists as
+    due-unclaimed are exactly the runs a `claim` takes when its limit is at
+    least their number, and the lease-lapsed and cancel-overdue runs are exactly
+    what a following `sweep` reclaims or cancels. `stuck --older-than` lists
+    exactly the live tasks whose enqueue instant is that old, oldest first. A
+    task looping through launch deferral appears there in both the current and
+    the alpha.1 form, and its seed shows that under the default grace, at any
+    instant between ticks of the seed's cadence, it appears in no clock leg.
+    `stats` gauges and `sizes --queue` equal counts computed in TypeScript from
+    the full-table dump the invariant snapshot binds, on the three dialects.
+    Every gauge is capped at 1,000 and reports `atLeast`, and `stats` prints
+    `quiet`, never `ok`, when every gauge is zero. Each new leg is registered in
+    the plan test's `DRIVEN_BY_A_DUE_RANGE` table with `boundedBy: 'LIMIT'`,
+    passes the libSQL plan reader, and states its growth-oracle verdict: it
+    grows with the backlog by design and is bounded by its LIMIT. `sizes` is the
+    named exception, a count over one queue, registered as a text statement if
+    the tree grammar refuses it. Line 32's alpha.1 harness runs at schema
+    version 11. Red: `<` for `<=` on `claim_expires_at_ms` in one leg fails the
+    claim-and-sweep differential by name, and a dropped LIMIT fails the
+    `DRIVEN_BY_A_DUE_RANGE` check. NOT MET.
+38. PR5.3d: drive verbs are the ports and nothing else. After each of `enqueue`,
+    `emit`, `cancel`, `retry` and `sweep`, a dump of every table equals the dump
+    the same port call leaves on a twin database with the same seeded IdSource,
+    through `main()` on all three dialects, and line 32's child-process runs
+    cover the bin. `emit`, `cancel` and `retry` without `--yes` change nothing,
+    exit 2 with `confirmation-required`, and print what they would do (control:
+    with `--yes` the dump changes). Every write that opens a store and has no
+    `--target` equal to the opened URL's host (or its path for `file:`) exits 2
+    and changes nothing (dump control); `tick` opens no store, and its origin
+    check below is its target check. Nothing falls back to TURSO_* or
+    DURABLERUN_QUEUE, and `enqueue` without `--key` exits 2. `cancel` on a task
+    whose saga began refuses without `--halt-rollback` and prints the rollback
+    facts taskFacts carries, because cancelling a rolling-back task halts the
+    saga (DESIGN.md section 3.10). Every refusal names its cause from a read of
+    the post-state. `retry`'s naming read is built from the retry guard's own
+    conjuncts, one boolean per conjunct, and the test enumerates the conjuncts
+    and plants each cause they give, by engine drive where one reaches it and by
+    raw fixture SQL otherwise, so a conjunct with no cause fails by name. The
+    causes are the nine the comment on `retryTask` in packages/core/src/ports.ts
+    lists, and a saga that began, which the guard also refuses (DESIGN.md
+    section 3.10) and the comment does not list; PR5.3d corrects that comment. A
+    `cancelTask` false separates an absent task from an already-terminal one by
+    state, and an `emit` of a `$` name answers `reserved-name`. The exit-code
+    table in DESIGN.md equals the one in the code (a test parses both). On the
+    v5-only fixture, each drive verb either passes the twin-dump comparison or
+    exits 5 naming both versions, and the list of verbs allowed at v5 is data
+    the test enumerates. `tick --url` against a loopback hosted router returns
+    the router's tick body, sends the token only in the Authorization header,
+    only to the origin of DURABLERUN_BASE_URL and only over https (loopback
+    excepted), and exits 4 on a wrong token. A mismatched `--url` sends nothing:
+    a loopback listener records no connection. Red: removing the naming read
+    fails the retry cases by name, a write without `--yes` fails the dump
+    control, and dropping the target check fails its case. NOT MET.
+39. PR5.3d: the operator drill. A script holding only `runCli(argv, env)`, a
+    store URL and a loopback hosted-router URL finds each planted cause without
+    being handed a task id, and `explain` names the cause the builder wrote down
+    before the CLI ran. For verdict `stuck`, the script appends `--yes` itself
+    to the suggested command where the command table requires it, runs it, and
+    the run moves to a terminal or healthy verdict. The stuck causes planted are
+    lease lapsed and cancellation overdue (cleared by `sweep`), and due but
+    unclaimed (cleared by `tick --url` against the router). Two causes are found
+    without an id and named `waiting`: never-started, built by a real worker
+    that lacks the handler, and an await on an untimed event nobody emits. For
+    those two, the script acts as the human, runs `cancel --yes`, and each run
+    ends cancelled. No healthy control comes back `stuck`. Red: dropping the
+    aged-live leg makes the never-started and awaiting cases fail by name (not
+    found), and a suggestion the command table cannot parse fails. NOT MET.
+40. PR5.2a (spec first, no SQL): specs/Retention.tla passes TLC on each config:
+    a spawning parent in the child's queue, one in another queue, a task with no
+    parent, and a liveness config under weak fairness. It holds WholeUnit,
+    PurgeOnlyDeadAndOld, ReplayableParentKeepsChild, NoStrandedWaiter,
+    CarrierKeepsEvent, RevivalSeesWholeUnit and AwaitOnPurgedIsRefused, and the
+    liveness property AgedUnblockedIsPurged. Every guard mutant in
+    specs/Retention.mutants.json is refuted by a named invariant. Each probe
+    config shows its named violation, including one that lifts the
+    third-party-handle assumption to show that the loud refusal is reachable,
+    and one for a task ended by a build before child tasks, which has no
+    completion event. The model's actions are ledgered in the no-batch form
+    (`Purge -- the purge batch lands in PR5.2c2`), because the spec ledger
+    refuses a quoted label that no store sends. PR5.2c2 turns them into
+    mappings, and each invariant names its executable twin. Red: deleting any
+    conjunct of Purge's guard while TLC stays green fails the mutant check. NOT
+    MET.
+41. PR5.2c1: before any delete path exists, the stamp and the checkers are
+    proved. For each label in `TERMINAL_BATCH_LABELS` (`complete`, `fail`,
+    `fail-rollback`, `cancel-task`, `sweep:cancel`, `sweep:lost-launch` and
+    `sweep:claim-timeout`), with the cases generated from that list so that a
+    terminal label added later is covered, a batch that ends the task sets
+    `tasks.fence_at_ms` to the ending instant, and no label's cell from a
+    terminal pre-state moves it, apart from `retry-task`, which revives a failed
+    task and restarts its age. `engineHistoryViolations` gains two conditions: a
+    live or revivable task's `$spawn` memo names an existing task, and a wait on
+    a completion event has its task or its event. Each condition has a
+    raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
+    terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
+    a path exists today, its fix lands in this PR as its own red-then-green
+    pair. NOT MET.
+42. PR5.2c2: purge removes exactly what the model allows, whole units only, on
+    the three dialects. The barrier grid crosses terminal state (completed,
+    failed with a saga, failed without, cancelled) with spawning-parent state
+    (none, absent, live, completed, cancelled, failed, failed with a saga),
+    parent queue (the child's or another), holder (a run naming the completion
+    event in any state, a wait naming it, none) and age (window minus 1 ms, 0,
+    plus 1 ms): 504 cells at a small unit. Unit size (the checkpoint cap minus
+    one, at the cap, and past it) is crossed only with one barrier-clear cell
+    per terminal state, 12 more cells, so 516 cells a dialect. In every cell,
+    what purge removes equals a TypeScript oracle written from the model over a
+    table dump, never over a live task, and after each purge
+    `engineHistoryViolations` is empty. A consequence oracle then drives the
+    parent forward through the store ports: repeating its spawn key returns the
+    same task id with `created: false`, its await of the child is never refused,
+    and a woken parent's payload survives. Fuzz walks with a `purge` op under
+    fake time hold the same checks. Crash-before, crash-after and duplicate at
+    the purge label leave a whole unit or none. A contest of four purgers beside
+    a claimer, a sweeper and a spawner reusing purged keys shows `deadlocks() ==
+    0` on PostgreSQL and MySQL, whole units after every round
+    (run-owner-missing, checkpoint-owner-run-missing, wait-run-missing, and
+    every completion event names an existing task), and no spawn throwing the
+    error for a lost task insert. No purge statement uses SKIP LOCKED. The
+    native purge-versus-await race runs in the shared `retention` surface on
+    every dialect. Core refuses a window under 3,600 seconds. Each barrier
+    conjunct, the window comparison, the unit's statement order, the event lock,
+    and SKIP LOCKED added to one purge delete has a registered mutation killed
+    by its own case, and the unfiltered mutation audit is clean. Line 32's
+    alpha.1 harness runs at schema version 12. Red: deleting the parent conjunct
+    fails its grid cell and the consequence oracle by name, deleting the carry
+    conjunct fails the wake-payload-mismatch invariant, and adding SKIP LOCKED
+    fails the contest's whole-unit check. NOT MET.
+43. PR5.2d: table size stays bounded over a simulated week, and can fail. A
+    `retention-soak` surface runs on the three dialects through the one
+    enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks;
+    a parent with an awaited child that completes; a parent that fails after its
+    child's completion woke it, which blocks the child's unit by parent and by
+    carry until the parent's own 48-hour window; a parent that sleeps past its
+    child's window, which blocks by parent; a failed task later retried; and a
+    cancelled task. A purge pass runs every simulated hour under windows of 12
+    hours completed, 12 cancelled and 48 failed, with fake now moved to
+    `nextWakeAtEpochMs`. A control run of the same seed with retention off gives
+    exact rows per unit. At each day boundary after hour 48, every counted table
+    (tasks, runs, checkpoints, waits, and events named `$task-done:`, read by
+    `sizes --queue`) is at most the bound built from the control's rows for the
+    units the policy still holds, plus one pass of lag. The control must exceed
+    that bound by at least three times by day 7, or the line fails as vacuous.
+    Outcomes sampled before each purge equal the control's, each pass's purged
+    set equals the oracle's set, and `engineHistoryViolations` is empty each
+    simulated day. Floors, measured and recorded in the PR: purged units above
+    zero for every table class; blocked-by-parent, blocked-by-carry and
+    blocked-by-age each above zero, reached by the cells named above; and all
+    168 arrivals at the terminal state their seed assigns, by the database
+    clock. The `purge` verb is a dry run unless `--execute`, refuses under an
+    active fake clock, refuses windows under 3,600 seconds, and for each unit
+    removed prints the task id, name, state, terminal instant, the idempotency
+    key's sha256, and rows per table. After a purge, `retry` of a purged failed
+    task answers `not-found` and says the task may have been retained out. Red:
+    a purge that deletes nothing fails the bound and the vacuity check, one that
+    drops the age conjunct fails set equality, and a driver stopped for a
+    simulated day fails the completion floor. NOT MET.
+44. PR5.4: the recurring workflow, alpha.1 in the loop, and the receipt checker.
+    A `periodic-digest` task registered in examples/vercel-turso/src/tasks.ts
+    runs one task per period under the idempotency key `digest-<period>`, makes
+    one external read (a GitHub ref, through an injected observer) and one
+    durable sleep, ends inside its period, and emits no caller event. Through
+    the example's own tests under fake time, 48 periods produce 48 completed
+    tasks, a failed period does not touch the next, and re-enqueuing a period
+    returns the same task. `pnpm verify:packages` passes, so the example
+    compiles against the packed tarballs. The example's migrate and receipt
+    scripts call `migrate()` only when `schemaVersion()` is below 5, and
+    otherwise print that the durablerun CLI manages the schema, which is tested
+    against line 32's fixture at the build's version. The week runs on alpha.1:
+    in line 32's alpha.1 consumer, `periodic-digest` and the example's awaiting
+    task run on the alpha.1 SDK over a libSQL file the CLI migrated to version
+    12, while the current CLI enqueues periods, sweeps, runs `stuck` and
+    `explain` on planted causes (an unregistered name, deferred by alpha.1's
+    reschedule path, and an await nobody emits), and the run purges. alpha.1
+    completes the tasks the CLI spawned, `explain` names each planted cause on
+    rows alpha.1 wrote, and the purged set is non-empty, holds at least one unit
+    of each terminal state alpha.1 reached, and equals line 42's oracle. alpha.1
+    runs under a fake clock set further in the past than the purge windows,
+    which alpha.1 honours because its clock reads the same `fake_now_ms` meta
+    row. The run then clears the clock and purges with the `purge` verb and
+    `--execute` under windows of at least 3,600 seconds, so the verb and its
+    report run on rows alpha.1 wrote. `pnpm cli selftest` sends every batch
+    label the command table can send, which an executor spy compares against the
+    table, including a `purgeUnit` of its own young unit that the barrier
+    refuses, and it refuses a queue that already holds tasks. The receipt
+    checker in apps/dogfood/src/receipt.ts accepts one well-formed week receipt
+    and refuses each of these by name: 6 days between first and last snapshot; a
+    missing daily snapshot; a `sizes` count one row over the bound; fewer than
+    160 of 168 periods found; a sealed hash that does not match the sha256 of
+    the injected task id, cause and nonce; an operator explanation that names a
+    different cause than the seal; a week with no `purge --execute` per day; and
+    a receipt with no selftest record. The bound for each counted table is the
+    start sample's count, plus (the completed window in hours plus 25) times the
+    rows per digest unit that line 43's soak measured for this task's shape,
+    plus the rows of the failed units the dry-run purge reports kept. A period
+    counts as found from the union of the per-day `purge --execute` reports,
+    which carry each removed unit's key sha256, and live `taskIdByKey` lookups,
+    and a fixture that drops one day's purge report fails the period count. Red:
+    each doctored fixture exits non-zero and the well-formed one exits zero. NOT
+    MET.
+
+**Receipt M1 (the maintainer's, outside the exit test):** a week of at least 168
+hours on the deployed alpha. Before the week, `pnpm cli selftest` passes on a
+branch or snapshot of the production database, and its output goes in the
+receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
+digest-<period> --queue digest --target <host>` hourly, on a queue of its own
+that the redeployed host drives, and `pnpm cli purge --queue digest --target
+<host> --completed-after <window> --cancelled-after <window> --execute --yes`
+runs at least daily with the windows of the maintainer's policy. `stats --json
+--queue digest` and `sizes --json --queue digest` are recorded at the start,
+once a day and at the end, each at or below line 44's bound. A second person
+injects one cause (an unregistered task name, or an await nobody emits) and
+publishes the sha256 of its task id, cause and a nonce before the operator
+starts, and the maintainer attests that ordering, since the checker can prove
+only the hash. The operator, holding the CLI and the store URL, finds the cause
+with `stuck --older-than`, names it with `explain`, and clears it, adding
+`--yes` themselves. Line 44's checker accepts the receipt.
+
+**Order:** PR5.0, this record, and then PR5.3a come first, and together they
+give a read-only tool for the deployed alpha and the harness that says whether
+alpha.1 runs on a database the CLI migrated. Then PR5.3b1 (after PR5.3a),
+PR5.3b2 (after PR5.3b1), PR5.3c (after PR5.3b1; it takes schema version 11), and
+PR5.3d (after PR5.3b2 and PR5.3c). PR5.2a is spec first: specs/Retention.tla
+under TLC and DESIGN.md section 3.12, with no TypeScript and no SQL. It depends
+only on this record, is built beside PR5.3b1 to PR5.3d, and merges after PR5.3d,
+so no second implementation PR is in flight. Then PR5.2c1 (after PR5.2a),
+PR5.2c2 (after PR5.2c1 and PR5.3c; schema version 12 is its first commit, and it
+is the one PR that can delete durable state), PR5.2d (after PR5.2c2 and PR5.3d),
+PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
+PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
+before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
+PR that adds a command, and section 3.12 is written by PR5.2a and completed by
+PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer decides on the
+two contract changes of DESIGN.md section 3.12, PR5.3c does not merge before the
+maintainer decides on the `enqueue_at_ms` plan-reader gate change, and PR5.2c2
+does not merge before the maintainer decides on the `fence_at_ms` one. A refusal
+is met by a docs pull request that first rewrites the lines it touches. If a
+contract change is refused, that pull request rewrites lines 40, 42, 43 and 44
+so that purge keeps every unit whose idempotency key may be presented again (the
+first change refused) or whose handle may still be awaited (the second). If the
+`enqueue_at_ms` change is refused, it rewrites lines 37, 39 and 44 and receipt
+M1: `stuck --older-than` leaves line 37, and line 39's script, line 44's run and
+receipt M1 are handed the task ids of the never-started and awaiting causes,
+which no clock leg holds. If the `fence_at_ms` change is refused, it rewrites
+line 42 before PR5.2c2 merges.
+
+**Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
+and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
+7); new hosted routes, hosted cancel, retry, explain or stats, an operator
+credential, and new members of the hosted authorization vocabulary, each a
+released-surface change, a release and a redeploy (trigger: the maintainer wants
+operators who hold no database credential); `enqueue`, `emit` and `result` over
+HTTP, since every verb but `tick` runs over a direct store URL and refuses
+`--url` (trigger: an operator who holds only the app URL and API token needs to
+drive the deployment); an audit trail of who cancelled, retried or emitted,
+which the engine does not record; retention of caller events, which would
+re-open first-write-wins for names an operator emits, and removal of
+PostgreSQL's `event_locks`, which needs a stated oldest supported build, so the
+week's workflow emits no caller event; trimming a live task's checkpoints,
+continue-as-new, and any schedule or cron primitive, so the recurring workflow
+is one task per period; a recurring workflow built as a chain of `ctx.spawn`
+children, which alpha.1 does not have (trigger: the maintainer wants the engine,
+not a cron, to be the scheduler); a task-name check in `enqueue` (trigger: a
+mistyped enqueue reaches a production queue); a `claimed_at_ms` column,
+percentiles, histograms, durable per-queue counters, a metrics sink and an OTel
+emitter (trigger: an operator who needs a histogram); a `wake` verb that makes a
+sleeping run due early, which no port can do (trigger: a stuck class that only
+such a write clears); a `tick` over a direct store, which exits 2 and names
+`sweep`; publishing the CLI, store-postgres or store-mysql, cutting alpha.2, and
+any redeploy beyond the example app's one task registration; queue discovery, a
+stored per-queue retention policy, a web UI, a TUI, `--watch` and `--wait`;
+bytes on disk, since the bound is rows; purging anything but whole terminal
+units, so rows with a NULL `fence_at_ms` and units past the checkpoint cap are
+kept and reported; the usage-API quota alerting, the BLOCKED runbook and the
+fleet migration sweep, which need accounts and stay under the PR5.2 entry; and
+assurance machinery the lines above do not need (a fuzz-walk equality for
+`stats`, a fuzz-walk check of `nextTransitionAtMs`, an SDK replay differential
+for purge, a generated classifier grid, and rewriting apps/dogfood `status` onto
+the new reads), with the trigger for each a wrong gauge, a wrong instant, or a
+purge mutant that survives the existing checks.
+
+**Held for the maintainer:** each of these is a supply or a decision that only
+the maintainer has, and no PR of this milestone makes it. Supply: a Turso
+database URL and token for the deployed alpha and a branch or snapshot of it for
+the selftest (ideally a read-only token too, which the repository cannot show
+Turso mints), the Vercel project and its CRON_SECRET with the example app
+redeployed once with `periodic-digest` registered and run with
+`DURABLERUN_QUEUE` set to `digest`, since a host drives only the one queue that
+variable names (so the build runs as a second deployment, unless the maintainer
+moves the alpha's own queue), the repository variable and secrets for the week's
+workflow, a second person for the sealed injection, and a calendar week. The
+migration of the deployed database: the CLI migrates it with the alpha.1 host
+left running, only after line 32's harness is green at the build's version,
+after a snapshot or branch on which `pnpm cli selftest` ran, in a quiet window
+with the finding query from the version 10 comment in
+packages/store-libsql/src/schema.ts run first (crossing version 10 held the
+libSQL writer 14.9 seconds on a cold 4.5 GB file, and under half a second with
+no call failing when that query ran first under no write lock), with a dry-run
+`purge` read before the first `purge --execute`, and never followed by the
+example's own migrate or receipt script from an alpha.1 checkout, whose
+`migrate()` takes a database at versions 0 to 4 up to 5 and refuses one recorded
+above 5; if the harness fails at some version, the deployed database stays at 5
+and retention there needs an alpha.2 release. Retention numbers and two contract
+changes: the completed and cancelled windows, whether failed tasks are ever
+purged (the plan keeps them, so a failed parent keeps its children), the
+producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
+unit cap, and approval of the two contract changes PR5.2a writes into DESIGN.md
+section 3.12, that an idempotency key dedupes for the window of its task's
+terminal state and that a child handle is valid until its unit is purged, after
+which an await is refused loudly. The one released-surface change:
+`FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
+checkpoints and to events, which needs a `changed` entry in
+scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
+before PR5.2c2 adds it. The metric definitions, above all that claim latency is
+the age of the oldest due run plus per-task start latency, with no
+`claimed_at_ms` column. Two `gate-changes:` entries for the libSQL plan reader,
+adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
+PR5.2c2, and a third if `sizes` falls back to a text statement. Whether
+direct-store access is acceptable: a database credential is full admin and
+bypasses the host's authorization, so the CLI redacts by default, requires
+`--target` on every write that opens a store and loads no `.env`, and the
+alternative, hosted operator routes with their own credential, is a non-goal
+here. Whether to type a store authentication or authorization failure apart from
+an outage: today a rejected password or token reaches the caller as a
+StoreUnavailableError, so under the plan it exits 6, which the table calls safe
+to repeat, and a forbidden write reaches the caller as a PermanentStoreError on
+PostgreSQL and MySQL (SQLSTATE class 42) and, by the libSQL executor's map, as a
+StoreUnavailableError on libSQL, while the table reserves exit 4 for
+unauthenticated or forbidden. Decisions the plan made that the maintainer may
+reverse: `purge` is a dry run unless `--execute`, with required windows and no
+defaults; `enqueue` requires `--key`; every write that opens a store requires
+`--target`, and `--queue` comes from argv only, with no TURSO_* or
+DURABLERUN_QUEUE fallback; suggestions never carry `--yes`, and `explain` never
+suggests `emit`; never-started tasks and untimed awaits are `waiting`, not
+`stuck`; `cancel` on a saga needs `--halt-rollback`; idempotency keys,
+user-authored failure text and every failed rollback's error, an SDK halt's
+included, are redacted like other user values, while task ids, task names, event
+names, checkpoint names and the step keys they hold print; each new port is one
+core implementation reached through store factories; `sizes` counts one queue;
+only `tick` uses HTTP; the week's workflow is one task per period produced by an
+external cron; a failed parent keeps its children in this first release; and
+there is no operator audit trail.
+
 ## Completed milestone — the follow-ups the reviews of the 2026-09-16 milestone deferred
 
 **Status: COMPLETE (named 2026-09-19, complete 2026-09-24).** PR3.4e merged as
 PR #94, the last product pull request of the milestone, and main at
-`278c0f0` meets every exit test below, lines 1 to 31. No milestone is current:
-the maintainer names the next one. The maintainer asked for every
+`278c0f0` meets every exit test below, lines 1 to 31. No milestone was current
+when it completed, and the maintainer named the next one, above, on 2026-09-24.
+The maintainer asked for every
 tractable follow-up that the reviews of the milestone named on 2026-09-16
 deferred or recorded as an option. Tractable means the repository and a
 development machine are enough: no account, secret, or decision that only the
@@ -5192,9 +5684,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   routing with versioned cache, multi-shard tick fan-out, driver adoption caps.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics
   (queue depth, claim latency, lease expiries); usage-API quota alerting +
-  BLOCKED runbook; fleet migration sweep. From PR3.3: event cleanup must not
-  remove a completion event whose task can still be awaited.
+  BLOCKED runbook; fleet migration sweep. The operable alpha milestone above
+  owns the retention and the metrics: retention as PR5.2a (specs/Retention.tla
+  and DESIGN.md section 3.12), PR5.2c1 (the terminal stamp and two history
+  conditions), PR5.2c2 (schema version 12 and the purge port) and PR5.2d (the
+  `purge` verb and the simulated-week soak), exit test lines 40 to 43, and the
+  metrics as `stats` and `sizes` in PR5.3c, line 37. The quota alerting, the
+  BLOCKED runbook and the fleet migration sweep need accounts, are not in that
+  milestone, and stay here. From PR3.3: event cleanup must not remove a
+  completion event whose task can still be awaited. The milestone proposes one
+  relaxation of it: a child handle is valid until its unit is purged, after
+  which an await is refused loudly and registers no wait. PR5.2a writes it into
+  DESIGN.md section 3.12, and it holds only once the maintainer approves it.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
+  The operable alpha milestone above owns it as packages/cli: PR5.3a (the tool,
+  its schema window, `result` and `checkpoints`, and the alpha.1 harness),
+  PR5.3b1 (`inspect` over new operator reads), PR5.3b2 (`explain`), PR5.3c
+  (`stuck`, `stats`, `sizes` and schema version 11) and PR5.3d (the drive verbs
+  and the operator drill), exit test lines 32 to 39.
 - **PR5.3a operator CLI, read-only**: IN REVIEW. Exit test lines 32, 33 and 34 of the
   operable alpha milestone, which PR5.0 records. `packages/cli` is private with no `bin`
   field, run as `pnpm cli <verb>` with no `.env` file loaded, and DESIGN.md section 3.11
