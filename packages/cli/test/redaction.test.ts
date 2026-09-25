@@ -10,6 +10,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { VERBS, type Verb } from '../src/commands.js'
+import { type Io, lastCatch } from '../src/main.js'
 import { failureReason, resultView } from '../src/render.js'
 import {
   type CliDb,
@@ -180,6 +181,30 @@ describe('redaction', () => {
       }
     }
   }, 120_000)
+
+  it("the bin's last catch prints an unexpected error's name and nothing of its message or fields", async () => {
+    let printed = ''
+    const io: Io = {
+      out: (text) => {
+        printed += text
+      },
+      err: (text) => {
+        printed += text
+      },
+    }
+    const thrown = Object.assign(new TypeError(`Invalid URL mysql://root:${CREDENTIAL}@x`), {
+      input: `mysql://root:${CREDENTIAL}@x`,
+    })
+    const exit = await lastCatch(io, () => Promise.reject(thrown))
+    expect(
+      { exit, printed: printed.includes(CREDENTIAL), named: printed.includes('TypeError') },
+      'mutation-verdict:behavior:cli-last-catch-prints-only-a-name',
+    ).toEqual({ exit: 1, printed: false, named: true })
+    printed = ''
+    expect(await lastCatch(io, () => Promise.reject(`thrown ${CREDENTIAL}`))).toBe(1)
+    expect(printed).not.toContain(CREDENTIAL)
+    expect(await lastCatch(io, () => Promise.resolve(0))).toBe(0)
+  })
 
   it('the bin prints no credential from a store URL that does not parse, and exits 2', () => {
     for (const url of [

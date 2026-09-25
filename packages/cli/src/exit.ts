@@ -8,7 +8,8 @@ export const EXITS = Object.freeze([
   {
     code: 1,
     name: 'internal',
-    meaning: 'an error the CLI does not expect, a defect; its message prints only with --reveal',
+    meaning:
+      "an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch",
   },
   {
     code: 2,

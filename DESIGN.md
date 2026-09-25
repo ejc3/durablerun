@@ -5536,7 +5536,13 @@ override for that file, and it returns ports narrowed to the calls a command may
 never an executor: the fake clock's setter and `claim` cannot be written. A database
 credential is full admin: it bypasses section 3.5's hosted authorization port, which
 decides only the hosted routes' four operations, and the rows it reaches hold params,
-checkpoints and event payloads in plaintext (section 3.5, observability).
+checkpoints and event payloads in plaintext (section 3.5, observability). So the CLI's
+own messages never quote the store URL or the token. A URL that does not parse, one whose
+user name or password does not percent-decode, and a libSQL server's URL that carries a
+user name or password, which its client would quote in an error, are refused with exit 2
+before anything opens. The bin's last catch prints only the name of an error nothing
+answered, beside a fixed sentence, and exits 1, because a foreign error's message and
+fields can quote the URL it was given.
 
 **Safety defaults.** Each store package exports `READABLE_SCHEMA_WINDOW`, the schema
 versions its reads accept: 5 to the current version for libSQL, because the release
@@ -5574,7 +5580,7 @@ same table, which a test holds equal to this one.
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | done | the command did what it says |
-| 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal |
+| 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
 | 2 | usage | usage, confirmation-required or target-mismatch; nothing was changed |
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | unauthenticated or forbidden |

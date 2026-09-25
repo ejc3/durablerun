@@ -36,6 +36,29 @@ export interface Io {
   err(text: string): void
 }
 
+/**
+ * What the bin prints for an error nothing answered, and the exit it ends in. A foreign
+ * error's message and fields can quote the store URL, its password included, so only the
+ * error's name prints, beside a fixed sentence.
+ */
+export function reportCrash(io: Io, error: unknown): number {
+  const name = error instanceof Error ? error.name : typeof error
+  const shown = /^[A-Za-z_$][\w$]{0,63}$/.test(name) ? name : 'error'
+  io.err(
+    `durablerun: an unexpected ${shown} ended the command. Its message is not printed, because it can quote the store URL and its password. This is a defect of the CLI.\n`,
+  )
+  return exitCode('internal')
+}
+
+/** The bin's last catch: the exit of `body`, or of the error it threw, as reportCrash prints it. */
+export async function lastCatch(io: Io, body: () => Promise<number>): Promise<number> {
+  try {
+    return await body()
+  } catch (error) {
+    return reportCrash(io, error)
+  }
+}
+
 interface Answer {
   readonly exit: ExitName
   readonly view: Record<string, unknown>

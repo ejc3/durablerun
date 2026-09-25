@@ -141,7 +141,10 @@ export function storeScheme(url: string): string | undefined {
 
 /**
  * What a write names with `--target`: the path of a `file:` URL, the whole of `:memory:`,
- * and the host of every other URL, its port included when it names one.
+ * and the host of every other URL, its port included when it names one. A URL that does not
+ * parse is refused, and so is a libSQL server's URL that carries a user name or a password,
+ * which the client would quote in its errors. No refusal quotes the URL, because a store URL
+ * can hold a password, and a database credential is full admin.
  */
 export function storeTarget(url: string): string {
   const scheme = storeScheme(url)
@@ -153,7 +156,24 @@ export function storeTarget(url: string): string {
     const path = rest.indexOf('/', 2)
     return path < 0 ? '' : rest.slice(path)
   }
-  return new URL(url).host
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+    // A driver percent-decodes the user name and the password, so one that does not decode
+    // fails there, with no message this CLI chose.
+    decodeURIComponent(parsed.username)
+    decodeURIComponent(parsed.password)
+  } catch {
+    throw new StoreUrlError(
+      'DURABLERUN_STORE_URL does not parse as a URL. It is not printed, because it can hold a password; a password must percent-encode every character a URL reserves, such as # / ? @ % and a space',
+    )
+  }
+  if (LOADERS[scheme] === libsql && (parsed.username !== '' || parsed.password !== '')) {
+    throw new StoreUrlError(
+      'a libSQL URL carries no user name or password, and its client would quote one in its errors; the URL is not printed. Put the token in DURABLERUN_STORE_TOKEN',
+    )
+  }
+  return parsed.host
 }
 
 function unknownScheme(): string {
@@ -161,6 +181,7 @@ function unknownScheme(): string {
 }
 
 export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
+  storeTarget(url)
   const scheme = storeScheme(url)
   const loader = scheme === undefined ? undefined : LOADERS[scheme]
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())
