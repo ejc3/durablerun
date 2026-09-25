@@ -50,6 +50,8 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     lines: (_db, seeded) => [
       ...Object.values(seeded).map((taskId) => ['result', taskId, '--queue', QUEUE]),
       ['result', 'no-such-task', '--queue', QUEUE],
+      ['result', 'x'.repeat(256), '--queue', QUEUE],
+      ['result', '--queue', QUEUE],
     ],
     shows: true,
   },
@@ -57,6 +59,8 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     lines: (_db, seeded) => [
       ['checkpoints', seeded.completed, '--queue', QUEUE],
       ['checkpoints', seeded.completed, '--queue', QUEUE, '--attempt', '1'],
+      ['checkpoints', seeded.completed, '--queue', QUEUE, '--attempt', '0'],
+      ['checkpoints', 'no-such-task', '--queue', QUEUE],
     ],
     shows: true,
   },
@@ -361,6 +365,22 @@ describe('redaction', () => {
       false,
     )
     expect(JSON.stringify(view)).not.toContain(SENTINEL)
+    // A rollback that throws an error named like an SDK halt is stored in the halt's shape,
+    // so the error is redacted whole. Only the two halt names the SDK writes may print, and
+    // the last name here is neither.
+    for (const name of ['$SagaStateCorrupt', '$RollbackNotRegistered', `$${SENTINEL}`]) {
+      const halt = JSON.stringify(
+        resultView(
+          {
+            state: 'failed',
+            failureReasonJson: REASON_CANCELLED,
+            rollback: { outcome: 'failed', errorJson: JSON.stringify({ name, message: SENTINEL }) },
+          },
+          false,
+        ),
+      )
+      expect({ name, printed: halt.includes(SENTINEL) }).toEqual({ name, printed: false })
+    }
     expect(
       JSON.stringify(
         resultView(

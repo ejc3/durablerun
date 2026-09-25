@@ -17,6 +17,7 @@ import {
   type FaultSite,
   QUEUE,
   SELECTED,
+  SENTINEL,
   type SeededTasks,
   type StartingSchema,
   faulting,
@@ -38,7 +39,8 @@ import {
  * state. After each case, running the same command again reaches the state one successful
  * run leaves, and for a read prints what that run printed. A read also leaves every table as
  * it found it, and migrate leaves a recorded version between the one it started from and
- * the build's.
+ * the build's. Every database holds the redaction sentinel of line 33 where it holds tasks,
+ * and no run of any case prints it.
  */
 
 /** The matrix's kinds, which the CLI injects under the same names. A new kind fails to compile. */
@@ -134,6 +136,16 @@ function meets(spec: CommandSpec, declared: string, label: string): boolean {
   )
 }
 
+/** Line 33's check: a run without --reveal prints the sentinel in neither stream. */
+function expectNoSentinel(
+  run: { readonly stdout: string; readonly stderr: string },
+  where: string,
+) {
+  expect(`${run.stdout}${run.stderr}`.includes(SENTINEL), `${where} printed the sentinel`).toBe(
+    false,
+  )
+}
+
 /** Every sending of every label, in order, of one run without a fault. */
 function sitesOf(labels: readonly string[]): FaultSite[] {
   const seen = new Map<string, number>()
@@ -162,6 +174,7 @@ async function faultSurface(
     from = await clean.db.admin.schemaVersion()
     const run = await runCli(clean.line, clean.db.env, recording.opener)
     expect(run.exit, run.stdout).toBe(0)
+    expectNoSentinel(run, `${dialect} ${verb} from ${scenario.name}: the clean run`)
     settled = await clean.db.dump()
     answer = run.stdout
   } finally {
@@ -185,6 +198,7 @@ async function faultSurface(
           where,
           exit: exitCode(faultExit(spec, site.label, fault)),
         })
+        expectNoSentinel(hit, where)
         if (spec.writes) {
           const recorded = await db.admin.schemaVersion()
           expect(
@@ -196,6 +210,7 @@ async function faultSurface(
         }
         const again = await runCli(line, db.env)
         expect(again.exit, `${where}: the repeat`).toBe(0)
+        expectNoSentinel(again, `${where}: the repeat`)
         expect(await db.dump(), `${where}: the repeat's state`).toBe(settled)
         if (spec.repeat === 'read') expect(again.stdout, `${where}: the repeat`).toBe(answer)
         cases++
