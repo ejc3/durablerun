@@ -5201,13 +5201,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   holds its command table, transport, safety defaults, redaction rule and exit codes. Its
   commands are `help`, `doctor`, `migrate`, `result` and `checkpoints`, over ports that
   exist today; no batch, statement or schema version is added. Each store package exports
-  `READABLE_SCHEMA_WINDOW` beside `CURRENT_SCHEMA_VERSION`, an addition to store-libsql's
-  released surface: versions 5 to 10 for libSQL, and 10 alone for PostgreSQL and MySQL. The
+  `READABLE_SCHEMA_WINDOW` beside `CURRENT_SCHEMA_VERSION` (versions 5 to 10 for libSQL, and
+  10 alone for PostgreSQL and MySQL) and `SCHEMA_VERSION_NOTES`, what migrate prints before
+  a version, and store-libsql exports `fileUrlPath`, the path its client opens for a `file:`
+  URL; all three are additions to store-libsql's released surface. The
   alpha.1 harness, run by `verify:packages`, found the release alpha.1 running its cycle on
   libSQL databases the CLI left at every version from 5 to 10, which settles the design's
-  open question of whether alpha.1 runs past version 5 at all. The registry holds 1135
-  mutations where main holds 1125, ten of them the CLI's guards, and the base gate's arm is
-  keyed on main's digest and exempts their nine markers.
+  open question of whether alpha.1 runs past version 5 at all. The registry holds 1147
+  mutations where main holds 1125, twenty-two of them the CLI's guards, and the base gate's
+  arm is keyed on main's digest and exempts their nineteen markers.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
