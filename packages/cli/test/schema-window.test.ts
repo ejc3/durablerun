@@ -2,7 +2,15 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { STORE_COMMANDS, commandLine, openCliDb, runCli, seedTasks } from './support.js'
+import {
+  STORE_COMMANDS,
+  commandLine,
+  comparedLines,
+  openCliDb,
+  runCli,
+  seedTasks,
+  withoutDialect,
+} from './support.js'
 
 /**
  * The schema window is the CLI's safety property: a build reads only the versions its store
@@ -71,6 +79,34 @@ describe('the schema window on libSQL', () => {
       expect(await empty.dump()).toBe(before)
     } finally {
       await empty.close()
+    }
+  })
+
+  it('a read of a database migrated through the first five versions answers as it does at the current version', async () => {
+    const answers = async (schema: 5 | 'current'): Promise<Map<string, unknown>> => {
+      const db = await openCliDb('libsql', 'window-v5', schema)
+      try {
+        const seeded = await seedTasks(db)
+        const found = new Map<string, unknown>()
+        for (const line of comparedLines(seeded)) {
+          const run = await runCli(line, db.env)
+          expect(run.exit === 0 || run.exit === 8, `${line.join(' ')}: ${run.stdout}`).toBe(true)
+          found.set(line.join(' '), withoutDialect(run.stdout))
+        }
+        return found
+      } finally {
+        await db.close()
+      }
+    }
+    const atFive = await answers(5)
+    const atCurrent = await answers('current')
+    expect([...atFive.keys()]).toEqual([...atCurrent.keys()])
+    for (const [line, answer] of atFive) {
+      // doctor reports the version it found, and nothing else of its answer may differ.
+      const expected = atCurrent.get(line) as Record<string, unknown>
+      expect(answer, line).toEqual(
+        line.startsWith('doctor') ? { ...expected, recordedSchemaVersion: 5 } : expected,
+      )
     }
   })
 })

@@ -457,3 +457,26 @@ export function commandLine(
 export const STORE_COMMANDS: readonly CommandSpec[] = VERBS.map((verb) => COMMANDS[verb]).filter(
   (spec) => spec.opensStore,
 )
+
+/** An event row whose payload is SQL NULL, which version 10 refuses to migrate over. */
+export async function plantNullPayload(db: CliDb): Promise<void> {
+  await db.raw.batch('fixture:null-payload', [
+    {
+      sql: 'INSERT INTO events (queue, event_name, payload) VALUES (?, ?, NULL)',
+      args: [QUEUE, 'written-by-another-port'],
+    },
+  ])
+}
+
+/** The command lines whose answers must match on every dialect, for one seeded database. */
+export function comparedLines(seeded: SeededTasks): string[][] {
+  const lines: string[][] = [['doctor', '--queue', QUEUE, '--json']]
+  for (const taskId of [...Object.values(seeded), 'no-such-task']) {
+    lines.push(['result', taskId, '--queue', QUEUE, '--json'])
+    lines.push(['result', taskId, '--queue', QUEUE, '--json', '--reveal'])
+    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json'])
+    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json', '--reveal'])
+  }
+  lines.push(['checkpoints', seeded.completed, '--queue', QUEUE, '--json', '--attempt', '1'])
+  return lines
+}
