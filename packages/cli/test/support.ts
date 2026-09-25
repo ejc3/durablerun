@@ -276,10 +276,25 @@ const TABLE_LIST: Readonly<Record<EnrolledDialect, string>> = {
   mysql: `SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`,
 }
 
-const SCHEMA_OBJECTS: Readonly<Record<EnrolledDialect, string>> = {
-  libsql: `SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name`,
-  postgres: `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname`,
-  mysql: `SELECT table_name, index_name, column_name, seq_in_index FROM information_schema.statistics WHERE table_schema = DATABASE() ORDER BY table_name, index_name, seq_in_index`,
+/**
+ * The catalog reads a dump holds besides every table's rows. On libSQL, sqlite_master holds
+ * the text of every table, index and trigger. On PostgreSQL and MySQL, every column with its
+ * type, nullability and default, every index, and every trigger, and on PostgreSQL every
+ * constraint.
+ */
+const SCHEMA_OBJECTS: Readonly<Record<EnrolledDialect, readonly string[]>> = {
+  libsql: [`SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name`],
+  postgres: [
+    `SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`,
+    `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname`,
+    `SELECT conrelid::regclass::text AS on_table, conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE connamespace = current_schema()::regnamespace ORDER BY conname`,
+    `SELECT event_object_table, trigger_name, event_manipulation, action_timing, action_statement FROM information_schema.triggers WHERE trigger_schema = current_schema() ORDER BY trigger_name, event_manipulation`,
+  ],
+  mysql: [
+    `SELECT table_name, column_name, column_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position`,
+    `SELECT table_name, index_name, column_name, seq_in_index FROM information_schema.statistics WHERE table_schema = DATABASE() ORDER BY table_name, index_name, seq_in_index`,
+    `SELECT event_object_table, trigger_name, event_manipulation, action_timing, action_statement FROM information_schema.triggers WHERE trigger_schema = DATABASE() ORDER BY trigger_name`,
+  ],
 }
 
 function comparable(value: unknown): unknown {
@@ -297,13 +312,13 @@ function rowText(row: SqlRow): string {
   )
 }
 
-/** Every table's rows, sorted, and the schema's objects, as one text. */
+/** Every table's rows, sorted, and the schema's objects the catalog reads above name, as one text. */
 async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<string> {
-  const [tables, objects] = await raw.batch(
+  const [tables, ...catalogs] = await raw.batch(
     'fixture:dump-catalog',
     [
       { sql: TABLE_LIST[dialect], args: [] },
-      { sql: SCHEMA_OBJECTS[dialect], args: [] },
+      ...SCHEMA_OBJECTS[dialect].map((sql) => ({ sql, args: [] })),
     ],
     'read',
   )
@@ -316,7 +331,7 @@ async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<strin
           names.map((table) => ({ sql: `SELECT * FROM ${table}`, args: [] })),
           'read',
         )
-  const lines = [`objects ${JSON.stringify((objects?.rows ?? []).map(rowText))}`]
+  const lines = catalogs.map((objects) => `objects ${JSON.stringify(objects.rows.map(rowText))}`)
   names.forEach((table, index) => {
     const rows = (results[index]?.rows ?? []).map(rowText).sort()
     lines.push(`${table} ${JSON.stringify(rows)}`)
