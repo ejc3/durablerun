@@ -232,7 +232,11 @@ describe('TLA tool artifact', () => {
       const output = `${result.stdout}\n${result.stderr}`
       expect(result.status, output).toBe(0)
       const lists = (await readdir(specs)).filter((file) => file.endsWith('.mutants.json'))
-      expect(lists.sort()).toEqual(['ChildTasks.mutants.json', 'Sagas.mutants.json'])
+      expect(lists.sort()).toEqual([
+        'ChildTasks.mutants.json',
+        'Retention.mutants.json',
+        'Sagas.mutants.json',
+      ])
       for (const list of lists) {
         const entries = JSON.parse(await readFile(join(specs, list), 'utf8')) as readonly unknown[]
         const model = list.slice(0, -'.mutants.json'.length)

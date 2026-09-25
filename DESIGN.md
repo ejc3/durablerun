@@ -1206,7 +1206,10 @@ One invocation executes one claimed run to its next suspension point:
     deadline bounds it, as it bounds an await cycle.
   - The completion event outlives every await of it. Event cleanup must not
     remove one while its task can still be awaited, or a late await would
-    register a wait that nothing will ever wake.
+    register a wait that nothing will ever wake. Retention (§3.12) proposes
+    relaxing this, awaiting the maintainer's approval: a completion event goes
+    only with its task's whole unit, and an await after that is refused and
+    registers nothing.
   - A timed await that comes due consumes its wait row and returns no
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
@@ -5508,6 +5511,210 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     replay would skip memoized steps whose effects were compensated.
   - A task the sweeps fail at an infrastructure cap ROLLS BACK like any other
     terminal failure.
+
+### 3.12 Retention: the purge of terminal task units (proposed, modeled, not built)
+
+Section 3.11 is the operator surface, which PR5.3a writes. This section keeps
+its number so that the two can land in either order, and until 3.11 lands, 3.10
+is followed by 3.12.
+
+Tasks, runs, checkpoints, and events grow without bound today: no store
+deletes one. This section is the protocol that bounds them by deleting whole
+terminal task units. `specs/Retention.tla` models it ahead of its
+SQL, and TLC checks it. No store sends a purge batch yet, so the model's ledger
+lists the purge as having no batch, and the two contract changes at the end of
+this section await the maintainer's approval before anything that depends on
+them is built.
+
+- **The unit.** One terminal task and what only it owns: its task row, its
+  runs, its checkpoints, the waits naming its runs, and its completion event
+  `$task-done:<taskId>`. A unit is deleted whole in one fenced batch, never in
+  parts. A half-deleted failed task would let `retryTask` revive it with no
+  memos, and every step would then run again with no error. The model's
+  `RetentionProbeChunkedPurge` deletes the task row in a second batch and shows
+  exactly that revival.
+- **Scope and policy.** Only completed, failed, and cancelled tasks are purged,
+  and only as whole units. A live task is never touched. The policy is a value
+  per invocation, `RetentionPolicy { completedSeconds, cancelledSeconds,
+  failedSeconds? }`, each an integer of at least 3,600 checked in core. A
+  state the policy does not name is kept forever. There is no default policy
+  and none is stored in the database. Failed tasks are kept unless the policy
+  names them, because `retryTask` can revive them.
+- **Age.** A unit's age is read from `tasks.fence_at_ms`, the stamp its
+  terminal batch writes from the ending run's instant, compared in SQL against
+  database now minus the window, so a client passes only a duration (§3.4 rule
+  3). A NULL stamp is never selected. The stamp is the last write of the task
+  row, not only of its ending: the stamp of a task that has slept for days is
+  days old. So the age alone never selects a task, and the barrier reads the
+  state beside it (`RetentionProbeLiveTask`).
+- **The barrier.** A unit is purged only when all five conditions hold, read
+  inside the purge batch's compare-and-set, at the instant of deletion. A list
+  of candidates read earlier is only a list of candidates.
+  - B1. The task is in a state the policy names, its stamp is an in-range
+    integer, and the stamp is at least the window old.
+  - B2. No run of the task is live. Tasks mirror their runs, so B1 implies this,
+    and it is a defence.
+  - B3. No run of another unit in the child's queue, in any state, holds the
+    child's outcome: a `wake_event` equal to the completion event's name with a
+    non-null `event_payload`. A woken run keeps both columns until `complete`
+    or `suspend` clears them, and a failed or cancelled run never clears them.
+    A run that names the event with no payload does not block. A parked run
+    holds `wake_event` with no payload, and keeps it when the claim of its
+    timed await that came due consumes the wait and when its task is cancelled
+    while it is parked. No reader needs the child through such a run: the
+    claim reads a wake with no payload as a timeout, and a retry or a revival
+    carries the wake to the successor run, whose replay of the await answers
+    timed out from it without reading the child. A live parked run is held by
+    B4 through its wait row instead. A run of the unit itself never blocks it,
+    because the batch deletes that run with the unit. B3 is the delete-time
+    form of the invariant library's `payload/event-missing` condition, which
+    flags a run whose `event_payload` is not null and whose event is missing,
+    so the library checks B3 after every purge. The model holds it with
+    `CarrierKeepsEvent`.
+  - B4. No wait row names the completion event. A wait on an ended task exists
+    only when an older build ended it under the wait, which the deploy rule of
+    §3.2 forbids. The condition keeps the task that a revival would need to
+    wake that waiter, and the model holds it with the deploy rule lifted.
+  - B5. The spawning parent, whose id one core function parses from the
+    child's reserved key (the inverse of `childSpawnKey`), is absent,
+    completed, or cancelled. It is looked up by `task_id` alone and never only
+    in the child's queue: `ctx.spawn` takes a queue option, the key does not
+    encode the parent's queue, and a live parent in another queue whose child
+    was purged would find its replay key free and spawn a second child with no
+    error (`RetentionProbeParentInAnotherQueue`, `RetentionProbeSecondChild`).
+    A key that starts with `$spawn:` and does not parse keeps its unit. A
+    failed parent keeps its children until it is purged itself, whether or not
+    its failure began a saga, and so does a parent that is rolling back. Only a
+    parent `retryTask` can revive strictly needs the rule: a parent rolling back
+    never reads its child again, and `retryTask` refuses a task whose saga
+    began. The first release keeps the simpler rule, which stays right if a
+    saga ever becomes revivable. No property of the model holds B5's block of
+    a parent that is rolling back or failed with a saga, nor its admission of a
+    completed or cancelled parent: a model run that admits a rolling-back and a
+    saga-failed parent stays green on every configuration,
+    and a rule that waited for a completed or cancelled parent's own purge
+    would only delay the child's under any policy the type can express. The
+    barrier grid's completed, cancelled, saga-failed, and rolling-back parent
+    cells hold those parts (PR5.2c2, BUILD.md exit test line 42). The lookup
+    assumes that one database holds every task, so a parent it cannot find by
+    `task_id` reads as absent. That holds while `ctx.spawn` writes to the store
+    the parent runs on. Once tasks are sharded across databases (§3.7), a spawn
+    routed to another shard would leave a live parent that reads as absent, and
+    B5 must then keep a unit whose parent it cannot find.
+- **The batch.** The compare-and-set stamps the task row, then deletes keyed on
+  that stamp remove the checkpoints, the waits, the runs, and the completion
+  event, and the task row goes last. The batch is atomic, so no reader sees it
+  half done, and the order follows the delete key paths: a wait is reached
+  through the run it names (`runs-to-waits`), so the waits go before the runs;
+  the checkpoints and the completion event are keyed by the task's id, through
+  the relations `tasks-to-checkpoints` and `tasks-to-events` that PR5.2c2 adds;
+  and every delete is keyed on the task row's stamp, so the row goes last. B3
+  reads the runs of a queue by `wake_event` in any state. MySQL's `runs_woken
+  (queue, wake_event, state)` covers every state, but libSQL's and PostgreSQL's
+  `runs_woken` is partial to pending runs, so PR5.2c2's schema version 12 adds
+  `runs_wake_holders (queue, wake_event) WHERE wake_event IS NOT NULL` on those
+  two, without which the plan check refuses the read. The batch takes the
+  completion event's lock through its lock coordinate,
+  as a terminal batch does, which makes it atomic and mutually exclusive with
+  every await, emit, and terminal batch of that event. It deletes the unit's
+  completion event and never a caller's event, and PostgreSQL's `event_locks` is
+  untouched because a completion event leaves no row there. A task ended by a
+  build older than child tasks has no completion event, and that delete matches
+  nothing (`RetentionProbeLegacyNoEvent`). No purge statement uses SKIP LOCKED:
+  InnoDB's SKIP LOCKED has skipped a row the batch had stamped itself. Each
+  delete carries a row-count check against the unit the compare-and-set read.
+  The `record-task-done` batch stays fenced on the stamp of the row it read, or
+  a purge between its read and its write would leave a completion event with no
+  task (`RetentionProbeUnfencedMaterialize`).
+- **After a purge,** `getTaskResult` and `retryTask` answer as for a task that
+  never existed, and an await of the task is refused.
+- **What keeps a unit forever,** by design: a failed spawning parent the policy
+  keeps; a run that failed or was cancelled while holding the child's outcome,
+  while the run's own unit is kept, because its task is in a state the policy
+  keeps or for another reason in this list; and a wait that an older build left
+  stranded. The model's liveness property, `AgedUnblockedIsPurged`, says the
+  barrier keeps a unit forever for no other reason the model can express.
+  Outside the model, four more things keep a unit: a NULL stamp, which is never
+  selected; a key that starts with `$spawn:` and does not parse; once PR5.2c2
+  adds the cap, a unit with more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`;
+  and a cycle of runs that hold each other's outcomes, which keeps every unit
+  in it even under a policy that names every state. Such a cycle needs a
+  `retryTask` revival. A run holds the outcome of a task that ended while the
+  run's own task was live, so without a revival each task in a cycle ended
+  after the task whose outcome it holds, which no cycle allows. With one it is
+  reachable: B parks on A, A fails and wakes B with
+  its outcome, `retryTask` revives A, A parks on B, B is cancelled before its
+  claim, which wakes A with B's outcome, and A is cancelled before its claim.
+  Each cancelled run then holds the other task's outcome. BUILD.md records the
+  remedy as an option with its trigger.
+
+**Two contract changes, proposed and awaiting the maintainer's approval.** Both
+follow from bounding rows by deleting task rows.
+
+1. **An idempotency key dedupes for the window of its task's terminal state.**
+   A purged task frees its key, and a producer that redelivers the key after
+   that gets a fresh task (`RetentionProbeRedeliveredKey`). Within the window
+   the key still dedupes, because no unit is purged before its window ends
+   (`PurgeOnlyDeadAndOld`). The completed and cancelled windows must therefore
+   exceed the producer's redelivery horizon. A spawn that reuses a key while
+   its unit is being purged must create a fresh task and must not throw. That
+   is a requirement on PR5.2c2, not a property of today's stores: every store's
+   spawn throws when its insert loses and its read of the key then finds no
+   task (`the task insert lost but no existing task explains it`). Nothing
+   deletes a task row today, so no store can reach that throw, and a purge
+   makes it reachable. PR5.2c2's contest drives the race on every dialect, and
+   when the insert loses and no task explains it, the store retries the insert
+   once, because the key is then free and a second loss is real.
+2. **A child handle is valid until its unit is purged, and an await after that
+   fails loudly.** The spawning parent's handle stays valid for as long as the
+   parent can run, by B5. A handle given to any other task cannot be found
+   from rows, so its lifetime is the window, and the window bounds every await
+   of it, a replay's included. An await after the purge is refused with
+   `ChildAwaitRefusedError('no-such-task')` and registers no wait
+   (`AwaitOnPurgedIsRefused`, and `RetentionProbeLateHandle` shows the refusal
+   is reachable). This relaxes §3.2's rule that event cleanup must not remove
+   a completion event while its task can still be awaited. The reason for that
+   rule still holds: no await registers a wait that nothing will ever wake,
+   because an await of a purged task is refused rather than registered.
+
+**The model.** `specs/Retention.tla` holds one child, its spawning parent (in
+the child's queue, in another queue, or absent, one per configuration), and a
+third party that holds the child's handle, beside the engine actions the purge
+can race: spawn and its replay, every terminal batch with its completion event
+and wake, the three awaits, the woken claim and the timed wait, sagas,
+`retryTask`, an older build's ending, and database time. TLC checks these
+properties under weak fairness on every configuration. Each names its
+executable twin: the ones the invariant library already has, and the ones
+PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
+
+| Property | What it says | Executable twin |
+|---|---|---|
+| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2); for a task row with no run: a condition PR5.2c1 adds |
+| `PurgeOnlyDeadAndOld` | only a task in a policy state, a window old, is purged | the barrier grid's state and age legs (PR5.2c2) |
+| `ReplayableParentKeepsChild` | a parent that can still run finds its child | a live or revivable task's `$spawn` memo names an existing task (PR5.2c1), and the consequence oracle (PR5.2c2) |
+| `NoStrandedWaiter` | a wait on a completion event has its task | a wait on a completion event has its task or its event (PR5.2c1) |
+| `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
+| `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the purge label's crash and duplicate cells (PR5.2c2) |
+| `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
+| `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
+| `TypeOK` | the variables keep their types | none needed |
+
+`WholeUnit` has two halves, and the invariant library holds one of them today:
+no run, checkpoint, wait, or completion event outlives its task. The other half,
+a terminal task row whose runs were deleted, has no executable twin yet. The
+library flags a task with no run only while the task is live, and its accounting
+conditions skip a task with no run, so a purge that deleted the runs,
+checkpoints, and event but kept the task row would pass `engineHistoryViolations`.
+PR5.2c1 adds the condition that every task row has a run, as issue #103 records.
+The condition holds today, because every task is inserted with its first run and
+nothing deletes a run.
+
+Each mutant in `specs/Retention.mutants.json` deletes or bends one guard of the
+barrier or the batch and is caught by the property it names, and each probe
+lifts one condition or one assumption and finds its witness. The model does not
+cover several parents or a chain of ancestors (each unit names only its own
+parent, so a chain of failed ancestors is purged top-down one link at a time),
+caller events, sizes, or lock order, which the concurrency contest owns.
 
 ## 4. What "ticks" mean here — direct answers to the original questions
 

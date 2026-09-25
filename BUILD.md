@@ -51,11 +51,12 @@ section 3.12 (retention) will hold the design, written by the PRs named below;
 this section is the plan.
 
 **Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
-The exit test is lines 32 to 44 below, and none is met. Each PR marks its own
-lines met, with the evidence in its own diff. The milestone is complete when
-lines 32 to 44 are all met, which PR5.5 records. The maintainer's live week on
-the deployed alpha is receipt M1, outside the numbered lines, and M1 is recorded
-met only when its receipt exists and line 44's checker accepts it.
+The exit test is lines 32 to 44 below, and each line says whether it is met.
+Each PR marks its own lines met, with the evidence in its own diff. The
+milestone is complete when lines 32 to 44 are all met, which PR5.5 records. The
+maintainer's live week on the deployed alpha is receipt M1, outside the numbered
+lines, and M1 is recorded met only when its receipt exists and line 44's checker
+accepts it.
 
 **Exit test:**
 
@@ -146,10 +147,15 @@ met only when its receipt exists and line 44's checker accepts it.
     integer a read consumes, a value outside `PERSISTED_INTEGER_BOUNDS`
     (fractional, negative, past `MAX_EPOCH_MS`) appears in the answer's
     `corrupt` list: it is never skipped and never throws. `taskIdByKey` recovers
-    a task from its idempotency key. Every count and instant is a JavaScript
-    number on all three dialects, and no list order depends on a text collation.
-    Red: a count returned as a string fails that dialect by name, and deleting
-    one field's guard fails that field's corrupt case. NOT MET.
+    a task from its idempotency key. `parseChildSpawnKey`, beside
+    `childSpawnKey` in core, returns the parent id and the replay key a child's
+    reserved key was built from, and a generated round-trip case covers parent
+    ids and replay keys that hold the delimiter. The parent condition of
+    specs/Retention.tla and DESIGN.md section 3.12 (B5) relies on that parse.
+    Every count and instant is a JavaScript number on all three dialects, and no
+    list order depends on a text collation. Red: a count returned as a string
+    fails that dialect by name, and deleting one field's guard fails that
+    field's corrupt case. NOT MET.
 36. PR5.3b2: `explain` names the seeded cause. Seeds are built by driving the
     real engine under fake time wherever an engine path reaches the state, and
     the states no engine path reaches (unreadable, unexplained, and the corrupt
@@ -260,8 +266,27 @@ met only when its receipt exists and line 44's checker accepts it.
     (`Purge -- the purge batch lands in PR5.2c2`), because the spec ledger
     refuses a quoted label that no store sends. PR5.2c2 turns them into
     mappings, and each invariant names its executable twin. Red: deleting any
-    conjunct of Purge's guard while TLC stays green fails the mutant check. NOT
-    MET.
+    conjunct of Purge's guard while TLC stays green fails the mutant check. This
+    is met on PR5.2a's branch, and by the Order paragraph that pull request does
+    not merge before the maintainer approves the two contract changes of
+    DESIGN.md section 3.12. `pnpm verify:tla` finds no error on four
+    configurations: the parent in the child's queue, in another queue, no parent
+    (which also lets an older build end the child under a wait and lifts the
+    third party's window), and a policy that purges failed tasks.
+    `scripts/tla.sh` holds every configuration of a model to one set of checked
+    properties, so all four run `SpecFair` with `AgedUnblockedIsPurged` and no
+    configuration runs liveness alone. Each of the 18 mutants in
+    specs/Retention.mutants.json fails the property it names. They delete B1's
+    policy and age halves, B3, B4 and B5 from `PurgeChild`'s guard and B1's two
+    halves from `PurgeHolder`'s, and change what the batch deletes and what an
+    await registers. The 14 probe configurations find their witnesses,
+    `RetentionProbeLateHandle` and `RetentionProbeLegacyNoEvent` among them. The
+    ledger lists `PurgeChild` and `PurgeHolder` as `-- the purge batch lands in
+    PR5.2c2`, and section 3.12's table names each property's executable twin. No
+    property holds two parts of B5, the block of a parent that is rolling back
+    or failed with a saga and the admission of a completed or cancelled parent,
+    so no mutant names them: the model's header and section 3.12 say why, and
+    line 42's grid holds them.
 41. PR5.2c1: before any delete path exists, the stamp and the checkers are
     proved. For each label in `TERMINAL_BATCH_LABELS` (`complete`, `fail`,
     `fail-rollback`, `cancel-task`, `sweep:cancel`, `sweep:lost-launch` and
@@ -269,9 +294,11 @@ met only when its receipt exists and line 44's checker accepts it.
     terminal label added later is covered, a batch that ends the task sets
     `tasks.fence_at_ms` to the ending instant, and no label's cell from a
     terminal pre-state moves it, apart from `retry-task`, which revives a failed
-    task and restarts its age. `engineHistoryViolations` gains two conditions: a
-    live or revivable task's `$spawn` memo names an existing task, and a wait on
-    a completion event has its task or its event. Each condition has a
+    task and restarts its age. `engineHistoryViolations` gains three conditions:
+    every task row has a run, the half of specs/Retention.tla's `WholeUnit` that
+    DESIGN.md section 3.12 says has no executable twin today; a live or
+    revivable task's `$spawn` memo names an existing task; and a wait on a
+    completion event has its task or its event. Each condition has a
     raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
     terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
     a path exists today, its fix lands in this PR as its own red-then-green
@@ -279,14 +306,16 @@ met only when its receipt exists and line 44's checker accepts it.
 42. PR5.2c2: purge removes exactly what the model allows, whole units only, on
     the three dialects. The barrier grid crosses terminal state (completed,
     failed with a saga, failed without, cancelled) with spawning-parent state
-    (none, absent, live, completed, cancelled, failed, failed with a saga),
-    parent queue (the child's or another), holder (a run naming the completion
-    event in any state, a wait naming it, none) and age (window minus 1 ms, 0,
-    plus 1 ms): 504 cells at a small unit. Unit size (the checkpoint cap minus
-    one, at the cap, and past it) is crossed only with one barrier-clear cell
-    per terminal state, 12 more cells, so 516 cells a dialect. In every cell,
-    what purge removes equals a TypeScript oracle written from the model over a
-    table dump, never over a live task, and after each purge
+    (none, absent, live, rolling back, completed, cancelled, failed, failed with
+    a saga), parent queue (the child's or another), holder (a run of another
+    unit, in any state, that holds the child's outcome payload, which blocks; a
+    run of another unit that names the completion event with no payload, which
+    must not block; a wait naming the event; none) and age (window minus 1 ms,
+    0, plus 1 ms): 768 cells at a small unit. Unit size (the checkpoint cap
+    minus one, at the cap, and past it) is crossed only with one barrier-clear
+    cell per terminal state, 12 more cells, so 780 cells a dialect. In every
+    cell, what purge removes equals a TypeScript oracle written from the model
+    over a table dump, never over a live task, and after each purge
     `engineHistoryViolations` is empty. A consequence oracle then drives the
     parent forward through the store ports: repeating its spawn key returns the
     same task id with `created: false`, its await of the child is never refused,
@@ -5686,7 +5715,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (queue depth, claim latency, lease expiries); usage-API quota alerting +
   BLOCKED runbook; fleet migration sweep. The operable alpha milestone above
   owns the retention and the metrics: retention as PR5.2a (specs/Retention.tla
-  and DESIGN.md section 3.12), PR5.2c1 (the terminal stamp and two history
+  and DESIGN.md section 3.12), PR5.2c1 (the terminal stamp and three history
   conditions), PR5.2c2 (schema version 12 and the purge port) and PR5.2d (the
   `purge` verb and the simulated-week soak), exit test lines 40 to 43, and the
   metrics as `stats` and `sizes` in PR5.3c, line 37. The quota alerting, the
@@ -5696,6 +5725,43 @@ these three things; nothing else in the system does I/O, time, or randomness.
   relaxation of it: a child handle is valid until its unit is purged, after
   which an await is refused loudly and registers no wait. PR5.2a writes it into
   DESIGN.md section 3.12, and it holds only once the maintainer approves it.
+- **PR5.2a retention spec**: DONE. `specs/Retention.tla` models the purge of
+  whole terminal task units ahead of any SQL (DESIGN.md §3.12): one child, its
+  spawning parent in the child's queue, in another queue, or absent, and a third
+  party holding the child's handle, beside every engine action the purge can
+  race. TLC checks nine properties under weak fairness on four configurations,
+  18 mutants are each caught by the property they name, and fourteen probes
+  find their witnesses, all in `pnpm verify:tla`. The model is PR5.2c2's
+  precondition: its ledger block lists `PurgeChild` and `PurgeHolder` as having
+  no batch, and PR5.2c2's purge batch turns that line into a mapping. The two
+  contract changes of §3.12, an idempotency key that dedupes for its task's
+  window and a child handle valid until its unit is purged, await the
+  maintainer's approval. The design recorded an alternative for the parent
+  condition, a `tasks.parent_task_id` column written at spawn, to be taken if
+  TLC refuted the argument that the reserved key names the parent. TLC found no
+  counterexample against the barrier as designed, which shows that B5 suffices
+  given a correct parent id: the model reads the parent's state directly, so it
+  cannot tell a parsed key from a column. So the key is parsed and no column is
+  added, and the parse rests on a generated round-trip case over keys that hold
+  the delimiter, which exit test line 35 gives PR5.3b1, beside the core function
+  that parses the key. One run of the model with the parent condition admitting
+  a parent that is rolling back or failed with a saga also stayed green, because
+  neither reads its child again. The first release keeps the stricter rule.
+  - Option, not built, with its trigger: keep a unit whose spawning parent the
+    purge cannot find, instead of reading that parent as absent. B5 assumes one
+    database holds every task, which is true while `ctx.spawn` writes to the
+    store its parent runs on. Trigger: tasks sharded across databases, or a
+    spawn that can write to another store.
+  - Option, not built, with its trigger: check `specs/Retention.tla`'s copy of
+    the engine's actions against `ChildTasks.tla` and `Sagas.tla`, or share
+    them, so that the copy cannot drift from the models it mirrors. Trigger: a
+    change to either model's await or wake.
+  - Option, not built, with its trigger: purge together a set of terminal units
+    whose runs hold each other's outcomes and that nothing else keeps. B3 keeps
+    each unit of such a cycle forever, and a cycle needs a `retryTask` revival
+    (DESIGN.md §3.12). Trigger: a unit kept past its window by a run that holds
+    its outcome, where that run's own unit is kept the same way by a run of the
+    first.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
   The operable alpha milestone above owns it as packages/cli: PR5.3a (the tool,
   its schema window, `result` and `checkpoints`, and the alpha.1 harness),

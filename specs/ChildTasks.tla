@@ -59,7 +59,10 @@
 \*    exclusive.  Without the lock on PostgreSQL, a parent reads no event, the
 \*    child inserts the event and sees no wait row, and the parent sleeps forever.
 \*  - The completion event outlives every await of it.  No action here removes an
-\*    event, so event cleanup must not take one while its task can be awaited.
+\*    event.  DESIGN.md S3.12 proposes relaxing this, pending the maintainer's
+\*    approval, and Retention.tla models the purge it proposes beside these
+\*    actions: the event goes only with its task's whole unit, when no holder
+\*    needs it, and an await after that is refused and registers nothing.
 \*  - The child await reaches the store by an internal path: the SDK's awaitEvent
 \*    refuses a name that starts with $, and the store's emitEvent port must.
 \*

@@ -1,0 +1,128 @@
+[
+  {
+    "name": "purge-ignores-the-age",
+    "guard": "a unit is purged only once its stamp is a window old",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  /\\ Aged(\"C\")\n  /\\ Lifted(\"carry\")",
+    "replace": "  /\\ Lifted(\"carry\")"
+  },
+  {
+    "name": "purge-holder-ignores-the-age",
+    "guard": "the parent's or the third party's unit is purged only once its stamp is a window old",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  /\\ Aged(x)\n",
+    "replace": ""
+  },
+  {
+    "name": "purge-holder-ignores-the-policy",
+    "guard": "the parent's or the third party's unit is purged only in a state the policy names",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  /\\ Admitted(x)\n",
+    "replace": ""
+  },
+  {
+    "name": "purge-ignores-the-policy",
+    "guard": "a unit is purged only in a state the policy names",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  \\/ st[t] \\in Policy\n",
+    "replace": "  \\/ st[t] \\in Outcomes\n"
+  },
+  {
+    "name": "purge-takes-a-live-task",
+    "guard": "a live task is never purged",
+    "caughtBy": "PurgeOnlyDeadAndOld",
+    "find": "  \\/ st[t] \\in Policy\n",
+    "replace": "  \\/ st[t] \\in Policy \\cup {\"live\", \"rolling\"}\n"
+  },
+  {
+    "name": "purge-ignores-the-parent",
+    "guard": "a child is purged only when its spawning parent is absent, completed, or cancelled",
+    "caughtBy": "ReplayableParentKeepsChild",
+    "find": "  /\\ ParentAllows\n  /\\ cCkpts'",
+    "replace": "  /\\ cCkpts'"
+  },
+  {
+    "name": "parent-looked-up-in-the-childs-queue",
+    "guard": "the spawning parent is looked up in every queue",
+    "caughtBy": "ReplayableParentKeepsChild",
+    "find": "  \\/ Lifted(\"parentQueue\") /\\ ParentQueue = \"other\"",
+    "replace": "  \\/ ParentQueue = \"other\""
+  },
+  {
+    "name": "purge-under-a-failed-parent",
+    "guard": "a failed parent keeps its children, since retry-task can revive it",
+    "caughtBy": "ReplayableParentKeepsChild",
+    "find": "{\"none\", \"absent\", \"completed\", \"cancelled\"}",
+    "replace": "{\"none\", \"absent\", \"completed\", \"cancelled\", \"failed\"}"
+  },
+  {
+    "name": "purge-under-a-live-parent",
+    "guard": "a live parent keeps its children",
+    "caughtBy": "ReplayableParentKeepsChild",
+    "find": "{\"none\", \"absent\", \"completed\", \"cancelled\"}",
+    "replace": "{\"none\", \"absent\", \"completed\", \"cancelled\", \"live\"}"
+  },
+  {
+    "name": "purge-ignores-a-carrier",
+    "guard": "no run in the child's queue carries the child's outcome",
+    "caughtBy": "CarrierKeepsEvent",
+    "find": "  /\\ Lifted(\"carry\") \\/ \\A x \\in Holders : carry[x] = \"none\"\n",
+    "replace": ""
+  },
+  {
+    "name": "purge-ignores-a-failed-carrier",
+    "guard": "a failed or cancelled run that carried the outcome still holds it",
+    "caughtBy": "CarrierKeepsEvent",
+    "find": "Lifted(\"carry\") \\/ \\A x \\in Holders : carry[x] = \"none\"",
+    "replace": "Lifted(\"carry\") \\/ \\A x \\in Holders : carry[x] # \"live\""
+  },
+  {
+    "name": "purge-ignores-a-wait",
+    "guard": "no wait names the child's completion event",
+    "caughtBy": "NoStrandedWaiter",
+    "find": "  /\\ Lifted(\"wait\") \\/ \\A x \\in Holders : aw[x] # \"waiting\"\n",
+    "replace": ""
+  },
+  {
+    "name": "purge-keeps-the-checkpoints",
+    "guard": "the checkpoints go with the unit",
+    "caughtBy": "WholeUnit",
+    "find": "  /\\ cCkpts' = FALSE /\\ cRuns' = FALSE /\\ cEvent' = FALSE\n",
+    "replace": "  /\\ cRuns' = FALSE /\\ cEvent' = FALSE /\\ UNCHANGED cCkpts\n"
+  },
+  {
+    "name": "purge-keeps-the-event",
+    "guard": "the completion event goes with the unit",
+    "caughtBy": "WholeUnit",
+    "find": "  /\\ cCkpts' = FALSE /\\ cRuns' = FALSE /\\ cEvent' = FALSE\n",
+    "replace": "  /\\ cCkpts' = FALSE /\\ cRuns' = FALSE /\\ UNCHANGED cEvent\n"
+  },
+  {
+    "name": "purge-keeps-the-task-row",
+    "guard": "the task row goes with the rest of the unit",
+    "caughtBy": "RevivalSeesWholeUnit",
+    "find": "     ELSE st' = [st EXCEPT ![\"C\"] = \"absent\"] /\\ UNCHANGED purging",
+    "replace": "     ELSE UNCHANGED <<st, purging>>"
+  },
+  {
+    "name": "purge-of-a-holder-leaves-its-carrier",
+    "guard": "a holder's runs go with its unit, and with them any outcome of the child they carried",
+    "caughtBy": "AgedUnblockedIsPurged",
+    "find": "  /\\ st' = [st EXCEPT ![x] = \"absent\"]\n  /\\ carry' = [carry EXCEPT ![x] = \"none\"]\n",
+    "replace": "  /\\ st' = [st EXCEPT ![x] = \"absent\"]\n  /\\ UNCHANGED carry\n"
+  },
+  {
+    "name": "await-registers-on-a-purged-child",
+    "guard": "an await of a purged child is refused and registers nothing",
+    "caughtBy": "AwaitOnPurgedIsRefused",
+    "find": "IF Lifted(\"await\") THEN \"waiting\" ELSE \"refused\"",
+    "replace": "\"waiting\""
+  },
+  {
+    "name": "purge-writes-an-unknown-state",
+    "guard": "a purged task is absent",
+    "caughtBy": "TypeOK",
+    "find": "     ELSE st' = [st EXCEPT ![\"C\"] = \"absent\"] /\\ UNCHANGED purging",
+    "replace": "     ELSE st' = [st EXCEPT ![\"C\"] = \"purged\"] /\\ UNCHANGED purging"
+  }
+]
