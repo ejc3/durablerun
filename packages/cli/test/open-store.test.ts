@@ -149,6 +149,30 @@ describe('the store opener', () => {
     }
   })
 
+  it('refuses an @ outside the user name and password, saying to write it %40, and takes one inside them', async () => {
+    // The last @ inside the authority ends the user name and password, so an @ before it is
+    // one of theirs, and the host after it is the URL's.
+    expect(await storeTarget('postgres://me@corp.io:secret@db.example.io/app')).toBe(
+      'db.example.io',
+    )
+    expect(await storeTarget('mysql://root:p@ss@127.0.0.1:3306/app')).toBe('127.0.0.1:3306')
+    expect(await storeTarget('postgres://db.example.io/app?user=a%40b')).toBe('db.example.io')
+    for (const url of [
+      'postgres://admin:x@secret#y@db.example.io/app',
+      'mysql://root:a@b?secret@db.example.io/app',
+      'postgres://admin:p@secret/word@db.example.io/app',
+      'https://tok:1\\secret@db.example.io',
+      'postgres://db.example.io/app?user=a@b',
+      'postgres:///app?host=/run/pg&user=me@corp',
+      'postgres:admin:secret@db.example.io/app',
+    ]) {
+      await expect(storeTarget(url), url).rejects.toThrow(
+        /an @ outside its user name and password, and an @ there must be written %40/,
+      )
+      await expect(storeTarget(url), url).rejects.not.toThrow(/secret/)
+    }
+  })
+
   it('refuses a token beside a URL that carries its own credentials, and opens nothing', async () => {
     for (const url of ['postgresql://user@127.0.0.1:1/app', 'mysql://root@127.0.0.1:1/app']) {
       await expect(openStore(url, 'a-token', testIdSource('o'))).rejects.toBeInstanceOf(

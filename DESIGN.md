@@ -5541,10 +5541,15 @@ it bypasses section 3.5's hosted authorization port, which decides only the host
 routes' four operations, and the rows it reaches hold params, checkpoints and event
 payloads in plaintext (section 3.5, observability). So the CLI's own messages never
 quote the store URL or the token. A URL that does not parse, one whose user name or
-password does not percent-decode, one with an @ outside its user name and password, which
-a reserved character in the password leaves and whose host then holds the password's
-start, and a libSQL server's URL that carries a user name or password, which its client
-would quote in an error, are refused with exit 2 before anything opens. The bin's last catch prints only the name of an error nothing answered,
+password does not percent-decode, one with an @ after the end of its authority, and a
+libSQL server's URL that carries a user name or password, which its client would quote in
+an error, are refused with exit 2 before anything opens. The authority ends at the first
+/ ? or # after the `//` that starts it, or at a backslash in `https:` and `wss:`, and a
+URL with no `//` is taken to have none. An unencoded # / or ? in a password ends it there,
+and then what parses as the host, the port or the query holds the rest of the password,
+which the `--target` message, a driver's error and a driver's console warning would print
+and a name lookup would send, so an @ outside the user name and password must be written
+%40, in a query too. The bin's last catch prints only the name of an error nothing answered,
 beside a fixed sentence, and exits 1, because a foreign error's message and fields can
 quote the URL it was given.
 

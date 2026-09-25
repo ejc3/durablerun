@@ -144,6 +144,8 @@ const CREDENTIAL_URLS: readonly string[] = [
   `mysql://root:a@b?${CREDENTIAL}@db.example.io/app`,
   `postgres://admin:x@${CREDENTIAL}#y@db.example.io/app`,
   `postgres://admin:p@${CREDENTIAL}/word@db.example.io/app`,
+  // A backslash ends the host of a special scheme, so the digits before it parse as the port.
+  `https://tok:${DIGIT_CREDENTIAL}\\${CREDENTIAL}@db.example.io`,
   `postgres://admin:${CREDENTIAL}#x@db.example.io:5432/app`,
   `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
   `postgresql://admin:${CREDENTIAL}/x@db.example.io/app`,
@@ -235,6 +237,7 @@ describe('redaction', () => {
       `postgres://admin:x@${CREDENTIAL}#y@db.example.io/app`,
       `mysql://root:a@b?${CREDENTIAL}@db.example.io/app`,
       `postgres://admin:p@${CREDENTIAL}/word@db.example.io/app`,
+      `https://tok:${DIGIT_CREDENTIAL}\\${CREDENTIAL}@db.example.io`,
       `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
       `postgres://admin:${CREDENTIAL}@[bad/app`,
       `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,

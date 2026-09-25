@@ -176,10 +176,10 @@ export function storeScheme(url: string): string | undefined {
  * What a write names with `--target`: the whole of `:memory:`, the path of a `file:` URL as
  * the libSQL client decodes it (store-libsql's own fileUrlPath, so the check that a read
  * creates no file looks at the file the client opens), and the host of every other URL, its
- * port included when it names one. A URL that does not parse is refused, and so is a
- * libSQL server's URL that carries a user name or a password, which the client would quote
- * in its errors. No refusal quotes the URL, because a store URL can hold a password, and a
- * database credential is full admin.
+ * port included when it names one. A URL that does not parse is refused, and so is one with
+ * an @ outside its user name and password, and a libSQL server's URL that carries a user
+ * name or a password, which the client would quote in its errors. No refusal quotes the URL,
+ * because a store URL can hold a password, and a database credential is full admin.
  */
 export async function storeTarget(url: string): Promise<string> {
   const scheme = storeScheme(url)
@@ -195,7 +195,7 @@ export async function storeTarget(url: string): Promise<string> {
     }
     return file.path
   }
-  const parsed = serverUrl(url)
+  const parsed = serverUrl(url, scheme)
   if (LOADERS[scheme] === libsql && (parsed.username !== '' || parsed.password !== '')) {
     throw new StoreUrlError(
       'a libSQL URL carries no user name or password, and its client would quote one in its errors; the URL is not printed. Put the token in DURABLERUN_STORE_TOKEN',
@@ -207,27 +207,44 @@ export async function storeTarget(url: string): Promise<string> {
 const UNPARSED_URL =
   'DURABLERUN_STORE_URL does not parse as a URL. It is not printed, because it can hold a password; a password must percent-encode every character a URL reserves, such as # / ? @ % and a space'
 
-const AUTHORITY_CUT_SHORT =
-  "DURABLERUN_STORE_URL has an @ outside its user name and password, so a reserved character in the password ended the URL's host part early. It is not printed, because what parsed as its host can hold the start of the password; percent-encode every # / ? @ % and space in the password"
+const AT_OUTSIDE_THE_AUTHORITY =
+  'DURABLERUN_STORE_URL has an @ outside its user name and password, and an @ there must be written %40. The URL is not printed, because an unencoded # / or ? in a password ends the host early, so what parses as the host or the query can hold the rest of the password; percent-encode every # / ? @ % and space in a password'
+
+/** The schemes a store takes that the URL parser treats as special, where a backslash ends a host too. */
+const SPECIAL_SCHEMES: ReadonlySet<string> = new Set(['https:', 'wss:'])
+
+/**
+ * Where a URL's authority ends, as the WHATWG parser that every store's client reads it with
+ * finds it: after the `//` that starts it, at the first / ? or #, and at a backslash too in a
+ * special scheme. A URL with no `//` straight after its scheme is taken to have none, so any
+ * @ in it is outside, which refuses more than the parser would and never less.
+ */
+function authorityEnd(url: string, scheme: string): number {
+  const start = scheme.length
+  if (!url.startsWith('//', start)) return start
+  const end = SPECIAL_SCHEMES.has(scheme) ? /[/?#\\]/g : /[/?#]/g
+  end.lastIndex = start + 2
+  return end.exec(url)?.index ?? url.length
+}
 
 /** A server's URL as it parses, or a refusal that does not quote it. */
-function serverUrl(url: string): URL {
-  let parsed: URL
+function serverUrl(url: string, scheme: string): URL {
+  // Every @ of a user name and password is inside the authority, whose last @ ends them. An @
+  // after the authority is one that an unencoded # / or ? in a password cut off from it, and
+  // then the host, the port and the query parsed before it hold the rest of the password.
+  if (url.includes('@', authorityEnd(url, scheme))) {
+    throw new StoreUrlError(AT_OUTSIDE_THE_AUTHORITY)
+  }
   try {
-    parsed = new URL(url)
+    const parsed = new URL(url)
     // A driver percent-decodes the user name and the password, so one that does not decode
     // fails there, with no message this CLI chose.
     decodeURIComponent(parsed.username)
     decodeURIComponent(parsed.password)
+    return parsed
   } catch {
     throw new StoreUrlError(UNPARSED_URL)
   }
-  // An @ outside the user name and password is one a reserved character in the password cut
-  // off from the authority, and the host and port parsed before it are the password's start.
-  if (parsed.username === '' && parsed.password === '' && url.includes('@')) {
-    throw new StoreUrlError(AUTHORITY_CUT_SHORT)
-  }
-  return parsed
 }
 
 function unknownScheme(): string {
