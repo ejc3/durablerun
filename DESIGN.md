@@ -5598,12 +5598,25 @@ Exit 6 is safe to repeat for every command. For a read that holds because a read
 nothing. For `migrate` it holds because each version's write is fenced by the version
 before it, and after a failed version write the admin reads the version again and carries
 on when the write landed, so a lost answer to a version write the store committed ends in
-0 and a rerun resumes from the version reached. The CLI's fault surface
-(`packages/cli/test/fault-surface.test.ts`) meets every batch every store command sends
-with an outage before it, a lost answer after it, and a second copy of it, on each
-dialect, and requires the exit the table declares, a state that is either the state
-before the command or the one a run without a fault leaves, and a repeat that ends at the
-second.
+0 and a rerun resumes from the version reached.
+
+The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
+executor, as the CLI sees it: crash-before (the executor rejects with
+StoreUnavailableError before the batch is sent), crash-after (it rejects after the batch
+commits) and duplicate (it delivers the batch twice). It is a CLI-level injection, not
+SimWorld's SimCrash. It meets every batch every store command sends, one sending at a
+time, on each dialect, from each starting state the command runs from: `migrate` from a
+database that was never initialized, from version 5 and from one version below the
+build's, and each read from the current version. The command table declares exit 6 for
+the first two and the exit of a clean run for duplicate, except at the batches whose lost
+answer `migrate` recovers, where it declares 0 for crash-after by label:
+`migrate:bootstrap` and each version's write, because the admin reads the version again.
+Every batch label and every per-label exit the table declares must be sent from some
+starting state, so a label that is stale or never met fails. After each case, running the
+same command again reaches the state one successful run leaves, and a read prints what
+that run printed. A read also leaves every table as it found it, and `migrate` leaves a
+recorded version between the one it started from and the build's; across several
+versions that can be neither the state it started from nor the one it would finish at.
 
 ## 4. What "ticks" mean here — direct answers to the original questions
 

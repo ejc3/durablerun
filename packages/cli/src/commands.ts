@@ -38,11 +38,13 @@ export interface PortUse {
 export type RepeatSafety = 'no-store' | 'read' | 'resumes'
 
 /**
- * A fault that meets one batch a command sends: the store is unavailable before the batch
- * reaches it, the batch commits and the answer is lost, or the batch is applied twice. The
- * fault matrix's kinds (packages/conformance/src/fault-matrix.ts), as the CLI meets them.
+ * A fault injected at the executor, as the CLI sees it, at one batch a command sends: the
+ * executor rejects with StoreUnavailableError before the batch is sent (`crash-before`),
+ * rejects after the batch commits (`crash-after`), or delivers the batch twice
+ * (`duplicate`). The fault matrix's kinds (packages/conformance/src/fault-matrix.ts) as a
+ * CLI-level injection, not SimWorld's SimCrash.
  */
-export const CLI_FAULTS = ['unavailable-before', 'crash-after', 'duplicate'] as const
+export const CLI_FAULTS = ['crash-before', 'crash-after', 'duplicate'] as const
 export type CliFault = (typeof CLI_FAULTS)[number]
 
 export interface CommandSpec {
@@ -79,9 +81,9 @@ const READ_FLAGS = {
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
 
-/** An outage exits 6, and a batch applied twice changes nothing a read or a version write sees. */
+/** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
-  'unavailable-before': 'unavailable',
+  'crash-before': 'unavailable',
   'crash-after': 'unavailable',
   duplicate: 'done',
 } as const satisfies Record<CliFault, ExitName>

@@ -350,13 +350,15 @@ export interface FaultSite {
 }
 
 /**
- * An executor that meets one sending of one label with a fault: the store unavailable
- * before it, the batch committed and its answer lost, or the batch applied twice.
+ * An executor that meets one sending of one label with a fault: it rejects with
+ * StoreUnavailableError before the batch is sent, rejects after the batch commits, or
+ * delivers the batch twice. A batch that fails on its own commits nothing, so after it the
+ * crash rejects all the same, as a lost answer does, and a second delivery answers for both.
  */
 export function faulting(
   real: SqlExecutor,
   site: FaultSite,
-  fault: 'unavailable-before' | 'crash-after' | 'duplicate',
+  fault: 'crash-before' | 'crash-after' | 'duplicate',
 ): SqlExecutor {
   let seen = 0
   return {
@@ -364,15 +366,15 @@ export function faulting(
       if (label !== site.label || ++seen !== site.occurrence) {
         return real.batch(label, statements, control)
       }
-      if (fault === 'unavailable-before') {
+      if (fault === 'crash-before') {
         throw new StoreUnavailableError(`fault: the store is unavailable before '${label}'`)
       }
-      if (fault === 'duplicate') await real.batch(label, statements, control)
-      const results = await real.batch(label, statements, control)
+      if (fault === 'duplicate') await real.batch(label, statements, control).catch(() => undefined)
       if (fault === 'crash-after') {
+        await real.batch(label, statements, control).catch(() => undefined)
         throw new StoreUnavailableError(`fault: the answer to '${label}' was lost`)
       }
-      return results
+      return real.batch(label, statements, control)
     },
   }
 }

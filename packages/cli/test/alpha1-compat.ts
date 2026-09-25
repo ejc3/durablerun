@@ -197,7 +197,7 @@ async function cliMigrate(file: string, version: number): Promise<void> {
     ['migrate', '--yes', '--target', file],
     { DURABLERUN_STORE_URL: `file:${file}` },
     openerWrapping((real) =>
-      faulting(real, { label: `migrate:v${version + 1}`, occurrence: 1 }, 'unavailable-before'),
+      faulting(real, { label: `migrate:v${version + 1}`, occurrence: 1 }, 'crash-before'),
     ),
   )
   if (run.exit !== 6)
