@@ -337,7 +337,7 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == 'eddaa5bd75fcb6db18681e020eae253a314fb2c34042f1d01ef03a1ea9fec7a9':
-              # The operator CLI (packages/cli) registers twenty-three mutations of its own
+              # The operator CLI (packages/cli) registers twenty-four mutations of its own
               # guards, and every verdict marker of their cases is newer than the base registry,
               # so each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (

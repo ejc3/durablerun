@@ -17481,9 +17481,16 @@ MUTATION_SPECS.extend(
         (
             "cli-store-url-refuses-an-at-outside-its-authority",
             "packages/cli/src/open-store.ts",
-            "  if (parsed.username === '' && parsed.password === '' && url.includes('@')) {\n",
-            "  if (false) { // MUTATION: an @ outside the user name and password is let through\n",
-            "a password cut short by an unencoded # / or ? parses with its leading digits as the port, and migrate's --target mismatch message quotes them",
+            "  if (url.includes('@', authorityEnd(url, scheme))) {\n",
+            "  if (false) { // MUTATION: an @ after the authority is let through\n",
+            "a password with an unencoded # / or ? parses with its rest as the host, the port or the query, which the --target mismatch message, a driver's error and mysql2's console warning print",
+        ),
+        (
+            "cli-store-url-authority-ends-at-a-backslash-in-https",
+            "packages/cli/src/open-store.ts",
+            "  const end = SPECIAL_SCHEMES.has(scheme) ? /[/?#\\\\]/g : /[/?#]/g\n",
+            "  const end = SPECIAL_SCHEMES.has(scheme) ? /[/?#]/g : /[/?#]/g // MUTATION: a backslash does not end an https: host\n",
+            "an https: URL whose password holds digits and then a backslash parses with those digits as the port, and migrate's --target mismatch message quotes them",
         ),
         (
             "cli-libsql-url-refuses-a-password",
@@ -17623,6 +17630,7 @@ VERDICTS.update(
 )
 VERDICTS["cli-libsql-url-refuses-a-password"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
 VERDICTS["cli-store-url-refuses-an-at-outside-its-authority"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
+VERDICTS["cli-store-url-authority-ends-at-a-backslash-in-https"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
 VERDICTS["cli-unreadable-reason-needs-reveal"] = VERDICTS["cli-unreadable-row-exits-10"]
 
 MUTATIONS = [
@@ -21533,7 +21541,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1148:
+        if len(MUTATIONS) != 1149:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

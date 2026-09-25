@@ -166,10 +166,17 @@ describe('the store opener', () => {
       'postgres:///app?host=/run/pg&user=me@corp',
       'postgres:admin:secret@db.example.io/app',
     ]) {
-      await expect(storeTarget(url), url).rejects.toThrow(
-        /an @ outside its user name and password, and an @ there must be written %40/,
+      const refusal = await storeTarget(url).then(
+        () => 'accepted',
+        (error: unknown) => (error instanceof StoreUrlError ? error.message : String(error)),
       )
-      await expect(storeTarget(url), url).rejects.not.toThrow(/secret/)
+      expect({
+        url,
+        says: refusal.includes(
+          'an @ outside its user name and password, and an @ there must be written %40',
+        ),
+        quotes: refusal.includes('secret'),
+      }).toEqual({ url, says: true, quotes: false })
     }
   })
 

@@ -5207,8 +5207,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   URL; all three are additions to store-libsql's released surface. The
   alpha.1 harness, run by `verify:packages`, found the release alpha.1 running its cycle on
   libSQL databases the CLI left at every version from 5 to 10, which settles the design's
-  open question of whether alpha.1 runs past version 5 at all. The registry holds 1148
-  mutations where main holds 1125, twenty-three of them the CLI's guards, and the base
+  open question of whether alpha.1 runs past version 5 at all. The registry holds 1149
+  mutations where main holds 1125, twenty-four of them the CLI's guards, and the base
   gate's arm is keyed on main's digest and exempts their nineteen markers.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
