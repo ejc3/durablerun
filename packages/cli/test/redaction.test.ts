@@ -356,43 +356,27 @@ describe('redaction', () => {
   })
 
   it("result prints a failed rollback's error as its length and sha256", () => {
-    const view = resultView(
-      {
-        state: 'failed',
-        failureReasonJson: REASON_CANCELLED,
-        rollback: { outcome: 'failed', errorJson: JSON.stringify({ message: SENTINEL }) },
-      },
-      false,
-    )
-    expect(JSON.stringify(view)).not.toContain(SENTINEL)
-    // A rollback that throws an error named like an SDK halt is stored in the halt's shape,
-    // so the error is redacted whole. Only the two halt names the SDK writes may print, and
-    // the last name here is neither.
-    for (const name of ['$SagaStateCorrupt', '$RollbackNotRegistered', `$${SENTINEL}`]) {
-      const halt = JSON.stringify(
-        resultView(
-          {
-            state: 'failed',
-            failureReasonJson: REASON_CANCELLED,
-            rollback: { outcome: 'failed', errorJson: JSON.stringify({ name, message: SENTINEL }) },
-          },
-          false,
-        ),
-      )
-      expect({ name, printed: halt.includes(SENTINEL) }).toEqual({ name, printed: false })
-    }
-    expect(
+    const shown = (errorJson: string, reveal: boolean): string =>
       JSON.stringify(
         resultView(
           {
             state: 'failed',
             failureReasonJson: REASON_CANCELLED,
-            rollback: { outcome: 'failed', errorJson: JSON.stringify({ message: SENTINEL }) },
+            rollback: { outcome: 'failed', errorJson },
           },
-          true,
+          reveal,
         ),
-      ),
-    ).toContain(SENTINEL)
+      )
+    const error = JSON.stringify({ message: SENTINEL })
+    expect(shown(error, false)).not.toContain(SENTINEL)
+    expect(shown(error, true)).toContain(SENTINEL)
+    // A rollback that throws an error named like an SDK halt is stored in the halt's shape,
+    // so the error is redacted whole. Only the two halt names the SDK writes may print, and
+    // the last name here is neither.
+    for (const name of ['$SagaStateCorrupt', '$RollbackNotRegistered', `$${SENTINEL}`]) {
+      const printed = shown(JSON.stringify({ name, message: SENTINEL }), false).includes(SENTINEL)
+      expect({ name, printed }).toEqual({ name, printed: false })
+    }
   })
 
   it('prints the four failure reasons the engine writes by name', async () => {
