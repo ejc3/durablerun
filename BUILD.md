@@ -99,12 +99,15 @@ recorded met only when its receipt exists and line 44's checker accepts it.
 34. PR5.3a (extended by every later PR that adds a command): the CLI has its own
     generated fault surface, as AGENTS.md requires of every new layer. From the
     command table, each command's port calls are enumerated with their batch
-    labels, and each call runs under the fault matrix's three kinds,
-    crash-before (the store unavailable before the batch is sent), crash-after
-    and duplicate, on the three dialects. In each case the exit code is the one
-    the table declares, and the post-state dump equals the no-fault run's or the
-    untouched state. Running the same command again ends at the dump one
-    successful run leaves, and prints the state it finds as of that read: a
+    labels, and each call runs on the three dialects under three faults injected
+    at the executor, as the CLI sees it: crash-before (the executor rejects with
+    StoreUnavailableError before the batch is sent), crash-after (it rejects
+    after the batch commits) and duplicate (it delivers the batch twice). The
+    command table declares exit 6 for the first two and the exit of a clean run
+    for duplicate, and each case exits as the table declares. It is a CLI-level
+    injection, not SimWorld's SimCrash. After each case, running the same
+    command again reaches the state one successful run leaves, compared as a
+    dump of every table, and prints the state it finds as of that read: a
     repeated `cancel` reports the task cancelled, and a repeated `retry` reports
     the pending run it finds. Exit 6 (store unavailable) is declared safe to
     repeat for every verb, which holds because `enqueue` requires `--key`. Red
@@ -239,15 +242,18 @@ recorded met only when its receipt exists and line 44's checker accepts it.
     conjunct of Purge's guard while TLC stays green fails the mutant check. NOT
     MET.
 41. PR5.2c1: before any delete path exists, the stamp and the checkers are
-    proved. For each terminal path (complete, fail, both cancel routes, the
-    sweep's caps), `tasks.fence_at_ms` equals the ending instant, and no label's
-    cell from a terminal pre-state moves it. `engineHistoryViolations` gains two
-    conditions: a live or revivable task's `$spawn` memo names an existing task,
-    and a wait on a completion event has its task or its event. Each condition
-    has a raw-fixture-SQL red, and every existing surface stays violation-free.
-    Red: a terminal path that leaves `fence_at_ms` NULL fails its case by name.
-    If such a path exists today, its fix lands in this PR as its own
-    red-then-green pair. NOT MET.
+    proved. For each label in `TERMINAL_BATCH_LABELS` (`complete`, `fail`,
+    `fail-rollback`, `cancel-task`, `sweep:cancel`, `sweep:lost-launch` and
+    `sweep:claim-timeout`), with the cases generated from that list so that a
+    terminal label added later is covered, a batch that ends the task sets
+    `tasks.fence_at_ms` to the ending instant, and no label's cell from a
+    terminal pre-state moves it. `engineHistoryViolations` gains two conditions:
+    a live or revivable task's `$spawn` memo names an existing task, and a wait
+    on a completion event has its task or its event. Each condition has a
+    raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
+    terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
+    a path exists today, its fix lands in this PR as its own red-then-green
+    pair. NOT MET.
 42. PR5.2c2: purge removes exactly what the model allows, whole units only, on
     the three dialects. The barrier grid crosses terminal state (completed,
     failed with a saga, failed without, cancelled) with spawning-parent state
@@ -324,9 +330,13 @@ recorded met only when its receipt exists and line 44's checker accepts it.
     task run on the alpha.1 SDK over a libSQL file the CLI migrated to version
     12, while the current CLI enqueues periods, sweeps, runs `stuck` and
     `explain` on planted causes (an unregistered name, deferred by alpha.1's
-    reschedule path, and an await nobody emits), and purges. alpha.1 completes
-    the tasks the CLI spawned, `explain` names each planted cause on rows
-    alpha.1 wrote, and the purged set equals line 42's oracle. `pnpm cli
+    reschedule path, and an await nobody emits), and the run purges. alpha.1
+    completes the tasks the CLI spawned, `explain` names each planted cause on
+    rows alpha.1 wrote, and the purged set is non-empty, holds at least one unit
+    of each terminal state alpha.1 reached, and equals line 42's oracle. The run
+    gets past the `purge` verb's refusal under an active fake clock and core's
+    3,600 second floor by purging through the same core entry the verb calls,
+    under a test-only policy, named as such, that no verb can select. `pnpm cli
     selftest` sends every batch label the command table can send, which an
     executor spy compares against the table, including a `purgeUnit` of its own
     young unit that the barrier refuses, and it refuses a queue that already
@@ -374,7 +384,15 @@ PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
 PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
-PR5.2c2.
+PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer approves the two
+contract changes of DESIGN.md section 3.12, and PR5.3c does not merge before the
+maintainer approves the `enqueue_at_ms` plan-reader gate change. If a contract
+change is refused, a docs pull request first rewrites lines 40, 42, 43 and 44 so
+that purge keeps every unit whose idempotency key may be presented again (the
+first change refused) or whose handle may still be awaited (the second); if the
+gate change is refused, `stuck --older-than` leaves line 37, and line 39's
+script, line 44's run and receipt M1 are handed the task ids of the
+never-started and awaiting causes, which no clock leg holds.
 
 **Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
 and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
