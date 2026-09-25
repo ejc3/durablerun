@@ -5554,19 +5554,23 @@ them is built.
     integer, and the stamp is at least the window old.
   - B2. No run of the task is live. Tasks mirror their runs, so B1 implies this,
     and it is a defence.
-  - B3. No run in the child's queue, in any state, has `wake_event` equal to the
-    completion event's name, with a payload or without one. A woken run keeps
-    `wake_event` and `event_payload` until `complete` or `suspend` clears them.
-    A parked run holds `wake_event` with no payload, and keeps it when the
-    claim of its timed await that came due consumes the wait, and when its
-    task is cancelled while it is parked. A failed or cancelled run never
-    clears either column. This is the conservative condition, on purpose: a
-    failed holder that names the event can be revived in place by `retryTask`
-    and replays its await, and a cancelled one is inspected, so the name alone
-    keeps the unit. It is not the delete-time form of the invariant library's
-    `payload/event-missing` condition, which fires only when `event_payload` is
-    not null. The model holds the payload half with `CarrierKeepsEvent` and the
-    name-only half with `NameCarrierKeepsChild`.
+  - B3. No run of another unit in the child's queue, in any state, holds the
+    child's outcome: a `wake_event` equal to the completion event's name with a
+    non-null `event_payload`. A woken run keeps both columns until `complete`
+    or `suspend` clears them, and a failed or cancelled run never clears them.
+    A run that names the event with no payload does not block. A parked run
+    holds `wake_event` with no payload, and keeps it when the claim of its
+    timed await that came due consumes the wait and when its task is cancelled
+    while it is parked. No reader needs the child through such a run: the
+    claim reads a wake with no payload as a timeout, and a retry or a revival
+    carries the wake to the successor run, whose replay of the await answers
+    timed out from it without reading the child. A live parked run is held by
+    B4 through its wait row instead. A run of the unit itself never blocks it,
+    because the batch deletes that run with the unit. B3 is the delete-time
+    form of the invariant library's `payload/event-missing` condition, which
+    flags a run whose `event_payload` is not null and whose event is missing,
+    so the library checks B3 after every purge. The model holds it with
+    `CarrierKeepsEvent`.
   - B4. No wait row names the completion event. A wait on an ended task exists
     only when an older build ended it under the wait, which the deploy rule of
     §3.2 forbids. The condition keeps the task that a revival would need to
@@ -5617,14 +5621,24 @@ them is built.
 - **After a purge,** `getTaskResult` and `retryTask` answer as for a task that
   never existed, and an await of the task is refused.
 - **What keeps a unit forever,** by design: a failed spawning parent the policy
-  keeps; a run that failed or was cancelled while naming the child's completion
-  event, with its payload or with the name alone, of a task the policy keeps;
-  and a wait that an older build left stranded. The
-  model's liveness property, `AgedUnblockedIsPurged`, says the barrier keeps a
-  unit forever for no other reason the model can express. Outside the model,
-  three more things keep a unit: a NULL stamp, which is never selected; a key
-  that starts with `$spawn:` and does not parse; and, once PR5.2c2 adds the
-  cap, a unit with more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`.
+  keeps; a run that failed or was cancelled while holding the child's outcome,
+  while the run's own unit is kept, because its task is in a state the policy
+  keeps or for another reason in this list; and a wait that an older build left
+  stranded. The model's liveness property, `AgedUnblockedIsPurged`, says the
+  barrier keeps a unit forever for no other reason the model can express.
+  Outside the model, four more things keep a unit: a NULL stamp, which is never
+  selected; a key that starts with `$spawn:` and does not parse; once PR5.2c2
+  adds the cap, a unit with more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`;
+  and a cycle of runs that hold each other's outcomes, which keeps every unit
+  in it even under a policy that names every state. Such a cycle needs a
+  `retryTask` revival. A run holds the outcome of a task that ended while the
+  run's own task was live, so without a revival each task in a cycle ended
+  after the task whose outcome it holds, which no cycle allows. With one it is
+  reachable: B parks on A, A fails and wakes B with
+  its outcome, `retryTask` revives A, A parks on B, B is cancelled before its
+  claim, which wakes A with B's outcome, and A is cancelled before its claim.
+  Each cancelled run then holds the other task's outcome. BUILD.md records the
+  remedy as an option with its trigger.
 
 **Two contract changes, proposed and awaiting the maintainer's approval.** Both
 follow from bounding rows by deleting task rows.
@@ -5670,7 +5684,6 @@ PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
 | `ReplayableParentKeepsChild` | a parent that can still run finds its child | a live or revivable task's `$spawn` memo names an existing task (PR5.2c1), and the consequence oracle (PR5.2c2) |
 | `NoStrandedWaiter` | a wait on a completion event has its task | a wait on a completion event has its task or its event (PR5.2c1) |
 | `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
-| `NameCarrierKeepsChild` | a run that names the completion event with no payload keeps the unit | the barrier grid's holder leg, a run naming the completion event in any state (PR5.2c2) |
 | `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the purge label's crash and duplicate cells (PR5.2c2) |
 | `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |

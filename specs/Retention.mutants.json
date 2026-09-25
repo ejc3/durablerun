@@ -66,15 +66,8 @@
     "name": "purge-ignores-a-carrier",
     "guard": "no run in the child's queue carries the child's outcome",
     "caughtBy": "CarrierKeepsEvent",
-    "find": "  /\\ Lifted(\"carry\") \\/ \\A x \\in Holders : carry[x] = \"none\" /\\ named[x] = \"none\"\n",
+    "find": "  /\\ Lifted(\"carry\") \\/ \\A x \\in Holders : carry[x] = \"none\"\n",
     "replace": ""
-  },
-  {
-    "name": "purge-ignores-a-name-only-carrier",
-    "guard": "no run in the child's queue names the child's completion event, even with no outcome on it",
-    "caughtBy": "NameCarrierKeepsChild",
-    "find": " /\\ named[x] = \"none\"\n",
-    "replace": "\n"
   },
   {
     "name": "purge-ignores-a-failed-carrier",
@@ -115,8 +108,8 @@
     "name": "purge-of-a-holder-leaves-its-carrier",
     "guard": "a holder's runs go with its unit, and with them any outcome of the child they carried",
     "caughtBy": "AgedUnblockedIsPurged",
-    "find": "  /\\ carry' = [carry EXCEPT ![x] = \"none\"]\n",
-    "replace": "  /\\ UNCHANGED carry\n"
+    "find": "  /\\ st' = [st EXCEPT ![x] = \"absent\"]\n  /\\ carry' = [carry EXCEPT ![x] = \"none\"]\n",
+    "replace": "  /\\ st' = [st EXCEPT ![x] = \"absent\"]\n  /\\ UNCHANGED carry\n"
   },
   {
     "name": "await-registers-on-a-purged-child",

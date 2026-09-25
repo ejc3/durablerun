@@ -5198,8 +5198,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   whole terminal task units ahead of any SQL (DESIGN.md §3.12): one child, its
   spawning parent in the child's queue, in another queue, or absent, and a third
   party holding the child's handle, beside every engine action the purge can
-  race. TLC checks ten properties under weak fairness on four configurations,
-  19 mutants are each caught by the property they name, and fourteen probes
+  race. TLC checks nine properties under weak fairness on four configurations,
+  18 mutants are each caught by the property they name, and fourteen probes
   find their witnesses, all in `pnpm verify:tla`. The model is PR5.2c2's
   precondition: its ledger block lists `PurgeChild` and `PurgeHolder` as having
   no batch, and PR5.2c2's purge batch turns that line into a mapping. The two
@@ -5225,6 +5225,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the engine's actions against `ChildTasks.tla` and `Sagas.tla`, or share
     them, so that the copy cannot drift from the models it mirrors. Trigger: a
     change to either model's await or wake.
+  - Option, not built, with its trigger: purge together a set of terminal units
+    whose runs hold each other's outcomes and that nothing else keeps. B3 keeps
+    each unit of such a cycle forever, and a cycle needs a `retryTask` revival
+    (DESIGN.md §3.12). Trigger: a unit kept past its window by a run that holds
+    its outcome, where that run's own unit is kept the same way by a run of the
+    first.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
