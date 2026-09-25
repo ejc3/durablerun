@@ -32,7 +32,7 @@
     "verify:tla": "bash scripts/confine.sh bash scripts/tla.sh",
     "verify:fuzz": "FUZZ_SEEDS=2000 FUZZ_STEPS=100 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
     "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 FUZZ_BATCHES=8 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
-    "verify:packages": "bash scripts/package-smoke.sh",
+    "verify:packages": "bash scripts/package-smoke.sh && bash scripts/alpha1-compat.sh",
     "lint:selftest": "python3 scripts/lint-selftest.py",
     "lint:deferrals": "python3 scripts/deferral-lint.py",
     "lint:gate": "python3 scripts/gate-lint.py",
