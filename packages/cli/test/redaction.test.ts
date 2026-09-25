@@ -1,3 +1,7 @@
+import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { inspect } from 'node:util'
 import {
   REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
@@ -82,7 +86,124 @@ async function runCase(verb: Verb, marker: string): Promise<void> {
   }
 }
 
+/**
+ * A credential planted in the store URL's password and in the token. A database credential
+ * is full admin, so it prints in no stream of any command, `--reveal` included, which shows
+ * values users wrote and never the store's credentials.
+ */
+const CREDENTIAL = 'pw-4b7e2c'
+
+/**
+ * Store URLs whose password holds the credential. Each password holds a character a URL's
+ * password must percent-encode, and several of the URLs do not parse at all, which is the
+ * common typo an operator makes.
+ */
+const CREDENTIAL_URLS: readonly string[] = [
+  `postgres://admin:${CREDENTIAL}#x@db.example.io:5432/app`,
+  `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
+  `postgresql://admin:${CREDENTIAL}/x@db.example.io/app`,
+  `postgresql://admin:${CREDENTIAL}@x@127.0.0.1:1/app`,
+  `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,
+  `postgres://admin:${CREDENTIAL}\nx@127.0.0.1:1/app`,
+  `postgres://admin:${CREDENTIAL}@[bad/app`,
+  `mysql://root:${CREDENTIAL}@127.0.0.1:99999/app`,
+  `libsql://tok:${CREDENTIAL}@exa mple.io`,
+  `libsql://tok:${CREDENTIAL}@127.0.0.1:1`,
+  `https://tok:${CREDENTIAL}@127.0.0.1:1`,
+]
+
+/** Each command's lines against a URL that holds a credential, keyed by the table's verbs. */
+const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> = {
+  help: () => [['help']],
+  doctor: () => [['doctor', '--queue', QUEUE]],
+  migrate: (target) => [
+    ['migrate', '--target', target],
+    ['migrate', '--target', target, '--yes'],
+    ['migrate', '--target', 'elsewhere', '--yes'],
+  ],
+  result: () => [['result', 'a-task', '--queue', QUEUE]],
+  checkpoints: () => [['checkpoints', 'a-task', '--queue', QUEUE, '--attempt', '1']],
+}
+
+/** What --target names for a URL, or a stand-in for a URL that names nothing. */
+function targetOf(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return parsed.host
+  } catch {
+    return 'x'
+  }
+}
+
+const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
+
 describe('redaction', () => {
+  it('a credential in the store URL or its token prints in no stream of any command, and every command answers with an exit code', async () => {
+    expect(Object.keys(CREDENTIAL_LINES).sort()).toEqual([...VERBS].sort())
+    for (const url of CREDENTIAL_URLS) {
+      for (const token of [undefined, `token-${CREDENTIAL}`]) {
+        const env = { DURABLERUN_STORE_URL: url, DURABLERUN_STORE_TOKEN: token }
+        for (const verb of VERBS) {
+          for (const line of CREDENTIAL_LINES[verb](targetOf(url))) {
+            for (const extra of [[], ['--json'], ['--reveal'], ['--json', '--reveal']]) {
+              const argv = [...line, ...extra]
+              let printed: string
+              let threw = false
+              try {
+                const run = await runCli(argv, env)
+                printed = `${run.stdout}${run.stderr}`
+              } catch (error) {
+                // A throw from main reached the bin, and Node printed it as inspect shows it.
+                threw = true
+                printed = inspect(error)
+              }
+              expect(
+                {
+                  url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),
+                  token: token !== undefined,
+                  argv: argv.join(' '),
+                  printed: printed.includes(CREDENTIAL),
+                  threw,
+                },
+                'mutation-verdict:behavior:cli-store-url-prints-no-credential',
+              ).toEqual({
+                url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),
+                token: token !== undefined,
+                argv: argv.join(' '),
+                printed: false,
+                threw: false,
+              })
+            }
+          }
+        }
+      }
+    }
+  }, 120_000)
+
+  it('the bin prints no credential from a store URL that does not parse, and exits 2', () => {
+    for (const url of [
+      `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
+      `postgres://admin:${CREDENTIAL}@[bad/app`,
+      `libsql://tok:${CREDENTIAL}@exa mple.io`,
+    ]) {
+      const child = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', BIN, 'doctor', '--queue', QUEUE, '--json'],
+        {
+          cwd: ROOT,
+          env: { PATH: process.env.PATH ?? '', DURABLERUN_STORE_URL: url },
+          encoding: 'utf8',
+        },
+      )
+      expect({
+        url: url.replaceAll(CREDENTIAL, '<credential>'),
+        exit: child.status,
+        printed: `${child.stdout}${child.stderr}`.includes(CREDENTIAL),
+      }).toEqual({ url: url.replaceAll(CREDENTIAL, '<credential>'), exit: 2, printed: false })
+    }
+  }, 60_000)
+
   it('walks the command table: every command has a sentinel case, and none prints the sentinel without --reveal', async () => {
     expect(Object.keys(CASES).sort()).toEqual([...VERBS].sort())
     for (const verb of VERBS) await runCase(verb, 'a command printed a value a user wrote')
