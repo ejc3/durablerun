@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { testIdSource } from '@durablerun/core/testing'
+import { LibsqlExecutor, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
   STORE_SCHEMES,
@@ -10,6 +11,24 @@ import {
   storeScheme,
   storeTarget,
 } from '../src/open-store.js'
+import { runCli } from './support.js'
+
+/** A database initialized through the store itself, at a URL the libSQL client decodes. */
+async function initialized(url: string): Promise<void> {
+  const db = LibsqlExecutor.open(url)
+  try {
+    await new LibsqlStoreAdmin(db).migrate()
+  } finally {
+    db.close()
+  }
+}
+
+/** The database files in a directory, without SQLite's journal files. */
+function databaseFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.sqlite'))
+    .sort()
+}
 
 describe('the store opener', () => {
   it('returns ports narrowed to the calls a command may make, and no executor', async () => {
@@ -68,6 +87,55 @@ describe('the store opener', () => {
     expect(storeTarget('mysql://root:secret@127.0.0.1:3306/app')).toBe('127.0.0.1:3306')
     expect(storeScheme('sqlite:data/x.db')).toBeUndefined()
     expect(() => storeTarget('/var/data/db.sqlite')).toThrow(StoreUrlError)
+  })
+
+  it("reads a file: URL's path as the libSQL client decodes it, for the read guard and for --target", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-file-url-'))
+    try {
+      await initialized(`file:${join(dir, 'a%20b.sqlite')}`)
+      await initialized(`file:${join(dir, 'a%3Fb.sqlite')}`)
+      await initialized(`file:${join(dir, 'a%23b.sqlite')}`)
+      expect(databaseFiles(dir)).toEqual(['a b.sqlite', 'a#b.sqlite', 'a?b.sqlite'])
+      const doctor = async (url: string) =>
+        (await runCli(['doctor', '--queue', 'q', '--json'], { DURABLERUN_STORE_URL: url })).exit
+      expect(
+        {
+          space: await doctor(`file:${join(dir, 'a%20b.sqlite')}`),
+          question: await doctor(`file:${join(dir, 'a%3Fb.sqlite')}`),
+          hash: await doctor(`file:${join(dir, 'a%23b.sqlite')}`),
+        },
+        'mutation-verdict:behavior:cli-file-url-reads-the-client-path',
+      ).toEqual({ space: 0, question: 0, hash: 0 })
+      // An unencoded # starts a fragment, which the client refuses, so the URL is refused.
+      expect(await doctor(`file:${join(dir, 'a')}#b.sqlite`)).toBe(2)
+
+      // Only a file whose name holds the text %41 is there, so the database the client
+      // would open, aA.sqlite, is missing, and a read refuses it without creating it.
+      writeFileSync(join(dir, 'a%41.sqlite'), '')
+      const encoded = await runCli(['doctor', '--queue', 'q', '--json'], {
+        DURABLERUN_STORE_URL: `file:${join(dir, 'a%41.sqlite')}`,
+      })
+      expect({ exit: encoded.exit, files: databaseFiles(dir) }).toEqual({
+        exit: 5,
+        files: ['a b.sqlite', 'a#b.sqlite', 'a%41.sqlite', 'a?b.sqlite'],
+      })
+
+      // --target names the path the client opens, decoded.
+      const created = await runCli(
+        ['migrate', '--yes', '--target', join(dir, 'new db.sqlite'), '--json'],
+        { DURABLERUN_STORE_URL: `file:${join(dir, 'new%20db.sqlite')}` },
+      )
+      expect(created.exit, created.stdout).toBe(0)
+      expect(databaseFiles(dir)).toEqual([
+        'a b.sqlite',
+        'a#b.sqlite',
+        'a%41.sqlite',
+        'a?b.sqlite',
+        'new db.sqlite',
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('refuses a token beside a URL that carries its own credentials, and opens nothing', async () => {
