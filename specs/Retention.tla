@@ -33,7 +33,12 @@
 \*      window old;
 \*  B2  no run of the task is live.  Tasks mirror their runs (Scheduler.tla), so
 \*      B1 implies it here, and it is a defence in the SQL with no twin here;
-\*  B3  no run in the child's queue carries the child's outcome;
+\*  B3  no run in the child's queue, in any state, names the child's completion
+\*      event: one that carries its outcome, or one that holds only the name
+\*      (a timed await that came due, or a parked run whose task was
+\*      cancelled).  This is the conservative condition: a failed holder that
+\*      names the event can be revived in place by retry-task and replay its
+\*      await, and a cancelled one is inspected;
 \*  B4  no wait names the child's completion event;
 \*  B5  the spawning parent, looked up by its id in every queue, is absent,
 \*      completed, or cancelled.
@@ -68,9 +73,9 @@
 \*
 \* WHAT KEEPS A UNIT FOREVER, by design: a failed spawning parent the policy
 \* keeps (failed tasks are kept by default because retry-task can revive them);
-\* a run of a kept task that failed or was cancelled while carrying the child's
-\* outcome (such a run never clears the columns); and a wait an older build left
-\* stranded.  AgedUnblockedIsPurged says nothing else does.
+\* a run of a kept task that failed or was cancelled while naming the child's
+\* completion event, with its outcome or with the name alone (such a run never
+\* clears the columns); and a wait an older build left stranded.  AgedUnblockedIsPurged says nothing else does.
 \*
 \* NOT MODELED, and why that is sound or what bounds it:
 \*  - Several parents or children, and a chain of ancestors.  Each unit's barrier
@@ -436,7 +441,7 @@ PurgeChild ==
   /\ Present("C") /\ ~purging
   /\ Admitted("C")
   /\ Aged("C")
-  /\ Lifted("carry") \/ \A x \in Holders : carry[x] = "none"
+  /\ Lifted("carry") \/ \A x \in Holders : carry[x] = "none" /\ named[x] = "none"
   /\ Lifted("wait") \/ \A x \in Holders : aw[x] # "waiting"
   /\ ParentAllows
   /\ cCkpts' = FALSE /\ cRuns' = FALSE /\ cEvent' = FALSE
@@ -570,6 +575,7 @@ AwaitOnPurgedIsRefused == [][AwaitStepOnPurgedIsRefused]_vars
 KeptForever ==
   \/ st["P"] = "failed" /\ "failed" \notin Policy
   \/ \E x \in Holders : carry[x] = "stuck" /\ st[x] \in Outcomes \ Policy
+  \/ \E x \in Holders : named[x] = "stuck" /\ st[x] \in Outcomes \ Policy
   \/ st["C"] \in Outcomes /\ \E x \in Holders : aw[x] = "waiting"
 
 \* A unit in a state the policy names, which nothing the policy keeps holds, is

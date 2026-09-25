@@ -5551,10 +5551,18 @@ them is built.
   - B2. No run of the task is live. Tasks mirror their runs, so B1 implies this,
     and it is a defence.
   - B3. No run in the child's queue, in any state, has `wake_event` equal to the
-    completion event's name. A woken run keeps `wake_event` and `event_payload`
-    until `complete` or `suspend` clears them, and a failed or cancelled run
-    never clears them. This is the delete-time form of the invariant library's
-    `payload/event-missing` condition.
+    completion event's name, with a payload or without one. A woken run keeps
+    `wake_event` and `event_payload` until `complete` or `suspend` clears them.
+    A parked run holds `wake_event` with no payload, and keeps it when the
+    claim of its timed await that came due consumes the wait, and when its
+    task is cancelled while it is parked. A failed or cancelled run never
+    clears either column. This is the conservative condition, on purpose: a
+    failed holder that names the event can be revived in place by `retryTask`
+    and replays its await, and a cancelled one is inspected, so the name alone
+    keeps the unit. It is not the delete-time form of the invariant library's
+    `payload/event-missing` condition, which fires only when `event_payload` is
+    not null. The model holds the payload half with `CarrierKeepsEvent` and the
+    name-only half with `NameCarrierKeepsChild`.
   - B4. No wait row names the completion event. A wait on an ended task exists
     only when an older build ended it under the wait, which the deploy rule of
     §3.2 forbids. The condition keeps the task that a revival would need to
@@ -5593,8 +5601,9 @@ them is built.
 - **After a purge,** `getTaskResult` and `retryTask` answer as for a task that
   never existed, and an await of the task is refused.
 - **What keeps a unit forever,** by design: a failed spawning parent the policy
-  keeps; a run that failed or was cancelled while carrying the child's outcome,
-  of a task the policy keeps; and a wait that an older build left stranded. The
+  keeps; a run that failed or was cancelled while naming the child's completion
+  event, with its payload or with the name alone, of a task the policy keeps;
+  and a wait that an older build left stranded. The
   model's liveness property, `AgedUnblockedIsPurged`, says the barrier keeps a
   unit forever for no other reason.
 
@@ -5637,6 +5646,7 @@ PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
 | `ReplayableParentKeepsChild` | a parent that can still run finds its child | a live or revivable task's `$spawn` memo names an existing task (PR5.2c1), and the consequence oracle (PR5.2c2) |
 | `NoStrandedWaiter` | a wait on a completion event has its task | a wait on a completion event has its task or its event (PR5.2c1) |
 | `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
+| `NameCarrierKeepsChild` | a run that names the completion event with no payload keeps the unit | the barrier grid's holder leg, a run naming the completion event in any state (PR5.2c2) |
 | `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the purge label's crash and duplicate cells (PR5.2c2) |
 | `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
