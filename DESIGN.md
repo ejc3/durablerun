@@ -5514,6 +5514,10 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 
 ### 3.12 Retention: the purge of terminal task units (proposed, modeled, not built)
 
+Section 3.11 is the operator surface, which PR5.3a writes. This section keeps
+its number so that the two can land in either order, and until 3.11 lands, 3.10
+is followed by 3.12.
+
 Tasks, runs, checkpoints, and events grow without bound today: no store
 deletes one. This section is the protocol that bounds them by deleting whole
 terminal task units. `specs/Retention.tla` models it ahead of its
@@ -5580,23 +5584,35 @@ them is built.
     parent `retryTask` can revive strictly needs the rule: a parent rolling back
     never reads its child again, and `retryTask` refuses a task whose saga
     began. The first release keeps the simpler rule, which stays right if a
-    saga ever becomes revivable.
+    saga ever becomes revivable. No property of the model holds B5's block of
+    a parent that is rolling back or failed with a saga, nor its admission of a
+    completed or cancelled parent: a model run that admits a rolling-back and a
+    saga-failed parent stays green on every configuration,
+    and a rule that waited for a completed or cancelled parent's own purge
+    would only delay the child's under any policy the type can express. The
+    barrier grid's parent cells hold both (PR5.2c2). The lookup assumes that one
+    database holds every task, so a parent it cannot find by `task_id` reads as
+    absent. That holds while `ctx.spawn` writes to the store the parent runs
+    on. Once tasks are sharded across databases (§3.7), a spawn routed to
+    another shard would leave a live parent that reads as absent, and B5 must
+    then keep a unit whose parent it cannot find.
 - **The batch.** The compare-and-set stamps the task row, then deletes keyed on
   that stamp remove the checkpoints, the waits, the runs, and the completion
-  event, and the task row goes last. Checkpoints go first because
-  `get-checkpoints` joins each checkpoint to its owner run, so a run deleted
-  first would hide its memos with no error. The batch takes the completion
-  event's lock through its lock coordinate, as a terminal batch does, which
-  makes it atomic and mutually exclusive with every await, emit, and terminal
-  batch of that event. It deletes the unit's completion event and never a
-  caller's event, and PostgreSQL's `event_locks` is untouched because a
-  completion event leaves no row there. A task ended by a build older than
-  child tasks has no completion event, and that delete matches nothing
-  (`RetentionProbeLegacyNoEvent`). No purge statement uses SKIP LOCKED: InnoDB's
-  SKIP LOCKED has skipped a row the batch had stamped itself. Each delete
-  carries a row-count check against the unit the compare-and-set read. The
-  `record-task-done` batch stays fenced on the stamp of the row it read, or a
-  purge between its read and its write would leave a completion event with no
+  event, and the task row goes last. The batch is atomic, so no reader sees it
+  half done, and the order follows the delete key paths: a checkpoint is found
+  through its owner run and a wait through the run it names, so both go before
+  the runs, and every delete is keyed on the task row's stamp, so the row goes
+  last. The batch takes the completion event's lock through its lock coordinate,
+  as a terminal batch does, which makes it atomic and mutually exclusive with
+  every await, emit, and terminal batch of that event. It deletes the unit's
+  completion event and never a caller's event, and PostgreSQL's `event_locks` is
+  untouched because a completion event leaves no row there. A task ended by a
+  build older than child tasks has no completion event, and that delete matches
+  nothing (`RetentionProbeLegacyNoEvent`). No purge statement uses SKIP LOCKED:
+  InnoDB's SKIP LOCKED has skipped a row the batch had stamped itself. Each
+  delete carries a row-count check against the unit the compare-and-set read.
+  The `record-task-done` batch stays fenced on the stamp of the row it read, or
+  a purge between its read and its write would leave a completion event with no
   task (`RetentionProbeUnfencedMaterialize`).
 - **After a purge,** `getTaskResult` and `retryTask` answer as for a task that
   never existed, and an await of the task is refused.
@@ -5605,7 +5621,10 @@ them is built.
   event, with its payload or with the name alone, of a task the policy keeps;
   and a wait that an older build left stranded. The
   model's liveness property, `AgedUnblockedIsPurged`, says the barrier keeps a
-  unit forever for no other reason.
+  unit forever for no other reason the model can express. Outside the model,
+  three more things keep a unit: a NULL stamp, which is never selected; a key
+  that starts with `$spawn:` and does not parse; and, once PR5.2c2 adds the
+  cap, a unit with more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`.
 
 **Two contract changes, proposed and awaiting the maintainer's approval.** Both
 follow from bounding rows by deleting task rows.
@@ -5616,7 +5635,12 @@ follow from bounding rows by deleting task rows.
    the key still dedupes, because no unit is purged before its window ends
    (`PurgeOnlyDeadAndOld`). The completed and cancelled windows must therefore
    exceed the producer's redelivery horizon. A spawn that reuses a key while
-   its unit is being purged creates a fresh task and does not throw.
+   its unit is being purged must create a fresh task and must not throw. That
+   is a requirement on PR5.2c2, not a property of today's stores: PostgreSQL's
+   spawn throws in that race today (`the task insert lost but no existing task
+   explains it`). PR5.2c2's contest drives the race, and when the insert loses
+   and no task explains it, the store retries the insert once, because the key
+   is then free and a second loss is real.
 2. **A child handle is valid until its unit is purged, and an await after that
    fails loudly.** The spawning parent's handle stays valid for as long as the
    parent can run, by B5. A handle given to any other task cannot be found

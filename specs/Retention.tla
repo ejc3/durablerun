@@ -66,7 +66,9 @@
 \*  - The parent is found by the id the child's reserved key names, in any queue:
 \*    ctx.spawn takes a queue option and the key does not encode the parent's
 \*    queue.  RetentionProbeParentInAnotherQueue shows what a lookup inside the
-\*    child's queue costs.
+\*    child's queue costs.  The lookup assumes one database holds every task,
+\*    so a parent it cannot find reads as absent, which holds until tasks are
+\*    sharded across databases (DESIGN.md S3.12).
 \*  - The record-task-done batch stays fenced on the stamp of the row it read.
 \*    RetentionProbeUnfencedMaterialize shows the orphan event a purge leaves
 \*    beside an unfenced one.
@@ -89,7 +91,10 @@
 \* keeps (failed tasks are kept by default because retry-task can revive them);
 \* a run of a kept task that failed or was cancelled while naming the child's
 \* completion event, with its outcome or with the name alone (such a run never
-\* clears the columns); and a wait an older build left stranded.  AgedUnblockedIsPurged says nothing else does.
+\* clears the columns); and a wait an older build left stranded.
+\* AgedUnblockedIsPurged says nothing else the model can express does.  Outside
+\* the model a NULL stamp, a $spawn: key that does not parse, and PR5.2c2's
+\* checkpoint cap keep a unit too.
 \*
 \* TWO PARTS OF B5 THAT NO PROPERTY HOLDS, on purpose, so no mutant names them:
 \*  - B5 keeps the children of a parent that is rolling back or failed with a
@@ -487,7 +492,8 @@ PurgeRow ==
 
 \* The parent's or the third party's own unit.  Nothing here awaits either of
 \* them, and neither was spawned by a task, so B1 is their whole barrier.  Their
-\* runs go with them, and with the runs any outcome of C they carried.
+\* runs go with them, and with the runs any outcome of C they carried and any
+\* name of C's event they held.
 PurgeHolder(x) ==
   /\ Admitted(x)
   /\ Aged(x)
@@ -610,7 +616,8 @@ KeptForever ==
 
 \* A unit in a state the policy names, which nothing the policy keeps holds, is
 \* purged, or leaves that state by revival, or comes to be held by what the
-\* policy keeps.  The barrier holds no unit forever for any other reason.  Twin:
+\* policy keeps.  The barrier holds no unit forever for any other reason the
+\* model can express.  Twin:
 \* the simulated week's floors (PR5.2d).
 AgedUnblockedIsPurged ==
   (st["C"] \in Policy /\ ~KeptForever) ~> (st["C"] \notin Policy \/ KeptForever)
