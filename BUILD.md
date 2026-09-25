@@ -51,11 +51,12 @@ section 3.12 (retention) will hold the design, written by the PRs named below;
 this section is the plan.
 
 **Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
-The exit test is lines 32 to 44 below, and none is met. Each PR marks its own
-lines met, with the evidence in its own diff. The milestone is complete when
-lines 32 to 44 are all met, which PR5.5 records. The maintainer's live week on
-the deployed alpha is receipt M1, outside the numbered lines, and M1 is recorded
-met only when its receipt exists and line 44's checker accepts it.
+The exit test is lines 32 to 44 below, and each line says whether it is met.
+Each PR marks its own lines met, with the evidence in its own diff. The
+milestone is complete when lines 32 to 44 are all met, which PR5.5 records. The
+maintainer's live week on the deployed alpha is receipt M1, outside the numbered
+lines, and M1 is recorded met only when its receipt exists and line 44's checker
+accepts it.
 
 **Exit test:**
 
@@ -86,8 +87,30 @@ met only when its receipt exists and line 44's checker accepts it.
     that `pnpm cli migrate --yes --target <its path>` took to each version from
     5 to the build's, and `result` reads what alpha.1 wrote exactly as alpha.1's
     own getTaskResult does. Red: a planted migration that adds a NOT NULL column
-    with no default fails the alpha.1 cycle by name. NOT MET: no CLI package
-    exists.
+    with no default fails the alpha.1 cycle by name. This is met.
+    `packages/cli/test/cli-dialects.test.ts`, on each dialect: "doctor, result
+    and checkpoints print the JSON libSQL prints, apart from the fields under
+    dialect", through `main` with a seeded IdSource; "a read command sends only
+    read batches, each with a label the command table declares"; "every store
+    command exits 5 on a database a newer build migrated, and changes no table";
+    "migrate without --yes changes nothing, and with --yes prints each version
+    applied"; and "bin/durablerun.ts exits with the code the exit table names
+    for each outcome". `schema-window.test.ts` holds the first five versions in
+    "a read of a database migrated through the first five versions answers as it
+    does at the current version". `import-boundary.test.ts` holds the one
+    importer in "a store package imported by any other file of packages/cli/src
+    fails the lint", the planted control, and "no file of packages/cli/src or
+    bin but open-store.ts names a module inside a store package", and
+    `open-store.test.ts` holds the ports in "returns ports narrowed to the calls
+    a command may make, and no executor"; only the opener reads a URL's scheme.
+    `scripts/alpha1-compat.sh`, which `verify:packages` runs and CI's verify job
+    requires (DURABLERUN_ALPHA1_REQUIRED=1), runs the cycle at every version
+    from 5 to 10: `migrate --yes` reaches the build's version through the bin,
+    and leaves each version below it when its store fails at the next version's
+    batch. Its planted control takes the form version 10 gives NOT NULL on
+    libSQL, a trigger that refuses the write, because SQLite refuses to add a
+    NOT NULL column with no default, and it must fail at alpha.1's spawn naming
+    `tasks.planted`.
 33. PR5.3a (extended by every later PR that adds a command): nothing
     user-authored and no store credential prints without `--reveal`. A sentinel
     planted in a task's params and headers, a checkpoint's state, an event
@@ -108,7 +131,28 @@ met only when its receipt exists and line 44's checker accepts it.
     names, event names and checkpoint names print, and so do the step keys a
     checkpoint name holds. A test walks the command table and fails for any
     command that has no sentinel case. Red: removing redaction from one renderer
-    fails that command's case by name. NOT MET.
+    fails that command's case by name. This is met.
+    `packages/cli/test/redaction.test.ts` plants the sentinel in a task's params
+    and headers, a checkpoint's state, an event payload, a completed result, a
+    failure reason the task's code wrote and an idempotency key, and "walks the
+    command table: every command has a sentinel case, and none prints the
+    sentinel without --reveal", in human text and in `--json`, with the refusals
+    `result` and `checkpoints` give among its lines. No verb of PR5.3a prints an
+    event payload or a key. Redaction removed from the result renderer fails
+    "result prints no value a user wrote without --reveal". "result prints a
+    failed rollback's error as its length and sha256" redacts errors named
+    `$SagaStateCorrupt`, `$RollbackNotRegistered` and a name that is neither,
+    and the CLI prints no name for any of them. "a credential in the store URL
+    or its token prints in no stream of any command, and every command answers
+    with an exit code" plants a password in the store URL, among URLs that do
+    not parse and URLs a store client refuses, and a token in
+    DURABLERUN_STORE_TOKEN, and reads the console and both process streams; "the
+    bin prints no credential in any stream, --reveal included, for any URL of
+    the credential sweep" runs the bin, and "the bin's last catch prints an
+    unexpected error's name and nothing of its message or fields" holds the last
+    catch. `fault-surface.test.ts` holds every fault case of line 34 to the
+    sentinel, and "prints the four failure reasons the engine writes by name"
+    holds the engine's four reasons.
 34. PR5.3a (extended by every later PR that adds a command): the CLI has its own
     generated fault surface, as AGENTS.md requires of every new layer. From the
     command table, each command's port calls are enumerated with their batch
@@ -118,22 +162,39 @@ met only when its receipt exists and line 44's checker accepts it.
     after the batch commits) and duplicate (it delivers the batch twice and
     resolves with the second delivery's result, as SimWorld does). The command
     table declares exit 6 for the first two and the exit of a clean run for
-    duplicate, and each case exits as the table declares. It is a CLI-level
-    injection, not SimWorld's SimCrash. A duplicated `retry` sees null from its
-    second delivery, so `retry` tells its own revival from a refusal by a read
-    before the write. Exit 6 (store unavailable) means the outcome is unknown,
-    since the write may have committed. After each case, for every verb but
-    `selftest`, running the same command again reaches the state one successful
-    run leaves, compared as a dump of every table, and prints the state it finds
-    as of that read: a repeated `cancel` reports the task cancelled, and a
-    repeated `retry` reports the pending run it finds. This is why exit 6 is
-    declared safe to repeat for every verb but `selftest`, and it holds because
-    `enqueue` requires `--key`. `selftest` refuses a queue that already holds
-    tasks, so its repeat class is a fresh run on a fresh queue, judged by that
-    run's own output and not by the dump. Red in PR5.3a: a read verb that maps a
-    StoreUnavailableError to exit 0 fails its crash-before case. Red in PR5.3d:
-    making `--key` optional fails the enqueue crash-after case by name, with two
-    tasks in the dump. NOT MET.
+    duplicate, except crash-after at `migrate:bootstrap` and at each
+    `migrate:v<N>`, which it declares 0 by label because core's migrate reads
+    the version again, and each case exits as the table declares. It is a
+    CLI-level injection, not SimWorld's SimCrash. A duplicated `retry` sees null
+    from its second delivery, so `retry` tells its own revival from a refusal by
+    a read before the write. Exit 6 (store unavailable) means the outcome is
+    unknown, since the write may have committed. After each case, for every verb
+    but `selftest`, running the same command again reaches the state one
+    successful run leaves, compared as a dump of every table, and prints the
+    state it finds as of that read: a repeated `cancel` reports the task
+    cancelled, and a repeated `retry` reports the pending run it finds. This is
+    why exit 6 is declared safe to repeat for every verb but `selftest`, and it
+    holds because `enqueue` requires `--key`. `selftest` refuses a queue that
+    already holds tasks, so its repeat class is a fresh run on a fresh queue,
+    judged by that run's own output and not by the dump. Red in PR5.3a: a read
+    verb that maps a StoreUnavailableError to exit 0 fails its crash-before
+    case. Red in PR5.3d: making `--key` optional fails the enqueue crash-after
+    case by name, with two tasks in the dump. This is met.
+    `packages/cli/test/fault-surface.test.ts` runs every store command of PR5.3a
+    from each starting state it runs from (`migrate` from a database that was
+    never initialized, from version 5 and from one version below the build's,
+    and each read from the current version) under the three faults at every
+    batch it sends, on each dialect, in "<verb> from <state> under every fault
+    kind at every batch it sends": each case exits as the table declares, prints
+    no sentinel of line 33, and running the command again exits 0 and leaves a
+    dump of every table equal to the one a clean run leaves, and a repeated read
+    prints what the clean run printed. "every batch label and faultsAt entry the
+    command table declares is sent from some starting state" fails a declared
+    label or per-label exit that no run sends, and the red, a read that maps
+    StoreUnavailableError to exit 0, fails "a read that meets an unavailable
+    store before its batch exits 6 and changes nothing". The PRs that add
+    `enqueue`, `cancel`, `retry` and `selftest` hold what the line says of them,
+    and PR5.3d holds its red.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -5702,6 +5763,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
   PR5.3b1 (`inspect` over new operator reads), PR5.3b2 (`explain`), PR5.3c
   (`stuck`, `stats`, `sizes` and schema version 11) and PR5.3d (the drive verbs
   and the operator drill), exit test lines 32 to 39.
+- **PR5.3a operator CLI, read-only**: IN REVIEW. Exit test lines 32, 33 and 34 of the
+  operable alpha milestone, which PR5.0 records. `packages/cli` is private with no `bin`
+  field, run as `pnpm cli <verb>` with no `.env` file loaded, and DESIGN.md section 3.11
+  holds its command table, transport, safety defaults, redaction rule and exit codes. Its
+  commands are `help`, `doctor`, `migrate`, `result` and `checkpoints`, over ports that
+  exist today; no batch, statement or schema version is added. Each store package exports
+  `READABLE_SCHEMA_WINDOW` beside `CURRENT_SCHEMA_VERSION` (versions 5 to 10 for libSQL, and
+  10 alone for PostgreSQL and MySQL) and `SCHEMA_VERSION_NOTES`, what migrate prints before
+  a version, and store-libsql exports `fileUrlPath`, the path its client opens for a `file:`
+  URL; all three are additions to store-libsql's released surface. The
+  alpha.1 harness, run by `verify:packages`, found the release alpha.1 running its cycle on
+  libSQL databases the CLI left at every version from 5 to 10, which settles the design's
+  open question of whether alpha.1 runs past version 5 at all. The registry holds 1149
+  mutations where main holds 1125, twenty-four of them the CLI's guards, and the base
+  gate's arm is keyed on main's digest and exempts their nineteen markers.
+  - Option for the credential sweep, not built, with its trigger: look for part of a
+    password. The sweep looks for the whole planted password and its leading digits, so a
+    message that prints a slice of one passes it: a slice planted in the `--target` mismatch
+    message printed there and the sweep passed. Trigger: a message found printing part of a
+    store credential, or a new message built from a URL's user name, password or query.
+  - Option for the redaction tests, not built, with its trigger: open a database whose URL
+    holds a credential. Every URL of the tests that holds a credential fails to open, and no
+    database that opens has one in its URL, so a print of the store URL on a path that runs
+    only after a store opens passes every case. Trigger: a command that prints anything
+    taken from the store URL after the store opens, or a test server that takes a password.
+  - Option for the authority refusal, not built, with its trigger: model each store client's
+    own URL parser. The refusal models the WHATWG parser the three drivers use, and a client
+    that split the user name from the host at the first `@` would read a host the check does
+    not. Trigger: a store whose client parses a URL by another rule, or a driver release
+    that changes its parser.
+  - Option for the import boundary, not built, with its trigger: resolve a computed
+    specifier. The resolver reads the specifiers TypeScript's scanner finds, so an
+    `import(name)` whose `name` is a variable yields none, and biome's rule does not see it
+    either. Trigger: a computed dynamic import in packages/cli.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

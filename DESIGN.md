@@ -5509,6 +5509,143 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   - A task the sweeps fail at an infrastructure cap ROLLS BACK like any other
     terminal failure.
 
+### 3.11 The operator CLI
+
+`packages/cli` is the operator's tool: one command, `pnpm cli <verb>`, which runs
+`node --import tsx packages/cli/bin/durablerun.ts` and loads no `.env` file. The package
+is private at version 0.0.0 with no `bin` field, so nothing here is published and
+`scripts/package-smoke.sh` skips it. `main(argv, env, io, ids, clock)` in `src/main.ts` is
+the whole CLI with everything it touches handed in, and the bin hands it the process's
+arguments, environment and streams. No command reads the clock.
+
+**The command table.** `src/commands.ts` holds one entry for each command: its arguments
+and flags, whether it opens a store and whether it writes, what running it again does
+after its answer was lost (`read` prints the state it finds as of that read, `resumes`
+carries on from where the first run stopped), each port call it makes with every batch
+label that call can send, the exit codes it gives, and the exit a fault at each of its
+batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
+table. The commands so far are `help`, `doctor`, `migrate`, `result` and `checkpoints`.
+
+**Transport.** Every command but `help` opens a store directly, from
+`DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
+one. There is no fallback to any other variable. `src/open-store.ts` picks the store by
+the URL's scheme: `file:`, `:memory:`, `libsql:`, `https:` and `wss:` open libSQL,
+`postgres:` and `postgresql:` PostgreSQL, and `mysql:` MySQL. It is the one file of the
+CLI that imports a store package. biome's `noRestrictedImports` holds that with an
+override for that file, and because the rule matches a specifier's spelling, a test also
+resolves every import of `src` and `bin` as the compiler does, relative paths and
+`typeof import(...)` included, and fails on one that lands in a store package. The
+opener returns ports narrowed to the calls a command may make, never an executor: the
+fake clock's setter and `claim` cannot be written. A database credential is full admin:
+it bypasses section 3.5's hosted authorization port, which decides only the hosted
+routes' four operations, and the rows it reaches hold params, checkpoints and event
+payloads in plaintext (section 3.5, observability). So the CLI's own messages never
+quote the store URL or the token. A URL that does not parse, one whose user name or
+password does not percent-decode, one with an @ after the end of its authority, and a
+libSQL server's URL that carries a user name or password, which its client would quote in
+an error, are refused with exit 2 before anything opens. The authority ends at the first
+/ ? or # after the `//` that starts it, or at a backslash in `https:` and `wss:`, and a
+URL with no `//` is taken to have none. An unencoded # / or ? in a password ends it there,
+and then what parses as the host, the port or the query holds the rest of the password,
+which the `--target` message, a driver's error and a driver's console warning would print
+and a name lookup would send, so an @ outside the user name and password must be written
+%40, in a query too. The bin's last catch prints only the name of an error nothing answered,
+beside a fixed sentence, and exits 1, because a foreign error's message and fields can
+quote the URL it was given.
+
+**Safety defaults.** Each store package exports `READABLE_SCHEMA_WINDOW`, the schema
+versions its reads accept: 5 to the current version for libSQL, because the release
+alpha.1 migrated its databases to version 5 and no later version adds a column a read
+selects, and the current version alone for PostgreSQL and MySQL, which were never
+released. Every read checks the recorded version against that window before anything
+else, and exits 5 for a database that is not initialized, older than the window, or
+recorded past the build's newest version, which a newer build migrated. A read never
+migrates, sends only read batches, and refuses a `file:` URL that names no file before a
+client opens, because a libSQL client creates the file it is pointed at. Opening a
+libSQL file sets it to write-ahead logging, as the store and the release alpha.1 already
+do on every connection, so a read of a file in rollback-journal mode leaves it in WAL
+mode, and no row changes. The CLI reads a `file:` URL's path with store-libsql's own
+`fileUrlPath`, as the client reads it: percent-decoded and cut at the query, so the file
+it checks is the file the client opens; a fragment, which the client refuses, is
+refused, and so is a path that holds `:memory:`, which the store reads as no file (the
+whole URL `:memory:` names a database held in memory). `migrate` is the only command that changes the schema. It must name its store
+again with `--target`, the URL's host with its port or the decoded path of a `file:`
+URL, and a mismatch exits 2 before anything is opened, as does a write to a URL with no
+host, such as a socket URL, which `--target` cannot name. A store client that refuses
+the URL as it is made is answered with exit 2 too, without the client's message, which
+can quote the URL. Without `--yes` it prints the versions it would apply and exits 2
+with `confirmation-required`, and for a `file:` URL that names no file yet it plans
+every version and opens nothing. Before each version it would apply, it prints the note
+the store package exports for that version in `SCHEMA_VERSION_NOTES`, so what a version
+costs on each dialect is said by that dialect's package and the CLI holds none of it;
+every store has one for version 10 today, and a database that was never initialized,
+which holds no rows, gets none. With `--yes` it prints each version applied, and when it
+fails partway, the versions it applied and the version now recorded. `--queue` and
+`--target` are read from the arguments only.
+
+**Redaction.** A value a user wrote prints as its byte length and sha256, and its text
+prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
+completed result, a failure reason the task's code wrote, a failed rollback's error, and
+an idempotency key. The four failure reasons the engine writes print by name
+(`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`). Task
+ids, task names, event names, checkpoint names and queue names print. A store's own
+error message prints only with `--reveal`, because a driver can quote a stored value in
+it, and so does what refused a stored row the store's decoders cannot read, which
+`result` and `checkpoints` answer with exit 10; a port's refusal names only what the
+caller passed, and prints.
+
+**Output.** Human text by default, one `name: value` line for each field. With `--json`
+one JSON document with every object's keys in code point order, which is the same on
+every dialect apart from the object under `dialect`: the URL scheme and the store's
+schema window.
+
+**Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
+same table, which a test holds equal to this one.
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 0 | done | the command did what it says |
+| 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
+| 2 | usage | usage, confirmation-required or target-mismatch; nothing was changed |
+| 3 | refused | the engine refused the call, and says why |
+| 4 | unauthorized | reserved for unauthenticated or forbidden; no command gives it yet, and a wrong credential exits 6 |
+| 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
+| 6 | unavailable | the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too |
+| 7 | permanent | the store answered with a permanent error |
+| 8 | not-found | no such task in the queue |
+| 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
+| 10 | unreadable | a stored row the store's decoders refuse; what refused it prints only with --reveal, because it can quote the row |
+
+Exit 6 is safe to repeat for every command. For a read that holds because a read changes
+nothing. For `migrate` it holds because each version's write is fenced by the version
+before it, and after a failed version write the admin reads the version again and carries
+on when the write landed, so a lost answer to a version write the store committed ends in
+0 and a rerun resumes from the version reached. Safe to repeat is not sure to succeed. A
+wrong credential exits 6 today on every store: both server executors type an
+authentication failure as an outage (a test measures it on PostgreSQL and MySQL), and the
+libSQL executor types every client error but a constraint or a type mismatch as one. It
+fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is reserved
+for it: typing an authentication failure apart from an outage changes the executors and
+core, and is the maintainer's decision.
+
+The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
+executor, as the CLI sees it: crash-before (the executor rejects with
+StoreUnavailableError before the batch is sent), crash-after (it rejects after the batch
+commits) and duplicate (it delivers the batch twice). It is a CLI-level injection, not
+SimWorld's SimCrash. It meets every batch every store command sends, one sending at a
+time, on each dialect, from each starting state the command runs from: `migrate` from a
+database that was never initialized, from version 5 and from one version below the
+build's, and each read from the current version. The command table declares exit 6 for
+the first two and the exit of a clean run for duplicate, except at the batches whose lost
+answer `migrate` recovers, where it declares 0 for crash-after by label:
+`migrate:bootstrap` and each version's write, because the admin reads the version again.
+Every batch label and every per-label exit the table declares must be sent from some
+starting state, so a label that is stale or never met fails. After each case, running the
+same command again reaches the state one successful run leaves, and a read prints what
+that run printed. A read also leaves every table as it found it, and `migrate` leaves a
+recorded version between the one it started from and the build's; across several
+versions that can be neither the state it started from nor the one it would finish at.
+
 ## 4. What "ticks" mean here — direct answers to the original questions
 
 - **How do ticks drive workflows?** A tick is one pass of the driver: sweep
