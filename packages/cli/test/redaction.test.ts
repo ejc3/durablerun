@@ -96,6 +96,12 @@ async function runCase(verb: Verb, marker: string): Promise<void> {
 const CREDENTIAL = 'pw-4b7e2c'
 
 /**
+ * A password's leading digits, which a reserved character after them turns into a port when
+ * it cuts the authority short: `admin:60917#...@host` parses with host `admin:60917`.
+ */
+const DIGIT_CREDENTIAL = '60917'
+
+/**
  * Store URLs whose password holds the credential. Each password holds a character a URL's
  * password must percent-encode, and several of the URLs do not parse at all, which is the
  * common typo an operator makes.
@@ -112,6 +118,8 @@ const CREDENTIAL_URLS: readonly string[] = [
   `libsql://tok:${CREDENTIAL}@exa mple.io`,
   `libsql://tok:${CREDENTIAL}@127.0.0.1:1`,
   `https://tok:${CREDENTIAL}@127.0.0.1:1`,
+  `postgres://admin:${DIGIT_CREDENTIAL}#${CREDENTIAL}@db.example.io/app`,
+  `mysql://root:${DIGIT_CREDENTIAL}/${CREDENTIAL}@db.example.io/app`,
 ]
 
 /** Each command's lines against a URL that holds a credential, keyed by the table's verbs. */
@@ -165,7 +173,7 @@ describe('redaction', () => {
                   url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),
                   token: token !== undefined,
                   argv: argv.join(' '),
-                  printed: printed.includes(CREDENTIAL),
+                  printed: printed.includes(CREDENTIAL) || printed.includes(DIGIT_CREDENTIAL),
                   threw,
                 },
                 'mutation-verdict:behavior:cli-store-url-prints-no-credential',
@@ -189,6 +197,7 @@ describe('redaction', () => {
       `postgres://admin:${CREDENTIAL}@[bad/app`,
       `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,
       `postgres://admin:${CREDENTIAL}%zz@127.0.0.1:1/app`,
+      `postgres://admin:${DIGIT_CREDENTIAL}#${CREDENTIAL}@db.example.io/app`,
       `libsql://tok:${CREDENTIAL}@127.0.0.1:1`,
       `https://tok:${CREDENTIAL}@127.0.0.1:1`,
     ]) {
