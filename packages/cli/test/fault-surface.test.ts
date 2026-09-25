@@ -5,6 +5,7 @@ import {
   CLI_FAULTS,
   COMMANDS,
   type CliFault,
+  type CommandSpec,
   VERBS,
   type Verb,
   declaresLabel,
@@ -63,6 +64,41 @@ const SCENARIOS: Readonly<Record<Exclude<Verb, 'help'>, Scenario>> = {
     schema: 'current',
     line: (_db, seeded) => ['checkpoints', seeded.completed, '--queue', QUEUE, '--json'],
   },
+}
+
+/** Every starting state a command's fault surface runs from. */
+function scenariosOf(verb: Exclude<Verb, 'help'>): readonly Scenario[] {
+  return [SCENARIOS[verb]]
+}
+
+/** The labels of every batch one run without a fault sends, from one starting state. */
+async function cleanLabels(
+  dialect: (typeof SELECTED)[number],
+  verb: Exclude<Verb, 'help'>,
+  scenario: Scenario,
+): Promise<string[]> {
+  const db = await openCliDb(dialect, `labels-${verb}`, scenario.schema)
+  try {
+    const seeded = await seedTasks(db)
+    const recording = recordingOpener()
+    const run = await runCli(scenario.line(db, seeded), db.env, recording.opener)
+    expect(run.exit, run.stdout).toBe(0)
+    return recording.sent().map((batch) => batch.label)
+  } finally {
+    await db.close()
+  }
+}
+
+/**
+ * Whether one label the table writes, `migrate:v<N>` among them, matches a label sent. The
+ * table's own matcher reads a command's every label, so it is asked about a command that
+ * declares this one alone.
+ */
+function meets(spec: CommandSpec, declared: string, label: string): boolean {
+  return declaresLabel(
+    { ...spec, ports: [{ call: 'admin.schemaVersion', labels: [declared] }] },
+    label,
+  )
 }
 
 async function prepared(dialect: (typeof SELECTED)[number], verb: Exclude<Verb, 'help'>) {
@@ -152,6 +188,27 @@ describe('the CLI fault surface', () => {
 
   for (const dialect of SELECTED) {
     describe(`[${dialect}]`, () => {
+      it('every batch label and faultsAt entry the command table declares is sent from some starting state', async () => {
+        for (const verb of VERBS) {
+          if (verb === 'help') continue
+          const spec = COMMANDS[verb]
+          const sent = new Set<string>()
+          for (const scenario of scenariosOf(verb)) {
+            for (const label of await cleanLabels(dialect, verb, scenario)) sent.add(label)
+          }
+          const declared = [
+            ...spec.ports.flatMap((port) => port.labels),
+            ...Object.keys(spec.faultsAt ?? {}),
+          ]
+          for (const label of declared) {
+            expect(
+              { verb, label, sent: [...sent].some((one) => meets(spec, label, one)) },
+              'mutation-verdict:behavior:cli-every-declared-label-is-sent',
+            ).toEqual({ verb, label, sent: true })
+          }
+        }
+      }, 120_000)
+
       for (const verb of VERBS) {
         if (verb === 'help') continue
         it(`${verb} under every fault kind at every batch it sends`, async () => {
