@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { inspect } from 'node:util'
+import { format, inspect } from 'node:util'
 import {
   REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
@@ -62,6 +62,38 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
   },
 }
 
+/**
+ * Run `run` with the console and the process's two streams captured, because a store's driver
+ * can print straight past the CLI's io, as mysql2 does for a query key it does not know.
+ */
+async function capturingConsole<T>(run: () => Promise<T>): Promise<{ value: T; printed: string }> {
+  let printed = ''
+  const methods = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const
+  const saved = methods.map((method) => console[method])
+  const writes = [process.stdout.write, process.stderr.write] as const
+  for (const method of methods) {
+    console[method] = (...args: unknown[]) => {
+      printed += `${format(...args)}\n`
+    }
+  }
+  const capture = (chunk: unknown): boolean => {
+    printed += String(chunk)
+    return true
+  }
+  process.stdout.write = capture as typeof process.stdout.write
+  process.stderr.write = capture as typeof process.stderr.write
+  try {
+    const value = await run()
+    return { value, printed }
+  } finally {
+    methods.forEach((method, index) => {
+      console[method] = saved[index] as (typeof console)[typeof method]
+    })
+    process.stdout.write = writes[0]
+    process.stderr.write = writes[1]
+  }
+}
+
 /** Run one command's case, and fail with `marker` when the sentinel prints without --reveal. */
 async function runCase(verb: Verb, marker: string): Promise<void> {
   const db = await openCliDb('libsql', `redaction-${verb}`)
@@ -107,6 +139,11 @@ const DIGIT_CREDENTIAL = '60917'
  * common typo an operator makes.
  */
 const CREDENTIAL_URLS: readonly string[] = [
+  // An @ in the password, then a reserved character: what parses as the host, or as a query
+  // key a driver prints, is part of the password.
+  `mysql://root:a@b?${CREDENTIAL}@db.example.io/app`,
+  `postgres://admin:x@${CREDENTIAL}#y@db.example.io/app`,
+  `postgres://admin:p@${CREDENTIAL}/word@db.example.io/app`,
   `postgres://admin:${CREDENTIAL}#x@db.example.io:5432/app`,
   `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
   `postgresql://admin:${CREDENTIAL}/x@db.example.io/app`,
@@ -161,8 +198,10 @@ describe('redaction', () => {
               let printed: string
               let threw = false
               try {
-                const run = await runCli(argv, env)
-                printed = `${run.stdout}${run.stderr}`
+                const { value: run, printed: driver } = await capturingConsole(() =>
+                  runCli(argv, env),
+                )
+                printed = `${run.stdout}${run.stderr}${driver}`
               } catch (error) {
                 // A throw from main reached the bin, and Node printed it as inspect shows it.
                 threw = true
@@ -193,6 +232,9 @@ describe('redaction', () => {
 
   it("refuses a store URL that does not parse, a password that does not percent-decode, and a libSQL server's URL with a password, with exit 2", async () => {
     for (const url of [
+      `postgres://admin:x@${CREDENTIAL}#y@db.example.io/app`,
+      `mysql://root:a@b?${CREDENTIAL}@db.example.io/app`,
+      `postgres://admin:p@${CREDENTIAL}/word@db.example.io/app`,
       `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
       `postgres://admin:${CREDENTIAL}@[bad/app`,
       `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,
@@ -260,6 +302,34 @@ describe('redaction', () => {
       }).toEqual({ url: url.replaceAll(CREDENTIAL, '<credential>'), exit: 2, printed: false })
     }
   }, 60_000)
+
+  it('the bin prints no credential in any stream, --reveal included, for any URL of the credential sweep', () => {
+    for (const url of CREDENTIAL_URLS) {
+      for (const extra of [[], ['--reveal']]) {
+        const child = spawnSync(
+          process.execPath,
+          ['--import', 'tsx', BIN, 'doctor', '--queue', QUEUE, ...extra],
+          {
+            cwd: ROOT,
+            env: { PATH: process.env.PATH ?? '', DURABLERUN_STORE_URL: url },
+            encoding: 'utf8',
+          },
+        )
+        const printed = `${child.stdout}${child.stderr}`
+        expect({
+          url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),
+          reveal: extra.length > 0,
+          printed: printed.includes(CREDENTIAL) || printed.includes(DIGIT_CREDENTIAL),
+          exited: typeof child.status === 'number',
+        }).toEqual({
+          url: JSON.stringify(url).replaceAll(CREDENTIAL, '<credential>'),
+          reveal: extra.length > 0,
+          printed: false,
+          exited: true,
+        })
+      }
+    }
+  }, 120_000)
 
   it('walks the command table: every command has a sentinel case, and none prints the sentinel without --reveal', async () => {
     expect(Object.keys(CASES).sort()).toEqual([...VERBS].sort())
