@@ -25,6 +25,9 @@ jobs:
       # What the service below is created with. A PostgreSQL test holds the server to it, so
       # an image that stopped honouring the arguments cannot pass for a linguistic server.
       DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
+      # verify:packages runs the release alpha.1 on databases the CLI migrated. An asset it
+      # cannot download fails this job, where the harness would otherwise skip and pass.
+      DURABLERUN_ALPHA1_REQUIRED: '1'
     services:
       postgres:
         image: postgres:17-alpine

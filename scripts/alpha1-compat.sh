@@ -7,8 +7,14 @@
 # packages/cli/test/alpha1-compat.ts against them. The asset URLs are the ones
 # examples/vercel-turso/package.json pins. A sha256 that does not match fails. An asset
 # that cannot be downloaded skips the harness, and the skip is printed with its reason and
-# counted; set DURABLERUN_ALPHA1_REQUIRED=1 to make it fail instead. With
-# DURABLERUN_ALPHA1_ASSETS set to a directory holding the four assets, nothing is downloaded.
+# counted; set DURABLERUN_ALPHA1_REQUIRED=1 to make it fail instead, as CI's verify job does.
+# With DURABLERUN_ALPHA1_ASSETS set to a directory holding the four assets, nothing is
+# downloaded.
+#
+# A known limit: alpha.1 is installed without its lockfile, so npm resolves its
+# dependencies fresh within the ranges its package.json files declare. The harness runs
+# alpha.1 against the newest @libsql/client in those ranges on the day it runs, not the
+# one alpha.1 was released beside.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
