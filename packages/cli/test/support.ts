@@ -202,7 +202,7 @@ export async function openCliDb(
         raw: db.raw,
         admin: db.admin,
         store: new PostgresSchedulerStore(db.raw, ids),
-        dump: () => dumpOf(dialect, db.raw),
+        dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
         close: db.close,
       }

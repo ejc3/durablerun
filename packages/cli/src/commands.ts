@@ -27,7 +27,7 @@ export interface PortUse {
     | 'admin.migrate'
     | 'scheduler.getTaskResult'
     | 'scheduler.getCheckpoints'
-  /** A label ending in `*` stands for every label that starts with what comes before it. */
+  /** A label ending in `<N>` stands for what comes before it followed by a whole number. */
   readonly labels: readonly string[]
 }
 
@@ -57,8 +57,10 @@ export interface CommandSpec {
   readonly ports: readonly PortUse[]
   /** The exit codes the command gives, by name. Every command can also exit `internal`. */
   readonly exits: readonly ExitName[]
-  /** The exit a fault at any batch the command sends ends in, or null for no store. */
+  /** The exit a fault at a batch the command sends ends in, or null for no store. */
   readonly faults: Readonly<Record<CliFault, ExitName>> | null
+  /** Batches whose faults end differently, by label, written as in `ports`. */
+  readonly faultsAt?: Readonly<Record<string, Readonly<Partial<Record<CliFault, ExitName>>>>>
 }
 
 const OUTPUT_FLAGS = {
@@ -77,7 +79,7 @@ const READ_FLAGS = {
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
 
-/** A read ends where it began whatever meets it: an outage exits 6, and a copy changes nothing. */
+/** An outage exits 6, and a batch applied twice changes nothing a read or a version write sees. */
 const READ_FAULTS = {
   'unavailable-before': 'unavailable',
   'crash-after': 'unavailable',
@@ -130,13 +132,15 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     repeat: 'resumes',
     ports: [
       SCHEMA_VERSION,
-      { call: 'admin.migrate', labels: ['migrate:version', 'migrate:bootstrap', 'migrate:v*'] },
+      { call: 'admin.migrate', labels: ['migrate:version', 'migrate:bootstrap', 'migrate:v<N>'] },
     ],
     exits: STORE_EXITS,
-    faults: {
-      'unavailable-before': 'unavailable',
-      'crash-after': 'unavailable',
-      duplicate: 'done',
+    faults: READ_FAULTS,
+    // After a version write fails, the admin reads the version again and carries on when
+    // the write landed, so a lost answer to a write the store committed ends in `done`.
+    faultsAt: {
+      'migrate:bootstrap': { 'crash-after': 'done' },
+      'migrate:v<N>': { 'crash-after': 'done' },
     },
   },
   result: {
@@ -176,13 +180,25 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
   },
 } satisfies Record<Verb, CommandSpec>)
 
+function labelMatches(declared: string, label: string): boolean {
+  if (!declared.endsWith('<N>')) return label === declared
+  const prefix = declared.slice(0, -'<N>'.length)
+  return label.startsWith(prefix) && /^[0-9]+$/.test(label.slice(prefix.length))
+}
+
 /** Whether a batch label is one the command declares. */
 export function declaresLabel(spec: CommandSpec, label: string): boolean {
-  return spec.ports.some((port) =>
-    port.labels.some((declared) =>
-      declared.endsWith('*') ? label.startsWith(declared.slice(0, -1)) : label === declared,
-    ),
-  )
+  return spec.ports.some((port) => port.labels.some((declared) => labelMatches(declared, label)))
+}
+
+/** The exit the command table declares for a fault at a batch with this label. */
+export function faultExit(spec: CommandSpec, label: string, fault: CliFault): ExitName {
+  if (spec.faults === null) throw new Error(`${spec.verb} opens no store, so no fault meets it`)
+  for (const [declared, exits] of Object.entries(spec.faultsAt ?? {})) {
+    const exit = labelMatches(declared, label) ? exits[fault] : undefined
+    if (exit !== undefined) return exit
+  }
+  return spec.faults[fault]
 }
 
 export function usage(spec: CommandSpec): string {

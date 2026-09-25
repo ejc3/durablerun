@@ -191,6 +191,7 @@ function help(json: boolean): Answer {
             ports: spec.ports,
             exits: spec.exits,
             faults: spec.faults,
+            faultsAt: spec.faultsAt,
           }
         }),
         exits: EXITS,
