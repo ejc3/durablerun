@@ -5594,7 +5594,9 @@ them is built.
     saga-failed parent stays green on every configuration,
     and a rule that waited for a completed or cancelled parent's own purge
     would only delay the child's under any policy the type can express. The
-    barrier grid's parent cells hold both (PR5.2c2). The lookup assumes that one
+    barrier grid's completed, cancelled, and saga-failed parent cells hold
+    those parts (PR5.2c2). The grid has no rolling-back parent state, so that
+    block needs one before anything holds it. The lookup assumes that one
     database holds every task, so a parent it cannot find by `task_id` reads as
     absent. That holds while `ctx.spawn` writes to the store the parent runs
     on. Once tasks are sharded across databases (§3.7), a spawn routed to
@@ -5603,10 +5605,17 @@ them is built.
 - **The batch.** The compare-and-set stamps the task row, then deletes keyed on
   that stamp remove the checkpoints, the waits, the runs, and the completion
   event, and the task row goes last. The batch is atomic, so no reader sees it
-  half done, and the order follows the delete key paths: a checkpoint is found
-  through its owner run and a wait through the run it names, so both go before
-  the runs, and every delete is keyed on the task row's stamp, so the row goes
-  last. The batch takes the completion event's lock through its lock coordinate,
+  half done, and the order follows the delete key paths: a wait is reached
+  through the run it names (`runs-to-waits`), so the waits go before the runs;
+  the checkpoints and the completion event are keyed by the task's id, through
+  the relations `tasks-to-checkpoints` and `tasks-to-events` that PR5.2c2 adds;
+  and every delete is keyed on the task row's stamp, so the row goes last. B3
+  reads the runs of a queue by `wake_event` in any state. MySQL's `runs_woken
+  (queue, wake_event, state)` covers every state, but libSQL's and PostgreSQL's
+  `runs_woken` is partial to pending runs, so PR5.2c2's schema version 12 adds
+  `runs_wake_holders (queue, wake_event) WHERE wake_event IS NOT NULL` on those
+  two, without which the plan check refuses the read. The batch takes the
+  completion event's lock through its lock coordinate,
   as a terminal batch does, which makes it atomic and mutually exclusive with
   every await, emit, and terminal batch of that event. It deletes the unit's
   completion event and never a caller's event, and PostgreSQL's `event_locks` is
@@ -5650,11 +5659,13 @@ follow from bounding rows by deleting task rows.
    (`PurgeOnlyDeadAndOld`). The completed and cancelled windows must therefore
    exceed the producer's redelivery horizon. A spawn that reuses a key while
    its unit is being purged must create a fresh task and must not throw. That
-   is a requirement on PR5.2c2, not a property of today's stores: PostgreSQL's
-   spawn throws in that race today (`the task insert lost but no existing task
-   explains it`). PR5.2c2's contest drives the race, and when the insert loses
-   and no task explains it, the store retries the insert once, because the key
-   is then free and a second loss is real.
+   is a requirement on PR5.2c2, not a property of today's stores: every store's
+   spawn throws when its insert loses and its read of the key then finds no
+   task (`the task insert lost but no existing task explains it`). Nothing
+   deletes a task row today, so no store can reach that throw, and a purge
+   makes it reachable. PR5.2c2's contest drives the race on every dialect, and
+   when the insert loses and no task explains it, the store retries the insert
+   once, because the key is then free and a second loss is real.
 2. **A child handle is valid until its unit is purged, and an await after that
    fails loudly.** The spawning parent's handle stays valid for as long as the
    parent can run, by B5. A handle given to any other task cannot be found

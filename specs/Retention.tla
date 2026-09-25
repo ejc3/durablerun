@@ -103,7 +103,8 @@
 \*    saga.  Neither reads its child again (retry-task refuses a task whose saga
 \*    began), and admitting both stays green on every configuration.  The first
 \*    release keeps the stricter rule, which stays right if a saga ever becomes
-\*    revivable.
+\*    revivable.  The barrier grid's saga-failed parent cell holds the second
+\*    half (PR5.2c2), and the grid has no rolling-back parent state yet.
 \*  - B5 admits a completed or cancelled parent.  A rule that waited for such a
 \*    parent's own purge would only delay the child's: every policy the policy
 \*    type can express names completed and cancelled, so the parent is purged
@@ -332,8 +333,10 @@ EnterRollback(t) ==
   /\ UNCHANGED <<saga, age, retries, cRuns, cCkpts, cEvent, spawned, memo, aw, legacy, second, redelivered, purging>>
 
 \* retry-task revives a failed task that began no saga.  Its checkpoints are
-\* intact, so P's replay finds its memos.  An await P had not answered may be
-\* taken again.
+\* intact, so P's replay finds its memos.  The revived holder may await C again
+\* unless its await had resolved.  That covers a later await at a new step, and
+\* it is wider than a replay, which answers a timed-out await from the wake the
+\* revived run carries without reading C.
 Revive(t) ==
   /\ t \in {"C", "P"} /\ st[t] = "failed" /\ ~saga[t] /\ retries[t] < MaxRetries
   /\ st' = [st EXCEPT ![t] = "live"]

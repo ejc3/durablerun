@@ -5211,8 +5211,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   counterexample against the barrier as designed, which shows that B5 suffices
   given a correct parent id: the model reads the parent's state directly, so it
   cannot tell a parsed key from a column. So the key is parsed and no column is
-  added, and the parse rests on a generated round-trip case, which PR5.3b1
-  writes beside the core function that parses the key. One run of the model
+  added, and the parse rests on a generated round-trip case, which the
+  milestone's design gives PR5.3b1, beside the core function that parses the
+  key. One run of the model
   with the parent condition admitting a parent that is rolling back or failed
   with a saga also stayed green, because neither reads its child again. The
   first release keeps the stricter rule.
