@@ -17476,7 +17476,7 @@ MUTATION_SPECS.extend(
             "packages/cli/src/open-store.ts",
             "    decodeURIComponent(parsed.password)\n",
             "    // MUTATION: a password that does not percent-decode reaches the driver\n",
-            "a password that does not percent-decode reaches the driver, which fails on it with an error the CLI answers as a defect",
+            "a PostgreSQL password that does not percent-decode reaches the driver, which fails on it as it connects, and the CLI answers exit 6, safe to repeat, for a URL no repeat can fix",
         ),
         (
             "cli-libsql-url-refuses-a-password",

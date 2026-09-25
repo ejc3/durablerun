@@ -188,6 +188,7 @@ describe('redaction', () => {
       `mysql://root:${CREDENTIAL}#x@db.example.io:3306/app`,
       `postgres://admin:${CREDENTIAL}@[bad/app`,
       `mysql://root:${CREDENTIAL}%zz@127.0.0.1:1/app`,
+      `postgres://admin:${CREDENTIAL}%zz@127.0.0.1:1/app`,
       `libsql://tok:${CREDENTIAL}@127.0.0.1:1`,
       `https://tok:${CREDENTIAL}@127.0.0.1:1`,
     ]) {
