@@ -297,7 +297,7 @@ function confirmationRequired(from: number, plan: readonly number[]): Answer {
   }
 }
 
-const migrate: Handler = async ({ invocation, store, note }) => {
+const migrate: Handler = async ({ invocation, store, reveal, note }) => {
   const from = await store.admin.schemaVersion()
   if (from > store.window.newest) {
     const problem = windowProblem(from, store.window)
@@ -320,7 +320,16 @@ const migrate: Handler = async ({ invocation, store, note }) => {
     if (warning !== undefined) note(`warning: ${warning}`)
   }
   if (invocation.booleans.yes !== true) return confirmationRequired(from, plan)
-  await store.admin.migrate()
+  try {
+    await store.admin.migrate()
+  } catch (error) {
+    // A migration that fails partway on a store that writes one version at a time leaves the
+    // versions before it applied, and says which, with the version now recorded.
+    const failed = failure(error, reveal)
+    const to = await store.admin.schemaVersion().catch(() => null)
+    const applied = to === null ? null : plan.filter((version) => version <= to)
+    return { exit: failed.exit, view: { from, to, applied, ...failed.view } }
+  }
   const to = await store.admin.schemaVersion()
   const applied = plan.filter((version) => version <= to)
   return {

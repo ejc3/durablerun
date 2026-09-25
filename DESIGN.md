@@ -5567,7 +5567,8 @@ each version it would apply, it prints the note the store package exports for th
 version in `SCHEMA_VERSION_NOTES`, so what a version costs on each dialect is said by
 that dialect's package and the CLI holds none of it; every store has one for version 10
 today, and a database that was never initialized, which holds no rows, gets none. With
-`--yes` it prints each version applied. `--queue` and `--target` are read from the
+`--yes` it prints each version applied, and when it fails partway, the versions it
+applied and the version now recorded. `--queue` and `--target` are read from the
 arguments only.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import { openCliDb, recordingOpener, runCli } from './support.js'
+import { faulting, openCliDb, openerWrapping, recordingOpener, runCli } from './support.js'
 
 /**
  * migrate is the one command that changes the schema, so it names its store again and asks
@@ -81,6 +81,33 @@ describe('migrate on libSQL', () => {
       'mutation-verdict:behavior:cli-write-refuses-an-empty-target',
     ).toEqual({ exit: 2, sent: 0 })
     expect(JSON.parse(run.stdout)).toMatchObject({ error: { kind: 'target-mismatch' } })
+  })
+
+  it('that fails partway says which versions it applied and the version now recorded', async () => {
+    const db = await openCliDb('libsql', 'migrate-partway', 5)
+    try {
+      const run = await runCli(
+        ['migrate', '--yes', '--target', db.target, '--json'],
+        db.env,
+        openerWrapping((real) =>
+          faulting(
+            real,
+            { label: `migrate:v${CURRENT_SCHEMA_VERSION}`, occurrence: 1 },
+            'crash-before',
+          ),
+        ),
+      )
+      expect(run.exit).toBe(6)
+      const versions = Array.from({ length: CURRENT_SCHEMA_VERSION - 6 }, (_, index) => index + 6)
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        from: 5,
+        to: CURRENT_SCHEMA_VERSION - 1,
+        applied: versions,
+        error: { kind: 'store-unavailable' },
+      })
+    } finally {
+      await db.close()
+    }
   })
 
   it('refuses a database over a stored NULL payload with exit 7, and leaves version 9', async () => {
