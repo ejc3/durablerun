@@ -117,22 +117,43 @@ type RowIdentity = Pick<CorruptInteger, 'runId' | 'stepName' | 'eventName'>
 const WRITTEN_WITH_EVERY_ROW: PersistedIntegerBounds = EVENT.emitted_at_ms
 
 /**
- * Whether a stored NULL is a value of a persisted integer, or a corrupt one. A column's
- * schema says whether it may hold NULL (`STORE_TABLE_COLUMNS`, which a conformance case
- * holds equal to every dialect's catalog), and that is the answer for every column but the
- * one above. The reads ask here, and so does their conformance surface.
+ * Whether each persisted integer's column may hold NULL by its schema, by field. It is built
+ * once from `STORE_TABLE_COLUMNS`, which a conformance case holds equal to every dialect's
+ * catalog, and a persisted integer that no statement builder names stops this module
+ * loading.
  */
-export function storedNullIsAValue(bounds: PersistedIntegerBounds): boolean {
+const SCHEMA_STORES_NULL = ((): Readonly<Record<string, boolean>> => {
+  const stores = createObject(null) as Record<string, boolean>
+  const tables = objectKeys(STORE_TABLE_COLUMNS) as (keyof typeof STORE_TABLE_COLUMNS)[]
+  for (const table of tables) {
+    const columns: Readonly<Record<string, { readonly nullable: boolean }>> =
+      STORE_TABLE_COLUMNS[table]
+    const fields: Readonly<Record<string, { readonly field: string }>> =
+      PERSISTED_INTEGER_BOUNDS[table]
+    for (const column of objectKeys(fields)) {
+      const spec = columns[column]
+      const bounds = fields[column]
+      if (spec === undefined || bounds === undefined) {
+        throw new TypeError(`no statement builder names the column ${table}.${column}`)
+      }
+      stores[bounds.field] = spec.nullable
+    }
+  }
+  return freeze(stores)
+})()
+
+/**
+ * Whether a stored NULL is a value of a persisted integer, or a corrupt one. The column's
+ * schema answers for every column but the one above. The reads ask here. Their conformance
+ * surface writes that one exception out itself, so its cases can fail when this is wrong.
+ */
+function storedNullIsAValue(bounds: PersistedIntegerBounds): boolean {
   if (bounds === WRITTEN_WITH_EVERY_ROW) return false
-  const column = persistedIntegerColumn(bounds)
-  const table = bounds.field.slice(0, bounds.field.length - column.length - 1)
-  const tables: Readonly<Record<string, Readonly<Record<string, { readonly nullable: boolean }>>>> =
-    STORE_TABLE_COLUMNS
-  const spec = tables[table]?.[column]
-  if (spec === undefined) {
+  const stores = SCHEMA_STORES_NULL[bounds.field]
+  if (stores === undefined) {
     throw new TypeError(`no statement builder names the column ${bounds.field}`)
   }
-  return spec.nullable
+  return stores
 }
 
 /**
@@ -242,13 +263,20 @@ function outcomeOf(taskId: string, row: SqlRow): TaskOutcomeFacts {
   }
 }
 
-const NOT_EMITTED: EmittedEvent = freeze({ exists: false, emittedAtMs: null })
+const NOT_EMITTED: Extract<EmittedEvent, { exists: false }> = freeze({
+  exists: false,
+  emittedAtMs: null,
+})
 
 /**
  * An event's own row, however a statement reached it: joined to a run or a wait that names
  * the event, or selected by its key. Both reads decode its instant here.
  */
-const emittedEvent = (row: SqlRow, corrupt: CorruptInteger[], eventName: string): EmittedEvent => ({
+const emittedEvent = (
+  row: SqlRow,
+  corrupt: CorruptInteger[],
+  eventName: string,
+): Extract<EmittedEvent, { exists: true }> => ({
   exists: true,
   emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),
 })

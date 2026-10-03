@@ -1,13 +1,12 @@
 import {
   type AwaitedEventFacts,
   type CorruptInteger,
-  LIVE_STATES,
   type RunFacts,
-  TERMINAL_STATES,
   type TaskFacts,
   type TaskRowFacts,
-  WAIT_STATUSES,
   type WaitFacts,
+  isLiveState,
+  isTerminalState,
 } from '@durablerun/core'
 import { type UserValue, userValue } from './render.js'
 
@@ -20,8 +19,12 @@ import { type UserValue, userValue } from './render.js'
  */
 type Printed<Facts> = Record<keyof Facts, unknown>
 
-const STATES: ReadonlySet<string> = new Set([...LIVE_STATES, ...TERMINAL_STATES])
-const STATUSES: ReadonlySet<string> = new Set(WAIT_STATUSES)
+/** Whether a stored state is one of the engine's own, as core tells them. */
+const isState = (stored: string): boolean => isLiveState(stored) || isTerminalState(stored)
+
+/** The two statuses of a wait, which every dialect's schema checks. Core names no list of them. */
+const WAIT_STATUSES: ReadonlySet<string> = new Set(['waiting', 'delivered'])
+const isStatus = (stored: string): boolean => WAIT_STATUSES.has(stored)
 
 /**
  * A stored state or status. One of the engine's own prints as it is. Any other text is a
@@ -29,8 +32,11 @@ const STATUSES: ReadonlySet<string> = new Set(WAIT_STATUSES)
  * length and sha256 unless revealed. The reason a decoder refused the row with quotes the
  * same text, and prints only when revealed.
  */
-const oneOf = (known: ReadonlySet<string>, stored: string, reveal: boolean): string | UserValue =>
-  known.has(stored) ? stored : userValue(stored, reveal)
+const oneOf = (
+  known: (stored: string) => boolean,
+  stored: string,
+  reveal: boolean,
+): string | UserValue => (known(stored) ? stored : userValue(stored, reveal))
 
 /** A task's own row. Its id and queue print beside the command, and the key is a user's value. */
 const taskView = (
@@ -38,7 +44,7 @@ const taskView = (
   reveal: boolean,
 ): Printed<Omit<TaskRowFacts, 'taskId' | 'queue'>> => ({
   taskName: task.taskName,
-  state: oneOf(STATES, task.state, reveal),
+  state: oneOf(isState, task.state, reveal),
   attempts: task.attempts,
   maxAttempts: task.maxAttempts,
   infraRetries: task.infraRetries,
@@ -53,7 +59,7 @@ const taskView = (
 const runView = (run: RunFacts, reveal: boolean): Printed<RunFacts> => ({
   runId: run.runId,
   queue: run.queue,
-  state: oneOf(STATES, run.state, reveal),
+  state: oneOf(isState, run.state, reveal),
   attempt: run.attempt,
   claimGen: run.claimGen,
   activatedGen: run.activatedGen,
@@ -72,7 +78,7 @@ const waitView = (wait: WaitFacts, reveal: boolean): Printed<WaitFacts> => ({
   runId: wait.runId,
   stepName: wait.stepName,
   eventName: wait.eventName,
-  status: oneOf(STATUSES, wait.status, reveal),
+  status: oneOf(isStatus, wait.status, reveal),
   timeoutAtMs: wait.timeoutAtMs,
   createdAtMs: wait.createdAtMs,
 })

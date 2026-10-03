@@ -10,12 +10,6 @@ export const TERMINAL_STATES = Object.freeze(['completed', 'failed', 'cancelled'
 /** The live states a claim may take: a run that is waiting to start or to wake. */
 export const QUEUED_STATES = Object.freeze(['pending', 'sleeping'] as const)
 
-/**
- * The statuses a wait row holds, which every dialect's schema checks: registered, and
- * delivered to the run it woke.
- */
-export const WAIT_STATUSES = Object.freeze(['waiting', 'delivered'] as const)
-
 export type LiveState = (typeof LIVE_STATES)[number]
 export type TerminalState = (typeof TERMINAL_STATES)[number]
 export type TaskState = LiveState | TerminalState
@@ -240,7 +234,7 @@ export interface RollbackOutcome {
 /**
  * A persisted integer an operator read consumed whose stored value is outside the bounds
  * core holds that field to (`PERSISTED_INTEGER_BOUNDS`), or is no exact integer at all: a
- * fraction, text, or a NULL where the engine never writes one (`storedNullIsAValue`). The
+ * fraction, text, or a NULL in a column the engine writes with every row. The
  * read reports it here and answers null for the field: it is never skipped and never thrown.
  */
 export interface CorruptInteger {
@@ -357,4 +351,6 @@ export interface TaskFacts {
 }
 
 /** Whether an event has been emitted, and when. Nothing here is derived from its payload. */
-export type EventState = EmittedEvent & { readonly corrupt: readonly CorruptInteger[] }
+export type EventState =
+  | (Extract<EmittedEvent, { exists: false }> & { readonly corrupt: readonly [] })
+  | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })

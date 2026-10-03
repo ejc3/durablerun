@@ -4004,8 +4004,9 @@ not depend on careful reading:
   changed, a field they do not consume must change nothing, and a field the surface names
   as neither fails its inventory. One registered mutation deletes each field's guard, and
   that field's case owns it. A second generated case for each of those integers sets its
-  column to NULL: the column's schema decides whether the value is stored at all, and
-  core's one definition of where NULL is a value decides whether the read lists it. Other
+  column to NULL: the column's schema decides whether the value is stored at all, and the
+  surface names for itself the one column whose rows never hold one, where the read must
+  list it, so the case does not ask core's reader what to expect. Other
   cases hold the read by key, an event's state with an instant that is out of bounds or
   NULL, the order of waits and events by code point under names that a linguistic collation
   and a comparison of UTF-16 code units each order otherwise,
@@ -5718,9 +5719,9 @@ value nothing vouches for, which every schema's check refuses, and it prints as 
 and sha256 unless revealed, as the reason a decoder refused that row with does.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
-one JSON document on stdout, with every object's keys in code point order, which is the same
-on every dialect apart from the object under `dialect`: the URL scheme and the store's
-schema window. In human text the stream follows what the answer holds. An answer that
+one JSON document on stdout, with every object's keys in code point order (each key is an
+ASCII name, so a plain sort gives it), which is the same on every dialect apart from the
+object under `dialect`: the URL scheme and the store's schema window. In human text the stream follows what the answer holds. An answer that
 carries what the command read from the store prints on stdout whatever the command exits
 with, and the exit code alone tells a script how it ended: `inspect` prints its snapshot
 there when it exits 10. A failure that read nothing prints on stderr: a usage error, a

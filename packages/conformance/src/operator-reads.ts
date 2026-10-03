@@ -8,7 +8,6 @@ import {
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
   PERSISTED_INTEGER_BOUNDS,
-  type PersistedIntegerBounds,
   REASON_CANCELLED,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   type RunFacts,
@@ -22,7 +21,6 @@ import {
   type TaskRowFacts,
   type WaitFacts,
   childSpawnKey,
-  storedNullIsAValue,
   taskDoneEventName,
 } from '@durablerun/core'
 import { RecordingExecutor } from '@durablerun/core/testing'
@@ -797,17 +795,29 @@ const NOT_READ: Readonly<Record<string, string>> = {
   'events.fence_at_ms': 'provenance, which the engine reads and an operator does not',
 }
 
+/** Whether a column's schema stores a NULL, as core's table of columns says. */
+const SCHEMA: Readonly<Record<Table, Readonly<Record<string, { readonly nullable: boolean }>>>> =
+  STORE_TABLE_COLUMNS
+
 /** Every persisted integer of the tables the reads select from, as core's bounds name them. */
 const FIELDS = TABLES.flatMap((table) =>
   Object.entries(PERSISTED_INTEGER_BOUNDS[table]).map(([column, bounds]) => ({
     table,
     column,
     field: `${table}.${column}`,
-    bounds: bounds as PersistedIntegerBounds,
+    nullable: SCHEMA[table][column]?.nullable === true,
     min: bounds.min,
     max: bounds.max,
   })),
 )
+
+/**
+ * The persisted integers whose column stores a NULL and whose rows never hold one, written
+ * out here and not asked of core's reader: no engine path leaves an event without the
+ * instant it was emitted at. A NULL there must be listed as corrupt. In every other column
+ * that stores one, a NULL is a value.
+ */
+const WRITTEN_WITH_EVERY_ROW: ReadonlySet<string> = new Set(['events.emitted_at_ms'])
 
 /** The row of a table that a seed made, as a storage corruption names it. */
 function rowOf(table: Table, rows: Rows, column: string, invalidRepresentation: string) {
@@ -1106,32 +1116,31 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
 
       /**
        * A stored NULL. A column whose schema refuses one has nothing to read. Where the
-       * schema stores one, core's one definition says whether it is a value of the field or
-       * a corrupt one (`storedNullIsAValue`), and each case holds the read to what it says.
-       * What the definition says of an event's instant is held apart from it, by the case
-       * of an event's state below and by core's own case, which each write the answer out.
+       * schema stores one, the read must take it for a value of the field, or list it as
+       * corrupt in the one column no engine path leaves NULL, which this surface names
+       * itself.
        */
-      for (const { table, column, field, bounds } of FIELDS) {
+      for (const { table, column, field, nullable } of FIELDS) {
         const read = READ[field]
         const title =
           read === undefined
             ? `${field} is not read: a stored NULL changes no answer`
-            : `${field} holding NULL is a value or is listed as corrupt, as core's one definition says`
+            : `${field} holding NULL is a value, or is listed as corrupt where no engine path writes one`
         it(title, async () => {
           const { rows, reads, clean, stored, set, factsWhile } = await columnOf(table, column)
-          const columns: Readonly<Record<string, { readonly nullable: boolean }>> =
-            STORE_TABLE_COLUMNS[table]
-          const stores = columns[column]?.nullable
           const { planted, facts } = await factsWhile(async () => {
-            await set('fixture:null', null).catch(() => undefined)
+            // Only a column whose schema refuses NULL may refuse this.
+            await set('fixture:null', null).catch((error: unknown) => {
+              if (nullable) throw error
+            })
             return (await stored()) === null
           })
           const readAsNull = read !== undefined && planted
           expect({ planted, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } }).toEqual({
             // The schema decides whether the column stores a NULL at all.
-            planted: stores,
+            planted: nullable,
             corrupt:
-              readAsNull && !storedNullIsAValue(bounds)
+              readAsNull && WRITTEN_WITH_EVERY_ROW.has(field)
                 ? [
                     {
                       field,
