@@ -236,17 +236,24 @@ accepts it.
     each of the nineteen persisted integers the reads consume, with a value
     below the bounds, a negative one, one past them, a fraction and text, and
     the eight integers of those tables the reads do not select get a case that
-    nothing changes. "finds a task by its idempotency key, in its own queue
-    alone, and a child by the key the engine built" holds `taskIdByKey`, "says
-    whether an event exists and when it was emitted, a completion event
-    included, and nothing of its payload" holds `eventState`, and "orders waits
-    and events by their UTF-16 code units, which no collation of the database
-    decides" holds the order under names a linguistic collation sorts
-    otherwise. `packages/cli/test/cli-dialects.test.ts` holds, on each dialect,
-    "inspect prints the outcome result prints for every seeded outcome, a
-    saga's rollback and a row the decoders refuse among them", and
+    nothing changes. "<field> holding NULL is a value or is listed as corrupt,
+    as core's one definition says" is generated for the same nineteen integers:
+    the column's schema decides whether a NULL is stored at all, and
+    `storedNullIsAValue` decides whether the read lists it. "finds a task by
+    its idempotency key, in its own queue alone, and a child by the key the
+    engine built" holds `taskIdByKey`, "says whether an event exists and when
+    it was emitted, a completion event included, and nothing of its payload"
+    holds `eventState`, with an instant that is out of bounds or NULL listed as
+    corrupt, and "orders waits and events by code point, which no collation of
+    the database decides" holds the order under names that a linguistic
+    collation and a comparison of UTF-16 code units each sort otherwise.
+    `packages/cli/test/cli-dialects.test.ts` holds, on each dialect, "inspect
+    prints the outcome result prints for every seeded outcome, a saga's
+    rollback and a row the decoders refuse among them", and
     `packages/cli/test/inspect.test.ts` holds the read by key, the exit for a
-    corrupt row and the usage. The two reds are registered mutations of core's
+    corrupt row, its snapshot on stdout in text whatever it exits with, a
+    stored state that is not the engine's own printed hidden, and the usage.
+    The two reds are registered mutations of core's
     one implementation: `operator-reads-answer-numbers`, which answers a count
     as a string, fails every seeded state of the dialect it runs on, under that
     dialect's name, and each of the nineteen `operator-reads-guard-<table>-
@@ -5922,12 +5929,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   decision, and the ruling that `eventState` answers whether an event exists and when it
   was emitted and nothing of its payload. No schema version and no write batch is added.
   Four batch labels are new, all reads: `task-facts`, `task-id-by-key` and `event-state`
-  are statement trees, and `fake-clock` is text. The registry holds 1174 mutations where
-  main holds 1149: one for each of the nineteen persisted integers the reads consume, and
-  one each for the numbers, the order of a list, the check of a read's strings, a child's
-  key read back, the redaction of a key by `inspect`, and its exit for a corrupt row. The
-  base gate's arm is keyed on main's digest and exempts their twenty-five markers, and one
-  pinned pair installs this tree's `scripts/text-statements.json` over main's.
+  are statement trees, and `fake-clock` is text. The registry holds 1184 mutations where
+  main holds 1149: one for each of the nineteen persisted integers the reads consume, one
+  each for database time, an event that exists with no instant, the numbers, the order of
+  runs, of waits, of events and of the corrupt list, the comparison by code point, the check
+  of a read's strings and a child's key read back, and six for `inspect`: the redaction of
+  a key, the exit for a corrupt row, the snapshot on stdout, and a stored state or status
+  that is not the engine's own in each of the three places one prints. The base gate's arm
+  is keyed on main's digest and exempts their thirty-three markers, and one pinned pair
+  installs this tree's `scripts/text-statements.json` over main's.
   - Where the build differs from the plan, and why. (1) A store opens and runs each batch
     of the reads, and core holds the one implementation over what the store hands it, where
     the plan said one implementation over an executor: the label ledger, the batch lint,
@@ -5945,8 +5955,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     for it. (5) The reads use a store's saga fragments and none of its eligibility
     fragments, which the plan listed: they report rows and decide nothing about what the
     engine may do next, which `explain` says from the facts. (6) No statement orders its
-    rows, and core orders every list by UTF-16 code units, because a text column sorts by
-    the database's collation.
+    rows, and core orders every list by Unicode code point, which is the order of UTF-8
+    bytes, because a text column sorts by the database's collation.
   - Measured while pinning the plans, and left as it is: on PostgreSQL, schema version 7
     changes the collation of `meta`'s key, which rebuilds that index over rows the
     migrations updated in place, and the server does not use an index built that way while
@@ -5968,6 +5978,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
     row of `checkpoints`. The reads select no integer of that table and reach it only
     through a store's saga fragments, which `task-result` already sends. Trigger: an
     operator read that selects a checkpoint's own columns.
+  - Option for the test clock's flag, not built, with its trigger: select the flag in
+    `task-facts` beside database time, through a second token of the dialect's clock. That
+    removes the `fake-clock` batch and its entry in `scripts/text-statements.json`, and
+    makes the flag part of the snapshot, where today it is read straight after it. Trigger:
+    PR5.3c, whose `stats` reads the flag in its one read batch by design, and `taskFacts`
+    follows it then.
+  - Option for `inspect --key`, not built, with its trigger: find the task by its key and
+    read its facts in one batch. Today they are two reads, and nothing deletes a task
+    between them. Trigger: PR5.2c2, whose purge can, and then a key that found a task
+    answers exit 8.
+  - Option for the event's instant, not built, with its trigger: a schema version that sets
+    `events.emitted_at_ms` NOT NULL on the three dialects, as version 10 did for `payload`.
+    `PERSISTED_TEMPORAL_FIELDS` and `STORE_TABLE_COLUMNS` record the column as nullable
+    because its schema is, the invariant library takes a NULL there for a value for the
+    same reason, and the operator's reads hold the one exception (`WRITTEN_WITH_EVERY_ROW`).
+    `PERSISTED_TEMPORAL_FIELDS` is a released declaration, so its entry does not change
+    before the schema does. Trigger: the next schema version that alters `events`, or a
+    second reader that needs the exception.
+  - Option for the three store files of the reads, not built, with its trigger: one check
+    that holds them equal, or one file. They are the same apart from the class name, shaped
+    as a class so that the batch checkers, which read text, see each label inside a
+    member. Trigger: a fourth file of this shape, or batch checkers that read trees.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

@@ -4003,8 +4003,12 @@ not depend on careful reading:
   A field the reads consume must be listed as corrupt and read as null with nothing else
   changed, a field they do not consume must change nothing, and a field the surface names
   as neither fails its inventory. One registered mutation deletes each field's guard, and
-  that field's case owns it. Other cases hold the read by key, an event's state, the order
-  of waits and events by code unit under names a linguistic collation orders otherwise,
+  that field's case owns it. A second generated case for each of those integers sets its
+  column to NULL: the column's schema decides whether the value is stored at all, and
+  core's one definition of where NULL is a value decides whether the read lists it. Other
+  cases hold the read by key, an event's state with an instant that is out of bounds or
+  NULL, the order of waits and events by code point under names that a linguistic collation
+  and a comparison of UTF-16 code units each order otherwise,
   that no params, headers, event payload, run result or checkpoint state is selected, and
   the refusal of every string place before anything is sent. It reads what the seeds reach:
   a corrupt value in a row of `checkpoints` reaches the facts only through a store's saga
@@ -5652,7 +5656,10 @@ executor runs a batch of reads as one read-only snapshot. Whether the test clock
 batch of its own, `fake-clock`, sent after the snapshot and only for a task that exists. A
 statement tree holds the clock only as its token and is refused when it names the test
 clock's row, so that one read is the store's own text. It is reported because a database
-whose test clock was left set never sees a run come due.
+whose test clock was left set never sees a run come due. `inspect --key` reads twice:
+`task-id-by-key` finds the task, and `task-facts` then reads it. A task that is gone between
+the two answers exit 8 for a key that found it a moment before. Nothing deletes a task
+today, and the retention purge of section 3.12 will.
 
 The facts hold no params, headers, event payload, run result or checkpoint state. The
 outcome is the one exception, and it is the one `result` prints: `task-facts` selects the
@@ -5670,16 +5677,28 @@ as null and listed in the answer's `corrupt` list with its field, the row that h
 why it was refused, and the value itself when it is a number. It is never skipped and never
 thrown. `next-wake` does the opposite with an instant outside its bounds and leaves it out,
 because a driver must not arm a timer on it. An inspect tool that hides a corrupt row
-defeats its purpose, so it reports the row. `inspect` prints every fact it read and exits
-10 when the outcome is unreadable or the list is not empty, so a script does not take a
-corrupt row for a clean answer.
+defeats its purpose, so it reports the row. `inspect` prints every fact it read, on stdout,
+and exits 10 when the outcome is unreadable or the list is not empty, so a script does not
+take a corrupt row for a clean answer.
+
+A stored NULL is a value where the column's schema stores one, as the lease expiry of a run
+that holds no lease is. Core has one definition of that, `storedNullIsAValue`, which reads
+`STORE_TABLE_COLUMNS`, the columns a conformance case holds equal to every dialect's
+catalog. It has one exception. `events.emitted_at_ms` may hold NULL by its schema, and each
+of the three statements that insert an event sets it, from the batch's clock or from the
+fence instant of the task the batch ended, and no statement updates it. So an event that
+exists with no instant is a row no engine path writes. It is listed as corrupt, with the
+kind of its stored value given as `null`, and so is a database time that is NULL.
 
 Every count and instant is a JavaScript number on every dialect, whichever form the driver
 returned it in. Every list has one order on every dialect: runs by their ordinal and then by
-run id, waits by run id and then by step, and events by name, each string compared by its
-UTF-16 code units in core. No
-statement orders its rows, because a text column sorts by the database's collation, which
-differs between the dialects and between two servers of one dialect.
+run id, waits by run id and then by step, events by name, and the corrupt list by field and
+then by row, each string compared by Unicode code point in core. That is the order of the
+strings' UTF-8 bytes, so an implementation whose strings are UTF-8 gets it from a plain
+comparison. The order of UTF-16 code units differs from it for a character past the basic
+plane against one from U+E000 to U+FFFF. No statement orders its rows, because a text column
+sorts by the database's collation, which differs between the dialects and between two
+servers of one dialect.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
@@ -5693,12 +5712,21 @@ it, and so does what refused a stored row the store's decoders cannot read, whic
 caller passed, and prints. `inspect` prints the idempotency key a task was spawned under as
 its length and sha256, and a child's key, which the engine built from its parent's id and a
 step key, the same way beside the parent it names. When no task was spawned under the key
-`inspect` was given, its answer does not quote the key.
+`inspect` was given, its answer does not quote the key. A task's state, a run's state and a
+wait's status print when they are one of the engine's own. Any other text there is a stored
+value nothing vouches for, which every schema's check refuses, and it prints as its length
+and sha256 unless revealed, as the reason a decoder refused that row with does.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
-one JSON document with every object's keys in code point order, which is the same on
-every dialect apart from the object under `dialect`: the URL scheme and the store's
-schema window.
+one JSON document on stdout, with every object's keys in code point order, which is the same
+on every dialect apart from the object under `dialect`: the URL scheme and the store's
+schema window. In human text the stream follows what the answer holds. An answer that
+carries what the command read from the store prints on stdout whatever the command exits
+with, and the exit code alone tells a script how it ended: `inspect` prints its snapshot
+there when it exits 10. A failure that read nothing prints on stderr: a usage error, a
+refused call, a store that is unavailable, a task that is not there, and the answer of
+`result` or `checkpoints` for a row the decoders refuse, which holds no fact of the row.
+`explain`, `stuck` and `stats` follow the same rule.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
