@@ -329,15 +329,43 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a store's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
+              def span(text):
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == '4da6f24e9b7535e573d76507a78ae033754ad498099e0e119dba30d7184e8788':
-              # `explain` registers fifty-five mutations: one for each arm of `diagnose`, and
+              # `explain` registers fifty-eight mutations: one for each arm of `diagnose`, and
               # the others for its default verdict, its two bounds, the instant a waiting run
-              # next moves at, the depth an await of a child is followed to and a ring of
-              # them, what a suggestion may carry, the exit and the stream of a row that is
-              # not readable and what names it, the outcome's redaction, the rows it reads no
-              # healthy cause from, and the walk that diagnoses what the engine leaves. Every
-              # verdict marker of their cases is newer than the base registry, so each is
-              # exempted there. No base entry is re-aimed.
+              # next moves at, the depth an await of a child is followed to, what a parent
+              # takes from a child and a ring of awaits, what a suggestion may carry, the
+              # exit and the stream of a row that is not readable and what names it, whether
+              # a wake's event exists, the outcome's redaction, the rows it reads no healthy
+              # cause from, and the walk that diagnoses what the engine leaves. Every verdict
+              # marker of their cases is newer than the base registry, so each is exempted
+              # there. Three base entries are re-aimed, the three that hold `inspect`'s exit for
+              # a row that is not readable: their lines now read, or are in, the one function
+              # that lists what is not readable.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:cli-explain-arm-completed",
                   "mutation-verdict:behavior:cli-explain-arm-cancelled",
@@ -387,7 +415,16 @@ jobs:
                   "mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill",
                   "mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field",
                   "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
+                  "mutation-verdict:behavior:cli-explain-a-parent-waits-for-a-child-a-worker-runs",
+                  "mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck",
+                  "mutation-verdict:behavior:cli-explain-says-whether-a-wake-event-exists",
               ))
+              for name in (
+                  "cli-inspect-exits-10-for-a-corrupt-row",
+                  "cli-inspect-exits-10-for-an-unknown-run-state",
+                  "cli-inspect-exits-10-for-an-unknown-wait-status",
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

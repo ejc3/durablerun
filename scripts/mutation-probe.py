@@ -17812,8 +17812,8 @@ MUTATION_SPECS.extend(
         (
             "cli-inspect-exits-10-for-a-corrupt-row",
             "packages/cli/src/main.ts",
-            "    exit: factsAreReadable(facts) ? 'done' : 'unreadable',\n",
-            "    exit: factsAreReadable(facts) ? 'done' : 'done', // MUTATION: a corrupt row exits 0\n",
+            "    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'unreadable',\n",
+            "    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'done', // MUTATION: a corrupt row exits 0\n",
             "inspect answers a task whose row holds a corrupt integer, or an outcome the decoders refuse, with exit 0, so a script reads it as a clean answer",
         ),
     )
@@ -18136,15 +18136,15 @@ MUTATION_SPECS.extend(
         (
             "cli-inspect-exits-10-for-an-unknown-run-state",
             "packages/cli/src/inspect.ts",
-            "    facts.runs.every((run) => isState(run.state)) &&\n",
-            "    true && // MUTATION: a run's state is not held to the engine's own\n",
+            "      .filter((run) => !isState(run.state))\n",
+            "      .filter(() => false) // MUTATION: a run's state is not held to the engine's own\n",
             "inspect exits 0 for a task one of whose runs holds a state that is not the engine's own, so a script reads a row no engine path writes as a clean one",
         ),
         (
             "cli-inspect-exits-10-for-an-unknown-wait-status",
             "packages/cli/src/inspect.ts",
-            "    facts.waits.every((wait) => isStatus(wait.status))\n",
-            "    true // MUTATION: a wait's status is not held to the engine's own\n",
+            "      .filter((wait) => !isStatus(wait.status))\n",
+            "      .filter(() => false) // MUTATION: a wait's status is not held to the engine's own\n",
             "inspect exits 0 for a task one of whose waits holds a status that is not the engine's own, so a script reads a row no engine path writes as a clean one",
         ),
         (
@@ -18491,8 +18491,8 @@ MUTATION_SPECS.extend(
         (
             "cli-explain-vouches-for-no-child-it-cannot-read-as-live",
             "packages/cli/src/explain.ts",
-            "  return child.cause === 'running-under-a-live-lease' ? 'waiting' : 'unexplained'\n",
-            "  return child.cause === 'running-under-a-live-lease' ? 'waiting' : 'waiting' // MUTATION: a child that has ended reads as one still on its way\n",
+            "  return child.ended ? 'unexplained' : 'waiting'\n",
+            "  return child.ended ? 'waiting' : 'waiting' // MUTATION: a child that has ended reads as one still on its way\n",
             "explain answers waiting for a run still parked on a child that has ended, which nothing will wake",
         ),
         (
@@ -18841,15 +18841,15 @@ MUTATION_SPECS.extend(
         (
             "cli-explain-unreadable-names-the-row-and-the-field",
             "packages/cli/src/explain.ts",
-            "          notTheEngines: statesNotTheEngines(facts),\n",
-            "          notTheEngines: [], // MUTATION: a state that is not the engine's own is not named\n",
+            "  return notReadable.length === 0 ? null : { cause: 'unreadable', facts: { notReadable } }\n",
+            "  return notReadable.length === 0 ? null : { cause: 'unreadable', facts: { notReadable: [] } } // MUTATION: what is not readable is not named\n",
             "explain answers unreadable for a run or a wait whose state is not the engine's own and names nothing that is unreadable",
         ),
         (
             "cli-explain-reads-a-ring-of-awaits-once",
             "packages/cli/src/main.ts",
-            "    } else if (onTheWay.includes(asked.taskId) || asked.taskId === taskId) {\n",
-            "    } else if (asked.taskId === '') { // MUTATION: a ring of awaits is followed round to the hop limit\n",
+            "    } else if (ring !== null) {\n",
+            "    } else if (ring !== null && asked.needs === 'checkpoints') { // MUTATION: a ring of awaits is followed round to the hop limit\n",
             "explain reads a task that waits on itself nine times over and answers unexplained",
         ),
     )
@@ -18910,6 +18910,57 @@ VERDICTS.update(
             "packages/cli/test/explain.test.ts",
             "explain on libSQL reads a ring of awaits once: a task that waits on itself, and two that wait on each other",
             "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
+        ),
+    }
+)
+
+# What the last fold of `explain` holds: a parent waits for any child that is ok and has
+# not ended, a ring of awaits that no clock ends is stuck, and a due run that carries the
+# wake fields of an await says whether its event exists.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-explain-a-parent-waits-for-a-child-a-worker-runs",
+            "packages/cli/src/explain.ts",
+            "  return child.ended ? 'unexplained' : 'waiting'\n",
+            "  return child.ended || child.cause !== 'running-under-a-live-lease' ? 'unexplained' : 'waiting' // MUTATION: one cause's name is what makes a parent wait\n",
+            "explain answers unexplained for every ancestor of a healthy child whose first pass has run for longer than the hung-run bound",
+        ),
+        (
+            "cli-explain-a-ring-no-clock-ends-is-stuck",
+            "packages/cli/src/explain.ts",
+            "  if ('ringEndedBy' in child) return child.ringEndedBy === 'nothing' ? 'stuck' : 'waiting'\n",
+            "  if ('ringEndedBy' in child) return child.ringEndedBy === 'nothing' ? 'waiting' : 'waiting' // MUTATION: a ring nothing ends is waiting\n",
+            "explain answers waiting, which promises a move, for a ring of awaits that no timeout and no cancellation deadline ends",
+        ),
+        (
+            "cli-explain-says-whether-a-wake-event-exists",
+            "packages/cli/src/explain.ts",
+            "          eventExists: wakeEventExists(view, run),\n",
+            "          eventExists: true, // MUTATION: carried wake fields read as an emitted event\n",
+            "explain says the event exists for a run that carries the wake fields of an await that timed out, so an operator reads a wake that nobody sent",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-explain-a-parent-waits-for-a-child-a-worker-runs": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a parent parked on a child that is past the hung-run bound is waiting, as it was before the bound",
+            "mutation-verdict:behavior:cli-explain-a-parent-waits-for-a-child-a-worker-runs",
+        ),
+        "cli-explain-a-ring-no-clock-ends-is-stuck": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a ring of awaits that no clock ends is stuck, and one that a timeout or a deadline ends is waiting",
+            "mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck",
+        ),
+        "cli-explain-says-whether-a-wake-event-exists": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL says of a due run that carries the wake fields of an await whether its event exists",
+            "mutation-verdict:behavior:cli-explain-says-whether-a-wake-event-exists",
         ),
     }
 )
@@ -22822,7 +22873,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1242:
+        if len(MUTATIONS) != 1245:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
