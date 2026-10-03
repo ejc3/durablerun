@@ -13,6 +13,7 @@ import { VERBS, type Verb } from '../src/commands.js'
 import { type Io, lastCatch } from '../src/main.js'
 import { failureReason, resultView } from '../src/render.js'
 import {
+  COMPLETED_KEY,
   type CliDb,
   QUEUE,
   SENTINEL,
@@ -61,6 +62,20 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
       ['checkpoints', seeded.completed, '--queue', QUEUE, '--attempt', '1'],
       ['checkpoints', seeded.completed, '--queue', QUEUE, '--attempt', '0'],
       ['checkpoints', 'no-such-task', '--queue', QUEUE],
+    ],
+    shows: true,
+  },
+  inspect: {
+    lines: (_db, seeded) => [
+      ...Object.values(seeded).map((taskId) => ['inspect', taskId, '--queue', QUEUE]),
+      // By the key, which holds the sentinel, and by a key no task has, which holds it too.
+      ['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE],
+      ['inspect', '--key', `no-task-has-${SENTINEL}`, '--queue', QUEUE],
+      ['inspect', 'no-such-task', '--queue', QUEUE],
+      // Refusals: an id and a key together, neither, and a key with no queue.
+      ['inspect', seeded.completed, '--key', COMPLETED_KEY, '--queue', QUEUE],
+      ['inspect', '--queue', QUEUE],
+      ['inspect', '--key', COMPLETED_KEY],
     ],
     shows: true,
   },
@@ -176,6 +191,10 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
   ],
   result: () => [['result', 'a-task', '--queue', QUEUE]],
   checkpoints: () => [['checkpoints', 'a-task', '--queue', QUEUE, '--attempt', '1']],
+  inspect: () => [
+    ['inspect', 'a-task', '--queue', QUEUE],
+    ['inspect', '--key', 'a-key', '--queue', QUEUE],
+  ],
 }
 
 /** What --target names for a URL, or a stand-in for a URL that names nothing. */
@@ -342,6 +361,10 @@ describe('redaction', () => {
 
   it('checkpoints prints no checkpoint state without --reveal', async () => {
     await runCase('checkpoints', 'mutation-verdict:behavior:cli-redacts-checkpoints')
+  })
+
+  it('inspect prints no value a user wrote without --reveal', async () => {
+    await runCase('inspect', 'mutation-verdict:behavior:cli-inspect-redacts-the-key')
   })
 
   it("result prints a failure reason the task's code wrote as its length and sha256", () => {

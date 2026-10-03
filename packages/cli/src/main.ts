@@ -19,6 +19,7 @@ import {
   usage,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
+import { factsAreReadable, factsView } from './inspect.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
@@ -436,9 +437,47 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
   }
 }
 
+/** The answer for a task the queue does not hold. `message` quotes no value a user wrote. */
+function notFound(view: Record<string, unknown>, message: string): Answer {
+  return { exit: 'not-found', view: { ...view, error: { kind: 'not-found', message } } }
+}
+
+/**
+ * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
+ * The facts print whole whatever they hold. A row the decoders refuse, or an integer
+ * outside its bounds, is printed where it stands and the command exits `unreadable`, so a
+ * script does not read a corrupt row as a clean answer.
+ */
+const inspect: Handler = async ({ invocation, store, reveal }) => {
+  const queue = invocation.strings.queue ?? ''
+  const key = invocation.strings.key
+  const version = await readableVersion(store)
+  if (typeof version !== 'number') return { ...version, view: { queue, ...version.view } }
+  const taskId =
+    key === undefined
+      ? (invocation.args.taskId ?? '')
+      : await store.operator.taskIdByKey(queue, key)
+  if (taskId === null) {
+    // The key is a value a user wrote, so the answer does not quote it.
+    return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
+  }
+  const facts = await store.operator.taskFacts(queue, taskId)
+  if (facts === null) return notFound({ queue, taskId }, `no task ${taskId} in queue ${queue}`)
+  // The outcome is rendered as `result` renders it, a refused row included.
+  const outcome =
+    'result' in facts.outcome
+      ? resultView(facts.outcome.result, reveal)
+      : unreadable({ state: 'unreadable' }, facts.outcome.refused, reveal).view
+  return {
+    exit: factsAreReadable(facts) ? 'done' : 'unreadable',
+    view: { queue, taskId, ...factsView(facts, outcome, reveal) },
+  }
+}
+
 const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze({
   doctor,
   migrate,
   result,
   checkpoints,
+  inspect,
 })

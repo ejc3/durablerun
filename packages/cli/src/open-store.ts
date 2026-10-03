@@ -1,5 +1,11 @@
 import { existsSync } from 'node:fs'
-import type { IdSource, SchedulerStore, SqlExecutor, StoreAdmin } from '@durablerun/core'
+import type {
+  IdSource,
+  OperatorReads,
+  SchedulerStore,
+  SqlExecutor,
+  StoreAdmin,
+} from '@durablerun/core'
 
 /**
  * The one file of the CLI that imports a store package (biome's noRestrictedImports holds
@@ -19,6 +25,9 @@ export type CliAdmin = Pick<StoreAdmin, 'schemaVersion' | 'nowEpochMs' | 'migrat
 /** The scheduler calls a command may make. A claim cannot be written. */
 export type CliScheduler = Pick<SchedulerStore, 'getTaskResult' | 'getCheckpoints'>
 
+/** The operator reads a command may make. */
+export type CliOperator = Pick<OperatorReads, 'taskFacts' | 'taskIdByKey'>
+
 /** What an operator should know before a migration crosses a version, as a store says it. */
 export type SchemaVersionNotes = Readonly<Record<number, string>>
 
@@ -29,6 +38,7 @@ export interface OpenedStore {
   readonly notes: SchemaVersionNotes
   readonly admin: CliAdmin
   readonly scheduler: CliScheduler
+  readonly operator: CliOperator
   close(): Promise<void>
 }
 
@@ -75,6 +85,7 @@ interface Opened {
   readonly notes: SchemaVersionNotes
   admin(db: SqlExecutor): StoreAdmin
   scheduler(db: SqlExecutor, ids: IdSource): SchedulerStore
+  operator(db: SqlExecutor): OperatorReads
   close(): Promise<void>
 }
 
@@ -102,6 +113,7 @@ const libsql: Loader = async (url, token, mayCreate, target) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.LibsqlStoreAdmin(db),
     scheduler: (db, ids) => new store.LibsqlSchedulerStore(db, ids),
+    operator: (db) => store.operatorReads(db),
     close: async () => executor.close(),
   }
 }
@@ -116,6 +128,7 @@ const postgres: Loader = async (url, token) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.PostgresStoreAdmin(db),
     scheduler: (db, ids) => new store.PostgresSchedulerStore(db, ids),
+    operator: (db) => store.operatorReads(db),
     close: () => executor.close(),
   }
 }
@@ -130,6 +143,7 @@ const mysql: Loader = async (url, token) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.MysqlStoreAdmin(db),
     scheduler: (db, ids) => new store.MysqlSchedulerStore(db, ids),
+    operator: (db) => store.operatorReads(db),
     close: () => executor.close(),
   }
 }
@@ -266,6 +280,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   const db = options.wrapExecutor?.(opened.executor) ?? opened.executor
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)
+  const operator = opened.operator(db)
   return {
     scheme,
     window: opened.window,
@@ -279,6 +294,11 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       getTaskResult: (queue: string, taskId: string) => scheduler.getTaskResult(queue, taskId),
       getCheckpoints: (queue: string, taskId: string, attempt: number) =>
         scheduler.getCheckpoints(queue, taskId, attempt),
+    }),
+    operator: Object.freeze({
+      taskFacts: (queue: string, taskId: string) => operator.taskFacts(queue, taskId),
+      taskIdByKey: (queue: string, idempotencyKey: string) =>
+        operator.taskIdByKey(queue, idempotencyKey),
     }),
     close: () => opened.close(),
   }

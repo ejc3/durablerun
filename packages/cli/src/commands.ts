@@ -8,7 +8,7 @@ import type { ExitName } from './exit.js'
  * one of those places and missed in another.
  */
 
-export const VERBS = ['help', 'doctor', 'migrate', 'result', 'checkpoints'] as const
+export const VERBS = ['help', 'doctor', 'migrate', 'result', 'checkpoints', 'inspect'] as const
 export type Verb = (typeof VERBS)[number]
 
 export interface FlagSpec {
@@ -27,6 +27,8 @@ export interface PortUse {
     | 'admin.migrate'
     | 'scheduler.getTaskResult'
     | 'scheduler.getCheckpoints'
+    | 'operator.taskFacts'
+    | 'operator.taskIdByKey'
   /** A label ending in `<N>` stands for what comes before it followed by a whole number. */
   readonly labels: readonly string[]
 }
@@ -51,6 +53,8 @@ export interface CommandSpec {
   readonly verb: Verb
   readonly summary: string
   readonly positionals: readonly string[]
+  /** An argument that a flag may stand in for: the command takes one of the two, never both. */
+  readonly alternative?: { readonly positional: string; readonly flag: string }
   readonly flags: Readonly<Record<string, FlagSpec>>
   readonly opensStore: boolean
   /** Whether the command changes the database, and so needs `--target`. */
@@ -180,6 +184,31 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
     faults: READ_FAULTS,
   },
+  inspect: {
+    verb: 'inspect',
+    summary:
+      'one snapshot of a task: its row, its outcome, its runs, its waits, and the events they name',
+    positionals: ['taskId'],
+    alternative: { positional: 'taskId', flag: 'key' },
+    flags: {
+      ...READ_FLAGS,
+      key: {
+        type: 'string',
+        value: 'K',
+        description: 'the idempotency key the task was spawned under, in place of its id',
+      },
+    },
+    opensStore: true,
+    writes: false,
+    repeat: 'read',
+    ports: [
+      SCHEMA_VERSION,
+      { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] },
+      { call: 'operator.taskFacts', labels: ['task-facts', 'fake-clock'] },
+    ],
+    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    faults: READ_FAULTS,
+  },
 } satisfies Record<Verb, CommandSpec>)
 
 function labelMatches(declared: string, label: string): boolean {
@@ -204,10 +233,21 @@ export function faultExit(spec: CommandSpec, label: string, fault: CliFault): Ex
 }
 
 export function usage(spec: CommandSpec): string {
-  const parts: string[] = [spec.verb, ...spec.positionals.map((name) => `<${name}>`)]
+  const shown = (name: string, flag: FlagSpec): string =>
+    flag.type === 'string' ? `--${name} <${flag.value ?? 'value'}>` : `--${name}`
+  const instead = spec.alternative
+  const parts: string[] = [spec.verb]
+  for (const name of spec.positionals) {
+    const flag = instead?.positional === name ? spec.flags[instead.flag] : undefined
+    parts.push(
+      instead === undefined || flag === undefined
+        ? `<${name}>`
+        : `<${name}> | ${shown(instead.flag, flag)}`,
+    )
+  }
   for (const [name, flag] of Object.entries(spec.flags)) {
-    const shown = flag.type === 'string' ? `--${name} <${flag.value ?? 'value'}>` : `--${name}`
-    parts.push(flag.required === true ? shown : `[${shown}]`)
+    if (name === instead?.flag) continue
+    parts.push(flag.required === true ? shown(name, flag) : `[${shown(name, flag)}]`)
   }
   return parts.join(' ')
 }
@@ -253,13 +293,19 @@ export function parseInvocation(argv: readonly string[]): Invocation {
       `${error instanceof Error ? error.message : String(error)}\nusage: ${usage(spec)}`,
     )
   }
-  if (parsed.positionals.length !== spec.positionals.length) {
+  // An argument a flag stands in for is not taken when the flag is given.
+  const instead = spec.alternative
+  const byFlag = instead !== undefined && typeof parsed.values[instead.flag] === 'string'
+  const taken = spec.positionals.filter((name) => !(byFlag && name === instead?.positional))
+  if (parsed.positionals.length !== taken.length) {
     throw new UsageError(
-      `${word} takes ${spec.positionals.length} argument(s), got ${parsed.positionals.length}\nusage: ${usage(spec)}`,
+      instead === undefined
+        ? `${word} takes ${spec.positionals.length} argument(s), got ${parsed.positionals.length}\nusage: ${usage(spec)}`
+        : `${word} takes <${instead.positional}> or --${instead.flag}, one of them and not both\nusage: ${usage(spec)}`,
     )
   }
   const args = Object.fromEntries(
-    spec.positionals.map((name, index) => [name, parsed.positionals[index] ?? '']),
+    taken.map((name, index) => [name, parsed.positionals[index] ?? '']),
   )
   const strings: Record<string, string> = {}
   const booleans: Record<string, boolean> = {}

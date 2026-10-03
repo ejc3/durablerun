@@ -21,6 +21,7 @@ import {
   plantNullPayload,
   recordingOpener,
   runCli,
+  seedSagas,
   seedTasks,
   withoutDialect,
 } from './support.js'
@@ -38,7 +39,7 @@ const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 async function answersOn(dialect: (typeof SELECTED)[number]): Promise<Map<string, string>> {
   const db = await openCliDb(dialect, 'same-json')
   try {
-    const seeded = await seedTasks(db)
+    const seeded = { ...(await seedTasks(db)), ...(await seedSagas(db)) }
     const answers = new Map<string, string>()
     for (const line of comparedLines(seeded)) {
       const run = await runCli(line, db.env)
@@ -56,7 +57,7 @@ async function answersOn(dialect: (typeof SELECTED)[number]): Promise<Map<string
  * something.
  */
 describe('the CLI on every selected dialect', () => {
-  it('doctor, result and checkpoints print the JSON libSQL prints, apart from the fields under dialect', async () => {
+  it('doctor, result, checkpoints and inspect print the JSON libSQL prints, apart from the fields under dialect', async () => {
     const reference = await answersOn('libsql')
     for (const dialect of SELECTED) {
       const answers = dialect === 'libsql' ? reference : await answersOn(dialect)
@@ -97,6 +98,79 @@ describe('the CLI on every selected dialect', () => {
               )
             }
           }
+        } finally {
+          await db.close()
+        }
+      })
+
+      it("inspect prints the outcome result prints for every seeded outcome, a saga's rollback and a row the decoders refuse among them", async () => {
+        const db = await openCliDb(dialect, 'same-outcome')
+        try {
+          const seeded = { ...(await seedTasks(db)), ...(await seedSagas(db)) }
+          // Fixture-built: a completed row with no payload, which the decoders refuse.
+          const contradiction = await db.store.spawn(QUEUE, 'report', '{}')
+          const [run] = await db.store.claim(QUEUE, 'refused-worker', {
+            leaseSeconds: 60,
+            limit: 1,
+          })
+          if (run?.taskId !== contradiction.taskId) throw new Error('the task was not claimed')
+          await db.store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)
+          await db.store.complete(QUEUE, run.runId, run.claimToken, '{}')
+          await db.raw.batch('fixture:contradiction', [
+            {
+              sql: 'UPDATE tasks SET completed_payload = NULL WHERE task_id = ?',
+              args: [contradiction.taskId],
+            },
+          ])
+          const printed: string[] = []
+          for (const [seed, taskId] of Object.entries({
+            ...seeded,
+            refused: contradiction.taskId,
+          })) {
+            for (const reveal of [[], ['--reveal']]) {
+              const line = [taskId, '--queue', QUEUE, '--json', ...reveal]
+              const result = await runCli(['result', ...line], db.env)
+              const inspected = await runCli(['inspect', ...line], db.env)
+              const {
+                command: _command,
+                exit: _exit,
+                queue: _queue,
+                taskId: _taskId,
+                dialect: _dialect,
+                ...outcome
+              } = JSON.parse(result.stdout) as Record<string, unknown>
+              const facts = JSON.parse(inspected.stdout) as Record<string, unknown>
+              expect({
+                seed,
+                reveal: reveal.length > 0,
+                outcome: facts.outcome,
+                exit: inspected.exit,
+                corrupt: facts.corrupt,
+              }).toEqual({
+                seed,
+                reveal: reveal.length > 0,
+                outcome,
+                exit: result.exit,
+                corrupt: [],
+              })
+              if (reveal.length === 0) {
+                const rollback = (outcome.rollback as { outcome?: string } | undefined)?.outcome
+                printed.push(
+                  `${seed}: ${outcome.state}${rollback === undefined ? '' : `, rollback ${rollback}`}`,
+                )
+              }
+            }
+          }
+          // The seeds reach every kind of outcome, so the comparison above was asked of each.
+          expect(printed).toEqual([
+            'completed: completed',
+            'failed: failed',
+            'cancelled: cancelled',
+            'pending: pending',
+            'rolledBack: failed, rollback complete',
+            'halted: failed, rollback failed',
+            'refused: unreadable',
+          ])
         } finally {
           await db.close()
         }
@@ -206,6 +280,8 @@ describe('the CLI on every selected dialect', () => {
           const cases: [string, Record<string, string>, string[]][] = [
             ['done', db.env, ['doctor', '--queue', QUEUE]],
             ['done', db.env, ['result', seeded.completed, '--queue', QUEUE]],
+            ['done', db.env, ['inspect', seeded.completed, '--queue', QUEUE]],
+            ['not-found', db.env, ['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE]],
             ['usage', older.env, ['migrate', '--target', older.target]],
             ['usage', db.env, ['result', '--queue', QUEUE]],
             ['refused', db.env, ['result', 'x'.repeat(256), '--queue', QUEUE]],
