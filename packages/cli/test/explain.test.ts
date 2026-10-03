@@ -475,10 +475,11 @@ describe('explain on libSQL', () => {
         nextTransitionAtMs: NOW_MS + 30_000,
       })
       await at(NOW_MS + 30_000 + DUE_GRACE_MS + 1)
-      expect(
-        read(await explain(db, task.taskId)),
-        'mutation-verdict:behavior:cli-explain-a-backoff-that-has-run-is-a-due-run',
-      ).toEqual({ cause: 'sleeping-past-its-wake', verdict: 'stuck', nextTransitionAtMs: null })
+      expect(read(await explain(db, task.taskId))).toEqual({
+        cause: 'sleeping-past-its-wake',
+        verdict: 'stuck',
+        nextTransitionAtMs: null,
+      })
       const claimed = await db.store.claim(QUEUE, 'w-second', { leaseSeconds: 60, limit: 5 })
       expect(claimed.map((one) => one.taskId)).toEqual([task.taskId])
     } finally {
@@ -616,6 +617,67 @@ describe('explain on libSQL', () => {
       await db.close()
     }
   }, 60_000)
+
+  it('reads a ring of awaits once: a task that waits on itself, and two that wait on each other', async () => {
+    const reads = async (db: CliDb, taskId: string) => {
+      const recording = recordingOpener()
+      const answer = await explain(db, taskId, recording.opener)
+      return {
+        cause: answer.cause,
+        verdict: answer.verdict,
+        followed: [answer.facts.followed, answer.awaits?.facts.followed],
+        reads: recording.sent().filter((batch) => batch.label === 'task-facts').length,
+      }
+    }
+    // The store lets a run await any task of its queue, its own among them.
+    const alone = await openCliDb('libsql', 'explain-ring-of-one')
+    try {
+      const task = await alone.store.spawn(QUEUE, 'job', '{}')
+      const run = await claimActivated(alone, 'w-self', task.taskId)
+      await alone.store.awaitTaskDone(
+        QUEUE,
+        task.taskId,
+        run.runId,
+        run.claimToken,
+        'await-self',
+        task.taskId,
+        null,
+      )
+      expect(
+        await reads(alone, task.taskId),
+        'mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once',
+      ).toEqual({
+        cause: 'awaiting-a-child',
+        verdict: 'waiting',
+        followed: ['ring', undefined],
+        reads: 1,
+      })
+    } finally {
+      await alone.close()
+    }
+    const pair = await openCliDb('libsql', 'explain-ring-of-two')
+    try {
+      const [first, second] = await chainOfAwaits(pair, 2)
+      const run = await claimActivated(pair, 'w-second', second ?? '')
+      await pair.store.awaitTaskDone(
+        QUEUE,
+        second ?? '',
+        run.runId,
+        run.claimToken,
+        'await-first',
+        first ?? '',
+        null,
+      )
+      expect(await reads(pair, first ?? '')).toEqual({
+        cause: 'awaiting-a-child',
+        verdict: 'waiting',
+        followed: ['followed', 'ring'],
+        reads: 2,
+      })
+    } finally {
+      await pair.close()
+    }
+  })
 
   it('every suggestion emitted parses, holds no --yes and never names emit', async () => {
     const emitted: string[][] = []

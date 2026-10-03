@@ -515,7 +515,7 @@ const inspect: Handler = async (context) => {
 
 /** How many checkpoints a task has committed, or that a row of them is one the decoders refuse. */
 async function checkpointCount(
-  store: OpenedStore,
+  store: Pick<OpenedStore, 'scheduler'>,
   queue: string,
   taskId: string,
 ): Promise<number | 'unreadable'> {
@@ -527,14 +527,16 @@ async function checkpointCount(
  * One task's facts and what `diagnose` says of them, or null for a task the queue does not
  * hold. `diagnose` names the evidence a cause turns on, and it is read here and handed
  * back: the task's checkpoints, or the child the task awaits, which is diagnosed the same
- * way. A task that is CHILD_HOPS awaits from the one named has its own child left unread,
- * so a chain of awaits, or a ring of them, costs a bounded number of reads.
+ * way. A child that is already on the way, the task itself among them, closes a ring and is
+ * not read again. A task that is CHILD_HOPS awaits from the one named has its own child
+ * left unread, so a chain of awaits costs a bounded number of reads.
  */
-async function explained(
-  store: OpenedStore,
+export async function explained(
+  store: Pick<OpenedStore, 'operator' | 'scheduler'>,
   queue: string,
   taskId: string,
   hop: number,
+  onTheWay: readonly string[] = [],
 ): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return null
@@ -545,10 +547,12 @@ async function explained(
     if (asked.needs in evidence) throw new Error(`diagnose asked for ${asked.needs} twice`)
     if (asked.needs === 'checkpoints') {
       evidence = { ...evidence, checkpoints: await checkpointCount(store, queue, taskId) }
+    } else if (onTheWay.includes(asked.taskId) || asked.taskId === taskId) {
+      evidence = { ...evidence, child: 'ring' }
     } else if (hop === CHILD_HOPS) {
       evidence = { ...evidence, child: 'not-followed' }
     } else {
-      const child = await explained(store, queue, asked.taskId, hop + 1)
+      const child = await explained(store, queue, asked.taskId, hop + 1, [...onTheWay, taskId])
       evidence = { ...evidence, child: child?.diagnosis ?? 'absent' }
     }
   }

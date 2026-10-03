@@ -216,8 +216,11 @@ export interface Diagnosis {
   readonly child?: Diagnosis
 }
 
-/** What following an awaited child found: its diagnosis, no such task, or a hop not taken. */
-export type ChildEvidence = Diagnosis | 'absent' | 'not-followed'
+/**
+ * What following an awaited child found: its diagnosis, no such task, a hop not taken, or
+ * a ring, where the child is a task already on the way, the task itself among them.
+ */
+export type ChildEvidence = Diagnosis | 'absent' | 'not-followed' | 'ring'
 
 /** What the facts of one task do not hold, which `diagnose` asks for when a cause turns on it. */
 export interface Evidence {
@@ -629,9 +632,12 @@ function firstFound(view: View): Found | Needed | null {
  * or unexplained gives its verdict to the task that waits for it, and a child a worker is
  * running makes it `waiting`. A child that has ended would have woken the run in the batch
  * that ended it, so a run still parked on it is `unexplained`, as is a child the queue does
- * not hold and a child that was not followed.
+ * not hold and a child that was not followed. Tasks that wait on each other in a ring, or a
+ * task that waits on itself, are `waiting`: nothing is owed to them, and only a timeout or
+ * a cancellation ends the wait.
  */
 function verdictThrough(child: ChildEvidence | undefined): Verdict {
+  if (child === 'ring') return 'waiting'
   if (child === undefined || typeof child === 'string') return 'unexplained'
   if (child.verdict !== 'ok') return child.verdict
   return child.cause === 'running-under-a-live-lease' ? 'waiting' : 'unexplained'

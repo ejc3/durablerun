@@ -78,8 +78,13 @@ export async function runFuzzScenario(
   makeFixture: StoreFixtureFactory,
   seed: number | string,
   steps: number,
+  afterWalk?: (fixture: Awaited<ReturnType<StoreFixtureFactory>>) => Promise<void>,
 ): Promise<FuzzStats> {
-  return withFixture(makeFixture, `fuzz-${seed}`, (f) => runWalk(f, seed, steps))
+  return withFixture(makeFixture, `fuzz-${seed}`, async (f) => {
+    const stats = await runWalk(f, seed, steps)
+    await afterWalk?.(f)
+    return stats
+  })
 }
 
 async function runWalk(
