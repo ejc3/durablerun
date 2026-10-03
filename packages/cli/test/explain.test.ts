@@ -710,6 +710,71 @@ describe('explain on libSQL', () => {
     ).toThrow(/explain knows no value for somethingElse of result/)
   })
 
+  it('builds a next command the parser of the CLI reads, for a queue whose name begins with a dash', async () => {
+    const db = await openCliDb('libsql', 'explain-dash-queue')
+    try {
+      for (const queue of ['-q', '--json']) {
+        const task = await db.store.spawn(queue, 'job', '{}')
+        const [run] = await db.store.claim(queue, `w${queue}`, { leaseSeconds: 60, limit: 1 })
+        if (run === undefined) throw new Error(`nothing to claim in ${queue}`)
+        await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)
+        await db.store.complete(queue, run.runId, run.claimToken, '{}')
+        const printed = await runCli(['explain', task.taskId, `--queue=${queue}`, '--json'], db.env)
+        const next = (JSON.parse(printed.stdout) as Answer).next
+        if (next === null) throw new Error('a completed task prints a next command')
+        /** What the parser reads of the suggestion, or the words it refuses it with. */
+        const parsed = (() => {
+          try {
+            const { spec, args, strings } = parseInvocation(next.argv)
+            return { verb: spec.verb, taskId: args.taskId, queue: strings.queue }
+          } catch (error) {
+            return String(error).split('\n')[0]
+          }
+        })()
+        expect(
+          { queue, parsed },
+          'mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument',
+        ).toEqual({ queue, parsed: { verb: 'result', taskId: task.taskId, queue } })
+        // The one line to paste is the same arguments, as a shell reads it back.
+        const read = spawnSync(
+          'sh',
+          ['-c', `printf '%s\\n' ${next.command.slice('pnpm cli '.length)}`],
+          { encoding: 'utf8' },
+        )
+        expect(read.stdout.split('\n').slice(0, -1)).toEqual(next.argv)
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('withholds a next command it cannot fill, and says what it has no value for', () => {
+    // What main.ts demands of a command that writes: the store named again with --target.
+    const sweep: CommandSpec = {
+      ...COMMANDS.migrate,
+      verb: 'sweep' as CommandSpec['verb'],
+      flags: {
+        ...COMMANDS.migrate.flags,
+        queue: { type: 'string', required: true, value: 'Q', description: 'the queue to sweep' },
+      },
+    }
+    const built = (() => {
+      try {
+        return suggestion(
+          { cause: 'lease-lapsed-unswept', verdict: 'stuck', taskId: 'a-task' },
+          QUEUE,
+          { sweep },
+        )
+      } catch (error) {
+        return `threw ${String(error)}`
+      }
+    })()
+    expect(
+      built,
+      'mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill',
+    ).toEqual({ withheld: 'explain knows no value for --target of sweep' })
+  })
+
   it('prints a suggestion as one line a shell reads back as the same arguments', () => {
     const argv = ['inspect', "a task's id", '--queue', 'a queue; rm -rf "$HOME"']
     const line = pastedLine(argv)
@@ -1049,6 +1114,59 @@ describe('diagnose', () => {
       // What it says of the row quotes nothing the row holds.
       expect(JSON.stringify(answer)).not.toContain(SENTINEL)
     }
+  })
+
+  it('says of a row that is not readable which row it is and which field, and quotes no stored value', () => {
+    const rogue = `rogue-${SENTINEL}`
+    const parked = {
+      state: 'sleeping',
+      wakeEvent: 'e',
+      wakeStep: 's',
+      availableAtMs: null,
+    } as const
+    const corrupt = {
+      field: 'runs.attempt',
+      runId: 'r',
+      reason: 'out-of-range',
+      stored: 'number',
+      value: '-3',
+    } as const
+    const facts = (given: TaskFacts) => {
+      const answer = answered(diagnose(given))
+      expect(JSON.stringify(answer)).not.toContain(SENTINEL)
+      return [answer.cause, answer.facts]
+    }
+    expect(
+      {
+        run: facts(factsOf({ state: rogue }, { task: { state: 'pending' } })),
+        wait: facts(factsOf(parked, { waits: [{ ...waitOf('e', null), status: rogue }] })),
+        integer: facts(factsOf({ attempt: null }, { corrupt: [corrupt] })),
+        outcome: facts({ ...factsOf({}), outcome: { refused: `refused ${rogue}` } }),
+      },
+      'mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field',
+    ).toEqual({
+      run: [
+        'unreadable',
+        { outcome: 'readable', corrupt: [], notTheEngines: [{ field: 'runs.state', runId: 'r' }] },
+      ],
+      wait: [
+        'unreadable',
+        {
+          outcome: 'readable',
+          corrupt: [],
+          notTheEngines: [{ field: 'waits.status', runId: 'r', stepName: 's' }],
+        },
+      ],
+      integer: [
+        'unreadable',
+        {
+          outcome: 'readable',
+          corrupt: [{ field: 'runs.attempt', runId: 'r' }],
+          notTheEngines: [],
+        },
+      ],
+      outcome: ['unreadable', { outcome: 'unreadable', corrupt: [], notTheEngines: [] }],
+    })
   })
 
   it('names a live task past its cancellation deadline by the deadline, whatever its run is doing', () => {
