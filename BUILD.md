@@ -5869,6 +5869,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     engine may do next, which `explain` says from the facts. (6) No statement orders its
     rows, and core orders every list by UTF-16 code units, because a text column sorts by
     the database's collation.
+  - Measured while pinning the plans, and left as it is: on PostgreSQL, schema version 7
+    changes the collation of `meta`'s key, which rebuilds that index over rows the
+    migrations updated in place, and the server does not use an index built that way while
+    a transaction older than the build is open. Until those transactions end, a read of
+    `meta`, the batch clock's among them, scans its handful of rows. The plan pin of the
+    operator's reads leaves `meta` out for that reason: on a database a test migrated a
+    moment ago, beside other tests, it planned one way in one run and the other way in the
+    next, which the first full run of the suite showed and a held transaction reproduces.
   - Option for the fuzz walk, not built, with its trigger: ask `taskFacts` of every task at
     quiescence, and require an empty `corrupt` list and the outcome `getTaskResult` gives.
     The surface asks it of eighteen seeded states. Trigger: a state the engine reaches that

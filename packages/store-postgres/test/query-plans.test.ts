@@ -565,8 +565,17 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
  * that remains is a table no index of the statement reaches. Every index scan is pinned
  * with its condition: the task and its saga's names by their keys, the task's runs by the
  * index on a task's ordinals, a run's waits by the head of their key, an event by its key,
- * a keyed task by the index on a queue's keys, and the test clock's row by its key. This
- * needs a server.
+ * and a keyed task by the index on a queue's keys. This needs a server.
+ *
+ * `meta` is left out of both checks, and with it the one statement that reads nothing
+ * else, whether the test clock is set. It holds a handful of rows, and schema version 7
+ * changes the collation of its key, which rebuilds that index over rows the migrations
+ * updated in place. PostgreSQL does not use an index built that way while a transaction
+ * older than the build is open. So on a database a test migrated a moment ago, beside
+ * other tests, a read of `meta` plans as an index scan in one run and as a scan of the
+ * table in the next, and its plan says when the database was migrated and not how a
+ * statement reaches its rows. The same holds on a deployed database only until the
+ * transactions that were open at its migration have ended.
  */
 it("reaches every row an operator's read takes by a key, and scans no table", async () => {
   const db = await openPostgresTestDb({ idNamespace: 'plan-operator-reads' })
@@ -596,13 +605,13 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
       const lines = await planLines(client, sql)
       reached[name] = lines.flatMap((line, at) => {
         const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
-        if (found === null) return []
+        if (found === null || found[2] === 'meta') return []
         const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
         return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
       })
       scans.push(
         ...lines
-          .filter((line) => /Seq Scan|Bitmap/.test(line))
+          .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta$/.test(line.trim()))
           .map((line) => `[${name}] ${line.trim()}`),
       )
     }
@@ -611,8 +620,6 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     expect(reached).toEqual({
       'task-facts#0': [
         'tasks_pkey on tasks: (task_id = $1)',
-        // The batch clock, which reads the test clock's row ahead of the server's own.
-        "meta_pkey on meta: (key = 'fake_now_ms'::text)",
         // The rollback outcome: the phase marker, then the saga's names among this task's
         // rows of the key, as `task-result` reads them.
         `checkpoints_pkey on checkpoints sp: ${sagaPhase}`,
@@ -632,7 +639,8 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
         'waits_pkey on waits w: (run_id = r.run_id)',
         'events_pkey on events e: ((queue = w.queue) AND (event_name = w.event_name))',
       ],
-      'fake-clock#0': ["meta_pkey on meta: (key = 'fake_now_ms'::text)"],
+      // It reads `meta` and nothing else.
+      'fake-clock#0': [],
       'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
       'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
     })
