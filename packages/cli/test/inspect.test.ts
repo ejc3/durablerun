@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_ATTEMPTS, type TaskFacts } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, usage } from '../src/commands.js'
-import { factsView } from '../src/inspect.js'
+import { factsAreReadable, factsView } from '../src/inspect.js'
 import { userValue } from '../src/render.js'
 import {
   COMPLETED_KEY,
@@ -18,6 +18,70 @@ import {
 
 /** An answer printed with --json. */
 const parsed = (stdout: string) => JSON.parse(stdout) as Record<string, unknown>
+
+/** Text no schema's check lets a state or a status hold. */
+const ROGUE = `rogue-${SENTINEL}`
+
+/**
+ * A task's facts as the view is given them, holding the three stored texts every schema
+ * checks. No row a store wrote holds another, so a case that needs one builds the facts.
+ */
+function factsHolding(
+  stored: { task: string; run: string; wait: string },
+  outcome: TaskFacts['outcome'] = { result: { state: 'pending' } },
+): TaskFacts {
+  return {
+    nowMs: NOW_MS,
+    fakeClock: true,
+    task: {
+      taskId: 't',
+      queue: QUEUE,
+      taskName: 'report',
+      state: stored.task,
+      attempts: 0,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      infraRetries: 0,
+      enqueueAtMs: NOW_MS,
+      firstStartedAtMs: null,
+      cancelAtMs: null,
+      idempotencyKey: null,
+      parentTaskId: null,
+      sagaBegan: false,
+    },
+    outcome,
+    runs: [
+      {
+        runId: 'r',
+        queue: QUEUE,
+        state: stored.run,
+        attempt: 1,
+        claimGen: 0,
+        activatedGen: 0,
+        relaunchCount: 0,
+        claimExpiresAtMs: null,
+        heartbeatAtMs: null,
+        availableAtMs: NOW_MS,
+        wakeEvent: null,
+        wakeStep: null,
+        startedAtMs: null,
+        completedAtMs: null,
+        failedAtMs: null,
+      },
+    ],
+    waits: [
+      {
+        runId: 'r',
+        stepName: 's',
+        eventName: 'e',
+        status: stored.wait,
+        timeoutAtMs: null,
+        createdAtMs: NOW_MS,
+      },
+    ],
+    events: [],
+    corrupt: [],
+  }
+}
 
 /**
  * `inspect` on libSQL. cli-dialects.test.ts holds its answers equal on every selected
@@ -199,58 +263,11 @@ describe('inspect on libSQL', () => {
   it("prints a state or a status that is not one of the engine's own as a hidden value unless --reveal", () => {
     // Every schema checks these columns, so no row a store wrote holds such a value, and the
     // view is given the facts directly.
-    const rogue = `rogue-${SENTINEL}`
-    const facts: TaskFacts = {
-      nowMs: NOW_MS,
-      fakeClock: true,
-      task: {
-        taskId: 't',
-        queue: QUEUE,
-        taskName: 'report',
-        state: rogue,
-        attempts: 0,
-        maxAttempts: DEFAULT_MAX_ATTEMPTS,
-        infraRetries: 0,
-        enqueueAtMs: NOW_MS,
-        firstStartedAtMs: null,
-        cancelAtMs: null,
-        idempotencyKey: null,
-        parentTaskId: null,
-        sagaBegan: false,
-      },
-      outcome: { refused: `task t has unknown state ${rogue}` },
-      runs: [
-        {
-          runId: 'r',
-          queue: QUEUE,
-          state: rogue,
-          attempt: 1,
-          claimGen: 0,
-          activatedGen: 0,
-          relaunchCount: 0,
-          claimExpiresAtMs: null,
-          heartbeatAtMs: null,
-          availableAtMs: NOW_MS,
-          wakeEvent: null,
-          wakeStep: null,
-          startedAtMs: null,
-          completedAtMs: null,
-          failedAtMs: null,
-        },
-      ],
-      waits: [
-        {
-          runId: 'r',
-          stepName: 's',
-          eventName: 'e',
-          status: rogue,
-          timeoutAtMs: null,
-          createdAtMs: NOW_MS,
-        },
-      ],
-      events: [],
-      corrupt: [],
-    }
+    const rogue = ROGUE
+    const facts = factsHolding(
+      { task: rogue, run: rogue, wait: rogue },
+      { refused: `task t has unknown state ${rogue}` },
+    )
     const shown = (given: TaskFacts, reveal: boolean) => {
       const view = factsView(given, {}, reveal) as unknown as {
         task: { state: unknown }
@@ -275,6 +292,37 @@ describe('inspect on libSQL', () => {
       waits: facts.waits.map((wait) => ({ ...wait, status: 'delivered' })),
     }
     expect(shown(known, false)).toEqual({ task: 'cancelled', run: 'sleeping', wait: 'delivered' })
+  })
+
+  it("exits 10 for a run's state or a wait's status that is not one of the engine's own", async () => {
+    const db = await openCliDb('libsql', 'inspect-rogue-state')
+    try {
+      const seeded = await seedTasks(db)
+      // Fixture-built: the schema's check refuses such a state, so it is set aside for the
+      // one statement that plants it.
+      await db.raw.batch('fixture:rogue', [
+        { sql: 'PRAGMA ignore_check_constraints = ON', args: [] },
+        { sql: "UPDATE runs SET state = 'rogue-state' WHERE task_id = ?", args: [seeded.pending] },
+        { sql: 'PRAGMA ignore_check_constraints = OFF', args: [] },
+      ])
+      const run = await runCli(['inspect', seeded.pending, '--queue', QUEUE, '--json'], db.env)
+      const answer = parsed(run.stdout)
+      expect(
+        { exit: run.exit, named: answer.exit, outcome: answer.outcome, corrupt: answer.corrupt },
+        'mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-run-state',
+      ).toEqual({ exit: 10, named: 'unreadable', outcome: { state: 'pending' }, corrupt: [] })
+    } finally {
+      await db.close()
+    }
+    // A wait's status, on facts given directly: the seeded tasks register no wait.
+    const own = { task: 'pending', run: 'sleeping', wait: 'waiting' }
+    expect(
+      {
+        own: factsAreReadable(factsHolding(own)),
+        rogueWait: factsAreReadable(factsHolding({ ...own, wait: ROGUE })),
+      },
+      'mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-wait-status',
+    ).toEqual({ own: true, rogueWait: false })
   })
 
   it('takes a task id or --key, one of them and not both, and refuses each other line before a store opens', async () => {
