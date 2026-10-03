@@ -1,0 +1,19 @@
+{
+  "name": "@durablerun/cli",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@durablerun/core": "workspace:*",
+    "@durablerun/store-libsql": "workspace:*",
+    "@durablerun/store-mysql": "workspace:*",
+    "@durablerun/store-postgres": "workspace:*"
+  },
+  "devDependencies": {
+    "@durablerun/conformance": "workspace:*"
+  }
+}

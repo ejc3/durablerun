@@ -3713,6 +3713,17 @@ export class Store {
         "an empty package inventory must fail the clean-consumer packaging gate",
     ),
     (
+        "alpha1-compat.sh",
+        {
+            "scripts/published-surface-v0.1.0-alpha.1.json": '{"assets":{"a.tgz":"0"}}\n',
+            "examples/vercel-turso/package.json": (
+                '{"dependencies":{"@durablerun/core":"https://example.invalid/b.tgz"}}\n'
+            ),
+        },
+        "whose file the snapshot does not record",
+        "an asset URL the release snapshot does not record must not be installed unchecked",
+    ),
+    (
         "gate-lint.py",
         {
             **gate(

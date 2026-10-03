@@ -327,3 +327,24 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
+/**
+ * The schema versions this build's reads accept. A read-only tool, such as the operator
+ * CLI, answers against any version in the window and refuses one outside it, and it never
+ * migrates. This store was never released, so no deployed database is known to be at an
+ * older version, and the window is the current version alone. A database recorded past
+ * `newest` was migrated by a newer build and is refused.
+ */
+export const READABLE_SCHEMA_WINDOW = Object.freeze({
+  oldest: CURRENT_SCHEMA_VERSION,
+  newest: CURRENT_SCHEMA_VERSION,
+})
+
+/**
+ * What an operator should know before a migration crosses a version, keyed by that
+ * version, for a tool that migrates, such as the operator CLI, to print first. A database
+ * that was never initialized holds no rows, and a tool may leave the notes out for it.
+ */
+export const SCHEMA_VERSION_NOTES: Readonly<Record<number, string>> = Object.freeze({
+  10: 'version 10 alters events in place, with reads and writes allowed meanwhile (ALGORITHM=INPLACE, LOCK=NONE), and a stored event whose payload is NULL makes it fail with error 1138 and leaves version 9: find such rows first with SELECT queue, event_name FROM events WHERE payload IS NULL.',
+})

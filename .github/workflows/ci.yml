@@ -25,6 +25,9 @@ jobs:
       # What the service below is created with. A PostgreSQL test holds the server to it, so
       # an image that stopped honouring the arguments cannot pass for a linguistic server.
       DURABLERUN_POSTGRES_LOCALE_PROVIDER: icu
+      # verify:packages runs the release alpha.1 on databases the CLI migrated. An asset it
+      # cannot download fails this job, where the harness would otherwise skip and pass.
+      DURABLERUN_ALPHA1_REQUIRED: '1'
     services:
       postgres:
         image: postgres:17-alpine
@@ -333,40 +336,30 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == '8857eb75f149cfbf35ad1e24bb12b0bd929cd60742dec023bef7db08235a9be2':
-              # The order results reach the task in (DESIGN.md section 3.2) registers one
-              # mutation for each line it adds, so every verdict marker of its cases is newer
-              # than the base registry, and each is exempted there. No base entry is re-aimed.
+          if digest == 'eddaa5bd75fcb6db18681e020eae253a314fb2c34042f1d01ef03a1ea9fec7a9':
+              # The operator CLI (packages/cli) registers twenty-four mutations of its own
+              # guards, and every verdict marker of their cases is newer than the base registry,
+              # so each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:order-marker-is-stored-for-calls-pending-together",
-                  "mutation-verdict:behavior:order-marker-is-stored-before-its-result",
-                  "mutation-verdict:behavior:order-marker-is-stored-for-a-sleep-pending-beside-a-call",
-                  "mutation-verdict:behavior:order-marker-without-a-result-names-nothing",
-                  "mutation-verdict:behavior:order-numbers-are-never-reused",
-                  "mutation-verdict:behavior:the-highest-marker-of-a-result-is-the-one-that-counts",
-                  "mutation-verdict:behavior:recorded-results-are-handed-over-in-recorded-order",
-                  "mutation-verdict:behavior:a-recorded-result-is-followed-by-a-turn-of-the-event-loop",
-                  "mutation-verdict:behavior:a-result-the-pass-produces-is-followed-by-a-turn-of-the-event-loop",
-                  "mutation-verdict:behavior:a-result-the-pass-produces-waits-for-the-recorded-ones",
-                  "mutation-verdict:behavior:a-call-that-failed-does-not-hold-up-the-calls-behind-it",
-                  "mutation-verdict:behavior:a-task-that-caught-the-error-that-ended-its-pass-does-not-complete",
-                  "mutation-verdict:behavior:flows-store-nothing-after-an-infrastructure-error-beside-them",
-                  "mutation-verdict:behavior:the-heartbeat-gives-up-on-a-result-nobody-asks-for",
-                  "mutation-verdict:behavior:a-pass-whose-lease-ended-lets-every-call-go",
-                  "mutation-verdict:behavior:a-pass-whose-heartbeat-stopped-lets-every-call-go",
-                  "mutation-verdict:behavior:replay-settles-before-the-rollback-decides",
-                  "mutation-verdict:behavior:a-number-given-up-is-answered-at-once",
-                  "mutation-verdict:behavior:a-beat-that-saw-results-handed-over-is-not-stuck",
-                  "mutation-verdict:behavior:a-number-a-call-waits-for-is-not-given-up",
-                  "mutation-verdict:behavior:a-number-the-pass-gave-is-never-given-up",
-                  "mutation-verdict:behavior:an-open-order-lets-every-call-go",
-                  "mutation-verdict:behavior:the-order-queue-drops-what-it-handed-over",
-                  "mutation-verdict:behavior:a-skipped-recorded-call-is-given-up-within-one-beat",
-                  "mutation-verdict:behavior:every-skipped-recorded-call-is-given-up-in-the-same-beat",
-                  "mutation-verdict:behavior:a-wait-is-judged-by-the-results-handed-over-since-it-began",
-                  "mutation-verdict:behavior:a-held-rollback-replay-waits-for-the-release",
-                  "mutation-verdict:behavior:a-store-error-ends-the-pass-whether-or-not-a-call-is-beside-it",
-                  "mutation-verdict:behavior:a-permanent-answer-of-the-store-does-not-end-the-pass",
+                  "mutation-verdict:behavior:cli-refuses-a-newer-schema",
+                  "mutation-verdict:behavior:cli-refuses-an-older-schema",
+                  "mutation-verdict:behavior:cli-read-creates-no-file",
+                  "mutation-verdict:behavior:cli-unavailable-store-exits-6",
+                  "mutation-verdict:behavior:cli-redacts-result",
+                  "mutation-verdict:behavior:cli-redacts-checkpoints",
+                  "mutation-verdict:behavior:cli-redacts-failure-reasons",
+                  "mutation-verdict:behavior:cli-migrate-needs-yes",
+                  "mutation-verdict:behavior:cli-migrate-needs-its-target",
+                  "mutation-verdict:behavior:cli-store-url-prints-no-credential",
+                  "mutation-verdict:behavior:cli-refuses-a-store-url-it-cannot-read",
+                  "mutation-verdict:behavior:cli-last-catch-prints-only-a-name",
+                  "mutation-verdict:behavior:cli-file-url-reads-the-client-path",
+                  "mutation-verdict:behavior:cli-file-url-refuses-a-fragment",
+                  "mutation-verdict:behavior:cli-refuses-a-url-its-store-client-refuses",
+                  "mutation-verdict:behavior:cli-write-refuses-an-empty-target",
+                  "mutation-verdict:behavior:cli-unreadable-row-exits-10",
+                  "mutation-verdict:behavior:cli-every-declared-label-is-sent",
+                  "mutation-verdict:behavior:cli-imports-resolve-outside-the-stores",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

@@ -59,9 +59,13 @@ const copied = (arg: SqlStatement['args'][number]) =>
  * A file URL's path as the client stores it: percent-decoded as the client decodes it, and
  * relative when the URL's is. Undefined for every URL that names no database file: a hosted
  * one, `:memory:`, and an empty path, which SQLite makes a private database of its one
- * connection. The scheme is read case-insensitively, as the client reads it.
+ * connection. The scheme is read case-insensitively, as the client reads it. `rest` is the
+ * query or fragment after the path. Exported so a tool that checks a file before a client
+ * opens it reads the same path the client opens.
  */
-function fileUrlPath(url: string): { path: string; absolute: boolean; rest: string } | undefined {
+export function fileUrlPath(
+  url: string,
+): { path: string; absolute: boolean; rest: string } | undefined {
   const parts = /^file:(?<authority>\/\/[^/?#]*)?(?<path>[^?#]*)(?<rest>[?#].*)?$/is.exec(
     url,
   )?.groups

@@ -17,6 +17,7 @@ ENGINE_SRC_DIRS=(
   packages/conformance/src
   packages/driver/src
   packages/sdk/src
+  packages/cli/src
 )
 ALLOWLIST=(
   packages/core/src/ids.ts          # systemIdSource IS the id/entropy boundary

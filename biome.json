@@ -1,6 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "organizeImports": { "enabled": true },
+  "organizeImports": {
+    "enabled": true
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
@@ -11,7 +13,9 @@
     "enabled": true,
     "rules": {
       "recommended": true,
-      "suspicious": { "noExplicitAny": "error" },
+      "suspicious": {
+        "noExplicitAny": "error"
+      },
       "style": {
         "noNonNullAssertion": "error",
         "noUnusedTemplateLiteral": "off"
@@ -19,7 +23,10 @@
     }
   },
   "javascript": {
-    "formatter": { "quoteStyle": "single", "semicolons": "asNeeded" }
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "asNeeded"
+    }
   },
   "files": {
     "ignore": [
@@ -32,5 +39,39 @@
       "tmp-repro",
       "*.probe-conflict"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "include": ["packages/cli/src/**"],
+      "linter": {
+        "rules": {
+          "nursery": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@durablerun/store-libsql": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns.",
+                  "@durablerun/store-libsql/testing": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns.",
+                  "@durablerun/store-postgres": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns.",
+                  "@durablerun/store-postgres/testing": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns.",
+                  "@durablerun/store-mysql": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns.",
+                  "@durablerun/store-mysql/testing": "Only packages/cli/src/open-store.ts imports a store package: the CLI reaches a store through the typed ports the opener returns."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "include": ["packages/cli/src/open-store.ts"],
+      "linter": {
+        "rules": {
+          "nursery": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
+    }
+  ]
 }

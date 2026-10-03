@@ -309,3 +309,25 @@ export const MIGRATIONS: Migration[] = [
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
+/**
+ * The schema versions this build's reads accept. A read-only tool, such as the operator
+ * CLI, answers against any version in the window and refuses one outside it, and it never
+ * migrates. The window starts at version 5 because the release alpha.1 migrated its
+ * databases to version 5 and nothing later: versions 6 to 10 add indexes, empty versions and
+ * triggers, and no read selects a column that a later version adds. A database recorded
+ * past `newest` was migrated by a newer build and is refused.
+ */
+export const READABLE_SCHEMA_WINDOW = Object.freeze({
+  oldest: 5,
+  newest: CURRENT_SCHEMA_VERSION,
+})
+
+/**
+ * What an operator should know before a migration crosses a version, keyed by that
+ * version, for a tool that migrates, such as the operator CLI, to print first. A database
+ * that was never initialized holds no rows, and a tool may leave the notes out for it.
+ */
+export const SCHEMA_VERSION_NOTES: Readonly<Record<number, string>> = Object.freeze({
+  10: 'version 10 reads every stored event inside its write transaction. On a cold 4.5 GB libSQL file it held the writer for 14.9 seconds, and other connections failed calls meanwhile. Run the finding query of DESIGN.md section 3.4 (schema version 10) first, in a quiet window: it reads the same pages under no write lock, and a row it finds makes version 10 fail.',
+})
