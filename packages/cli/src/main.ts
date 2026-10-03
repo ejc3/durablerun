@@ -25,12 +25,9 @@ import {
   CHILD_HOPS,
   type Diagnosis,
   type Evidence,
-  deepest,
+  answerView,
   diagnose,
-  diagnosisView,
-  pastedLine,
   readUnreadableRow,
-  suggestion,
 } from './explain.js'
 import { factsAreReadable, factsView } from './inspect.js'
 import {
@@ -394,19 +391,15 @@ const checkpoints: Handler = async (context) => {
   if ('exit' in found) return found
   const { queue, taskId } = found
   const attempt = shown === undefined ? MAX_RUN_ORDINAL : Number(shown)
-  const view: Record<string, unknown> = {
-    queue,
-    taskId,
-    attempt: shown === undefined ? null : attempt,
+  const view = { queue, taskId, attempt: shown === undefined ? null : attempt }
+  const rows = await decoded(() => store.scheduler.getCheckpoints(queue, taskId, attempt))
+  if ('refused' in rows) {
+    return unreadable({ ...view, checkpoints: 'unreadable' }, rows.refused, reveal)
   }
-  try {
-    const rows = await store.scheduler.getCheckpoints(queue, taskId, attempt)
-    view.checkpoints = rows.map((row) => checkpointView(row, reveal))
-  } catch (error) {
-    if (!isUnreadableRow(error)) throw error
-    return unreadable({ ...view, checkpoints: 'unreadable' }, error.message, reveal)
+  return {
+    exit: 'done',
+    view: { ...view, checkpoints: rows.value.map((row) => checkpointView(row, reveal)) },
   }
-  return { exit: 'done', view }
 }
 
 /**
@@ -425,6 +418,21 @@ function isUnreadableRow(error: unknown): error is RangeError {
   return error instanceof RangeError && !isPortRefusal(error)
 }
 
+/**
+ * What a read through the store's decoders answered, or the words they refused a stored row
+ * with. Every other error is thrown.
+ */
+async function decoded<T>(
+  read: () => Promise<T>,
+): Promise<{ readonly value: T } | { readonly refused: string }> {
+  try {
+    return { value: await read() }
+  } catch (error) {
+    if (!isUnreadableRow(error)) throw error
+    return { refused: error.message }
+  }
+}
+
 type TaskResult = NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>>
 type ReadTask = { readonly queue: string; readonly taskId: string } & (
   | { readonly result: TaskResult }
@@ -441,14 +449,9 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
   const taskId = invocation.args.taskId ?? ''
   const version = await readableVersion(store)
   if (typeof version !== 'number') return { ...version, view: { queue, taskId, ...version.view } }
-  try {
-    const found = await store.scheduler.getTaskResult(queue, taskId)
-    if (found !== null) return { queue, taskId, result: found }
-  } catch (error) {
-    if (!isUnreadableRow(error)) throw error
-    return { queue, taskId, unreadable: error.message }
-  }
-  return noSuchTask(queue, taskId)
+  const found = await decoded(() => store.scheduler.getTaskResult(queue, taskId))
+  if ('refused' in found) return { queue, taskId, unreadable: found.refused }
+  return found.value === null ? noSuchTask(queue, taskId) : { queue, taskId, result: found.value }
 }
 
 /** The answer for a task the queue does not hold. `message` quotes no value a user wrote. */
@@ -516,12 +519,8 @@ async function checkpointCount(
   queue: string,
   taskId: string,
 ): Promise<number | 'unreadable'> {
-  try {
-    return (await store.scheduler.getCheckpoints(queue, taskId, MAX_RUN_ORDINAL)).length
-  } catch (error) {
-    if (!isUnreadableRow(error)) throw error
-    return 'unreadable'
-  }
+  const rows = await decoded(() => store.scheduler.getCheckpoints(queue, taskId, MAX_RUN_ORDINAL))
+  return 'refused' in rows ? 'unreadable' : rows.value.length
 }
 
 /**
@@ -568,25 +567,18 @@ const explain: Handler = async (context) => {
   const found = await explained(context.store, queue, taskId, 0)
   if (found === null) return noSuchTask(queue, taskId)
   const { facts, diagnosis } = found
-  const last = deepest(diagnosis)
-  const argv = suggestion(last, queue)
   return {
     exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',
     holdsFacts: true,
     view: {
       queue,
-      ...diagnosisView(diagnosis),
+      ...answerView(diagnosis, queue),
       databaseNowEpochMs: facts.nowMs,
       fakeClock: facts.fakeClock,
-      // The cause at the end of the awaits that were followed, when there is one.
-      ...(last === diagnosis
-        ? {}
-        : { deepest: { taskId: last.taskId, cause: last.cause, verdict: last.verdict } }),
       // An ended task's outcome, rendered as `result` renders it.
       ...(isTerminalState(facts.task.state) && 'result' in facts.outcome
         ? { outcome: resultView(facts.outcome.result, context.reveal) }
         : {}),
-      next: argv === null ? null : { argv, command: pastedLine(argv) },
     },
   }
 }

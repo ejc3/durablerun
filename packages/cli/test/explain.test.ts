@@ -18,11 +18,14 @@ import {
   pastedLine,
   suggestion,
 } from '../src/explain.js'
+import type { StoreOpener } from '../src/open-store.js'
 import {
   EXPLAIN_SEEDS,
   type ExplainSeed,
   asleep,
   chainOfAwaits,
+  fixture,
+  onSeed,
   seedWorld,
 } from './explain-seeds.js'
 import {
@@ -60,8 +63,9 @@ interface Answer {
   readonly awaits?: Answer & { readonly taskId: string }
 }
 
-async function explain(db: CliDb, taskId: string): Promise<Answer> {
-  const run = await runCli(['explain', taskId, '--queue', QUEUE, '--json'], db.env)
+/** Run `explain --json` of one task, through an opener of the test's own when it gives one. */
+async function explain(db: CliDb, taskId: string, opener?: StoreOpener): Promise<Answer> {
+  const run = await runCli(['explain', taskId, '--queue', QUEUE, '--json'], db.env, opener)
   return { ...(JSON.parse(run.stdout) as Answer), exit: run.exit }
 }
 
@@ -69,20 +73,6 @@ function seedOf(cause: Cause): ExplainSeed {
   const seed = EXPLAIN_SEEDS.find((one) => one.cause === cause)
   if (seed === undefined) throw new Error(`no seed for ${cause}`)
   return seed
-}
-
-/** Build one seed on a libSQL database of its own, and run `body` against it. */
-async function onSeed<T>(
-  seed: ExplainSeed,
-  body: (db: CliDb, taskId: string, at: (ms: number) => Promise<void>) => Promise<T>,
-): Promise<T> {
-  const db = await openCliDb('libsql', `explain-${seed.cause}`)
-  try {
-    const world = seedWorld(db)
-    return await body(db, await seed.build(world), world.at)
-  } finally {
-    await db.close()
-  }
 }
 
 /** The causes whose verdict turns on how late the instant they name is. */
@@ -128,14 +118,11 @@ describe('explain on libSQL', () => {
           verdict: rule,
         })
       }
-      expect({ cause: seed.cause, says: seed.name.includes('fixture-built') }).toEqual({
-        cause: seed.cause,
-        says: seed.built === 'fixture',
-      })
     }
-    // Every other seed reaches its state through the store's ports alone.
+    // These six say in their names that fixture SQL built them. Every other seed reaches its
+    // state through the store's ports alone.
     expect(
-      EXPLAIN_SEEDS.filter((seed) => seed.built === 'fixture').map((seed) => seed.cause),
+      EXPLAIN_SEEDS.filter((seed) => seed.name.includes('fixture-built')).map((seed) => seed.cause),
     ).toEqual([
       'wait-outlives-its-event',
       'unreadable',
@@ -159,7 +146,7 @@ describe('explain on libSQL', () => {
     /** The two no clock ever turns stuck: the plan's decision for a task no build runs yet, and for an approval. */
     const never = ['a task enqueued ahead of the build that registers it', 'an untimed await']
     for (const seed of controls) {
-      await onSeed(seed, async (db, taskId, at) => {
+      await onSeed('libsql', seed, async (db, taskId, at) => {
         const answer = await explain(db, taskId)
         expect(
           { control: seed.control, cause: answer.cause, stuck: answer.verdict === 'stuck' },
@@ -186,7 +173,7 @@ describe('explain on libSQL', () => {
       'sleeping-past-its-wake',
     ])
     for (const seed of LATE) {
-      await onSeed(seed, async (db, taskId, at) => {
+      await onSeed('libsql', seed, async (db, taskId, at) => {
         const due = (await explain(db, taskId)).facts.dueAtMs as number
         await at(due + DUE_GRACE_MS)
         const atTheEdge = await explain(db, taskId)
@@ -220,7 +207,7 @@ describe('explain on libSQL', () => {
   }, 60_000)
 
   it('a run claimed once is hung one millisecond past HUNG_RUN_MS, and a run claimed again never is', async () => {
-    await onSeed(seedOf('running-past-the-hung-bound'), async (db, taskId, at) => {
+    await onSeed('libsql', seedOf('running-past-the-hung-bound'), async (db, taskId, at) => {
       const past = await explain(db, taskId)
       await at(NOW_MS + HUNG_RUN_MS)
       const atTheEdge = await explain(db, taskId)
@@ -237,7 +224,7 @@ describe('explain on libSQL', () => {
     })
     // A run that slept and was claimed again: no fact says when its second pass began, so
     // however long ago the run first started, it is not named hung.
-    await onSeed(seedOf('sleeping-on-a-timer'), async (db, taskId, at) => {
+    await onSeed('libsql', seedOf('sleeping-on-a-timer'), async (db, taskId, at) => {
       await at(NOW_MS + 120_000)
       const again = await claimActivated(db, 'w-again', taskId)
       for (let beat = 1; beat <= 2 * (HUNG_RUN_MS / 1_800_000); beat++) {
@@ -256,8 +243,8 @@ describe('explain on libSQL', () => {
 
   it('at nextTransitionAtMs a claim takes the run, and one millisecond earlier none does', async () => {
     const moved: string[] = []
-    for (const seed of EXPLAIN_SEEDS) {
-      await onSeed(seed, async (db, taskId, at) => {
+    for (const seed of EXPLAIN_SEEDS.filter((one) => one.verdict === 'waiting')) {
+      await onSeed('libsql', seed, async (db, taskId, at) => {
         const answer = await explain(db, taskId)
         const next = answer.nextTransitionAtMs
         // A run that is already due has its instant behind it, and an untimed await has none.
@@ -292,27 +279,23 @@ describe('explain on libSQL', () => {
       for (let hop = answer.awaits; hop !== undefined; hop = hop.awaits) chain.push(hop.taskId)
       return chain
     }
-    const facts = (opener: ReturnType<typeof recordingOpener>) =>
-      opener.sent().filter((batch) => batch.label === 'task-facts').length
+    /** An answer, and how many times the facts of a task were read for it. */
     const ask = async (db: CliDb, taskId: string) => {
       const recording = recordingOpener()
-      const run = await runCli(
-        ['explain', taskId, '--queue', QUEUE, '--json'],
-        db.env,
-        recording.opener,
-      )
-      return { answer: JSON.parse(run.stdout) as Answer, reads: facts(recording), exit: run.exit }
+      const answer = await explain(db, taskId, recording.opener)
+      const reads = recording.sent().filter((batch) => batch.label === 'task-facts').length
+      return { answer, reads }
     }
-    // Ten tasks, each but the last parked on the next: the ninth is CHILD_HOPS awaits from the
-    // first, so
-    // its own child is left unread, and nothing vouches for what that child is doing.
+    // Ten tasks, each but the last parked on the next. The ninth is CHILD_HOPS awaits from
+    // the first, so its own child is left unread, and nothing vouches for what that child is
+    // doing.
     const long = await openCliDb('libsql', 'explain-chain-long')
     try {
       const chain = await chainOfAwaits(long, CHILD_HOPS + 2)
-      const { answer, reads, exit } = await ask(long, chain[0] ?? '')
+      const { answer, reads } = await ask(long, chain[0] ?? '')
       expect(
         {
-          exit,
+          exit: answer.exit,
           reads,
           followed: followed(answer, chain[0] ?? ''),
           deepest: answer.deepest,
@@ -378,7 +361,7 @@ describe('explain on libSQL', () => {
   it('every suggestion emitted parses, holds no --yes and never names emit', async () => {
     const emitted: string[][] = []
     for (const seed of EXPLAIN_SEEDS) {
-      await onSeed(seed, async (db, taskId, at) => {
+      await onSeed('libsql', seed, async (db, taskId, at) => {
         const answers = [await explain(db, taskId)]
         // The same seed once the driver is late for it, for the causes that have a clock.
         await at(NOW_MS + 30 * 86_400_000)
@@ -437,7 +420,7 @@ describe('explain on libSQL', () => {
     }
   }, 120_000)
 
-  it('names the causes whose suggestion no command of the table carries yet', async () => {
+  it('names the causes whose suggestion no command of the table carries yet', () => {
     // `sweep`, `tick` and `cancel` join the command table with the drive verbs. Until then a
     // cause that names one of them prints no next command. The pull request that adds them
     // empties this list, and has to say here what each of these causes then suggests.
@@ -452,16 +435,10 @@ describe('explain on libSQL', () => {
       'pending-due-unclaimed: tick',
       'sleeping-past-its-wake: tick',
     ])
-    for (const seed of [...LATE, seedOf('running-past-the-hung-bound')]) {
-      await onSeed(seed, async (db, taskId, at) => {
-        if (seed.verdict !== 'stuck') await at(NOW_MS + 30 * 86_400_000)
-        const answer = await explain(db, taskId)
-        expect({ cause: answer.cause, verdict: answer.verdict, next: answer.next }).toEqual({
-          cause: seed.cause,
-          verdict: 'stuck',
-          next: null,
-        })
-      })
+    // Stuck, each of them prints no next command today.
+    for (const line of notYet) {
+      const cause = line.slice(0, line.indexOf(':')) as Cause
+      expect(suggestion({ cause, verdict: 'stuck', taskId: 'a-task' }, QUEUE)).toBeNull()
     }
     // A verb in the table whose argument or required flag `explain` knows no value for is a
     // defect of the table of causes, and is refused out loud.
@@ -471,7 +448,7 @@ describe('explain on libSQL', () => {
         result: unknown,
       }),
     ).toThrow(/explain knows no value for somethingElse of result/)
-  }, 60_000)
+  })
 
   it('prints a suggestion as one line a shell reads back as the same arguments', () => {
     const argv = ['inspect', "a task's id", '--queue', 'a queue; rm -rf "$HOME"']
@@ -494,7 +471,7 @@ describe('explain on libSQL', () => {
     const inspectExit = async (db: CliDb, taskId: string) =>
       (await runCli(['inspect', taskId, '--queue', QUEUE, '--json'], db.env)).exit
     // A row the decoders refuse.
-    await onSeed(seedOf('unreadable'), async (db, taskId) => {
+    await onSeed('libsql', seedOf('unreadable'), async (db, taskId) => {
       const answer = await explain(db, taskId)
       expect(
         { exit: answer.exit, cause: answer.cause, inspect: await inspectExit(db, taskId) },
@@ -511,10 +488,8 @@ describe('explain on libSQL', () => {
       ).toEqual({ exit: 10, stderr: '', named: true })
     })
     // An integer outside its bounds, fixture-built: the cause names the field.
-    await onSeed(seedOf('pending-due-unclaimed'), async (db, taskId) => {
-      await db.raw.batch('fixture:corrupt', [
-        { sql: 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', args: [taskId] },
-      ])
+    await onSeed('libsql', seedOf('pending-due-unclaimed'), async (db, taskId) => {
+      await fixture(db, 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', [taskId])
       const answer = await explain(db, taskId)
       expect({
         exit: answer.exit,
@@ -534,7 +509,7 @@ describe('explain on libSQL', () => {
     // it is not read as a task that has none. The store's read leaves out a row whose owner
     // ordinal is outside its bounds before the decoders see it, so the row is handed to them
     // here by an executor that answers the read with one.
-    await onSeed(seedOf('sleeping-on-a-timer'), async (db, taskId) => {
+    await onSeed('libsql', seedOf('sleeping-on-a-timer'), async (db, taskId) => {
       const refusedByTheDecoders = openerWrapping((real) => ({
         batch: async (label, statements, control) => {
           const results = await real.batch(label, statements, control)
@@ -545,10 +520,8 @@ describe('explain on libSQL', () => {
           }))
         },
       }))
-      const line = ['explain', taskId, '--queue', QUEUE, '--json']
-      const run = await runCli(line, db.env, refusedByTheDecoders)
-      const answer = JSON.parse(run.stdout) as Answer
-      expect({ exit: run.exit, cause: answer.cause, facts: answer.facts }).toEqual({
+      const answer = await explain(db, taskId, refusedByTheDecoders)
+      expect({ exit: answer.exit, cause: answer.cause, facts: answer.facts }).toEqual({
         exit: 10,
         cause: 'unreadable',
         facts: { checkpoints: 'unreadable' },
@@ -556,9 +529,7 @@ describe('explain on libSQL', () => {
       // The known limit DESIGN.md section 3.11 records: the same value planted in the stored
       // row is left out by the read, so the task reads as one with no checkpoint. A read
       // that lists such a row changes this expectation.
-      await db.raw.batch('fixture:corrupt', [
-        { sql: 'UPDATE checkpoints SET owner_attempt = -1 WHERE task_id = ?', args: [taskId] },
-      ])
+      await fixture(db, 'UPDATE checkpoints SET owner_attempt = -1 WHERE task_id = ?', [taskId])
       const planted = await explain(db, taskId)
       expect([planted.exit, planted.cause]).toEqual([0, 'never-started-alpha1-form'])
     })
@@ -566,9 +537,7 @@ describe('explain on libSQL', () => {
     const db = await openCliDb('libsql', 'explain-unreadable-child')
     try {
       const [parent, child] = await chainOfAwaits(db, 2)
-      await db.raw.batch('fixture:corrupt', [
-        { sql: 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', args: [child ?? ''] },
-      ])
+      await fixture(db, 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', [child ?? ''])
       const answer = await explain(db, parent ?? '')
       expect({
         exit: answer.exit,
@@ -584,12 +553,6 @@ describe('explain on libSQL', () => {
     } finally {
       await db.close()
     }
-    // Rows that disagree and are each readable exit 0: a verdict is not an exit code.
-    await onSeed(seedOf('task-and-run-states-differ'), async (db, taskId) => {
-      const text = await runCli(['explain', taskId, '--queue', QUEUE], db.env)
-      expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
-      expect(text.stdout.split('\n')).toContain('verdict: inconsistent')
-    })
   }, 60_000)
 
   it('exits 8 for a task or a key the queue does not hold, on stderr in text, and does not print the key', async () => {

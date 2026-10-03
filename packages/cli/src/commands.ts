@@ -90,15 +90,23 @@ const READ_FLAGS = {
   },
 } as const satisfies Record<string, FlagSpec>
 
-/** The flags of a read that names its task by an id or by an idempotency key. */
-const TASK_OR_KEY_FLAGS = {
-  ...READ_FLAGS,
-  key: {
-    type: 'string',
-    value: 'K',
-    description: 'the idempotency key the task was spawned under, in place of its id',
+/**
+ * How a read names its task: by its id, or by the idempotency key it was spawned under in
+ * place of the id. The flag and the pairing that gives it its meaning are one definition, so
+ * a command cannot take the flag and still require the id.
+ */
+const BY_ID_OR_KEY = {
+  positionals: ['taskId'],
+  alternative: { positional: 'taskId', flag: 'key' },
+  flags: {
+    ...READ_FLAGS,
+    key: {
+      type: 'string',
+      value: 'K',
+      description: 'the idempotency key the task was spawned under, in place of its id',
+    },
   },
-} as const satisfies Record<string, FlagSpec>
+} as const satisfies Pick<CommandSpec, 'positionals' | 'alternative' | 'flags'>
 
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
@@ -114,6 +122,9 @@ const READ_FAULTS = {
 } as const satisfies Record<CliFault, ExitName>
 
 const STORE_EXITS = ['done', 'usage', 'schema', 'unavailable', 'permanent'] as const
+
+/** The exits of a read that names one task. */
+const TASK_READ_EXITS = [...STORE_EXITS, 'refused', 'not-found', 'unreadable'] as const
 
 export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
   help: {
@@ -179,7 +190,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     writes: false,
     repeat: 'read',
     ports: [SCHEMA_VERSION, TASK_RESULT],
-    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    exits: TASK_READ_EXITS,
     faults: READ_FAULTS,
   },
   checkpoints: {
@@ -198,36 +209,32 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     writes: false,
     repeat: 'read',
     ports: [SCHEMA_VERSION, TASK_RESULT, CHECKPOINTS],
-    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    exits: TASK_READ_EXITS,
     faults: READ_FAULTS,
   },
   inspect: {
     verb: 'inspect',
     summary:
       'one snapshot of a task: its row, its outcome, its runs, its waits, and the events they name',
-    positionals: ['taskId'],
-    alternative: { positional: 'taskId', flag: 'key' },
-    flags: TASK_OR_KEY_FLAGS,
+    ...BY_ID_OR_KEY,
     opensStore: true,
     writes: false,
     repeat: 'read',
     ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS],
-    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    exits: TASK_READ_EXITS,
     faults: READ_FAULTS,
   },
   explain: {
     verb: 'explain',
     summary:
       'why a task is where it is: one cause from a closed table, a verdict, and the facts behind it',
-    positionals: ['taskId'],
-    alternative: { positional: 'taskId', flag: 'key' },
-    flags: TASK_OR_KEY_FLAGS,
+    ...BY_ID_OR_KEY,
     opensStore: true,
     writes: false,
     repeat: 'read',
     // The checkpoints are read only for a started run parked on a timer and no event.
     ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS],
-    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    exits: TASK_READ_EXITS,
     faults: READ_FAULTS,
   },
 } satisfies Record<Verb, CommandSpec>)

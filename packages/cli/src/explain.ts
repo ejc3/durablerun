@@ -230,7 +230,7 @@ interface Found {
   readonly cause: Cause
   /** The instant the cause turns on: when the run came due, or when it next may move. */
   readonly at?: number | null
-  readonly facts?: Readonly<Record<string, unknown>>
+  readonly facts: Readonly<Record<string, unknown>>
 }
 
 /** One cause's condition: what it found, the evidence it turns on, or null when it declines. */
@@ -264,12 +264,15 @@ const unreadableArm: Arm = ({ facts }) =>
         },
       }
 
-const liveRunUnderATerminalTaskArm: Arm = ({ facts, live }) =>
-  isTerminalState(facts.task.state) && live.length > 0
-    ? {
-        cause: 'terminal-task-with-a-live-run',
-        facts: { taskState: facts.task.state, liveRuns: live.map((run) => run.runId) },
-      }
+/** A task's state and its live runs, which a cause names when the two do not fit together. */
+const liveRuns = ({ facts, live }: View) => ({
+  taskState: facts.task.state,
+  liveRuns: live.map((run) => run.runId),
+})
+
+const liveRunUnderATerminalTaskArm: Arm = (view) =>
+  isTerminalState(view.facts.task.state) && view.live.length > 0
+    ? { cause: 'terminal-task-with-a-live-run', facts: liveRuns(view) }
     : null
 
 /** A task's attempts and its budget, which every ended task's cause names. */
@@ -315,12 +318,9 @@ const failedWithNoRetryArm: Arm = ({ facts }) => {
     : null
 }
 
-const notOneLiveRunArm: Arm = ({ facts, live }) =>
-  isLiveState(facts.task.state) && live.length !== 1
-    ? {
-        cause: 'live-task-without-one-live-run',
-        facts: { taskState: facts.task.state, liveRuns: live.map((run) => run.runId) },
-      }
+const notOneLiveRunArm: Arm = (view) =>
+  isLiveState(view.facts.task.state) && view.live.length !== 1
+    ? { cause: 'live-task-without-one-live-run', facts: liveRuns(view) }
     : null
 
 const statesDifferArm: RunArm = ({ facts }, run) =>
@@ -609,30 +609,28 @@ function verdictOf(rule: Rule, lateMs: number | null, child: ChildEvidence | und
  * The answer for facts no arm takes is `unexplained`.
  */
 export function diagnose(facts: TaskFacts, evidence: Evidence = {}): Diagnosis | Needed {
-  const live = facts.runs.filter((run) => isLiveState(run.state))
-  const found = firstFound({ facts, evidence, live }) ?? {
+  const view: View = { facts, evidence, live: facts.runs.filter((run) => isLiveState(run.state)) }
+  const found: Found | Needed = firstFound(view) ?? {
     cause: 'unexplained',
-    facts: { taskState: facts.task.state, liveRuns: live.map((run) => run.runId) },
+    facts: liveRuns(view),
   }
   if ('needs' in found) return found
   const at = found.at ?? null
   const lateMs = at === null || facts.nowMs === null ? null : facts.nowMs - at
   const rule: Rule = CAUSES[found.cause].verdict
   const verdict = verdictOf(rule, lateMs, evidence.child)
-  const child = typeof evidence.child === 'object' ? { child: evidence.child } : {}
   return {
     taskId: facts.task.taskId,
     cause: found.cause,
     verdict,
     nextTransitionAtMs: verdict === 'waiting' ? at : null,
-    facts:
-      rule === 'late' ? { ...found.facts, dueAtMs: at, lateByMs: lateMs } : (found.facts ?? {}),
-    ...(found.cause === 'awaiting-a-child' ? child : {}),
+    facts: rule === 'late' ? { ...found.facts, dueAtMs: at, lateByMs: lateMs } : found.facts,
+    ...(rule === 'child' && typeof evidence.child === 'object' ? { child: evidence.child } : {}),
   }
 }
 
 /** The diagnosis at the end of a chain of awaited children: the task's own when it awaits none. */
-export function deepest(diagnosis: Diagnosis): Diagnosis {
+function deepest(diagnosis: Diagnosis): Diagnosis {
   return diagnosis.child === undefined ? diagnosis : deepest(diagnosis.child)
 }
 
@@ -680,7 +678,7 @@ export const pastedLine = (argv: readonly string[]): string =>
   `pnpm cli ${argv.map(shellWord).join(' ')}`
 
 /** What `explain` prints of a diagnosis, and of each child it followed, under `awaits`. */
-export function diagnosisView(diagnosis: Diagnosis): Record<string, unknown> {
+function diagnosisView(diagnosis: Diagnosis): Record<string, unknown> {
   return {
     taskId: diagnosis.taskId,
     cause: diagnosis.cause,
@@ -689,6 +687,23 @@ export function diagnosisView(diagnosis: Diagnosis): Record<string, unknown> {
     nextTransitionAtMs: diagnosis.nextTransitionAtMs,
     facts: diagnosis.facts,
     ...(diagnosis.child === undefined ? {} : { awaits: diagnosisView(diagnosis.child) }),
+  }
+}
+
+/**
+ * What `explain` prints of the task it was asked about: its diagnosis, the cause at the end
+ * of the awaits that were followed, when one was, and the next command, which is the one
+ * for that last task.
+ */
+export function answerView(diagnosis: Diagnosis, queue: string): Record<string, unknown> {
+  const last = deepest(diagnosis)
+  const argv = suggestion(last, queue)
+  return {
+    ...diagnosisView(diagnosis),
+    ...(last === diagnosis
+      ? {}
+      : { deepest: { taskId: last.taskId, cause: last.cause, verdict: last.verdict } }),
+    next: argv === null ? null : { argv, command: pastedLine(argv) },
   }
 }
 

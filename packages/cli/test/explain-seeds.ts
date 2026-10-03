@@ -1,13 +1,21 @@
 import { RELAUNCH_CAP } from '@durablerun/core'
 import { runClaimedRun } from '@durablerun/sdk'
 import { type Cause, HUNG_RUN_MS, type Verdict } from '../src/explain.js'
-import { type CliDb, NOW_MS, QUEUE, REFUSING_CLOCK, claimActivated } from './support.js'
+import {
+  type CliDb,
+  NOW_MS,
+  QUEUE,
+  REFUSING_CLOCK,
+  claimActivated,
+  openCliDb,
+  seedRefused,
+} from './support.js'
 
 /**
- * One seed for every cause of `explain`'s table (exit test line 36). A seed built by
- * `engine` reaches its state through the store's ports alone, under the test clock, as a
- * deployment does. A seed built by `fixture` is fixture-built: raw SQL writes a row no
- * engine path writes, after the ports took the task as far as they go.
+ * One seed for every cause of `explain`'s table (exit test line 36). A seed reaches its
+ * state through the store's ports alone, under the test clock, as a deployment does, unless
+ * its name says it is fixture-built: then raw SQL writes a row no engine path writes, after
+ * the ports took the task as far as they go.
  */
 
 /** A test database and its clock, which every database of these tests starts at NOW_MS. */
@@ -22,12 +30,12 @@ export interface ExplainSeed {
   readonly verdict: Verdict
   /** What the seed is, as its case is titled. A fixture-built seed says so. */
   readonly name: string
-  readonly built: 'engine' | 'fixture'
   /** Which of line 36's six healthy controls the seed is, for those that are one. */
   readonly control?: string
   /**
-   * The verdict marker of the registered mutation that deletes the cause's arm. A literal,
-   * because the mutation audit reads it from this source.
+   * The verdict marker of the registered mutation that deletes the cause's arm, or for
+   * `unexplained`, of the one that answers a healthy cause when no arm takes the facts. A
+   * literal, because the mutation audit reads it from this source.
    */
   readonly marker: string
   /** Build the state and answer the task to explain. */
@@ -36,6 +44,21 @@ export interface ExplainSeed {
 
 export function seedWorld(db: CliDb): SeedWorld {
   return { db, at: (ms) => db.admin.setFakeNowEpochMs(ms) }
+}
+
+/** Build one seed on a database of its own, of one dialect, and run `body` against it. */
+export async function onSeed<T>(
+  dialect: CliDb['dialect'],
+  seed: ExplainSeed,
+  body: (db: CliDb, taskId: string, at: SeedWorld['at']) => Promise<T>,
+): Promise<T> {
+  const db = await openCliDb(dialect, `explain-${seed.cause}`)
+  try {
+    const world = seedWorld(db)
+    return await body(db, await seed.build(world), world.at)
+  } finally {
+    await db.close()
+  }
 }
 
 type SpawnOptions = Parameters<CliDb['store']['spawn']>[3]
@@ -115,7 +138,8 @@ export async function chainOfAwaits(db: CliDb, length: number): Promise<string[]
   return chain
 }
 
-const fixture = (db: CliDb, sql: string, args: (string | number)[]) =>
+/** Fixture SQL: one statement that writes what no engine path writes. */
+export const fixture = (db: CliDb, sql: string, args: (string | number)[]) =>
   db.raw.batch('fixture:explain-seed', [{ sql, args }])
 
 export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
@@ -123,7 +147,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'completed',
     verdict: 'ok',
     name: 'a task its worker completed',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-completed',
     build: async ({ db }) => {
       const { taskId, run } = await started(db)
@@ -135,7 +158,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'cancelled',
     verdict: 'ok',
     name: 'a task cancelled before it started',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-cancelled',
     build: async ({ db }) => {
       const task = await spawn(db)
@@ -147,7 +169,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'failed-by-an-engine-reason',
     verdict: 'ok',
     name: 'a task the sweep failed at the relaunch cap, after every launch of it was lost',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-failed-by-an-engine-reason',
     build: async ({ db, at }) => {
       const task = await spawn(db)
@@ -168,7 +189,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'failed-attempts-exhausted',
     verdict: 'ok',
     name: 'a task whose code failed on the one attempt it had',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-failed-attempts-exhausted',
     build: async ({ db }) => {
       const { taskId, run } = await started(db, { maxAttempts: 1 })
@@ -180,7 +200,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'failed-with-no-retry',
     verdict: 'ok',
     name: 'a task whose worker failed it for good on the first of three attempts',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-failed-with-no-retry',
     build: async ({ db }) => {
       const { taskId, run } = await started(db, { maxAttempts: 3 })
@@ -192,7 +211,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'cancellation-deadline-passed',
     verdict: 'waiting',
     name: 'a task at its start deadline, which no sweep has cancelled',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-cancellation-deadline-passed',
     build: async ({ db, at }) => {
       const task = await spawn(db, 'job', {
@@ -207,7 +225,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'lease-lapsed-unswept',
     verdict: 'waiting',
     name: 'a started run at the end of its lease, which no sweep has taken back',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-lease-lapsed-unswept',
     build: async ({ db, at }) => {
       const { taskId } = await started(db)
@@ -219,7 +236,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'running-past-the-hung-bound',
     verdict: 'stuck',
     name: 'a run its worker has kept alive for a millisecond more than the hung-run bound',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-running-past-the-hung-bound',
     build: async ({ db, at }) => {
       const { taskId, run } = await started(db)
@@ -235,7 +251,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'running-under-a-live-lease',
     verdict: 'ok',
     name: 'a run under a lease its worker extended',
-    built: 'engine',
     control: 'a live lease',
     marker: 'mutation-verdict:behavior:cli-explain-arm-running-under-a-live-lease',
     build: async ({ db, at }) => {
@@ -251,7 +266,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'pending-delayed',
     verdict: 'waiting',
     name: 'a task enqueued with a start an hour off',
-    built: 'engine',
     control: 'a start delay',
     marker: 'mutation-verdict:behavior:cli-explain-arm-pending-delayed',
     build: async ({ db }) => (await spawn(db, 'job', { startDelaySeconds: 3600 })).taskId,
@@ -260,7 +274,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'woken-unclaimed',
     verdict: 'waiting',
     name: 'a run an emitted event woke, which no claim has taken',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-woken-unclaimed',
     build: async ({ db, at }) => {
       const taskId = await parkedOnAnEvent(db, null)
@@ -273,7 +286,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'pending-due-unclaimed',
     verdict: 'waiting',
     name: 'a task enqueued a moment ago, which no claim has taken',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-pending-due-unclaimed',
     build: async ({ db }) => (await spawn(db)).taskId,
   },
@@ -281,7 +293,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'never-started',
     verdict: 'waiting',
     name: 'a task enqueued ahead of the build that registers it, which a real worker with no handler for it deferred',
-    built: 'engine',
     control: 'a task enqueued ahead of the build that registers it',
     marker: 'mutation-verdict:behavior:cli-explain-arm-never-started',
     build: async ({ db }) => {
@@ -300,7 +311,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'wait-outlives-its-event',
     verdict: 'inconsistent',
     name: 'a run parked on an event whose row is then planted, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-arm-wait-outlives-its-event',
     build: async ({ db }) => {
       const taskId = await parkedOnAnEvent(db, null)
@@ -317,7 +327,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'never-started-alpha1-form',
     verdict: 'waiting',
     name: 'a run started and then rescheduled 15 seconds on with no checkpoint, the two port calls the alpha.1 worker makes for a task name it has no handler for',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-never-started-alpha1-form',
     build: async ({ db }) => {
       const { taskId, run } = await started(db)
@@ -329,7 +338,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'sleeping-past-its-wake',
     verdict: 'waiting',
     name: 'a sleeping run at its wake, which no claim has taken',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-sleeping-past-its-wake',
     build: async ({ db, at }) => {
       const taskId = await asleep(db, 120)
@@ -341,7 +349,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'awaiting-a-child',
     verdict: 'waiting',
     name: 'a parent parked on a child that is due and unclaimed',
-    built: 'engine',
     marker: 'mutation-verdict:behavior:cli-explain-arm-awaiting-a-child',
     build: async ({ db }) => (await chainOfAwaits(db, 2))[0] ?? '',
   },
@@ -349,7 +356,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'awaiting-a-timed-event',
     verdict: 'waiting',
     name: 'a run parked on an event inside its timeout',
-    built: 'engine',
     control: 'a timed await inside its timeout',
     marker: 'mutation-verdict:behavior:cli-explain-arm-awaiting-a-timed-event',
     build: async ({ db }) => parkedOnAnEvent(db, 300),
@@ -358,7 +364,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'awaiting-an-untimed-event',
     verdict: 'waiting',
     name: 'a run parked on an event with no timeout',
-    built: 'engine',
     control: 'an untimed await',
     marker: 'mutation-verdict:behavior:cli-explain-arm-awaiting-an-untimed-event',
     build: async ({ db }) => parkedOnAnEvent(db, null),
@@ -367,7 +372,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'sleeping-on-a-timer',
     verdict: 'waiting',
     name: 'a run its code put to sleep for two minutes',
-    built: 'engine',
     control: 'a sleep',
     marker: 'mutation-verdict:behavior:cli-explain-arm-sleeping-on-a-timer',
     build: async ({ db }) => asleep(db, 120),
@@ -376,20 +380,13 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'unreadable',
     verdict: 'inconsistent',
     name: 'a completed task whose payload is then set to NULL, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-arm-unreadable',
-    build: async ({ db }) => {
-      const { taskId, run } = await started(db)
-      await db.store.complete(QUEUE, run.runId, run.claimToken, '{}')
-      await fixture(db, 'UPDATE tasks SET completed_payload = NULL WHERE task_id = ?', [taskId])
-      return taskId
-    },
+    build: ({ db }) => seedRefused(db),
   },
   {
     cause: 'terminal-task-with-a-live-run',
     verdict: 'inconsistent',
     name: 'a completed task whose run is then set back to pending, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-arm-terminal-task-with-a-live-run',
     build: async ({ db }) => {
       const { taskId, run } = await started(db)
@@ -402,7 +399,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'live-task-without-one-live-run',
     verdict: 'inconsistent',
     name: 'a pending task whose one run is then set to cancelled, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-arm-live-task-without-one-live-run',
     build: async ({ db }) => {
       const task = await spawn(db)
@@ -414,7 +410,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'task-and-run-states-differ',
     verdict: 'inconsistent',
     name: 'a pending run whose task is then set to sleeping, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-arm-task-and-run-states-differ',
     build: async ({ db }) => {
       const task = await spawn(db)
@@ -426,7 +421,6 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     cause: 'unexplained',
     verdict: 'unexplained',
     name: 'a sleeping run whose wake instant is then set to NULL with no event to wait on, fixture-built',
-    built: 'fixture',
     marker: 'mutation-verdict:behavior:cli-explain-answers-unexplained-by-default',
     build: async ({ db }) => {
       const taskId = await asleep(db, 120)

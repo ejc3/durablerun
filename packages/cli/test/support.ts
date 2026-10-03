@@ -559,23 +559,26 @@ export async function plantNullPayload(db: CliDb): Promise<void> {
   ])
 }
 
-/** The command lines whose answers must match on every dialect, for one seeded database. */
+/**
+ * The command lines whose answers must match on every dialect, for one seeded database. The
+ * command table says which reads there are: each read that names a task runs for every
+ * seeded task and for one the queue does not hold, and each that takes an idempotency key
+ * in place of the id runs by the key as well. So a read joins the comparison by joining
+ * the table.
+ */
 export function comparedLines(
   seeded: SeededTasks & Partial<SeededSagas> & { readonly refused?: string },
 ): string[][] {
+  const reads = STORE_COMMANDS.filter((spec) => !spec.writes)
   const lines: string[][] = [['doctor', '--queue', QUEUE, '--json']]
   for (const taskId of [...Object.values(seeded), 'no-such-task']) {
-    lines.push(['result', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['result', taskId, '--queue', QUEUE, '--json', '--reveal'])
-    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json', '--reveal'])
-    lines.push(['inspect', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['inspect', taskId, '--queue', QUEUE, '--json', '--reveal'])
-    lines.push(['explain', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['explain', taskId, '--queue', QUEUE, '--json', '--reveal'])
+    for (const { verb } of reads.filter((spec) => spec.positionals.includes('taskId'))) {
+      lines.push([verb, taskId, '--queue', QUEUE, '--json'])
+      lines.push([verb, taskId, '--queue', QUEUE, '--json', '--reveal'])
+    }
   }
   lines.push(['checkpoints', seeded.completed, '--queue', QUEUE, '--json', '--attempt', '1'])
-  for (const verb of ['inspect', 'explain']) {
+  for (const { verb } of reads.filter((spec) => spec.alternative?.flag === 'key')) {
     lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
     lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
     lines.push([verb, '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])

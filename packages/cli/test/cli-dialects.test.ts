@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import type { SchemaVersionNotes } from '../src/open-store.js'
-import { EXPLAIN_SEEDS, seedWorld } from './explain-seeds.js'
+import { EXPLAIN_SEEDS, onSeed } from './explain-seeds.js'
 import {
   QUEUE,
   SELECTED,
@@ -172,33 +172,32 @@ describe('the CLI on every selected dialect', () => {
       // Exit test line 36: one seed for every cause of the table, each on every dialect.
       describe('explain names the seeded cause', () => {
         for (const seed of EXPLAIN_SEEDS) {
-          it(`${seed.cause}: ${seed.name}`, async () => {
-            const db = await openCliDb(dialect, 'explain-seed')
-            try {
-              const taskId = await seed.build(seedWorld(db))
-              const line = ['explain', taskId, '--queue', QUEUE]
-              const run = await runCli([...line, '--json'], db.env)
-              const answer = JSON.parse(run.stdout) as { cause?: string; verdict?: string }
-              expect({ cause: answer.cause, verdict: answer.verdict }, seed.marker).toEqual({
-                cause: seed.cause,
-                verdict: seed.verdict,
-              })
-              // A verdict is not an exit code: only a row that is not readable exits 10. In
-              // text the answer prints on stdout either way.
-              const exit = seed.cause === 'unreadable' ? 10 : 0
-              const text = await runCli(line, db.env)
-              expect({ json: run.exit, text: text.exit, stderr: text.stderr }).toEqual({
-                json: exit,
-                text: exit,
-                stderr: '',
-              })
-              const lines = text.stdout.split('\n')
-              expect(lines).toContain(`cause: ${seed.cause}`)
-              expect(lines).toContain(`verdict: ${seed.verdict}`)
-            } finally {
-              await db.close()
-            }
-          }, 60_000)
+          it(
+            `${seed.cause}: ${seed.name}`,
+            () =>
+              onSeed(dialect, seed, async (db, taskId) => {
+                const line = ['explain', taskId, '--queue', QUEUE]
+                const run = await runCli([...line, '--json'], db.env)
+                const answer = JSON.parse(run.stdout) as { cause?: string; verdict?: string }
+                expect({ cause: answer.cause, verdict: answer.verdict }, seed.marker).toEqual({
+                  cause: seed.cause,
+                  verdict: seed.verdict,
+                })
+                // A verdict is not an exit code: only a row that is not readable exits
+                // `unreadable`. In text the answer prints on stdout either way.
+                const exit = exitCode(seed.cause === 'unreadable' ? 'unreadable' : 'done')
+                const text = await runCli(line, db.env)
+                expect({ json: run.exit, text: text.exit, stderr: text.stderr }).toEqual({
+                  json: exit,
+                  text: exit,
+                  stderr: '',
+                })
+                const lines = text.stdout.split('\n')
+                expect(lines).toContain(`cause: ${seed.cause}`)
+                expect(lines).toContain(`verdict: ${seed.verdict}`)
+              }),
+            60_000,
+          )
         }
       })
 
