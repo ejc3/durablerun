@@ -1230,6 +1230,11 @@ describe('diagnose', () => {
         wait: facts(factsOf(parked, { waits: [{ ...waitOf('e', null), status: rogue }] })),
         integer: facts(factsOf({ attempt: null }, { corrupt: [corrupt] })),
         outcome: facts({ ...factsOf({}), outcome: { refused: `refused ${rogue}` } }),
+        // A task's own state is refused by the outcome's decoder, and is named as well.
+        task: facts({
+          ...factsOf({}, { task: { state: rogue } }),
+          outcome: { refused: `task t has unknown state ${rogue}` },
+        }),
       },
       'mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field',
     ).toEqual({
@@ -1254,6 +1259,10 @@ describe('diagnose', () => {
         },
       ],
       outcome: ['unreadable', { outcome: 'unreadable', corrupt: [], notTheEngines: [] }],
+      task: [
+        'unreadable',
+        { outcome: 'unreadable', corrupt: [], notTheEngines: [{ field: 'tasks.state' }] },
+      ],
     })
   })
 
