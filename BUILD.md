@@ -5930,15 +5930,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
   decision, and the ruling that `eventState` answers whether an event exists and when it
   was emitted and nothing of its payload. No schema version and no write batch is added.
   Four batch labels are new, all reads: `task-facts`, `task-id-by-key` and `event-state`
-  are statement trees, and `fake-clock` is text. The registry holds 1184 mutations where
+  are statement trees, and `fake-clock` is text. The registry holds 1187 mutations where
   main holds 1149: one for each of the nineteen persisted integers the reads consume, one
   each for database time, an event that exists with no instant, the numbers, the order of
   runs, of waits, of events and of the corrupt list, the comparison by code point, the check
-  of a read's strings and a child's key read back, and six for `inspect`: the redaction of
-  a key, the exit for a corrupt row, the snapshot on stdout, and a stored state or status
-  that is not the engine's own in each of the three places one prints. The base gate's arm
-  is keyed on main's digest and exempts their thirty-three markers, and one pinned pair
-  installs this tree's `scripts/text-statements.json` over main's.
+  of a read's strings and a child's key read back, eight for `inspect` (the redaction of a
+  key, the exit for a corrupt row, the snapshot on stdout, a stored state or status that is
+  not the engine's own printed hidden in each of the three places one prints, and exit 10
+  for such a state of a run or status of a wait), and one for the invariant library's
+  refusal of an event with no instant. The base gate's arm is keyed on main's digest and
+  exempts their thirty-six markers, and one pinned pair installs this tree's
+  `scripts/text-statements.json` over main's.
   - Where the build differs from the plan, and why. (1) A store opens and runs each batch
     of the reads, and core holds the one implementation over what the store hands it, where
     the plan said one implementation over an executor: the label ledger, the batch lint,
@@ -5966,6 +5968,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     point where it was ordered by UTF-16 code units, the top view of `inspect` is held to
     the type of the facts, and one function decodes an event's instant. What was not built
     is recorded in the options below, each with its trigger.
+  - A narrow re-review of that fold found eight more things, and the same postmortem holds
+    both rounds. Fixed here: a run's state or a wait's status that is not the engine's own
+    makes `inspect` exit 10, the stream rule is stated as the code holds it, with text mode
+    cases for two refusals that name a fact about the store, the invariant library refuses
+    an event with no instant as the reads do, and the generated NULL case takes only a
+    schema's refusal of a NULL for one. Four of the six that count were made by the first
+    fold: three statements that said more than the code does, and a case that could not
+    fail.
   - Measured while pinning the plans, and left as it is: on PostgreSQL, schema version 7
     changes the collation of `meta`'s key, which rebuilds that index over rows the
     migrations updated in place, and the server does not use an index built that way while
@@ -6000,20 +6010,36 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Option for the event's instant, not built, with its trigger: a schema version that sets
     `events.emitted_at_ms` NOT NULL on the three dialects, as version 10 did for `payload`.
     `PERSISTED_TEMPORAL_FIELDS` and `STORE_TABLE_COLUMNS` record the column as nullable
-    because its schema is, the invariant library takes a NULL there for a value for the
-    same reason, and the operator's reads hold the one exception (`WRITTEN_WITH_EVERY_ROW`).
-    `PERSISTED_TEMPORAL_FIELDS` is a released declaration, so its entry does not change
-    before the schema does. Trigger: the next schema version that alters `events`, or a
-    second reader that needs the exception.
+    because its schema is, and core names the one exception beside them,
+    `PERSISTED_INTEGER_NEVER_NULL`, which the operator's reads and the invariant library
+    both read. `PERSISTED_TEMPORAL_FIELDS` is a released declaration, so its entry does not
+    change before the schema does, and a reader that asked the table alone would still take
+    the NULL for a value. Trigger: the next schema version that alters `events`.
   - Option for the three store files of the reads, not built, with its trigger: one check
     that holds them equal, or one file. They are the same apart from the class name, shaped
     as a class so that the batch checkers, which read text, see each label inside a
     member. Trigger: a fourth file of this shape, or batch checkers that read trees.
   - Option for the stream an answer prints on, not built, with its trigger: make it part of
-    the answer's type, so that an answer which fails cannot be built without saying whether
-    it holds what the command read. Today a handler marks such an answer by hand, and a
-    case for each answer holds it. Trigger: the second command whose answer holds facts
-    when it fails.
+    the answer's type, so that an answer which does not exit 0 cannot be built without
+    saying whether it is the snapshot its command exists to print or a refusal. Today a
+    handler marks a snapshot by hand, and `inspect`'s is the only one. Text mode cases
+    hold four answers to their stream: the snapshot of `inspect` at exit 10 on stdout, a
+    task that is not there on stderr, every store command on a database a newer build
+    migrated on stderr with the recorded version it names, and `migrate` without `--yes`
+    on stderr with the versions it would apply. No case reads the stream of any other
+    refusal in text mode. Trigger: the second command that prints a snapshot when it does
+    not exit 0.
+  - Option for the events of a snapshot, not built, with its trigger: key the events a
+    task's runs and waits name by queue and name, and name the queue in a corrupt entry of
+    an event. Today they are keyed by name alone, which is exact while a task's runs and
+    waits are in the task's own queue: a run takes its queue from its task or from the run
+    it succeeds, a wait registers only under a claimed run of its own queue, and no
+    statement changes either. Trigger: the first command that follows an await into
+    another queue.
+  - Option for the statuses of a wait, not built, with its trigger: one list that the three
+    schemas' checks and the CLI's view are held to. Today each schema writes the two
+    statuses in its check, and the CLI keeps a fourth copy to tell a status of the engine's
+    own. Trigger: a schema version that adds a wait status.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
