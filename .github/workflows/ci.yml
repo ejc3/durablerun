@@ -330,13 +330,14 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '4da6f24e9b7535e573d76507a78ae033754ad498099e0e119dba30d7184e8788':
-              # `explain` registers forty-six mutations: one for each arm of `diagnose`, and
+              # `explain` registers fifty-five mutations: one for each arm of `diagnose`, and
               # the others for its default verdict, its two bounds, the instant a waiting run
-              # next moves at, the depth an await of a child is followed to, what a suggestion
-              # may carry, the exit and the stream of a row that is not readable, the outcome's
-              # redaction, and the rows it reads no healthy cause from. Every verdict marker of
-              # their cases is newer than the base registry, so each is exempted there. No base
-              # entry is re-aimed.
+              # next moves at, the depth an await of a child is followed to and a ring of
+              # them, what a suggestion may carry, the exit and the stream of a row that is
+              # not readable and what names it, the outcome's redaction, the rows it reads no
+              # healthy cause from, and the walk that diagnoses what the engine leaves. Every
+              # verdict marker of their cases is newer than the base registry, so each is
+              # exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:cli-explain-arm-completed",
                   "mutation-verdict:behavior:cli-explain-arm-cancelled",
@@ -377,6 +378,15 @@ jobs:
                   "mutation-verdict:behavior:cli-explain-quotes-a-pasted-line",
                   "mutation-verdict:behavior:cli-explain-reads-no-cause-from-rows-that-disagree",
                   "mutation-verdict:behavior:cli-explain-vouches-for-no-child-it-cannot-read-as-live",
+                  "mutation-verdict:behavior:cli-explain-arm-backing-off",
+                  "mutation-verdict:behavior:cli-explain-names-every-state-a-walk-leaves",
+                  "mutation-verdict:behavior:cli-explain-a-run-past-the-hung-bound-is-not-stuck",
+                  "mutation-verdict:behavior:cli-explain-never-suggests-cancel",
+                  "mutation-verdict:behavior:cli-explain-next-transition-takes-an-earlier-deadline",
+                  "mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument",
+                  "mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill",
+                  "mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field",
+                  "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

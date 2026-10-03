@@ -18393,8 +18393,8 @@ MUTATION_SPECS.extend(
         (
             "cli-explain-next-transition-is-the-instant-the-engine-moves-at",
             "packages/cli/src/explain.ts",
-            "    nextTransitionAtMs: verdict === 'waiting' ? at : null,\n",
-            "    nextTransitionAtMs: verdict === 'waiting' && at !== null ? at - 1 : null, // MUTATION: one millisecond early\n",
+            "    nextTransitionAtMs: verdict === 'waiting' ? next : null,\n",
+            "    nextTransitionAtMs: verdict === 'waiting' && next !== null ? next - 1 : null, // MUTATION: one millisecond early\n",
             "explain names an instant at which the engine still cannot move the run as the instant it next may",
         ),
         (
@@ -18715,7 +18715,7 @@ VERDICTS.update(
         "cli-explain-next-transition-is-the-instant-the-engine-moves-at": ExpectedVerdict(
             "behavior",
             "packages/cli/test/explain.test.ts",
-            "explain on libSQL at nextTransitionAtMs a claim takes the run, and one millisecond earlier none does",
+            "explain on libSQL at nextTransitionAtMs the engine moves the task, and one millisecond earlier it does not",
             "mutation-verdict:behavior:cli-explain-next-transition-is-the-instant-the-engine-moves-at",
         ),
         "cli-explain-follows-a-child-to-depth-8": ExpectedVerdict(
@@ -18781,6 +18781,138 @@ VERDICTS["cli-explain-await-needs-one-wait"] = VERDICTS["cli-explain-reads-no-ca
 VERDICTS["cli-explain-never-started-declines-a-registered-wait"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
 VERDICTS["cli-explain-an-unread-child-is-unexplained"] = VERDICTS["cli-explain-vouches-for-no-child-it-cannot-read-as-live"]
 VERDICTS["cli-explain-alpha1-form-needs-no-checkpoint"] = VERDICTS["cli-explain-arm-sleeping-on-a-timer"]
+
+# What the fold of `explain`'s one review holds: a run in retry or rollback backoff has a
+# cause, and is a due run once the delay has run; a run past the hung-run bound is not
+# stuck and is never told to cancel; the next instant takes an earlier cancellation
+# deadline; a suggestion's flag and value are one argument, and one that cannot be filled
+# is withheld; what is unreadable is named; and a ring of awaits is read once.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-explain-arm-backing-off",
+            "packages/cli/src/explain.ts",
+            "  'backing-off': ofTheLiveRun(backingOffArm),\n",
+            "  'backing-off': () => null, // MUTATION: the arm of backing-off is deleted\n",
+            "explain answers unexplained for a task in retry backoff, which every default retry writes",
+        ),
+        (
+            "cli-explain-names-every-state-a-walk-leaves",
+            "packages/cli/src/explain.ts",
+            "  const asleep = wait !== undefined || onABareTimer(run) || asleepSinceItWasInserted(run)\n",
+            "  const asleep = wait !== undefined || onABareTimer(run) // MUTATION: a backoff that has run is no due run\n",
+            "explain answers unexplained for a run whose retry delay has run and which no claim has taken yet, a state the engine leaves a task in whenever the driver is a moment behind",
+        ),
+        (
+            "cli-explain-a-run-past-the-hung-bound-is-not-stuck",
+            "packages/cli/src/explain.ts",
+            "  'running-past-the-hung-bound': {\n    verdict: 'ok',\n",
+            "  'running-past-the-hung-bound': {\n    verdict: 'stuck', // MUTATION: a long first pass is stuck\n",
+            "explain answers stuck for a healthy run under a live lease, to which nothing is owed, so stuck no longer means that a move the driver owes is late",
+        ),
+        (
+            "cli-explain-never-suggests-cancel",
+            "packages/cli/src/explain.ts",
+            "    next: 'inspect',\n    meaning:\n      'the run was claimed once",
+            "    next: 'cancel', // MUTATION: a long first pass is told to cancel\n    meaning:\n      'the run was claimed once",
+            "explain names cancel, the one command that destroys work, as the next command for a run that may be healthy",
+        ),
+        (
+            "cli-explain-next-transition-takes-an-earlier-deadline",
+            "packages/cli/src/explain.ts",
+            "  const next = earlier(at, isAhead(view, cancelAtMs) ? cancelAtMs : null)\n",
+            "  const next = earlier(at, isAhead(view, cancelAtMs) ? null : null) // MUTATION: the deadline is no clock\n",
+            "explain names a later instant than the one at which the sweep cancels the task, or no instant at all for an await with no timeout",
+        ),
+        (
+            "cli-explain-a-required-flag-and-its-value-are-one-argument",
+            "packages/cli/src/explain.ts",
+            "    argv.push(`--${name}=${value}`)\n",
+            "    argv.push(`--${name}`, value) // MUTATION: the value is an argument of its own\n",
+            "explain prints a next command that the CLI's own parser refuses when the queue's name begins with a dash",
+        ),
+        (
+            "cli-explain-withholds-a-command-it-cannot-fill",
+            "packages/cli/src/explain.ts",
+            "    if (value === undefined) return noValueFor(`--${name}`, spec)\n",
+            "    if (value === undefined) throw new Error(`explain knows no value for ${name}`) // MUTATION: a hole in the command is thrown\n",
+            "explain exits 1 with no cause printed for a task whose next command requires a flag it has no value for, as every command that writes does",
+        ),
+        (
+            "cli-explain-unreadable-names-the-row-and-the-field",
+            "packages/cli/src/explain.ts",
+            "          notTheEngines: statesNotTheEngines(facts),\n",
+            "          notTheEngines: [], // MUTATION: a state that is not the engine's own is not named\n",
+            "explain answers unreadable for a run or a wait whose state is not the engine's own and names nothing that is unreadable",
+        ),
+        (
+            "cli-explain-reads-a-ring-of-awaits-once",
+            "packages/cli/src/main.ts",
+            "    } else if (onTheWay.includes(asked.taskId) || asked.taskId === taskId) {\n",
+            "    } else if (asked.taskId === '') { // MUTATION: a ring of awaits is followed round to the hop limit\n",
+            "explain reads a task that waits on itself nine times over and answers unexplained",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-explain-arm-backing-off": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause backing-off: a run its worker failed with attempts left, whose next attempt sleeps until the retry delay has run",
+            "mutation-verdict:behavior:cli-explain-arm-backing-off",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-names-every-state-a-walk-leaves": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain-walk.test.ts",
+            "explain over a walk of the engine names a cause for every task a walk leaves, and none is unexplained or inconsistent",
+            "mutation-verdict:behavior:cli-explain-names-every-state-a-walk-leaves",
+        ),
+        "cli-explain-a-run-past-the-hung-bound-is-not-stuck": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a healthy first pass past the hung-run bound is not stuck, and no cancel is suggested for it",
+            "mutation-verdict:behavior:cli-explain-a-run-past-the-hung-bound-is-not-stuck",
+        ),
+        "cli-explain-never-suggests-cancel": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a healthy first pass past the hung-run bound is not stuck, and no cancel is suggested for it",
+            "mutation-verdict:behavior:cli-explain-never-suggests-cancel",
+        ),
+        "cli-explain-next-transition-takes-an-earlier-deadline": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL names the cancellation deadline as the next instant when it comes before the wake, and prints it among the facts",
+            "mutation-verdict:behavior:cli-explain-next-transition-takes-an-earlier-deadline",
+        ),
+        "cli-explain-a-required-flag-and-its-value-are-one-argument": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL builds a next command the parser of the CLI reads, for a queue whose name begins with a dash",
+            "mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument",
+        ),
+        "cli-explain-withholds-a-command-it-cannot-fill": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL withholds a next command it cannot fill, and says what it has no value for",
+            "mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill",
+        ),
+        "cli-explain-unreadable-names-the-row-and-the-field": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose says of a row that is not readable which row it is and which field, and quotes no stored value",
+            "mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field",
+        ),
+        "cli-explain-reads-a-ring-of-awaits-once": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL reads a ring of awaits once: a task that waits on itself, and two that wait on each other",
+            "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
+        ),
+    }
+)
 
 MUTATIONS = [
     Mutation(
@@ -22690,7 +22822,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1233:
+        if len(MUTATIONS) != 1242:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
