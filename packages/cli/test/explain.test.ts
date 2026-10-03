@@ -681,7 +681,7 @@ describe('explain on libSQL', () => {
         'mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once',
       ).toEqual({
         cause: 'awaiting-a-child',
-        verdict: 'waiting',
+        verdict: 'stuck',
         followed: ['ring', undefined],
         reads: 1,
       })
@@ -703,7 +703,7 @@ describe('explain on libSQL', () => {
       )
       expect(await reads(pair, first ?? '')).toEqual({
         cause: 'awaiting-a-child',
-        verdict: 'waiting',
+        verdict: 'stuck',
         followed: ['followed', 'ring'],
         reads: 2,
       })
@@ -740,6 +740,7 @@ describe('explain on libSQL', () => {
         verdict: answer.verdict,
         nextTransitionAtMs: answer.nextTransitionAtMs,
         next: answer.next?.argv[0] ?? null,
+        ringEndedBy: answer.facts.ringEndedBy,
       }
     }
     const ring = { cause: 'awaiting-a-child', next: null }
@@ -748,7 +749,13 @@ describe('explain on libSQL', () => {
     const never = await openCliDb('libsql', 'explain-ring-nothing-ends')
     try {
       const taskId = await waitsOnItself(never, null, {})
-      const stuck = { ...ring, verdict: 'stuck', nextTransitionAtMs: null, next: 'inspect' }
+      const stuck = {
+        ...ring,
+        verdict: 'stuck',
+        nextTransitionAtMs: null,
+        next: 'inspect',
+        ringEndedBy: 'nothing',
+      }
       expect(
         await read(never, taskId),
         'mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck',
@@ -759,7 +766,12 @@ describe('explain on libSQL', () => {
       await never.close()
     }
     // A timeout on the await, or a cancellation deadline on the task, ends the ring.
-    const ended = { ...ring, verdict: 'waiting', nextTransitionAtMs: NOW_MS + 60_000 }
+    const ended = {
+      ...ring,
+      verdict: 'waiting',
+      nextTransitionAtMs: NOW_MS + 60_000,
+      ringEndedBy: 'a-clock',
+    }
     const timed = await openCliDb('libsql', 'explain-ring-timeout')
     try {
       expect(await read(timed, await waitsOnItself(timed, 60, {}))).toEqual(ended)
@@ -774,7 +786,8 @@ describe('explain on libSQL', () => {
       await bounded.close()
     }
     // Two tasks that wait on each other, where only the second's await has a timeout: the
-    // first has no clock of its own, and the second's ends the ring for both.
+    // first has no clock of its own, and the second's ends the ring for both. Asked about
+    // either, the ring closes at the other, so the facts of the task asked about name none.
     const pair = await openCliDb('libsql', 'explain-ring-one-clock')
     try {
       const [first, second] = await chainOfAwaits(pair, 2)
@@ -793,7 +806,7 @@ describe('explain on libSQL', () => {
         second: await read(pair, second ?? ''),
       }).toEqual({
         first: { ...ring, verdict: 'waiting', nextTransitionAtMs: null },
-        second: ended,
+        second: { ...ring, verdict: 'waiting', nextTransitionAtMs: NOW_MS + 60_000 },
       })
     } finally {
       await pair.close()

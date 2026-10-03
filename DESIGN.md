@@ -5736,9 +5736,11 @@ that failed for good is `ok`: nothing will move it and nothing should.
   however long it has run.
 - `waiting`: the next move is a clock's, an event's, a child's or a later build's, or it is
   the driver's and is not late yet.
-- `stuck`: a move the driver owes is late. It means nothing else, and no cause has it as a
-  verdict of its own: the type of the table refuses one, so a task is `stuck` only by the
-  `late` rule below, its own or that of a child it waits for.
+- `stuck`: a move the driver owes is late, or no move can come, as for a ring of awaits
+  that no timeout and no cancellation deadline ends. Neither is a healthy task. No cause
+  has `stuck` as a verdict of its own: the type of the table refuses one, so a task is
+  `stuck` only by the `late` rule below, or by the `child` rule, for a ring it closes or
+  for a child it waits for that is `stuck`.
 - `inconsistent`: a row is not readable, or the rows disagree in a way no engine path writes.
 - `unexplained`: no cause of the table takes the facts. It is the answer when every arm
   declines, so a state nobody listed is never read as a healthy one.
@@ -5854,8 +5856,11 @@ as they are, and a child that is `ok` and has not ended makes its parent `waitin
 a child whose run is claimed under a live lease, however long it has run.
 The store lets a run await any task of its queue, so a task can wait on itself, and tasks
 can wait on each other in a ring. A child that is already on the way is not read a second
-time, and the task that waits on it is `waiting`: nothing is owed to a ring, and only a
-timeout or a cancellation ends the wait. Three cases are `unexplained`: a child the queue
+time. The task that waits on it is `waiting` when some task of the ring has a timeout on
+its await or a cancellation deadline, either of which ends the ring, and `stuck` when none
+has, because no move can come to such a ring. Its facts say which under `ringEndedBy`, and
+the next command for a ring that is `stuck` is `inspect`. Three cases are `unexplained`: a
+child the queue
 does not hold, a child that was not followed, and a child that has ended. The batch that
 ends a task wakes every run parked on it (section 3.2), and `explain` reads a parent and
 its child in two snapshots. So a run still parked on an ended child was read a moment

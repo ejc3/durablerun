@@ -25,9 +25,12 @@ import {
   CHILD_HOPS,
   type Diagnosis,
   type Evidence,
+  type TaskOnTheWay,
   answerView,
   diagnose,
+  endsByAClock,
   readUnreadableRow,
+  ringClosedBy,
 } from './explain.js'
 import { factsAreReadable, factsView } from './inspect.js'
 import {
@@ -528,31 +531,34 @@ async function checkpointCount(
  * hold. `diagnose` names the evidence a cause turns on, and it is read here and handed
  * back: the task's checkpoints, or the child the task awaits, which is diagnosed the same
  * way. A child that is already on the way, the task itself among them, closes a ring and is
- * not read again. A task that is CHILD_HOPS awaits from the one named has its own child
+ * not read again, and the evidence says whether a clock of any task of the ring ends its
+ * wait. A task that is CHILD_HOPS awaits from the one named has its own child
  * left unread, so a chain of awaits costs a bounded number of reads.
  */
 export async function explained(
   store: Pick<OpenedStore, 'operator' | 'scheduler'>,
   queue: string,
   taskId: string,
-  onTheWay: readonly string[] = [],
+  onTheWay: readonly TaskOnTheWay[] = [],
 ): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return null
   const hop = onTheWay.length
+  const path = [...onTheWay, { taskId, endsByAClock: endsByAClock(facts) }]
   let evidence: Evidence = {}
   for (;;) {
     const asked = diagnose(facts, evidence)
     if (!('needs' in asked)) return { facts, diagnosis: asked }
     if (asked.needs in evidence) throw new Error(`diagnose asked for ${asked.needs} twice`)
+    const ring = asked.needs === 'child' ? ringClosedBy(path, asked.taskId) : null
     if (asked.needs === 'checkpoints') {
       evidence = { ...evidence, checkpoints: await checkpointCount(store, queue, taskId) }
-    } else if (onTheWay.includes(asked.taskId) || asked.taskId === taskId) {
-      evidence = { ...evidence, child: 'ring' }
+    } else if (ring !== null) {
+      evidence = { ...evidence, child: ring }
     } else if (hop === CHILD_HOPS) {
       evidence = { ...evidence, child: 'not-followed' }
     } else {
-      const child = await explained(store, queue, asked.taskId, [...onTheWay, taskId])
+      const child = await explained(store, queue, asked.taskId, path)
       evidence = { ...evidence, child: child?.diagnosis ?? 'absent' }
     }
   }

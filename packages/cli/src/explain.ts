@@ -47,9 +47,10 @@ export const CHILD_HOPS = 8
 /**
  * How a cause gets its verdict: a verdict of its own, `late` (`waiting` until the instant
  * it names is more than DUE_GRACE_MS past, `stuck` from then), or `child` (the verdict of
- * the cause the awaited child was followed to). No cause may have `stuck` as a verdict of
- * its own: `stuck` means that a move the driver owes is late, and only the `late` rule
- * measures that.
+ * the cause the awaited child was followed to, or of the ring the await closes). No cause
+ * may have `stuck` as a verdict of its own. `stuck` means that a move the driver owes is
+ * late, which only the `late` rule measures, or that no move can come, which only the
+ * `child` rule finds, for a ring of awaits that no clock ends.
  */
 type Rule = Exclude<Verdict, 'stuck'> | 'late' | 'child'
 
@@ -221,10 +222,40 @@ export interface Diagnosis {
 }
 
 /**
- * What following an awaited child found: its diagnosis, no such task, a hop not taken, or
- * a ring, where the child is a task already on the way, the task itself among them.
+ * A ring of awaits: the awaited child is a task already on the way, the task itself among
+ * them. A clock ends the ring when any task of it has one that ends its own wait.
  */
-export type ChildEvidence = Diagnosis | 'absent' | 'not-followed' | 'ring'
+export interface Ring {
+  readonly ringEndedBy: 'a-clock' | 'nothing'
+}
+
+/** What following an awaited child found: its diagnosis, no such task, a hop not taken, or a ring. */
+export type ChildEvidence = Diagnosis | 'absent' | 'not-followed' | Ring
+
+/** A task on the way from the one `explain` was asked about to the one it is reading. */
+export interface TaskOnTheWay {
+  readonly taskId: string
+  readonly endsByAClock: boolean
+}
+
+/**
+ * Whether a clock ends this task's wait, whatever the task it waits for does: the task has
+ * a cancellation deadline, at which the sweep cancels it, or its live run has an instant it
+ * comes due at, which for a run parked on an await is the await's timeout.
+ */
+export const endsByAClock = (facts: TaskFacts): boolean =>
+  facts.task.cancelAtMs !== null ||
+  facts.runs.some((run) => isLiveState(run.state) && run.availableAtMs !== null)
+
+/**
+ * The ring an await of `childTaskId` closes, for the task at the end of `path`, or null
+ * when that child is not on the path. The ring is the path from that child on.
+ */
+export function ringClosedBy(path: readonly TaskOnTheWay[], childTaskId: string): Ring | null {
+  const from = path.findIndex((one) => one.taskId === childTaskId)
+  if (from === -1) return null
+  return { ringEndedBy: path.slice(from).some((one) => one.endsByAClock) ? 'a-clock' : 'nothing' }
+}
 
 /** What the facts of one task do not hold, which `diagnose` asks for when a cause turns on it. */
 export interface Evidence {
@@ -553,6 +584,14 @@ const pastItsWakeArm: RunArm = (view, run) => {
     : null
 }
 
+/** What an await's cause says of how far its child was followed, and of a ring, what ends it. */
+const followedTo = (child: ChildEvidence) => {
+  if (typeof child === 'string') return { followed: child }
+  return 'ringEndedBy' in child
+    ? { followed: 'ring', ringEndedBy: child.ringEndedBy }
+    : { followed: 'followed' }
+}
+
 const awaitingAChildArm: RunArm = (view, run) => {
   const { evidence } = view
   const wait = registeredWait(view, run)
@@ -565,7 +604,7 @@ const awaitingAChildArm: RunArm = (view, run) => {
     facts: {
       ...awaited(wait),
       childTaskId,
-      followed: typeof evidence.child === 'string' ? evidence.child : 'followed',
+      ...followedTo(evidence.child),
     },
   }
 }
@@ -637,13 +676,13 @@ function firstFound(view: View): Found | Needed | null {
  * has not ended makes it `waiting`, whatever that child's cause is called: an `ok` task
  * that has not ended is one a worker is running. A child that has ended would have woken
  * the run in the batch that ended it, so a run still parked on it is `unexplained`, as is
- * a child the queue does not hold and a child that was not followed. Tasks that wait on each other in a ring, or a
- * task that waits on itself, are `waiting`: nothing is owed to them, and only a timeout or
- * a cancellation ends the wait.
+ * a child the queue does not hold and a child that was not followed. Tasks that wait on
+ * each other in a ring, or a task that waits on itself, are `waiting` when a clock of some
+ * task of the ring ends its wait, and `stuck` when none does: no move can come to them.
  */
 function verdictThrough(child: ChildEvidence | undefined): Verdict {
-  if (child === 'ring') return 'waiting'
   if (child === undefined || typeof child === 'string') return 'unexplained'
+  if ('ringEndedBy' in child) return child.ringEndedBy === 'nothing' ? 'stuck' : 'waiting'
   if (child.verdict !== 'ok') return child.verdict
   return child.ended ? 'unexplained' : 'waiting'
 }
@@ -686,7 +725,9 @@ export function diagnose(facts: TaskFacts, evidence: Evidence = {}): Diagnosis |
       ...(rule === 'late' ? { dueAtMs: at, lateByMs: lateMs } : {}),
       ...(cancelAtMs === null ? {} : { cancelAtMs }),
     },
-    ...(rule === 'child' && typeof evidence.child === 'object' ? { child: evidence.child } : {}),
+    ...(rule === 'child' && typeof evidence.child === 'object' && 'cause' in evidence.child
+      ? { child: evidence.child }
+      : {}),
   }
 }
 
