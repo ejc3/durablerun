@@ -270,6 +270,7 @@ describe('explain on libSQL', () => {
     // Every waiting seed that a clock moves was moved, so the check above ran for each.
     expect(moved).toEqual([
       'pending-delayed',
+      'backing-off',
       'never-started',
       'never-started-alpha1-form',
       'awaiting-a-timed-event',
@@ -308,11 +309,10 @@ describe('explain on libSQL', () => {
         nextTransitionAtMs: NOW_MS + 30_000,
       })
       await at(NOW_MS + 30_000 + DUE_GRACE_MS + 1)
-      expect(read(await explain(db, task.taskId))).toEqual({
-        cause: 'sleeping-past-its-wake',
-        verdict: 'stuck',
-        nextTransitionAtMs: null,
-      })
+      expect(
+        read(await explain(db, task.taskId)),
+        'mutation-verdict:behavior:cli-explain-a-backoff-that-has-run-is-a-due-run',
+      ).toEqual({ cause: 'sleeping-past-its-wake', verdict: 'stuck', nextTransitionAtMs: null })
       const claimed = await db.store.claim(QUEUE, 'w-second', { leaseSeconds: 60, limit: 5 })
       expect(claimed.map((one) => one.taskId)).toEqual([task.taskId])
     } finally {

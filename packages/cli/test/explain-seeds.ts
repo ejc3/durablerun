@@ -290,6 +290,19 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     build: async ({ db }) => (await spawn(db)).taskId,
   },
   {
+    cause: 'backing-off',
+    verdict: 'waiting',
+    name: 'a run its worker failed with attempts left, whose next attempt sleeps until the retry delay has run',
+    marker: 'mutation-verdict:behavior:cli-explain-arm-backing-off',
+    build: async ({ db }) => {
+      const { taskId, run } = await started(db, { maxAttempts: 3 })
+      await db.store.fail(QUEUE, run.runId, run.claimToken, '{"name":"Error"}', {
+        delaySeconds: 30,
+      })
+      return taskId
+    },
+  },
+  {
     cause: 'never-started',
     verdict: 'waiting',
     name: 'a task enqueued ahead of the build that registers it, which a real worker with no handler for it deferred',

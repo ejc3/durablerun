@@ -124,7 +124,8 @@ export const CAUSES = Object.freeze({
   'pending-delayed': {
     verdict: 'waiting',
     next: null,
-    meaning: 'the run is not due yet: a start delay or a backoff holds it',
+    meaning:
+      'the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out',
   },
   'woken-unclaimed': {
     verdict: 'late',
@@ -135,6 +136,12 @@ export const CAUSES = Object.freeze({
     verdict: 'late',
     next: 'tick',
     meaning: 'the run is due, and no claim has taken it',
+  },
+  'backing-off': {
+    verdict: 'waiting',
+    next: null,
+    meaning:
+      'the run follows a failed run and sleeps until its retry delay or its rollback delay has run',
   },
   'never-started': {
     verdict: 'waiting',
@@ -156,7 +163,8 @@ export const CAUSES = Object.freeze({
   'sleeping-past-its-wake': {
     verdict: 'late',
     next: 'tick',
-    meaning: "the run's timer or its await's timeout has passed, and no claim has taken it",
+    meaning:
+      "the run's timer, its backoff or its await's timeout has passed, and no claim has taken it",
   },
   'awaiting-a-child': {
     verdict: 'child',
@@ -412,6 +420,23 @@ const dueUnclaimedArm: RunArm = (view, run) =>
       }
     : null
 
+/**
+ * A run asleep that no claim has ever taken. Only a failure's successor is inserted asleep:
+ * the next attempt of a retry with a delay, or a rollback pass that follows a failed
+ * rollback with a delay. Every other sleeping run was parked by the worker that held it.
+ */
+const asleepSinceItWasInserted = (run: RunFacts): boolean =>
+  run.state === 'sleeping' && run.claimGen === 0
+
+const backingOffArm: RunArm = (view, run) =>
+  asleepSinceItWasInserted(run) && isAhead(view, run.availableAtMs)
+    ? {
+        cause: 'backing-off',
+        at: run.availableAtMs,
+        facts: { runId: run.runId, attempt: run.attempt },
+      }
+    : null
+
 /** What a never-started cause says of its run: the task name no worker had a handler for. */
 const neverStarted = ({ task }: TaskFacts, run: RunFacts) => ({
   runId: run.runId,
@@ -497,7 +522,8 @@ const neverStartedAlpha1Arm: RunArm = ({ facts, evidence }, run) => {
 
 const pastItsWakeArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
-  return (wait !== undefined || onABareTimer(run)) && isPast(view, run.availableAtMs)
+  const asleep = wait !== undefined || onABareTimer(run) || asleepSinceItWasInserted(run)
+  return asleep && isPast(view, run.availableAtMs)
     ? {
         cause: 'sleeping-past-its-wake',
         at: run.availableAtMs,
@@ -564,6 +590,7 @@ export const ARMS: { readonly [C in Exclude<Cause, 'unexplained'>]: Arm } = {
   'pending-delayed': ofTheLiveRun(pendingDelayedArm),
   'woken-unclaimed': ofTheLiveRun(wokenUnclaimedArm),
   'pending-due-unclaimed': ofTheLiveRun(dueUnclaimedArm),
+  'backing-off': ofTheLiveRun(backingOffArm),
   'never-started': ofTheLiveRun(neverStartedArm),
   'wait-outlives-its-event': ofTheLiveRun(waitOutlivesItsEventArm),
   'never-started-alpha1-form': ofTheLiveRun(neverStartedAlpha1Arm),

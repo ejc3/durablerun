@@ -5769,13 +5769,14 @@ one, and a test parses both and requires them equal.
 | lease-lapsed-unswept | late | sweep | the run's lease expired, and no sweep has taken the run back |
 | running-past-the-hung-bound | stuck | cancel | the run was claimed once and has run under a live lease for longer than the hung-run bound |
 | running-under-a-live-lease | ok | none | the run is claimed under a lease that has not expired |
-| pending-delayed | waiting | none | the run is not due yet: a start delay or a backoff holds it |
+| pending-delayed | waiting | none | the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out |
 | woken-unclaimed | late | tick | the run holds a wake from the event named and is due, and no claim has taken it |
 | pending-due-unclaimed | late | tick | the run is due, and no claim has taken it |
+| backing-off | waiting | none | the run follows a failed run and sleeps until its retry delay or its rollback delay has run |
 | never-started | waiting | none | the run was claimed and parked again before any worker started it, which a worker does for a task name it has no handler for |
 | wait-outlives-its-event | inconsistent | inspect | the run waits on an event that exists, which no engine path writes |
 | never-started-alpha1-form | waiting | none | the run was started and parked on a timer with no checkpoint committed, which the release alpha.1 does for a task name it has no handler for |
-| sleeping-past-its-wake | late | tick | the run's timer or its await's timeout has passed, and no claim has taken it |
+| sleeping-past-its-wake | late | tick | the run's timer, its backoff or its await's timeout has passed, and no claim has taken it |
 | awaiting-a-child | child | inspect | the run waits for the child task named to end |
 | awaiting-a-timed-event | waiting | none | the run waits on the event named, until its timeout |
 | awaiting-an-untimed-event | waiting | none | the run waits on the event named, with no timeout |
