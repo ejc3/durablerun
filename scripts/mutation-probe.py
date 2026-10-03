@@ -17633,6 +17633,367 @@ VERDICTS["cli-store-url-refuses-an-at-outside-its-authority"] = VERDICTS["cli-re
 VERDICTS["cli-store-url-authority-ends-at-a-backslash-in-https"] = VERDICTS["cli-refuses-a-store-url-it-cannot-read"]
 VERDICTS["cli-unreadable-reason-needs-reveal"] = VERDICTS["cli-unreadable-row-exits-10"]
 
+# The operator's reads (core's one implementation of OperatorReads) and `inspect`: each
+# persisted integer a read consumes is held to its field's bounds, every count and instant
+# is a number, every list is ordered by core, every string is checked before the entry, a
+# child's key reads back as the parent that wrote it, and `inspect` redacts the idempotency
+# key and exits 10 for a corrupt row. One mutation deletes each guard, and the case
+# generated for that field, or written for that rule, owns it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operator-reads-guard-tasks-attempts",
+            "packages/core/src/operator-reads.ts",
+            "      attempts: ofTask(TASK.attempts),\n",
+            "      attempts: task.attempts as number, // MUTATION: the guard of tasks.attempts is deleted\n",
+            "an operator reads a stored tasks.attempts outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-tasks-max-attempts",
+            "packages/core/src/operator-reads.ts",
+            "      maxAttempts: ofTask(TASK.max_attempts),\n",
+            "      maxAttempts: task.max_attempts as number, // MUTATION: the guard of tasks.max_attempts is deleted\n",
+            "an operator reads a stored tasks.max_attempts outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-tasks-infra-retries",
+            "packages/core/src/operator-reads.ts",
+            "      infraRetries: ofTask(TASK.infra_retries),\n",
+            "      infraRetries: task.infra_retries as number, // MUTATION: the guard of tasks.infra_retries is deleted\n",
+            "an operator reads a stored tasks.infra_retries outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-tasks-enqueue-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      enqueueAtMs: ofTask(TASK.enqueue_at_ms),\n",
+            "      enqueueAtMs: task.enqueue_at_ms as number, // MUTATION: the guard of tasks.enqueue_at_ms is deleted\n",
+            "an operator reads a stored tasks.enqueue_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-tasks-first-started-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      firstStartedAtMs: ofTask(TASK.first_started_at_ms),\n",
+            "      firstStartedAtMs: task.first_started_at_ms as number, // MUTATION: the guard of tasks.first_started_at_ms is deleted\n",
+            "an operator reads a stored tasks.first_started_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-tasks-cancel-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      cancelAtMs: ofTask(TASK.cancel_at_ms),\n",
+            "      cancelAtMs: task.cancel_at_ms as number, // MUTATION: the guard of tasks.cancel_at_ms is deleted\n",
+            "an operator reads a stored tasks.cancel_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-attempt",
+            "packages/core/src/operator-reads.ts",
+            "      attempt: int(RUN.attempt),\n",
+            "      attempt: row.attempt as number, // MUTATION: the guard of runs.attempt is deleted\n",
+            "an operator reads a stored runs.attempt outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-claim-gen",
+            "packages/core/src/operator-reads.ts",
+            "      claimGen: int(RUN.claim_gen),\n",
+            "      claimGen: row.claim_gen as number, // MUTATION: the guard of runs.claim_gen is deleted\n",
+            "an operator reads a stored runs.claim_gen outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-activated-gen",
+            "packages/core/src/operator-reads.ts",
+            "      activatedGen: int(RUN.activated_gen),\n",
+            "      activatedGen: row.activated_gen as number, // MUTATION: the guard of runs.activated_gen is deleted\n",
+            "an operator reads a stored runs.activated_gen outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-relaunch-count",
+            "packages/core/src/operator-reads.ts",
+            "      relaunchCount: int(RUN.relaunch_count),\n",
+            "      relaunchCount: row.relaunch_count as number, // MUTATION: the guard of runs.relaunch_count is deleted\n",
+            "an operator reads a stored runs.relaunch_count outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-claim-expires-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      claimExpiresAtMs: int(RUN.claim_expires_at_ms),\n",
+            "      claimExpiresAtMs: row.claim_expires_at_ms as number, // MUTATION: the guard of runs.claim_expires_at_ms is deleted\n",
+            "an operator reads a stored runs.claim_expires_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-heartbeat-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      heartbeatAtMs: int(RUN.heartbeat_at_ms),\n",
+            "      heartbeatAtMs: row.heartbeat_at_ms as number, // MUTATION: the guard of runs.heartbeat_at_ms is deleted\n",
+            "an operator reads a stored runs.heartbeat_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-available-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      availableAtMs: int(RUN.available_at_ms),\n",
+            "      availableAtMs: row.available_at_ms as number, // MUTATION: the guard of runs.available_at_ms is deleted\n",
+            "an operator reads a stored runs.available_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-started-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      startedAtMs: int(RUN.started_at_ms),\n",
+            "      startedAtMs: row.started_at_ms as number, // MUTATION: the guard of runs.started_at_ms is deleted\n",
+            "an operator reads a stored runs.started_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-completed-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      completedAtMs: int(RUN.completed_at_ms),\n",
+            "      completedAtMs: row.completed_at_ms as number, // MUTATION: the guard of runs.completed_at_ms is deleted\n",
+            "an operator reads a stored runs.completed_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-runs-failed-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      failedAtMs: int(RUN.failed_at_ms),\n",
+            "      failedAtMs: row.failed_at_ms as number, // MUTATION: the guard of runs.failed_at_ms is deleted\n",
+            "an operator reads a stored runs.failed_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-waits-timeout-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      timeoutAtMs: int(WAIT.timeout_at_ms),\n",
+            "      timeoutAtMs: row.timeout_at_ms as number, // MUTATION: the guard of waits.timeout_at_ms is deleted\n",
+            "an operator reads a stored waits.timeout_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-waits-created-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "      createdAtMs: int(WAIT.created_at_ms),\n",
+            "      createdAtMs: row.created_at_ms as number, // MUTATION: the guard of waits.created_at_ms is deleted\n",
+            "an operator reads a stored waits.created_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-guard-events-emitted-at-ms",
+            "packages/core/src/operator-reads.ts",
+            "              emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),\n",
+            "              emittedAtMs: row.emitted_at_ms as number, // MUTATION: the guard of events.emitted_at_ms is deleted\n",
+            "an operator reads a stored events.emitted_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-answer-numbers",
+            "packages/core/src/operator-reads.ts",
+            "    if (decoded.ok) return decoded.value\n",
+            "    if (decoded.ok) return String(decoded.value) as unknown as number // MUTATION: a count is answered as a string\n",
+            "every count and instant an operator reads is a string, as a driver that hands back a 64-bit integer as text would leave it, so arithmetic on two instants concatenates them",
+        ),
+        (
+            "operator-reads-order-their-own-lists",
+            "packages/core/src/operator-reads.ts",
+            "    waits: waits.sort(\n      (left, right) =>\n        byCodeUnits(left.runId, right.runId) || byCodeUnits(left.stepName, right.stepName),\n    ),\n",
+            "    waits, // MUTATION: the waits keep the order the store returned them in\n",
+            "a task's waits come back in the order of each database's own collation, so the same task prints differently on two dialects",
+        ),
+        (
+            "operator-read-check-runs-before-the-entry",
+            "packages/core/src/operator-reads.ts",
+            "        requireOperatorReadStrings(method, args)\n",
+            "        // MUTATION: the entry is reached with nothing checked\n",
+            "no operator read holds any string it is passed: a queue or a task id with a NUL, or past the width, reaches every store's statement",
+        ),
+        (
+            "child-spawn-key-reads-back",
+            "packages/core/src/child-tasks.ts",
+            "  const parentEnd = parentStart + toNumber(written)\n",
+            "  const parentEnd = key.indexOf(':', parentStart) // MUTATION: the parent id ends at the first delimiter\n",
+            "a child whose parent's id holds the delimiter is read as the child of another task, so an operator is sent to a parent that does not exist",
+        ),
+        (
+            "cli-inspect-redacts-the-key",
+            "packages/cli/src/inspect.ts",
+            "  idempotencyKey: task.idempotencyKey === null ? null : userValue(task.idempotencyKey, reveal),\n",
+            "  idempotencyKey: task.idempotencyKey === null ? null : userValue(task.idempotencyKey, true), // MUTATION: an idempotency key prints\n",
+            "inspect prints the idempotency key a task was spawned under without --reveal",
+        ),
+        (
+            "cli-inspect-exits-10-for-a-corrupt-row",
+            "packages/cli/src/main.ts",
+            "    exit: factsAreReadable(facts) ? 'done' : 'unreadable',\n",
+            "    exit: factsAreReadable(facts) ? 'done' : 'done', // MUTATION: a corrupt row exits 0\n",
+            "inspect answers a task whose row holds a corrupt integer, or an outcome the decoders refuse, with exit 0, so a script reads it as a clean answer",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "operator-reads-guard-tasks-attempts": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.attempts outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-attempts",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-tasks-max-attempts": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.max_attempts outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-max-attempts",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-tasks-infra-retries": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.infra_retries outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-infra-retries",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-tasks-enqueue-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.enqueue_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-enqueue-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-tasks-first-started-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.first_started_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-first-started-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-tasks-cancel-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown tasks.cancel_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-tasks-cancel-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-attempt": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.attempt outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-attempt",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-claim-gen": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.claim_gen outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-claim-gen",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-activated-gen": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.activated_gen outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-activated-gen",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-relaunch-count": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.relaunch_count outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-relaunch-count",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-claim-expires-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.claim_expires_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-claim-expires-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-heartbeat-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.heartbeat_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-heartbeat-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-available-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.available_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-available-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-started-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.started_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-started-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-completed-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.completed_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-completed-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-runs-failed-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown runs.failed_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-runs-failed-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-waits-timeout-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown waits.timeout_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-waits-timeout-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-waits-created-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown waits.created_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-waits-created-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-guard-events-emitted-at-ms": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] a persisted integer outside its bounds is listed, never skipped and never thrown events.emitted_at_ms outside its bounds is listed as corrupt, read as null, and changes nothing else",
+            "mutation-verdict:behavior:operator-reads-guard-events-emitted-at-ms",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-answer-numbers": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] answers every seeded state with one canonical answer, the same on every dialect a running task under a lease its worker extended",
+            "mutation-verdict:behavior:operator-reads-answer-numbers",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-order-their-own-lists": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] orders waits and events by their UTF-16 code units, which no collation of the database decides",
+            "mutation-verdict:behavior:operator-reads-order-their-own-lists",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-read-check-runs-before-the-entry": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "the strings an operator's read carries refuses a string outside the domain, past the width, or left out, at every place, before anything is sent",
+            "mutation-verdict:behavior:operator-read-check-runs-before-the-entry",
+        ),
+        "child-spawn-key-reads-back": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/child-tasks.test.ts",
+            "a child's spawn key, read back answers the parent and the call site of every key the builder writes, whatever delimiters they hold",
+            "mutation-verdict:behavior:child-spawn-key-reads-back",
+        ),
+        "cli-inspect-redacts-the-key": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction inspect prints no value a user wrote without --reveal",
+            "mutation-verdict:behavior:cli-inspect-redacts-the-key",
+        ),
+        "cli-inspect-exits-10-for-a-corrupt-row": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/inspect.test.ts",
+            "inspect on libSQL prints a corrupt row where it stands and exits 10, so a script does not read it as a clean answer",
+            "mutation-verdict:behavior:cli-inspect-exits-10-for-a-corrupt-row",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -21541,7 +21902,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1149:
+        if len(MUTATIONS) != 1174:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

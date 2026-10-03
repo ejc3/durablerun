@@ -242,7 +242,7 @@ jobs:
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
         # once its pull request is the base, and is deleted then. One row is live: the
-        # released-surface snapshot, whose changed table this pull request adds to.
+        # list of the statements a store sends as text, which this pull request adds to.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -251,10 +251,10 @@ jobs:
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
               (
-                  'scripts/published-surface-v0.1.0-alpha.1.json',
-                  '66dc03c5d24708e8916ad07b1b1a8ff797fe297ecf8426410f10143e43eca4dc',
-                  '0d45318203826fa3ef5c7e9dd3fc3d061b359dad2413ef43cb7a62b97902bc9d',
-                  'LibsqlExecutor joins the changed table, for the constructor argument this pull request adds',
+                  'scripts/text-statements.json',
+                  '269d9eafbbaa9fa1fb952a727bc2ef76b2d1a5b45cc7eb66b03f2a366635e0b8',
+                  '967ed3dc7d53cf070d11f38f7b13d39db3fe55b3fc644e41f19ef070aeb67831',
+                  "fake-clock joins the list, for the operator's read of whether the test clock is set, which this pull request adds",
               ),
           )
           def sha(data):
@@ -336,30 +336,38 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'eddaa5bd75fcb6db18681e020eae253a314fb2c34042f1d01ef03a1ea9fec7a9':
-              # The operator CLI (packages/cli) registers twenty-four mutations of its own
-              # guards, and every verdict marker of their cases is newer than the base registry,
-              # so each is exempted there. No base entry is re-aimed.
+          if digest == '080f8444e8d748c0b9c1969f4a7368af37c4f9c2e72b9a1c4361bca5ee5536bd':
+              # The operator's reads and `inspect` register twenty-five mutations: one for
+              # each persisted integer the reads consume, and one each for the numbers, the
+              # order of a list, the check of a read's strings, a child's key read back, and
+              # the two rules of `inspect`. Every verdict marker of their cases is newer than
+              # the base registry, so each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cli-refuses-a-newer-schema",
-                  "mutation-verdict:behavior:cli-refuses-an-older-schema",
-                  "mutation-verdict:behavior:cli-read-creates-no-file",
-                  "mutation-verdict:behavior:cli-unavailable-store-exits-6",
-                  "mutation-verdict:behavior:cli-redacts-result",
-                  "mutation-verdict:behavior:cli-redacts-checkpoints",
-                  "mutation-verdict:behavior:cli-redacts-failure-reasons",
-                  "mutation-verdict:behavior:cli-migrate-needs-yes",
-                  "mutation-verdict:behavior:cli-migrate-needs-its-target",
-                  "mutation-verdict:behavior:cli-store-url-prints-no-credential",
-                  "mutation-verdict:behavior:cli-refuses-a-store-url-it-cannot-read",
-                  "mutation-verdict:behavior:cli-last-catch-prints-only-a-name",
-                  "mutation-verdict:behavior:cli-file-url-reads-the-client-path",
-                  "mutation-verdict:behavior:cli-file-url-refuses-a-fragment",
-                  "mutation-verdict:behavior:cli-refuses-a-url-its-store-client-refuses",
-                  "mutation-verdict:behavior:cli-write-refuses-an-empty-target",
-                  "mutation-verdict:behavior:cli-unreadable-row-exits-10",
-                  "mutation-verdict:behavior:cli-every-declared-label-is-sent",
-                  "mutation-verdict:behavior:cli-imports-resolve-outside-the-stores",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-attempts",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-max-attempts",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-infra-retries",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-enqueue-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-first-started-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-tasks-cancel-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-attempt",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-claim-gen",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-activated-gen",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-relaunch-count",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-claim-expires-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-heartbeat-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-available-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-started-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-completed-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-runs-failed-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-waits-timeout-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-waits-created-at-ms",
+                  "mutation-verdict:behavior:operator-reads-guard-events-emitted-at-ms",
+                  "mutation-verdict:behavior:operator-reads-answer-numbers",
+                  "mutation-verdict:behavior:operator-reads-order-their-own-lists",
+                  "mutation-verdict:behavior:operator-read-check-runs-before-the-entry",
+                  "mutation-verdict:behavior:child-spawn-key-reads-back",
+                  "mutation-verdict:behavior:cli-inspect-redacts-the-key",
+                  "mutation-verdict:behavior:cli-inspect-exits-10-for-a-corrupt-row",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
