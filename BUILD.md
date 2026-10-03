@@ -300,12 +300,13 @@ accepts it.
     live task without exactly one live run, and a task and a run whose states
     differ. `explain --json` returns the seeded cause and verdict for each.
     Never-started and an untimed await get the verdict `waiting`, never `stuck`,
-    and `stuck` means only that a move the driver owes is late: a run under a
-    live lease is `ok` however long it has run. Six healthy controls never come
+    and `stuck` means that a move the driver owes is late, or that no move can
+    come, as for a ring of awaits that no clock ends: a run under a live lease
+    is `ok` however long it has run. Six healthy controls never come
     back `stuck`: a start delay, a sleep, a timed await inside its timeout, a
     live lease, an untimed await, and a task enqueued ahead of the build that
     registers it. The default verdict is `unexplained`, never healthy, and every
-    task that a walk of the engine leaves has a cause that is neither
+    task that a walk of the engine leaves gets a verdict that is neither
     `unexplained` nor `inconsistent`. For each waiting seed that has a clock
     transition, moving fake now to `nextTransitionAtMs` lets the engine progress
     the run, and one millisecond earlier does not. Suggestions are generated
@@ -347,7 +348,11 @@ accepts it.
     prints it among the facts"; "follows an await of a child one hop at a time
     to depth 8, and reports the deepest cause", over a chain of ten tasks and a
     chain of nine; "reads a ring of awaits once: a task that waits on itself,
-    and two that wait on each other"; "every suggestion emitted parses, holds no
+    and two that wait on each other"; "a ring of awaits that no clock ends is
+    stuck, and one that a timeout or a deadline ends is waiting"; "a parent
+    parked on a child that is past the hung-run bound is waiting, as it was
+    before the bound"; "says of a due run that carries the wake fields of an
+    await whether its event exists"; "every suggestion emitted parses, holds no
     --yes and never names emit"; "builds a next command the parser of the CLI
     reads, for a queue whose name begins with a dash"; "withholds a next command
     it cannot fill, and says what it has no value for"; "names the causes whose
@@ -6117,17 +6122,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   and core and the stores are unchanged. `packages/cli` gains the SDK as a development
   dependency, for the seed that runs a real worker with no handler, and the conformance
   package's fuzz runner gains an optional function it calls with the walk's fixture when
-  the walk ends, for the case that diagnoses what a walk leaves. The registry holds 1242
+  the walk ends, for the case that diagnoses what a walk leaves. The registry holds 1245
   mutations where main holds 1187: one for each of the twenty-five arms of `diagnose`, and
-  thirty for its default verdict, its two bounds at their edges, the hung-run bound's limit
+  thirty-three for its default verdict, its two bounds at their edges, the hung-run bound's limit
   to a run claimed once and its verdict and verb, the instant a waiting run next moves at
-  and the deadline that can come before it, the depth an await of a child is followed to
-  and a ring of awaits, what a suggestion may carry, how it is spelled and when it is
+  and the deadline that can come before it, the depth an await of a child is followed to,
+  what a parent takes from a child that is running, a ring of awaits and what ends one,
+  whether the event of a carried wake exists, what a suggestion may carry, how it is spelled and when it is
   withheld, the exit and the stream of a row that is not readable and what names it, the
   redaction of an ended task's outcome, the rows it reads no healthy cause from, and the
-  walk. The base gate's arm is keyed on main's digest and exempts their forty-eight
-  markers, and the pinned file pair of the pull request before, which is dead now that it
-  is the base, is removed.
+  walk. The base gate's arm is keyed on main's digest and exempts their fifty-one
+  markers. It re-aims three entries of main's registry, the three that hold `inspect`'s
+  exit for a row that is not readable, whose lines now read, or are in, the one function
+  that lists what is not readable. The pinned file pair of the pull request
+  before, which is dead now that it is the base, is removed.
   - Where the build differs from the plan, and why. (1) The tasks waiting on an event: no
     read lists them and this pull request adds no SQL, so `explain` prints the event and the
     step and lists no task. Line 37 gives PR5.3c the read and the field. (2) A cause that
@@ -6147,8 +6155,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     of a retry or of a delayed rollback pass, a run past the hung-run bound, and four forms
     of rows that disagree. (6) The plan named a hung-run constant and no rule for it. The
     cause it gives keeps the verdict `ok` and suggests `inspect`: nothing is owed to a run
-    under a live lease, so `stuck` means only that a move the driver owes is late. The
-    bound is held only to a run claimed once, because no fact says when a later pass of a
+    under a live lease. `stuck` means that a move the driver owes is late, or that no
+    move can come, as for a ring of awaits that no timeout and no cancellation deadline
+    ends. The bound is held only to a run claimed once, because no fact says when a later pass of a
     run began. (7) A cause whose move is the driver's is `waiting` inside a grace of 120
     seconds and `stuck` after it, where the plan named those causes with no rule for a run
     that came due a moment ago. (8) A never-started cause stays `waiting` however long ago
@@ -6173,7 +6182,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     whose owner ordinal is outside its bounds, so a sleeper whose every checkpoint row is
     corrupt that way reads as `never-started-alpha1-form`, and a case pins it. The store
     lets a run await any task of its queue, its own among them, so the fuzz walk leaves
-    tasks that wait on themselves: `explain` reads such a ring once and answers `waiting`.
+    tasks that wait on themselves: `explain` reads such a ring once, and answers `waiting`
+    when a timeout or a cancellation deadline of some task of the ring ends it and `stuck`
+    when none does.
   - Option for the checkpoint count, not built, with its trigger: a read that counts a
     task's checkpoints, corrupt rows included, in place of `getCheckpoints`, which returns
     every checkpoint's state to be counted and leaves out a row it cannot order. Trigger:
@@ -6192,6 +6203,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     leaves a parent that was just woken printing `unexplained`, until it is asked again.
     Trigger: the first report of that answer for a healthy parent, or a read that takes a
     task and the task it awaits in one batch.
+  - Option for one instant along a chain of awaits, not built, with its trigger: name the
+    earliest instant at which a clock moves any task of a followed chain.
+    `nextTransitionAtMs` is the explained task's own, from its run and its cancellation
+    deadline, and a child's instants print under `awaits`. Trigger: the first operator who
+    needs one instant for a chain.
+  - Option for the fuzz surface, not built, with its trigger: add `suspendRun`,
+    `deferLaunch` and `retryTask` to the calls the fuzz walk makes, so the walk case
+    reaches a sleep with its checkpoint, a deferred launch and a revived task. The seeds
+    hold those states today and the walk does not. Trigger: a state `explain` has no
+    cause for that only one of those three calls writes, or the next pull request that
+    changes the fuzz walk.
   - Option for the walk, not built, with its trigger: run it on PostgreSQL and MySQL as
     well. `diagnose` reads facts that the operator-reads surface already holds equal on the
     three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
