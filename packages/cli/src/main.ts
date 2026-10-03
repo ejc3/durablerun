@@ -65,6 +65,13 @@ interface Answer {
   readonly view: Record<string, unknown>
   /** Human lines that replace the generic rendering of the view. */
   readonly text?: readonly string[]
+  /**
+   * The view holds what the command read from the store. Such an answer prints on stdout
+   * whatever the command exits with, and the exit code alone tells a script how it ended.
+   * An answer without it that did not exit `done` holds only why the command failed, and
+   * prints on stderr.
+   */
+  readonly holdsFacts?: true
 }
 
 interface Context {
@@ -171,7 +178,7 @@ function emit(
   const failed = answer.exit !== 'done'
   if (json) io.out(canonicalJson(document))
   else if (answer.text !== undefined) io.out(`${answer.text.join('\n')}\n`)
-  else (failed ? io.err : io.out)(humanText(document))
+  else (failed && answer.holdsFacts !== true ? io.err : io.out)(humanText(document))
   return exitCode(answer.exit)
 }
 
@@ -442,9 +449,9 @@ function noSuchTask(queue: string, taskId: string): Answer {
 
 /**
  * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
- * The facts print whole whatever they hold. A row the decoders refuse, or an integer
- * outside its bounds, is printed where it stands and the command exits `unreadable`, so a
- * script does not read a corrupt row as a clean answer.
+ * The facts print whole whatever they hold, on stdout. A row the decoders refuse, or an
+ * integer outside its bounds, is printed where it stands and the command exits
+ * `unreadable`, so a script does not read a corrupt row as a clean answer.
  */
 const inspect: Handler = async ({ invocation, store, reveal }) => {
   const queue = invocation.strings.queue ?? ''
@@ -468,6 +475,7 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
       : unreadable({ state: 'unreadable' }, facts.outcome.refused, reveal).view
   return {
     exit: factsAreReadable(facts) ? 'done' : 'unreadable',
+    holdsFacts: true,
     view: { queue, taskId, ...factsView(facts, outcome, reveal) },
   }
 }
