@@ -32,6 +32,7 @@ import {
   SEED_WORKER,
   fixture,
   onSeed,
+  parkedOnAnEvent,
   seedWorld,
 } from './explain-seeds.js'
 import {
@@ -375,7 +376,7 @@ describe('explain on libSQL', () => {
     }
   }, 60_000)
 
-  it('at nextTransitionAtMs a claim takes the run, and one millisecond earlier none does', async () => {
+  it('at nextTransitionAtMs the engine moves the task, and one millisecond earlier it does not', async () => {
     const moved: string[] = []
     for (const seed of EXPLAIN_SEEDS.filter((one) => one.verdict === 'waiting')) {
       await onSeed('libsql', seed, async (db, taskId, at) => {
@@ -405,6 +406,41 @@ describe('explain on libSQL', () => {
       'awaiting-a-timed-event',
       'sleeping-on-a-timer',
     ])
+    // Where a task's cancellation deadline comes before its run's wake, the instant is the
+    // deadline and the sweep is what moves the task: it cancels at that instant and not
+    // one millisecond earlier, and no claim takes the run at either.
+    const minute = { cancellation: { maxDurationSeconds: 60 } }
+    const deadlineFirst: Readonly<Record<string, (db: CliDb) => Promise<string>>> = {
+      'a sleeper whose timer is after its deadline': (db) => asleep(db, 120, minute),
+      'an await under a timeout that is after its deadline': (db) =>
+        parkedOnAnEvent(db, 300, minute),
+      'an await with no timeout': (db) => parkedOnAnEvent(db, null, minute),
+    }
+    for (const [name, build] of Object.entries(deadlineFirst)) {
+      const db = await openCliDb('libsql', 'explain-deadline-moves')
+      try {
+        const taskId = await build(db)
+        const next = (await explain(db, taskId)).nextTransitionAtMs
+        expect({ name, next }).toEqual({ name, next: NOW_MS + 60_000 })
+        const movedAt = async (ms: number) => {
+          await db.admin.setFakeNowEpochMs(ms)
+          const swept = await db.store.sweep(QUEUE, 10)
+          const claimed = await db.store.claim(QUEUE, `w-${ms}`, { leaseSeconds: 60, limit: 10 })
+          return { cancelled: swept.map((one) => one.taskId), claimed: claimed.length }
+        }
+        expect({
+          name,
+          early: await movedAt(NOW_MS + 60_000 - 1),
+          onTime: await movedAt(NOW_MS + 60_000),
+        }).toEqual({
+          name,
+          early: { cancelled: [], claimed: 0 },
+          onTime: { cancelled: [taskId], claimed: 0 },
+        })
+      } finally {
+        await db.close()
+      }
+    }
   }, 120_000)
 
   it('names a run asleep until its retry delay or its rollback delay has run, and reads a parent through to such a child', async () => {

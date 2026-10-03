@@ -203,9 +203,11 @@ export interface Diagnosis {
   readonly cause: Cause
   readonly verdict: Verdict
   /**
-   * For a `waiting` verdict, the instant from which the engine may move the run, or null
-   * when no clock moves it. It is at or before database time when the run is already due
-   * and the driver's next tick owes the move. Null for every other verdict.
+   * For a `waiting` verdict, the earliest instant from which a clock lets the engine move
+   * the task, or null when no clock does: the instant the run comes due or its await times
+   * out, or the task's cancellation deadline when that is ahead and comes first. It is at
+   * or before database time when the run is already due and the driver's next tick owes
+   * the move. Null for every other verdict.
    */
   readonly nextTransitionAtMs: number | null
   /** The facts behind the cause. None is a value a user wrote. */
@@ -385,14 +387,7 @@ const hungArm: RunArm = (view, run) => {
     runningForMs > HUNG_RUN_MS
     ? {
         cause: 'running-past-the-hung-bound',
-        facts: {
-          ...lease(run),
-          startedAtMs: run.startedAtMs,
-          runningForMs,
-          ...(view.facts.task.cancelAtMs === null
-            ? {}
-            : { cancelAtMs: view.facts.task.cancelAtMs }),
-        },
+        facts: { ...lease(run), startedAtMs: run.startedAtMs, runningForMs },
       }
     : null
 }
@@ -655,14 +650,28 @@ export function diagnose(facts: TaskFacts, evidence: Evidence = {}): Diagnosis |
   const lateMs = at === null || facts.nowMs === null ? null : facts.nowMs - at
   const rule: Rule = CAUSES[found.cause].verdict
   const verdict = verdictOf(rule, lateMs, evidence.child)
+  // A live task's cancellation deadline is a fact of every cause, and a clock of its own:
+  // at it the sweep cancels the task, whatever its run waits for.
+  const cancelAtMs = isLiveState(facts.task.state) ? facts.task.cancelAtMs : null
+  const next = earlier(at, isAhead(view, cancelAtMs) ? cancelAtMs : null)
   return {
     taskId: facts.task.taskId,
     cause: found.cause,
     verdict,
-    nextTransitionAtMs: verdict === 'waiting' ? at : null,
-    facts: rule === 'late' ? { ...found.facts, dueAtMs: at, lateByMs: lateMs } : found.facts,
+    nextTransitionAtMs: verdict === 'waiting' ? next : null,
+    facts: {
+      ...found.facts,
+      ...(rule === 'late' ? { dueAtMs: at, lateByMs: lateMs } : {}),
+      ...(cancelAtMs === null ? {} : { cancelAtMs }),
+    },
     ...(rule === 'child' && typeof evidence.child === 'object' ? { child: evidence.child } : {}),
   }
+}
+
+/** The earlier of two instants, either of which may be absent. */
+function earlier(one: number | null, other: number | null): number | null {
+  if (one === null || other === null) return one ?? other
+  return Math.min(one, other)
 }
 
 /** The diagnosis at the end of a chain of awaited children: the task's own when it awaits none. */

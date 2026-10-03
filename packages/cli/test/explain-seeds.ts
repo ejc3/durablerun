@@ -77,8 +77,12 @@ async function started(db: CliDb, options: SpawnOptions = {}) {
 }
 
 /** A started task parked on the event `approval`, under a timeout or with none. */
-async function parkedOnAnEvent(db: CliDb, timeoutSeconds: number | null) {
-  const { taskId, run } = await started(db)
+export async function parkedOnAnEvent(
+  db: CliDb,
+  timeoutSeconds: number | null,
+  options: SpawnOptions = {},
+) {
+  const { taskId, run } = await started(db, options)
   const answer = await db.store.awaitEvent(
     QUEUE,
     taskId,
