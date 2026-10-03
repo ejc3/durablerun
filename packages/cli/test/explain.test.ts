@@ -332,6 +332,37 @@ describe('explain on libSQL', () => {
     }
   })
 
+  it('a parent parked on a child that is past the hung-run bound is waiting, as it was before the bound', async () => {
+    const db = await openCliDb('libsql', 'explain-hung-child')
+    try {
+      const [parent, child] = await chainOfAwaits(db, 2)
+      const run = await claimActivated(db, 'w-child', child ?? '')
+      await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS - 1_000)
+      expect((await db.store.heartbeat(QUEUE, run.runId, run.claimToken, 60)).held).toBe(true)
+      const read = async (ms: number) => {
+        await db.admin.setFakeNowEpochMs(ms)
+        const answer = await explain(db, parent ?? '')
+        return { cause: answer.cause, verdict: answer.verdict, deepest: answer.deepest }
+      }
+      expect(await read(NOW_MS + HUNG_RUN_MS)).toEqual({
+        cause: 'awaiting-a-child',
+        verdict: 'waiting',
+        deepest: { taskId: child, cause: 'running-under-a-live-lease', verdict: 'ok' },
+      })
+      // One millisecond on the child's cause has another name. A worker is still running it.
+      expect(
+        await read(NOW_MS + HUNG_RUN_MS + 1),
+        'mutation-verdict:behavior:cli-explain-a-parent-waits-for-a-child-a-worker-runs',
+      ).toEqual({
+        cause: 'awaiting-a-child',
+        verdict: 'waiting',
+        deepest: { taskId: child, cause: 'running-past-the-hung-bound', verdict: 'ok' },
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
   it('names the cancellation deadline as the next instant when it comes before the wake, and prints it among the facts', async () => {
     const read = (answer: Answer) => ({
       cause: answer.cause,
