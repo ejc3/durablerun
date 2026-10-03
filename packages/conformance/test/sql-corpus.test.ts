@@ -49,6 +49,13 @@ describe('generated SQL corpus', () => {
         expect(await store.getCheckpoints('q', run.taskId, 1)).toEqual([])
         expect(await store.getTaskResult('q', run.taskId)).not.toBeNull()
         expect(await store.nextWakeAtEpochMs('q')).not.toBeNull()
+        // An operator's reads go through the same recorder.
+        const operator = fixture.operatorReadsOver(
+          recordingTreeBatches(fixture.raw, recorded, isTreeBuiltStatement),
+        )
+        expect((await operator.taskFacts('q', run.taskId))?.runs).toHaveLength(1)
+        expect(await operator.taskIdByKey('q', 'no-such-key')).toBeNull()
+        expect((await operator.eventState('q', 'no-such-event')).exists).toBe(false)
         // A run this store never heard of: the terminal batch reads its task, finds none,
         // and reads its state to say why it refuses.
         await expect(store.complete('q', 'no-such-run', 'no-token', '"x"')).rejects.toThrow()

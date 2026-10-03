@@ -1,5 +1,10 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { META_TABLE_SQL, MysqlSchedulerStore, MysqlStoreAdmin } from '@durablerun/store-mysql'
+import {
+  META_TABLE_SQL,
+  MysqlSchedulerStore,
+  MysqlStoreAdmin,
+  operatorReads,
+} from '@durablerun/store-mysql'
 import {
   mysqlPersistedIntegerCatalogStatements,
   openMysqlTestDb,
@@ -127,6 +132,7 @@ export async function makeMysqlFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
+    operatorReadsOver: (db: SqlExecutor) => operatorReads(db),
     deadlocks: () => raw.deadlocks,
     lockWait: async () => ({
       store,

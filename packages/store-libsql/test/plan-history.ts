@@ -1,5 +1,10 @@
 import { SAGA_STARTED_PREFIX, type SqlExecutor } from '@durablerun/core'
-import { type LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '../src/index.js'
+import {
+  type LibsqlExecutor,
+  LibsqlSchedulerStore,
+  LibsqlStoreAdmin,
+  operatorReads,
+} from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
 
 type SqlStatement = Parameters<SqlExecutor['batch']>[1][number]
@@ -94,7 +99,14 @@ export async function recordHistory(
     'event',
     null,
   )
+  // An operator's reads of a parked task, of the task a key names, and of an event, before
+  // the event exists and after: a read changes nothing, so where it stands is free.
+  const operator = operatorReads(recorder)
+  await operator.taskFacts('q', waiting.taskId)
+  await operator.taskIdByKey('q', 'no-such-key')
   await store.emitEvent('q', 'event', '{}')
+  await operator.taskFacts('q', waiting.taskId)
+  await operator.eventState('q', 'event')
   const woken = await startedOf(waiting.taskId)
   await store.complete('q', woken.runId, woken.claimToken, '{}')
   // A parent awaits a live child, and the child ends and wakes it. Then an older build's

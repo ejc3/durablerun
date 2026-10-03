@@ -12,5 +12,6 @@ export {
   SCHEMA_VERSION_READ_SQL,
 } from './schema.js'
 export { PostgresSchedulerStore } from './store.js'
+export { operatorReads } from './operator-reads.js'
 export { NOW_MS } from './time.js'
 export { TREE_DIALECT } from './tree.js'

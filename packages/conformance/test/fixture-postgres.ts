@@ -1,5 +1,9 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { PostgresSchedulerStore, PostgresStoreAdmin } from '@durablerun/store-postgres'
+import {
+  PostgresSchedulerStore,
+  PostgresStoreAdmin,
+  operatorReads,
+} from '@durablerun/store-postgres'
 import {
   openPostgresTestDb,
   postgresPersistedIntegerCatalogStatements,
@@ -100,6 +104,7 @@ export async function makePostgresFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
+    operatorReadsOver: (db: SqlExecutor) => operatorReads(db),
     deadlocks: () => raw.deadlocks,
     lockWait: async () => ({
       store,

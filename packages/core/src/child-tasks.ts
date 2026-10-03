@@ -16,8 +16,10 @@ import { requireIdentifiersFit } from './validate.js'
 const {
   JSONParse: parseJson,
   JSONStringify: stringifyJson,
+  NumberFrom: toNumber,
   ObjectHasOwn: hasOwn,
   RangeError: TrustedRangeError,
+  RegExpExec: regexpExec,
   StringStartsWith: startsWith,
 } = TASK_INTRINSICS
 
@@ -201,6 +203,30 @@ export class ChildAwaitRefusedError extends Error {
  */
 export function childSpawnKey(parentTaskId: string, replayKey: string): string {
   return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId.length}:${parentTaskId}:${replayKey}`
+}
+
+const CHILD_SPAWN_KEY_PREFIX = `${RESERVED_EVENT_PREFIX}spawn:`
+/** A length as `childSpawnKey` writes one: decimal digits with no leading zero. */
+const WRITTEN_LENGTH = /^(?:0|[1-9][0-9]*)$/
+
+/**
+ * The parent and the call site a child's idempotency key names, or null for any key
+ * `childSpawnKey` could not have built. The written length says where the parent id ends,
+ * so a delimiter inside either part is read as part of it.
+ */
+export function parseChildSpawnKey(
+  key: string,
+): { parentTaskId: string; replayKey: string } | null {
+  if (!startsWith(key, CHILD_SPAWN_KEY_PREFIX)) return null
+  const lengthEnd = key.indexOf(':', CHILD_SPAWN_KEY_PREFIX.length)
+  if (lengthEnd < 0) return null
+  const written = key.slice(CHILD_SPAWN_KEY_PREFIX.length, lengthEnd)
+  if (regexpExec(WRITTEN_LENGTH, written) === null) return null
+  const parentStart = lengthEnd + 1
+  const parentEnd = parentStart + toNumber(written)
+  // The parent id is followed by the delimiter that starts the call site.
+  if (parentEnd >= key.length || key[parentEnd] !== ':') return null
+  return { parentTaskId: key.slice(parentStart, parentEnd), replayKey: key.slice(parentEnd + 1) }
 }
 
 /**

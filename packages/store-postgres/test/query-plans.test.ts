@@ -1,6 +1,7 @@
 import { SAGA_STARTED_PREFIX, type SqlExecutor, type SqlStatement } from '@durablerun/core'
 import { Client } from 'pg'
 import { expect, it } from 'vitest'
+import { operatorReads } from '../src/operator-reads.js'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
 import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
@@ -551,6 +552,95 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
       attemptRecordsRead,
       'mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt',
     ).toEqual({ completed: false, failed: false, cancelled: false, saga: true })
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * An operator's reads reach every row by a key. Each statement is recorded from a real
+ * read of a parked task, and planned with sequential and bitmap scans disabled, so a scan
+ * that remains is a table no index of the statement reaches. Every index scan is pinned
+ * with its condition: the task and its saga's names by their keys, the task's runs by the
+ * index on a task's ordinals, a run's waits by the head of their key, an event by its key,
+ * a keyed task by the index on a queue's keys, and the test clock's row by its key. This
+ * needs a server.
+ */
+it("reaches every row an operator's read takes by a key, and scans no table", async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-operator-reads' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const seen: { label: string; index: number; sql: string }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, control) => {
+        for (const [index, statement] of statements.entries()) {
+          seen.push({ label, index, sql: statement.sql })
+        }
+        return db.raw.batch(label, statements, control)
+      },
+    }
+    const store = new PostgresSchedulerStore(db.raw, db.ids)
+    const task = await store.spawn('q', 'job', '{}', { idempotencyKey: 'order-7' })
+    const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+    if (run?.taskId !== task.taskId) throw new Error('expected to claim the keyed task')
+    await store.activate('q', run.runId, run.claimToken, run.claimGen)
+    await store.awaitEvent('q', run.taskId, run.runId, run.claimToken, 'approve', 'approval', 60)
+    const reads = operatorReads(recorder)
+    expect((await reads.taskFacts('q', task.taskId))?.waits).toHaveLength(1)
+    expect(await reads.taskIdByKey('q', 'order-7')).toBe(task.taskId)
+    expect((await reads.eventState('q', 'approval')).exists).toBe(false)
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const reached: Record<string, string[]> = {}
+    const scans: string[] = []
+    for (const statement of seen) {
+      const name = `${statement.label}#${statement.index}`
+      const lines = await planLines(client, statement.sql)
+      reached[name] = lines.flatMap((line, at) => {
+        const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
+        if (found === null) return []
+        const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
+        return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
+      })
+      scans.push(
+        ...lines
+          .filter((line) => /Seq Scan|Bitmap/.test(line))
+          .map((line) => `[${name}] ${line.trim()}`),
+      )
+    }
+    expect(scans).toEqual([])
+    const sagaPhase = "((task_id = tasks.task_id) AND (checkpoint_name = '$rolling-back'::text))"
+    expect(reached).toEqual({
+      'task-facts#0': [
+        'tasks_pkey on tasks: (task_id = $1)',
+        // The batch clock, which reads the test clock's row ahead of the server's own.
+        "meta_pkey on meta: (key = 'fake_now_ms'::text)",
+        // The rollback outcome: the phase marker, then the saga's names among this task's
+        // rows of the key, as `task-result` reads them.
+        `checkpoints_pkey on checkpoints sp: ${sagaPhase}`,
+        'checkpoints_pkey on checkpoints ss: (task_id = tasks.task_id)',
+        "checkpoints_pkey on checkpoints sr: ((task_id = tasks.task_id) AND (checkpoint_name = ('$rollback:'::text || substr(ss.checkpoint_name, 10))))",
+        `checkpoints_pkey on checkpoints sp_1: ${sagaPhase}`,
+        'checkpoints_pkey on checkpoints st: (task_id = tasks.task_id)',
+        // Whether the saga began.
+        `checkpoints_pkey on checkpoints sp_2: ${sagaPhase}`,
+      ],
+      'task-facts#1': [
+        'runs_task_attempt on runs r: (task_id = $1)',
+        'events_pkey on events e: ((queue = r.queue) AND (event_name = r.wake_event))',
+      ],
+      'task-facts#2': [
+        'runs_task_attempt on runs r: (task_id = $1)',
+        'waits_pkey on waits w: (run_id = r.run_id)',
+        'events_pkey on events e: ((queue = w.queue) AND (event_name = w.event_name))',
+      ],
+      'fake-clock#0': ["meta_pkey on meta: (key = 'fake_now_ms'::text)"],
+      'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
+      'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
+    })
   } finally {
     await client.end()
     await db.close()

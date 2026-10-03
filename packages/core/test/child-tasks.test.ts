@@ -6,6 +6,7 @@ import {
   sqlFragment,
   type TaskOutcome,
   childSpawnKey,
+  parseChildSpawnKey,
   decodeTaskOutcome,
   encodeTaskOutcome,
   refuseReservedEventName,
@@ -182,6 +183,66 @@ describe("a child's spawn key", () => {
       ],
       'mutation-verdict:behavior:child-spawn-key-is-unambiguous',
     ).toEqual([false, false])
+  })
+})
+
+describe("a child's spawn key, read back", () => {
+  // Every part holds the delimiter, a digit that could be read as a length, the reserved
+  // prefix, and a character outside the basic plane, which is two UTF-16 units.
+  const PARTS = [
+    '',
+    'a',
+    ':',
+    '1',
+    '1:',
+    ':1:',
+    '$spawn:',
+    '3:abc',
+    'task-7',
+    '\u{1F600}',
+    'a:\u{1F600}:b',
+  ]
+
+  it('answers the parent and the call site of every key the builder writes, whatever delimiters they hold', () => {
+    const wrong: string[] = []
+    const keys = new Set<string>()
+    for (const parentTaskId of PARTS) {
+      for (const replayKey of PARTS) {
+        const key = childSpawnKey(parentTaskId, replayKey)
+        keys.add(key)
+        const read = parseChildSpawnKey(key)
+        if (read?.parentTaskId !== parentTaskId || read.replayKey !== replayKey) {
+          wrong.push(
+            `${JSON.stringify([parentTaskId, replayKey])} read back as ${JSON.stringify(read)}`,
+          )
+        }
+      }
+    }
+    expect(wrong, 'mutation-verdict:behavior:child-spawn-key-reads-back').toEqual([])
+    // No two pairs spell one key, so what is read back is the only pair that wrote it.
+    expect(keys.size).toBe(PARTS.length * PARTS.length)
+  })
+
+  it('answers null for a key the builder could not have written', () => {
+    for (const key of [
+      '',
+      'order-7',
+      '$spawn',
+      '$spawn:',
+      '$spawn:1',
+      '$spawn:1:a',
+      '$spawn:2:a:b',
+      '$spawn:01:a:b',
+      '$spawn:-1:a:b',
+      '$spawn:1.0:a:b',
+      '$spawn:x:a:b',
+      '$spawn:1:ab:c',
+      '$spawn:99999999999999999999:a:b',
+      '$task-done:1:a:b',
+      ' $spawn:1:a:b',
+    ]) {
+      expect({ key, read: parseChildSpawnKey(key) }).toEqual({ key, read: null })
+    }
   })
 })
 

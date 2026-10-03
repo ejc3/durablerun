@@ -88,6 +88,10 @@ export const MATRIX_READ_LABELS = [
   'get-checkpoints',
   'task-result',
   'next-wake',
+  'task-facts',
+  'fake-clock',
+  'task-id-by-key',
+  'event-state',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -598,6 +602,7 @@ export async function runFaultMatrixCase(
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
       const admin = f.adminOver(simDb)
+      const operator = f.operatorReadsOver(simDb)
       // Every call is fault-tolerant: a crash rejection means "this call's
       // process died" — the workload carries on, like real traffic would.
       const go = async <T>(op: () => Promise<T>): Promise<T | null> => {
@@ -874,6 +879,11 @@ export async function runFaultMatrixCase(
       await go(() => store.sweep(Q, 10))
       if (t2) await go(() => store.getTaskResult(Q, t2.taskId))
       await go(() => store.nextWakeAtEpochMs(Q))
+      // An operator's reads, beside whatever the faults left: a task with its runs, the
+      // task a key names, and an event.
+      if (t2) await go(() => operator.taskFacts(Q, t2.taskId))
+      await go(() => operator.taskIdByKey(Q, 'k1'))
+      await go(() => operator.eventState(Q, 'go'))
     })
     await world.run()
 

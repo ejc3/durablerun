@@ -21,6 +21,7 @@ const EXPECTED_SURFACE_IDS = [
   'self-concurrency',
   'stale-token',
   'executor-errors',
+  'operator-reads',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 
