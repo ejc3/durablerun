@@ -712,6 +712,94 @@ describe('explain on libSQL', () => {
     }
   })
 
+  it('a ring of awaits that no clock ends is stuck, and one that a timeout or a deadline ends is waiting', async () => {
+    type SpawnOptions = Parameters<CliDb['store']['spawn']>[3]
+    /** A task parked on its own completion, under a timeout or with none. */
+    const waitsOnItself = async (
+      db: CliDb,
+      timeoutSeconds: number | null,
+      options: SpawnOptions,
+    ) => {
+      const task = await db.store.spawn(QUEUE, 'job', '{}', options)
+      const run = await claimActivated(db, 'w-self', task.taskId)
+      await db.store.awaitTaskDone(
+        QUEUE,
+        task.taskId,
+        run.runId,
+        run.claimToken,
+        'await-self',
+        task.taskId,
+        timeoutSeconds,
+      )
+      return task.taskId
+    }
+    const read = async (db: CliDb, taskId: string) => {
+      const answer = await explain(db, taskId)
+      return {
+        cause: answer.cause,
+        verdict: answer.verdict,
+        nextTransitionAtMs: answer.nextTransitionAtMs,
+        next: answer.next?.argv[0] ?? null,
+      }
+    }
+    const ring = { cause: 'awaiting-a-child', next: null }
+    // No timeout and no cancellation deadline: nothing ends the wait, now or a year on, so
+    // no move can come. The next command is a look, and never a cancel.
+    const never = await openCliDb('libsql', 'explain-ring-nothing-ends')
+    try {
+      const taskId = await waitsOnItself(never, null, {})
+      const stuck = { ...ring, verdict: 'stuck', nextTransitionAtMs: null, next: 'inspect' }
+      expect(
+        await read(never, taskId),
+        'mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck',
+      ).toEqual(stuck)
+      await never.admin.setFakeNowEpochMs(NOW_MS + 365 * 86_400_000)
+      expect(await read(never, taskId)).toEqual(stuck)
+    } finally {
+      await never.close()
+    }
+    // A timeout on the await, or a cancellation deadline on the task, ends the ring.
+    const ended = { ...ring, verdict: 'waiting', nextTransitionAtMs: NOW_MS + 60_000 }
+    const timed = await openCliDb('libsql', 'explain-ring-timeout')
+    try {
+      expect(await read(timed, await waitsOnItself(timed, 60, {}))).toEqual(ended)
+    } finally {
+      await timed.close()
+    }
+    const bounded = await openCliDb('libsql', 'explain-ring-deadline')
+    try {
+      const options = { cancellation: { maxDurationSeconds: 60 } }
+      expect(await read(bounded, await waitsOnItself(bounded, null, options))).toEqual(ended)
+    } finally {
+      await bounded.close()
+    }
+    // Two tasks that wait on each other, where only the second's await has a timeout: the
+    // first has no clock of its own, and the second's ends the ring for both.
+    const pair = await openCliDb('libsql', 'explain-ring-one-clock')
+    try {
+      const [first, second] = await chainOfAwaits(pair, 2)
+      const run = await claimActivated(pair, 'w-second', second ?? '')
+      await pair.store.awaitTaskDone(
+        QUEUE,
+        second ?? '',
+        run.runId,
+        run.claimToken,
+        'await-first',
+        first ?? '',
+        60,
+      )
+      expect({
+        first: await read(pair, first ?? ''),
+        second: await read(pair, second ?? ''),
+      }).toEqual({
+        first: { ...ring, verdict: 'waiting', nextTransitionAtMs: null },
+        second: ended,
+      })
+    } finally {
+      await pair.close()
+    }
+  })
+
   it('every suggestion emitted parses, holds no --yes and never names emit', async () => {
     const emitted: string[][] = []
     for (const seed of EXPLAIN_SEEDS) {
