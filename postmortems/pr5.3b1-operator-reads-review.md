@@ -35,7 +35,7 @@ Every counted finding came from the outside review. This project's machinery fou
 |----------|----------|-------|
 | The one review of the branch's head, by reading and by its own probes on libSQL (findings 1, 2, 3, 4, 7, 8 and 9) | 7 | No |
 
-Self-catch rate: 0 of 7, or 0% (previous round on main, PR5.2a's: 0 of 15, or 0%; previous round on this work, PR5.3a's: 0 of 17, or 0%). Three rounds of the operable alpha milestone have a rate of zero. The mechanisms each added hold the instance the review named, and the next review finds the same class one step over.
+Self-catch rate: 0 of 7, or 0% (previous round on main, PR5.2a's: 0 of 15, or 0%; previous round on this work, PR5.3a's: 0 of 17, or 0%). All four rounds of the operable alpha milestone so far, PR5.0's, PR5.3a's, PR5.2a's and this one, have a rate of zero. The mechanisms each added hold the instance the review named, and the next review finds the same class one step over.
 
 ## Recurrence
 
@@ -43,7 +43,7 @@ A stored NULL read as a value recurred. PR3.1d's round met it in the same table:
 
 Values planted where the author chose recurred, and has now appeared in both rounds of the CLI. PR5.3a's redaction sweep planted a credential in the URLs its author listed, and its fold widened the list. Here the corrupt cases generated every field and took the kinds of value from a list of five, and the redaction case planted its sentinel only where a store would accept it. PR5.3a's mechanism enumerates commands and flags. It does not enumerate the kinds of value a column can hold, and it cannot reach a value a schema refuses.
 
-A guard with no registered owner recurred. PR3.9e part 3a derived, for statement trees, which guards have no mutation. That check reads SQL trees. It derives nothing for a guard written in TypeScript, so in core's reader and in the CLI the registry is again a list its author keeps, and four guards were missing from it.
+A guard with no registered owner recurred. PR3.9e part 3a derived which conditions of the statement tree rules have no mutation, by reading the text of the regions that hold those rules. Its own postmortem says a rule outside those regions has no derived remainder. Core's reader and the CLI are outside them, so there the registry is again a list its author keeps, and four guards were missing from it.
 
 Two classes are new in this work. A case that checks one mode of an output that has two (finding 2) had not been met before. An expected answer taken from what the code under test does (findings 3 and 7) is new in this form: the surface's rule, that an expected answer is written out from what the scenario did, was applied to the values of rows and not to the choices of the read itself.
 
@@ -68,7 +68,7 @@ None is known when this is written: the fold has not been reviewed, and a narrow
 ## Evidence
 
 - Red tests: commit `7670c51`, probe `packages/cli/test/inspect.test.ts` `prints the snapshot on stdout in text as it does with --json, whatever it exits with`, run and seen failing (1 test) against `5e360cc`, where stdout was empty and the snapshot was on stderr.
-- Fixes: commit `8f503ff`, which turns that red test green; gate after the fix: the 61 cases of the CLI on libSQL.
+- Fixes: commit `8f503ff`, which turns that red test green; gate after the fix: the 60 cases the CLI had then, on libSQL.
 - Red tests: commit `f74e405`, probe `packages/core/test/operator-reads.test.ts` `lists an event that exists with no instant, in a task's facts and in an event's state`, run and seen failing (1 test) against `8f503ff`, where the answer held an empty corrupt list. The same commit's conformance case, "says whether an event exists and when it was emitted, a completion event included, and nothing of its payload", was seen failing by name on libSQL, PostgreSQL and MySQL (3 tests).
 - Fixes: commit `6f7a205`, which turns those red tests green; gate after the fix: core's cases, and the 240 cases of the surface on the three dialects, 81 of them the generated NULL cases.
 - Red tests: none of its own for findings 4, 7, 8 and 9, and this line cites no commit. With the UTF-16 comparator put back by hand, the surface's order case failed by name on all three dialects under its marker, and the same change is now a registered mutation.
