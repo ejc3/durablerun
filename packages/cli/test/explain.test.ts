@@ -301,6 +301,80 @@ describe('explain on libSQL', () => {
     }
   })
 
+  it('names the cancellation deadline as the next instant when it comes before the wake, and prints it among the facts', async () => {
+    const read = (answer: Answer) => ({
+      cause: answer.cause,
+      verdict: answer.verdict,
+      nextTransitionAtMs: answer.nextTransitionAtMs,
+      cancelAtMs: answer.facts.cancelAtMs,
+    })
+    // A sleeper that may run for a minute, asleep for two: the sweep cancels it at the
+    // minute, which is before its timer.
+    const db = await openCliDb('libsql', 'explain-deadline-first')
+    try {
+      const taskId = await asleep(db, 120, { cancellation: { maxDurationSeconds: 60 } })
+      expect(
+        read(await explain(db, taskId)),
+        'mutation-verdict:behavior:cli-explain-next-transition-takes-an-earlier-deadline',
+      ).toEqual({
+        cause: 'sleeping-on-a-timer',
+        verdict: 'waiting',
+        nextTransitionAtMs: NOW_MS + 60_000,
+        cancelAtMs: NOW_MS + 60_000,
+      })
+      // One millisecond before that instant nothing moves the task, and at it the sweep does.
+      await db.admin.setFakeNowEpochMs(NOW_MS + 60_000 - 1)
+      expect({
+        swept: await db.store.sweep(QUEUE, 10),
+        claimed: await db.store.claim(QUEUE, 'w-early', { leaseSeconds: 60, limit: 10 }),
+      }).toEqual({ swept: [], claimed: [] })
+      await db.admin.setFakeNowEpochMs(NOW_MS + 60_000)
+      expect((await db.store.sweep(QUEUE, 10)).map((swept) => [swept.kind, swept.taskId])).toEqual([
+        ['cancelled', taskId],
+      ])
+    } finally {
+      await db.close()
+    }
+    // An await with no timeout has no clock of its own, and the task's deadline is one.
+    const untimed = await openCliDb('libsql', 'explain-deadline-untimed')
+    try {
+      const task = await untimed.store.spawn(QUEUE, 'job', '{}', {
+        cancellation: { maxDurationSeconds: 60 },
+      })
+      const run = await claimActivated(untimed, 'w-await', task.taskId)
+      await untimed.store.awaitEvent(
+        QUEUE,
+        task.taskId,
+        run.runId,
+        run.claimToken,
+        'approve',
+        'approval',
+        null,
+      )
+      expect(read(await explain(untimed, task.taskId))).toEqual({
+        cause: 'awaiting-an-untimed-event',
+        verdict: 'waiting',
+        nextTransitionAtMs: NOW_MS + 60_000,
+        cancelAtMs: NOW_MS + 60_000,
+      })
+    } finally {
+      await untimed.close()
+    }
+    // A deadline after the wake leaves the wake as the next instant, and still prints.
+    const later = await openCliDb('libsql', 'explain-deadline-later')
+    try {
+      const taskId = await asleep(later, 120, { cancellation: { maxDurationSeconds: 300 } })
+      expect(read(await explain(later, taskId))).toEqual({
+        cause: 'sleeping-on-a-timer',
+        verdict: 'waiting',
+        nextTransitionAtMs: NOW_MS + 120_000,
+        cancelAtMs: NOW_MS + 300_000,
+      })
+    } finally {
+      await later.close()
+    }
+  }, 60_000)
+
   it('at nextTransitionAtMs a claim takes the run, and one millisecond earlier none does', async () => {
     const moved: string[] = []
     for (const seed of EXPLAIN_SEEDS.filter((one) => one.verdict === 'waiting')) {
