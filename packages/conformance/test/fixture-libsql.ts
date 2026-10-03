@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore, LibsqlStoreAdmin, operatorReads } from '@durablerun/store-libsql'
 import { holdLibsqlWriteLock, openTestDb } from '@durablerun/store-libsql/testing'
 import {
   type PersistedNumericTable,
@@ -132,6 +132,7 @@ export async function makeLibsqlFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
+    operatorReadsOver: operatorReads,
     // SQLite has one writer at a time and never picks a victim: a writer that cannot get
     // the lock waits out its busy timeout and fails, and the executor runs nothing again.
     deadlocks: () => 0,

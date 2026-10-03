@@ -16,6 +16,7 @@ import { requireIdentifiersFit } from './validate.js'
 const {
   JSONParse: parseJson,
   JSONStringify: stringifyJson,
+  NumberFrom: toNumber,
   ObjectHasOwn: hasOwn,
   RangeError: TrustedRangeError,
   StringStartsWith: startsWith,
@@ -201,6 +202,28 @@ export class ChildAwaitRefusedError extends Error {
  */
 export function childSpawnKey(parentTaskId: string, replayKey: string): string {
   return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId.length}:${parentTaskId}:${replayKey}`
+}
+
+const CHILD_SPAWN_KEY_PREFIX = `${RESERVED_EVENT_PREFIX}spawn:`
+
+/**
+ * The parent and the call site a child's idempotency key names, or null for any key
+ * `childSpawnKey` could not have built. The written length says where the parent id ends,
+ * so a delimiter inside either part is read as part of it. The key is read loosely, and the
+ * answer is kept only when the builder writes this very key from it, so what a key the
+ * builder could not have built means is the builder's to say, and is said nowhere else.
+ */
+export function parseChildSpawnKey(
+  key: string,
+): { parentTaskId: string; replayKey: string } | null {
+  if (!startsWith(key, CHILD_SPAWN_KEY_PREFIX)) return null
+  const lengthEnd = key.indexOf(':', CHILD_SPAWN_KEY_PREFIX.length)
+  const written = key.slice(CHILD_SPAWN_KEY_PREFIX.length, lengthEnd)
+  const parentStart = lengthEnd + 1
+  const parentEnd = parentStart + toNumber(written)
+  const parentTaskId = key.slice(parentStart, parentEnd)
+  const replayKey = key.slice(parentEnd + 1)
+  return childSpawnKey(parentTaskId, replayKey) === key ? { parentTaskId, replayKey } : null
 }
 
 /**

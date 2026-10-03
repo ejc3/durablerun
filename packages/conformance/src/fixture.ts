@@ -4,6 +4,7 @@ import {
   type PersistedCounterFieldDescriptor,
   type PersistedTemporalFieldDescriptor,
   type HeldSchedulerStore,
+  type HeldOperatorReads,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -325,6 +326,13 @@ export interface StoreFixture {
    * actors against one database.
    */
   storeOver(db: SqlExecutor, buggify?: Buggify): HeldSchedulerStore
+  /**
+   * The dialect's operator reads over an executor, through the factory its store package
+   * exports. They are apart from the store: no engine actor calls them. The type is
+   * nominal, as the store's is: only core's one implementation, with its check of every
+   * string, is a fixture's operator reads.
+   */
+  operatorReadsOver(db: SqlExecutor): HeldOperatorReads
   /**
    * How many times the server has chosen one of this fixture's batches as a deadlock
    * victim, read from the fixture's own executor. The executor runs a victim again, which

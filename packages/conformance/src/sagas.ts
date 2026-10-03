@@ -38,8 +38,8 @@ const Q = 'q'
 /** Where a saga case puts a task's children, so the next claim in `Q` is never one of them. */
 const KIDS = 'kids'
 const START_MS = 1_000_000
-const CAUSE = '{"name":"ForwardBoom"}'
-const ROLLBACK_BOOM = '{"name":"RollbackBoom"}'
+export const CAUSE = '{"name":"ForwardBoom"}'
+export const ROLLBACK_BOOM = '{"name":"RollbackBoom"}'
 
 async function rowsOf(raw: SqlExecutor, sql: string, args: (string | number)[] = []) {
   const [result] = await raw.batch('saga-rows', [{ sql, args }], 'read')

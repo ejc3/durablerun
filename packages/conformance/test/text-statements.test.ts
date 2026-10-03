@@ -67,6 +67,10 @@ describe('the statements a store sends as text', () => {
         expect((await store.heartbeat('q', run.runId, run.claimToken, 30)).held).toBe(true)
         await store.driverHeartbeat('q', 'driver-1', 30)
         expect(await store.nextWakeAtEpochMs('q')).not.toBeNull()
+        // An operator's read of a task asks whether the test clock is set, which is text.
+        expect(
+          (await fixture.operatorReadsOver(recorder).taskFacts('q', run.taskId))?.fakeClock,
+        ).toBe(false)
         await store.sweep('q', 10)
         expect(await store.expireLeaseNow('q', run.runId, run.claimToken)).toBe(true)
         await admin.migrate()
@@ -84,7 +88,9 @@ describe('the statements a store sends as text', () => {
         LISTED.filter((label) => !text.has(label) && !UNMIGRATED_ONLY.includes(label)),
       ).toEqual([])
       expect([...trees].filter((label) => LISTED.includes(label))).toEqual([])
-      expect([...trees]).toEqual(expect.arrayContaining(['heartbeat', 'next-wake', 'sweep:scan']))
+      expect([...trees]).toEqual(
+        expect.arrayContaining(['heartbeat', 'next-wake', 'sweep:scan', 'task-facts']),
+      )
     })
   }
 })

@@ -1,6 +1,6 @@
 import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { SchedulerStore } from './ports.js'
+import type { OperatorReads, SchedulerStore } from './ports.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
 const {
@@ -305,13 +305,54 @@ function requireNamed(named: NamedStrings | undefined, value: unknown, where: st
  * the caller passed or left out.
  */
 export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
-  const named: readonly NamedStrings[] = PORT_STRINGS[method]
+  requireArguments(PORT_STRINGS[method], method, args)
+}
+
+/** Hold a call's arguments to the names one row of a table gives them, in order. */
+function requireArguments(
+  named: readonly NamedStrings[],
+  method: string,
+  args: readonly unknown[],
+): void {
   for (let index = 0; index < named.length; index++) {
     const spec = named[index]
     // Only an options object shows its place in a refusal, so only one has it written out.
     const where = typeof spec === 'object' && spec !== null ? `${method}[${index}]` : ''
     requireNamed(spec, args[index], where)
   }
+}
+
+export type OperatorReadMethod = keyof OperatorReads
+
+/**
+ * Where each named string enters the operator's read port (`OperatorReads`), under the
+ * names and the rules of the table above. It is a table of its own because that port is
+ * apart from `SchedulerStore`: `HeldPort` and `PORT_STRINGS` say what a store's entries
+ * take and stay as they were. Its type is computed from `OperatorReads`, so a method that
+ * port gains, and a string argument a method gains, each stop the build until this names
+ * them. An idempotency key is held as a caller's is, and a reserved one is not refused: a
+ * read of the engine's own key or event changes nothing.
+ */
+export const OPERATOR_READ_STRINGS = frozenThroughout({
+  taskFacts: ['queue', 'taskId'],
+  taskIdByKey: ['queue', 'idempotencyKey'],
+  eventState: ['queue', 'eventName'],
+} as const satisfies PortStringsOf<OperatorReads>)
+
+/** Every method the operator read table names, which is every method of that port. */
+export const OPERATOR_READ_METHODS: readonly OperatorReadMethod[] = freeze(
+  objectKeys(OPERATOR_READ_STRINGS) as OperatorReadMethod[],
+)
+
+/**
+ * The one check of the strings an operator read carries, as `requirePortStrings` is of a
+ * store call's. Core's implementation of the port puts it in front of every method.
+ */
+export function requireOperatorReadStrings(
+  method: OperatorReadMethod,
+  args: readonly unknown[],
+): void {
+  requireArguments(OPERATOR_READ_STRINGS[method], method, args)
 }
 
 /** Every method the table names, which is every method of the port. */

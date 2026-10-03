@@ -1,6 +1,8 @@
 import { SAGA_STARTED_PREFIX, type SqlExecutor, type SqlStatement } from '@durablerun/core'
+import { RecordingExecutor } from '@durablerun/core/testing'
 import { Client } from 'pg'
 import { expect, it } from 'vitest'
+import { operatorReads } from '../src/operator-reads.js'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
 import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
@@ -551,6 +553,97 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
       attemptRecordsRead,
       'mutation-verdict:behavior:saga-postgres-attempt-records-read-only-for-a-halt',
     ).toEqual({ completed: false, failed: false, cancelled: false, saga: true })
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * An operator's reads reach every row by a key. Each statement is recorded from a real
+ * read of a parked task, and planned with sequential and bitmap scans disabled, so a scan
+ * that remains is a table no index of the statement reaches. Every index scan is pinned
+ * with its condition: the task and its saga's names by their keys, the task's runs by the
+ * index on a task's ordinals, a run's waits by the head of their key, an event by its key,
+ * and a keyed task by the index on a queue's keys. This needs a server.
+ *
+ * `meta` is left out of both checks, and with it the one statement that reads nothing
+ * else, whether the test clock is set. It holds a handful of rows, and schema version 7
+ * changes the collation of its key, which rebuilds that index over rows the migrations
+ * updated in place. PostgreSQL does not use an index built that way while a transaction
+ * older than the build is open. So on a database a test migrated a moment ago, beside
+ * other tests, a read of `meta` plans as an index scan in one run and as a scan of the
+ * table in the next, and its plan says when the database was migrated and not how a
+ * statement reaches its rows. The same holds on a deployed database only until the
+ * transactions that were open at its migration have ended.
+ */
+it("reaches every row an operator's read takes by a key, and scans no table", async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-operator-reads' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const recorder = new RecordingExecutor(db.raw)
+    const store = new PostgresSchedulerStore(db.raw, db.ids)
+    const task = await store.spawn('q', 'job', '{}', { idempotencyKey: 'order-7' })
+    const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+    if (run?.taskId !== task.taskId) throw new Error('expected to claim the keyed task')
+    await store.activate('q', run.runId, run.claimToken, run.claimGen)
+    await store.awaitEvent('q', run.taskId, run.runId, run.claimToken, 'approve', 'approval', 60)
+    const reads = operatorReads(recorder)
+    expect((await reads.taskFacts('q', task.taskId))?.waits).toHaveLength(1)
+    expect(await reads.taskIdByKey('q', 'order-7')).toBe(task.taskId)
+    expect((await reads.eventState('q', 'approval')).exists).toBe(false)
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const reached: Record<string, string[]> = {}
+    const scans: string[] = []
+    const seen = recorder.batches.flatMap(({ label, statements }) =>
+      statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
+    )
+    for (const { name, sql } of seen) {
+      const lines = await planLines(client, sql)
+      reached[name] = lines.flatMap((line, at) => {
+        const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
+        if (found === null || found[2] === 'meta') return []
+        const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
+        return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
+      })
+      scans.push(
+        ...lines
+          .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta$/.test(line.trim()))
+          .map((line) => `[${name}] ${line.trim()}`),
+      )
+    }
+    expect(scans).toEqual([])
+    const sagaPhase = "((task_id = tasks.task_id) AND (checkpoint_name = '$rolling-back'::text))"
+    expect(reached).toEqual({
+      'task-facts#0': [
+        'tasks_pkey on tasks: (task_id = $1)',
+        // The rollback outcome: the phase marker, then the saga's names among this task's
+        // rows of the key, as `task-result` reads them.
+        `checkpoints_pkey on checkpoints sp: ${sagaPhase}`,
+        'checkpoints_pkey on checkpoints ss: (task_id = tasks.task_id)',
+        "checkpoints_pkey on checkpoints sr: ((task_id = tasks.task_id) AND (checkpoint_name = ('$rollback:'::text || substr(ss.checkpoint_name, 10))))",
+        `checkpoints_pkey on checkpoints sp_1: ${sagaPhase}`,
+        'checkpoints_pkey on checkpoints st: (task_id = tasks.task_id)',
+        // Whether the saga began.
+        `checkpoints_pkey on checkpoints sp_2: ${sagaPhase}`,
+      ],
+      'task-facts#1': [
+        'runs_task_attempt on runs r: (task_id = $1)',
+        'events_pkey on events e: ((queue = r.queue) AND (event_name = r.wake_event))',
+      ],
+      'task-facts#2': [
+        'runs_task_attempt on runs r: (task_id = $1)',
+        'waits_pkey on waits w: (run_id = r.run_id)',
+        'events_pkey on events e: ((queue = w.queue) AND (event_name = w.event_name))',
+      ],
+      // It reads `meta` and nothing else.
+      'fake-clock#0': [],
+      'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
+      'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
+    })
   } finally {
     await client.end()
     await db.close()

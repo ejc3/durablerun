@@ -3,6 +3,7 @@ import type {
   Checkpoint,
   CheckpointWrite,
   ClaimedRun,
+  EventState,
   FailOutcome,
   FailedRollback,
   LaunchIdentity,
@@ -10,6 +11,7 @@ import type {
   SpawnOptions,
   SpawnResult,
   SweptRun,
+  TaskFacts,
   TaskResult,
   WakeSpec,
 } from './types.js'
@@ -257,6 +259,24 @@ export interface SchedulerStore {
    * no reason, a completed payload, or counters out of range or out of accounting.
    */
   retryTask(queue: string, taskId: string): Promise<{ runId: string; attempt: number } | null>
+}
+
+/**
+ * What an operator reads of a deployment, apart from `SchedulerStore`: no engine actor calls
+ * it, and nothing here writes. Each method is one batch of reads over one snapshot, and
+ * `taskFacts` then asks in a second batch whether the test clock is set. Core holds the one
+ * implementation (`createOperatorReads`), and each store package exports a factory that
+ * reaches it with that store's batches and fragments.
+ */
+export interface OperatorReads {
+  /** One snapshot of a task, its runs, its waits and the events they name, or null when the queue holds no such task. */
+  taskFacts(queue: string, taskId: string): Promise<TaskFacts | null>
+
+  /** The task spawned under an idempotency key, or null. A child's key, which the engine built, finds its child. */
+  taskIdByKey(queue: string, idempotencyKey: string): Promise<string | null>
+
+  /** Whether an event exists and when it was emitted, a completion event included. */
+  eventState(queue: string, eventName: string): Promise<EventState>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */

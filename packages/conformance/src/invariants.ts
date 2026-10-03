@@ -2,6 +2,7 @@ import {
   IDENTIFIER_CHARACTERS,
   type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
+  PERSISTED_INTEGER_NEVER_NULL,
   PERSISTED_TEMPORAL_FIELDS,
   type PersistedTemporalFieldDescriptor,
   type PersistedTemporalFieldId,
@@ -410,7 +411,9 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     subject: string,
     identity: readonly string[],
   ): void => {
-    if (value === null && field.nullable) return
+    // A NULL is a value where the column's schema stores one, except in the one field no
+    // engine path leaves NULL, which core names.
+    if (value === null && field.nullable && field.bounds !== PERSISTED_INTEGER_NEVER_NULL) return
     const decoded = decodeBoundedInteger(value, field.bounds)
     if (decoded.ok) return
     add(

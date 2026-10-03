@@ -465,6 +465,36 @@ describe('invariant checkers fire on constructed corruption', () => {
     })
   }
 
+  it('flags an event that exists with no instant, which no engine path writes', async () => {
+    // The column stores a NULL, and every statement that inserts an event sets it, so core
+    // names it as the one persisted integer that is never NULL on a row.
+    const f = await seeded('event-no-instant')
+    const instants = async () =>
+      (await engineInvariantViolations(f.raw)).filter((violation) =>
+        violation.startsWith('temporal-storage-class: events/'),
+      ).length
+    await f.raw.batch('setup', [
+      {
+        sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+              VALUES (?, 'emitted', '{}', ?)`,
+        args: [Q, NOW],
+      },
+    ])
+    const withAnInstant = await instants()
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+              VALUES (?, 'no-instant', '{}', NULL)`,
+        args: [Q],
+      },
+    ])
+    expect(
+      { withAnInstant, withNone: await instants() },
+      'mutation-verdict:behavior:invariants-refuse-an-event-with-no-instant',
+    ).toEqual({ withAnInstant: 0, withNone: 1 })
+    await f.close()
+  })
+
   it('flags a zero stored lease as below the positive duration bound', async () => {
     const f = await seeded('zero-lease-lower-bound')
     await f.raw.batch('corrupt', [

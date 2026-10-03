@@ -87,7 +87,7 @@ export interface PortObjectPlace {
 type Path = readonly (number | string)[]
 
 /** A copy of `value` with `replacement` at `path`. Only what is on the path is copied. */
-function withAt(value: unknown, path: Path, replacement: unknown): unknown {
+export function withAt(value: unknown, path: Path, replacement: unknown): unknown {
   const [step, ...rest] = path
   if (step === undefined) return replacement
   if (Array.isArray(value)) {

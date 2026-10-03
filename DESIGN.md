@@ -3985,6 +3985,35 @@ not depend on careful reading:
   sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
   controls, rounded-duration parity, and driver-cleanup atomicity pin the
   contract independently of the global invariant.
+- *The operator-reads surface* (`conformance/src/operator-reads.ts`): the operator's reads
+  (§3.11) on each dialect. Core holds their one implementation, so the surface holds what a
+  dialect can still get wrong: the rows its statements answer with, the kind of value its
+  driver hands back for a count or an instant, and what its schema lets a column hold.
+  Every seeded state is built by driving the engine under the test clock, and its expected
+  answer is written out from what the scenario did, with no value read back from the
+  database. The same expected answer is compared on every dialect, so the dialects agree
+  with each other because each agrees with it. One state no engine path reaches, a
+  completed row with no payload, is built with fixture SQL and named so. Each case also
+  holds that every count and instant is a JavaScript number, that the read sent one
+  snapshot batch and the test clock's batch in read mode and changed no row, and that the
+  outcome is the one `getTaskResult` answers with, a refusal included. The corrupt cases are
+  generated from core's bounds: for every persisted integer of the four tables the reads
+  select from, a value below its bounds, a negative one and one past them is planted, then
+  a fraction and text through the storage-corruption door, which a strict column refuses.
+  A field the reads consume must be listed as corrupt and read as null with nothing else
+  changed, a field they do not consume must change nothing, and a field the surface names
+  as neither fails its inventory. One registered mutation deletes each field's guard, and
+  that field's case owns it. A second generated case for each of those integers sets its
+  column to NULL: the column's schema decides whether the value is stored at all, and the
+  surface names for itself the one column whose rows never hold one, where the read must
+  list it, so the case does not ask core's reader what to expect. Other
+  cases hold the read by key, an event's state with an instant that is out of bounds or
+  NULL, the order of waits and events by code point under names that a linguistic collation
+  and a comparison of UTF-16 code units each order otherwise,
+  that no params, headers, event payload, run result or checkpoint state is selected, and
+  the refusal of every string place before anything is sent. It reads what the seeds reach:
+  a corrupt value in a row of `checkpoints` reaches the facts only through a store's saga
+  fragments, and no case plants one.
 - *The counts of this document* (`conformance/test/design-counts.test.ts`): a
   count stated here for a property the code pins carries a marker straight
   after the number, an HTML comment that names the property, and the test
@@ -5527,7 +5556,9 @@ after its answer was lost (`read` prints the state it finds as of that read, `re
 carries on from where the first run stopped), each port call it makes with every batch
 label that call can send, the exit codes it gives, and the exit a fault at each of its
 batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
-table. The commands so far are `help`, `doctor`, `migrate`, `result` and `checkpoints`.
+table. A command may name one argument that a flag stands in for, and it then takes one of
+the two and never both: `inspect` takes a task id or `--key`. The commands so far are
+`help`, `doctor`, `migrate`, `result`, `checkpoints` and `inspect`.
 
 **Transport.** Every command but `help` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
@@ -5586,6 +5617,107 @@ which holds no rows, gets none. With `--yes` it prints each version applied, and
 fails partway, the versions it applied and the version now recorded. `--queue` and
 `--target` are read from the arguments only.
 
+**The operator's reads.** `inspect (<taskId> | --key <idempotencyKey>) --queue Q` reads
+through `OperatorReads` (core's `ports.ts`), a read port apart from `SchedulerStore`: no
+engine actor calls it, and nothing in it writes. It has three methods.
+
+- `taskFacts(queue, taskId)` answers one snapshot of a task, or null when the queue holds no
+  such task: database time, and whether the test clock is set; the task's row (name, state,
+  attempts, the attempt budget, infrastructure retries, the enqueue and first-start
+  instants, the cancellation deadline, the idempotency key, the parent a child's key names,
+  and whether a saga began); its outcome; every run (state, ordinal, claim and activation
+  generations, relaunch count, lease expiry, last heartbeat, when it is available, the event
+  and the step it is parked on or was woken by, and when it started and ended); every wait a
+  run registered; and for each event a run or a wait names, whether it exists and when it
+  was emitted.
+- `taskIdByKey(queue, key)` answers the task spawned under an idempotency key, or null. A
+  child's key, which the engine built, finds its child.
+- `eventState(queue, name)` answers whether an event exists and when it was emitted, a
+  completion event included, and nothing derived from its payload. The payload digest that
+  `emit` prints for an event that already exists belongs to PR5.3d, which adds it there.
+  No command calls `eventState` yet, so the CLI's opener hands out the other two alone.
+
+Core holds the one implementation (`createOperatorReads`). Its statements are shared trees
+(`statements/operator.ts`) over each store's own fragments, and each store package exports
+a factory, `operatorReads(executor)`, that hands core that store's batches. A store opens
+each batch and runs it, as it does for a child await, so every batch label is a literal in
+a store's source, which is where the label ledger, the batch lint and the fault matrix read
+labels. No released class changes. `HeldPort` and `PORT_STRINGS` say what a store's entries
+take and stay as they were, and the read port's strings are held from a second table,
+`OPERATOR_READ_STRINGS`, whose type is computed from the port. Core puts its check in front
+of every method in one loop, so a method cannot leave it out. What it returns is the only
+value of the type `HeldOperatorReads`. A store's factory hands that type out, and the
+conformance fixture and the CLI's opener take nothing less, so an object that implements
+the port on its own is not accepted in its place. A reserved key and a reserved
+event name are held to the same domain and width and are not refused: a read of the engine's
+own key or event changes nothing.
+
+`task-facts` is one batch of three reads, the task, its runs and its waits, and every
+executor runs a batch of reads as one read-only snapshot. Whether the test clock is set is a
+batch of its own, `fake-clock`, sent after the snapshot and only for a task that exists. A
+statement tree holds the clock only as its token and is refused when it names the test
+clock's row, so that one read is the store's own text. It is reported because a database
+whose test clock was left set never sees a run come due. `inspect --key` reads twice:
+`task-id-by-key` finds the task, and `task-facts` then reads it. A task that is gone between
+the two answers exit 8 for a key that found it a moment before. Nothing deletes a task
+today, and the retention purge of section 3.12 will.
+
+The events of a snapshot are those of the task's own queue, and the reads name an event by
+its name alone. A run takes its queue from its task's row or from the run it succeeds, a
+wait registers only under a claimed run of its own queue whose task is in that queue, and
+no statement changes either queue, so no engine path gives a task a run or a wait in
+another queue. The invariant library flags such a row. Read from a database where one was
+planted, an event that two queues hold under one name is answered from the first row that
+names it.
+
+The facts hold no params, headers, event payload, run result or checkpoint state. The
+outcome is the one exception, and it is the one `result` prints: `task-facts` selects the
+columns `decodeTaskResult` reads and the two values `decodeRollbackOutcome` reads, as
+`task-result` does, and decodes them with those two decoders, which are the ones
+`getTaskResult` calls. There is no second decoder, so `inspect` and `result` cannot
+disagree about an outcome. A row the decoders refuse does not fail the read. What they
+refused it with becomes the outcome, and `inspect` prints `unreadable` there as `result`
+does. Only a refusal by those two decoders is treated so, and every other error is thrown,
+because core refuses some of a caller's own mistakes with a `RangeError` too.
+
+Every persisted integer the reads consume is held to the bounds core gives its field
+(`PERSISTED_INTEGER_BOUNDS`). A value outside them, or one that is no exact integer, is read
+as null and listed in the answer's `corrupt` list with its field, the row that holds it,
+why it was refused, and the value itself when it is a number. It is never skipped and never
+thrown. `next-wake` does the opposite with an instant outside its bounds and leaves it out,
+because a driver must not arm a timer on it. An inspect tool that hides a corrupt row
+defeats its purpose, so it reports the row. `inspect` prints every fact it read, on stdout,
+and exits 10 when the outcome is unreadable, when the list is not empty, or when a run's
+state or a wait's status is not one of the engine's own, so a script does not take a
+corrupt row for a clean answer.
+
+A stored NULL is a value where the column's schema stores one, as the lease expiry of a run
+that holds no lease is. The operator's reads take a column's schema from
+`STORE_TABLE_COLUMNS`, the columns a conformance case holds equal to every dialect's
+catalog. One column is an exception, and core names it once, as
+`PERSISTED_INTEGER_NEVER_NULL`: `events.emitted_at_ms` may hold NULL by its schema, and each
+of the three statements that insert an event sets it, from the batch's clock or from the
+fence instant of the task the batch ended, and no statement updates it. So an event that
+exists with no instant is a row no engine path writes. Two readers ask whether a stored NULL
+is a value of a field, and both read that one name, so they agree about such a row. The
+operator's reads list it as corrupt, with the kind of its stored value given as `null`. The
+invariant library, which every conformance case, simulation and fuzz walk runs over the
+rows, flags it under the storage condition of that field. Core's table of temporal fields,
+`PERSISTED_TEMPORAL_FIELDS`, still records the column as nullable: it records the schema,
+and its entries are a released declaration. A schema version that made the column NOT NULL
+would change the table and remove the exception. A database time that is NULL is listed as
+corrupt too.
+
+Every count and instant is a JavaScript number on every dialect, whichever form the driver
+returned it in. Every list has one order on every dialect: runs by their ordinal and then by
+run id, waits by run id and then by step, events by name, and the corrupt list by field and
+then by row, each string compared by Unicode code point in core. That is the order of the
+strings' UTF-8 bytes, so an implementation whose strings are UTF-8 gets it from a plain
+comparison. The order of UTF-16 code units differs from it for a character past the basic
+plane against one from U+E000 to U+FFFF. No statement orders its rows, because a text column
+sorts by the database's collation, which differs between the dialects and between two
+servers of one dialect.
+
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
@@ -5595,12 +5727,33 @@ ids, task names, event names, checkpoint names and queue names print. A store's 
 error message prints only with `--reveal`, because a driver can quote a stored value in
 it, and so does what refused a stored row the store's decoders cannot read, which
 `result` and `checkpoints` answer with exit 10; a port's refusal names only what the
-caller passed, and prints.
+caller passed, and prints. `inspect` prints the idempotency key a task was spawned under as
+its length and sha256, and a child's key, which the engine built from its parent's id and a
+step key, the same way beside the parent it names. When no task was spawned under the key
+`inspect` was given, its answer does not quote the key. A task's state, a run's state and a
+wait's status print when they are one of the engine's own. Any other text there is a stored
+value nothing vouches for, which every schema's check refuses, and it prints as its length
+and sha256 unless revealed, as the reason a decoder refused that row with does.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
-one JSON document with every object's keys in code point order, which is the same on
-every dialect apart from the object under `dialect`: the URL scheme and the store's
-schema window.
+one JSON document on stdout, with every object's keys in code point order (each key is an
+ASCII name, so a plain sort gives it), which is the same on every dialect apart from the
+object under `dialect`: the URL scheme and the store's schema window.
+
+In human text one rule decides the stream. An answer prints on stdout when the command
+exits 0. An answer its handler marks as the snapshot the command exists to print also
+prints on stdout, whatever the command exits with, so the exit code alone tells a script
+how it ended. The snapshot of `inspect` is the one answer marked so today, and it prints
+there when it exits 10. Every other answer that does not exit 0 is a refusal and prints on
+stderr. That holds when the refusal names a fact about the store. On a database recorded
+at a schema version outside the window, `doctor`, `inspect`, `result` and `checkpoints`
+exit 5 and print the recorded version on stderr. `migrate` without `--yes` exits 2 and
+prints the version it starts from and the versions it would apply on stderr, and a
+`migrate` that fails partway prints the versions it applied there. A usage error, a
+refused call, a store that is unavailable, a task that is not there, and the answer of
+`result` or `checkpoints` for a row the decoders refuse print there too. `explain`,
+`stuck` and `stats` follow it the same way: the report each exists to print is marked and
+prints on stdout whatever it exits with, and each of their refusals prints on stderr.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -5617,7 +5770,7 @@ same table, which a test holds equal to this one.
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
 | 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
-| 10 | unreadable | a stored row the store's decoders refuse; what refused it prints only with --reveal, because it can quote the row |
+| 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
 nothing. For `migrate` it holds because each version's write is fenced by the version
@@ -5638,7 +5791,9 @@ commits) and duplicate (it delivers the batch twice). It is a CLI-level injectio
 SimWorld's SimCrash. It meets every batch every store command sends, one sending at a
 time, on each dialect, from each starting state the command runs from: `migrate` from a
 database that was never initialized, from version 5 and from one version below the
-build's, and each read from the current version. The command table declares exit 6 for
+build's, and each read from the current version. `inspect` runs by an idempotency key,
+which sends the read by key and then every batch a read by a task id sends. The command
+table declares exit 6 for
 the first two and the exit of a clean run for duplicate, except at the batches whose lost
 answer `migrate` recovers, where it declares 0 for crash-after by label:
 `migrate:bootstrap` and each version's write, because the admin reads the version again.

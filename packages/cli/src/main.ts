@@ -19,6 +19,7 @@ import {
   usage,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
+import { factsAreReadable, factsView } from './inspect.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
@@ -64,6 +65,14 @@ interface Answer {
   readonly view: Record<string, unknown>
   /** Human lines that replace the generic rendering of the view. */
   readonly text?: readonly string[]
+  /**
+   * The view is the snapshot this command exists to print. A handler sets it by hand, and
+   * such an answer prints on stdout whatever the command exits with, so the exit code alone
+   * tells a script how it ended. Every other answer that did not exit `done` is a refusal
+   * and prints on stderr, one that names a fact about the store among them: the recorded
+   * schema version of a database outside the window, or the versions `migrate` would apply.
+   */
+  readonly holdsFacts?: true
 }
 
 interface Context {
@@ -170,7 +179,7 @@ function emit(
   const failed = answer.exit !== 'done'
   if (json) io.out(canonicalJson(document))
   else if (answer.text !== undefined) io.out(`${answer.text.join('\n')}\n`)
-  else (failed ? io.err : io.out)(humanText(document))
+  else (failed && answer.holdsFacts !== true ? io.err : io.out)(humanText(document))
   return exitCode(answer.exit)
 }
 
@@ -426,13 +435,50 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
     if (!isUnreadableRow(error)) throw error
     return { queue, taskId, unreadable: error.message }
   }
+  return noSuchTask(queue, taskId)
+}
+
+/** The answer for a task the queue does not hold. `message` quotes no value a user wrote. */
+function notFound(view: Record<string, unknown>, message: string): Answer {
+  return { exit: 'not-found', view: { ...view, error: { kind: 'not-found', message } } }
+}
+
+/** The answer for a task id the queue holds no task under. A task id prints. */
+function noSuchTask(queue: string, taskId: string): Answer {
+  return notFound({ queue, taskId }, `no task ${taskId} in queue ${queue}`)
+}
+
+/**
+ * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
+ * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
+ * integer outside its bounds, or a state or status that is not the engine's own is printed
+ * where it stands and the command exits `unreadable`, so a script does not read a corrupt
+ * row as a clean answer.
+ */
+const inspect: Handler = async ({ invocation, store, reveal }) => {
+  const queue = invocation.strings.queue ?? ''
+  const key = invocation.strings.key
+  const version = await readableVersion(store)
+  if (typeof version !== 'number') return { ...version, view: { queue, ...version.view } }
+  const taskId =
+    key === undefined
+      ? (invocation.args.taskId ?? '')
+      : await store.operator.taskIdByKey(queue, key)
+  if (taskId === null) {
+    // The key is a value a user wrote, so the answer does not quote it.
+    return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
+  }
+  const facts = await store.operator.taskFacts(queue, taskId)
+  if (facts === null) return noSuchTask(queue, taskId)
+  // The outcome is rendered as `result` renders it, a refused row included.
+  const outcome =
+    'result' in facts.outcome
+      ? resultView(facts.outcome.result, reveal)
+      : unreadable({ state: 'unreadable' }, facts.outcome.refused, reveal).view
   return {
-    exit: 'not-found',
-    view: {
-      queue,
-      taskId,
-      error: { kind: 'not-found', message: `no task ${taskId} in queue ${queue}` },
-    },
+    exit: factsAreReadable(facts) ? 'done' : 'unreadable',
+    holdsFacts: true,
+    view: { queue, taskId, ...factsView(facts, outcome, reveal) },
   }
 }
 
@@ -441,4 +487,5 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze
   migrate,
   result,
   checkpoints,
+  inspect,
 })

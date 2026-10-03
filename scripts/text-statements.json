@@ -34,6 +34,10 @@
     "admin:now": {
       "shape": "read",
       "why": "it is the test clock's read of the clock definition itself, by an admin built over a bare executor with no tree dialect"
+    },
+    "fake-clock": {
+      "shape": "read",
+      "why": "it reads the test clock's own row in meta, and a statement tree holds the clock only as its token: a tree that names that row is refused as a second clock"
     }
   }
 }

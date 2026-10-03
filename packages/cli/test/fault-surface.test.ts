@@ -13,6 +13,7 @@ import {
 } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import {
+  COMPLETED_KEY,
   type CliDb,
   type FaultSite,
   QUEUE,
@@ -98,6 +99,16 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
   ],
   result: readAt((seeded) => ['result', completed(seeded), '--queue', QUEUE, '--json']),
   checkpoints: readAt((seeded) => ['checkpoints', completed(seeded), '--queue', QUEUE, '--json']),
+  // By a key, `inspect` sends the read by key and then every batch a read by id sends, so
+  // the one scenario meets each batch the command declares.
+  inspect: [
+    {
+      name: 'the current version, by an idempotency key',
+      schema: 'current',
+      seeded: ALL,
+      line: () => ['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'],
+    },
+  ],
 }
 
 /** A database in a scenario's starting state, and the command line that runs against it. */

@@ -13,6 +13,7 @@ import {
 import type { StoreFixtureFactory } from './fixture.js'
 import { identifierBoundConformance } from './identifier-bound.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
+import { operatorReadsConformance } from './operator-reads.js'
 import {
   POISON_ADDRESSED_PROFILES,
   POISON_AGGREGATE_WITNESSES,
@@ -1409,4 +1410,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'self-concurrency', run: selfConcurrencyConformance },
   { id: 'stale-token', run: staleTokenConformance },
   { id: 'executor-errors', run: executorErrorConformance },
+  { id: 'operator-reads', run: operatorReadsConformance },
 ] as const)

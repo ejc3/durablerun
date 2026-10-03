@@ -21,6 +21,8 @@ import {
   plantNullPayload,
   recordingOpener,
   runCli,
+  seedRefused,
+  seedSagas,
   seedTasks,
   withoutDialect,
 } from './support.js'
@@ -34,20 +36,38 @@ const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
-/** The answers of every compared command line, run through main against one seeded database. */
-async function answersOn(dialect: (typeof SELECTED)[number]): Promise<Map<string, string>> {
-  const db = await openCliDb(dialect, 'same-json')
-  try {
-    const seeded = await seedTasks(db)
-    const answers = new Map<string, string>()
-    for (const line of comparedLines(seeded)) {
-      const run = await runCli(line, db.env)
-      answers.set(line.join(' '), run.stdout)
+/** One seeded database's tasks by the name of their seed, and what every compared command line printed. */
+interface Answers {
+  readonly seeded: Readonly<Record<string, string>>
+  readonly printed: ReadonlyMap<string, string>
+}
+
+/**
+ * The answers of every compared command line, run through main against one seeded database
+ * of a dialect. A dialect is asked once, and every case that reads its answers shares them.
+ */
+const asked = new Map<string, Promise<Answers>>()
+function answersOn(dialect: (typeof SELECTED)[number]): Promise<Answers> {
+  const ask = async (): Promise<Answers> => {
+    const db = await openCliDb(dialect, 'same-json')
+    try {
+      const seeded = {
+        ...(await seedTasks(db)),
+        ...(await seedSagas(db)),
+        refused: await seedRefused(db),
+      }
+      const printed = new Map<string, string>()
+      for (const line of comparedLines(seeded)) {
+        printed.set(line.join(' '), (await runCli(line, db.env)).stdout)
+      }
+      return { seeded, printed }
+    } finally {
+      await db.close()
     }
-    return answers
-  } finally {
-    await db.close()
   }
+  const answers = asked.get(dialect) ?? ask()
+  asked.set(dialect, answers)
+  return answers
 }
 
 /**
@@ -56,10 +76,10 @@ async function answersOn(dialect: (typeof SELECTED)[number]): Promise<Map<string
  * something.
  */
 describe('the CLI on every selected dialect', () => {
-  it('doctor, result and checkpoints print the JSON libSQL prints, apart from the fields under dialect', async () => {
-    const reference = await answersOn('libsql')
+  it('doctor, result, checkpoints and inspect print the JSON libSQL prints, apart from the fields under dialect', async () => {
+    const { printed: reference } = await answersOn('libsql')
     for (const dialect of SELECTED) {
-      const answers = dialect === 'libsql' ? reference : await answersOn(dialect)
+      const { printed: answers } = await answersOn(dialect)
       expect([...answers.keys()]).toEqual([...reference.keys()])
       for (const [line, stdout] of answers) {
         const parsed = JSON.parse(stdout) as { dialect?: Record<string, unknown> }
@@ -102,6 +122,52 @@ describe('the CLI on every selected dialect', () => {
         }
       })
 
+      it("inspect prints the outcome result prints for every seeded outcome, a saga's rollback and a row the decoders refuse among them", async () => {
+        const { seeded, printed } = await answersOn(dialect)
+        const outcomes: string[] = []
+        for (const [seed, taskId] of Object.entries(seeded)) {
+          for (const reveal of [[], ['--reveal']]) {
+            const answerOf = (verb: string) =>
+              JSON.parse(
+                printed.get([verb, taskId, '--queue', QUEUE, '--json', ...reveal].join(' ')) ??
+                  '{}',
+              ) as Record<string, unknown>
+            // What `result` printed of the task, less what names the command and the task:
+            // its exit and its outcome.
+            const {
+              command: _command,
+              queue: _queue,
+              taskId: _taskId,
+              dialect: _dialect,
+              ...result
+            } = answerOf('result')
+            const facts = answerOf('inspect')
+            expect({
+              seed,
+              reveal: reveal.length > 0,
+              outcome: { exit: facts.exit, ...(facts.outcome as object) },
+              corrupt: facts.corrupt,
+            }).toEqual({ seed, reveal: reveal.length > 0, outcome: result, corrupt: [] })
+            if (reveal.length === 0) {
+              const rollback = (result.rollback as { outcome?: string } | undefined)?.outcome
+              outcomes.push(
+                `${seed}: ${result.state}${rollback === undefined ? '' : `, rollback ${rollback}`}, exit ${result.exit}`,
+              )
+            }
+          }
+        }
+        // The seeds reach every kind of outcome, so the comparison above was asked of each.
+        expect(outcomes).toEqual([
+          'completed: completed, exit done',
+          'failed: failed, exit done',
+          'cancelled: cancelled, exit done',
+          'pending: pending, exit done',
+          'rolledBack: failed, rollback complete, exit done',
+          'halted: failed, rollback failed, exit done',
+          'refused: unreadable, exit unreadable',
+        ])
+      }, 120_000)
+
       it('every store command exits 5 on a database a newer build migrated, and changes no table', async () => {
         const db = await openCliDb(dialect, 'newer')
         try {
@@ -109,8 +175,20 @@ describe('the CLI on every selected dialect', () => {
           await db.recordNewer()
           const before = await db.dump()
           for (const spec of STORE_COMMANDS) {
-            const run = await runCli(commandLine(spec, db, seeded.completed), db.env)
+            const line = commandLine(spec, db, seeded.completed)
+            const run = await runCli(line, db.env)
             expect({ verb: spec.verb, exit: run.exit }).toEqual({ verb: spec.verb, exit: 5 })
+            // In text the refusal prints on stderr, though it names the version recorded.
+            const text = await runCli(
+              line.filter((argument) => argument !== '--json'),
+              db.env,
+            )
+            expect({
+              verb: spec.verb,
+              exit: text.exit,
+              stdout: text.stdout,
+              namesTheVersion: text.stderr.includes('recordedSchemaVersion: '),
+            }).toEqual({ verb: spec.verb, exit: 5, stdout: '', namesTheVersion: true })
           }
           expect(await db.dump()).toBe(before)
         } finally {
@@ -206,6 +284,8 @@ describe('the CLI on every selected dialect', () => {
           const cases: [string, Record<string, string>, string[]][] = [
             ['done', db.env, ['doctor', '--queue', QUEUE]],
             ['done', db.env, ['result', seeded.completed, '--queue', QUEUE]],
+            ['done', db.env, ['inspect', seeded.completed, '--queue', QUEUE]],
+            ['not-found', db.env, ['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE]],
             ['usage', older.env, ['migrate', '--target', older.target]],
             ['usage', db.env, ['result', '--queue', QUEUE]],
             ['refused', db.env, ['result', 'x'.repeat(256), '--queue', QUEUE]],

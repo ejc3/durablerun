@@ -328,6 +328,14 @@
 \*   'get-checkpoints' [read] -- read-only query
 \*   'task-result' [read] -- read-only query
 \*   'next-wake' [read] -- read-only query
+\*   'task-facts' [read] -- an operator's read of one task, its runs, its waits
+\*     and the events they name, from one snapshot; no engine actor sends it
+\*   'task-id-by-key' [read] -- an operator's read of the task an idempotency key
+\*     names; no engine actor sends it
+\*   'event-state' [read] -- an operator's read of whether an event exists and
+\*     when it was emitted; no engine actor sends it
+\*   'fake-clock' [read] -- an operator's read of whether the test clock is set;
+\*     no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

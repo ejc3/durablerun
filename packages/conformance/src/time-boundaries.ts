@@ -11,6 +11,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from './fixture.js'
+import { spawnedRun } from './scenario.js'
 
 const Q = 'time-boundary'
 const NORMAL_NOW_MS = 1_000_000
@@ -29,17 +30,8 @@ interface TimeBoundaryCase {
   prepare(fixture: StoreFixture): Promise<PreparedBoundary>
 }
 
-async function spawned(
-  fixture: StoreFixture,
-  taskName: string,
-  options?: SpawnOptions,
-): Promise<{ taskId: string; runId: string }> {
-  const result = await fixture.store.spawn(Q, taskName, '{}', options)
-  if (!result.created || result.runId === null) {
-    throw new Error(`timestamp boundary setup did not create ${taskName}`)
-  }
-  return { taskId: result.taskId, runId: result.runId }
-}
+const spawned = (fixture: StoreFixture, taskName: string, options?: SpawnOptions) =>
+  spawnedRun(fixture.store, Q, taskName, options)
 
 async function claimOne(
   fixture: StoreFixture,

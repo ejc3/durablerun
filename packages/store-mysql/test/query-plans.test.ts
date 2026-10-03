@@ -10,6 +10,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
+import { operatorReads } from '../src/operator-reads.js'
 import { RUNS_STAMP_INDEX, RUNS_TASK_ATTEMPT_INDEX } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -96,7 +97,7 @@ async function shippedBatch(
 /** Copy one row of a table `count` times, with some columns replaced by SQL. */
 async function cloneRows(
   db: TestDb,
-  table: 'tasks' | 'runs' | 'waits' | 'checkpoints',
+  table: 'tasks' | 'runs' | 'waits' | 'checkpoints' | 'events',
   where: string,
   replaced: Readonly<Record<string, string>>,
   count = HISTORY,
@@ -1123,6 +1124,73 @@ describe("the saga reads beside their own task's checkpoints, on MySQL", () => {
         created: true,
         walkedFewRows: true,
       })
+    } finally {
+      await db.close()
+    }
+  })
+})
+
+describe("an operator's reads beside a history of tasks, on MySQL", () => {
+  it('reads a task, the task a key names, and an event without walking the tasks, runs, waits or events of the database', async () => {
+    // An operator's read reaches one task by its key, the task's runs by the index on a
+    // task's ordinals, a run's waits by the head of their key, an event by its key, and a
+    // keyed task by the index on a queue's keys. The tables hold a history, because an
+    // EXPLAIN over empty tables says nothing, and every batch is measured from inside its
+    // own transaction.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-operator-reads', nowMs: 1_000_000 })
+    try {
+      const labels = ['task-facts', 'task-id-by-key', 'event-state']
+      const { executor: measuring, walked } = countingRowsWalked(db, labels)
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const task = await store.spawn(Q, 'job', '{}', { idempotencyKey: 'order-7' })
+      const [run] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      if (run?.taskId !== task.taskId) throw new Error('the keyed task was not claimed')
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 'approve', 'approval', null)
+      await store.emitEvent(Q, 'emitted', '{}')
+      // The history: other tasks under other keys, each with a run parked on an event of
+      // its own, the wait that run registered, and events that were emitted.
+      await cloneRows(db, 'tasks', `src.task_id = '${task.taskId}'`, {
+        task_id: "CONCAT('old-task-', seq.n)",
+        idempotency_key: "CONCAT('old-key-', seq.n)",
+      })
+      await cloneRows(db, 'runs', `src.run_id = '${run.runId}'`, {
+        run_id: "CONCAT('old-run-', seq.n)",
+        task_id: "CONCAT('old-task-', seq.n)",
+        wake_event: "CONCAT('old-event-', seq.n)",
+      })
+      await cloneRows(db, 'waits', `src.run_id = '${run.runId}'`, {
+        run_id: "CONCAT('old-run-', seq.n)",
+        task_id: "CONCAT('old-task-', seq.n)",
+        event_name: "CONCAT('old-event-', seq.n)",
+      })
+      await cloneRows(db, 'events', "src.event_name = 'emitted'", {
+        event_name: "CONCAT('old-event-', seq.n)",
+      })
+      await db.raw.batch('fixture:analyze', [
+        { sql: 'ANALYZE TABLE tasks, runs, waits, events', args: [] },
+      ])
+      const reads = operatorReads(measuring)
+      const facts = await reads.taskFacts(Q, task.taskId)
+      expect({ runs: facts?.runs.length, waits: facts?.waits.length }).toEqual({
+        runs: 1,
+        waits: 1,
+      })
+      // A task of the history, whose run names an event that exists.
+      expect((await reads.taskFacts(Q, 'old-task-7'))?.events).toEqual([
+        { eventName: 'old-event-7', exists: true, emittedAtMs: 1_000_000 },
+      ])
+      expect(await reads.taskIdByKey(Q, 'old-key-7')).toBe('old-task-7')
+      expect((await reads.eventState(Q, 'old-event-7')).exists).toBe(true)
+      // Each entry is the rows a label's batches walked beside the HISTORY rows of each table.
+      // Measured on MySQL 8.4: the two reads of a task walked six rows between them, and
+      // the read by key and the read of an event walked none.
+      expect(
+        labels
+          .map((label) => [label, Number(walked.get(label))])
+          .filter(([, rows]) => !(Number(rows) < 50)),
+      ).toEqual([])
+      expect([...walked.keys()].sort()).toEqual([...labels].sort())
     } finally {
       await db.close()
     }

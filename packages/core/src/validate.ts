@@ -601,6 +601,18 @@ export const PERSISTED_TEMPORAL_FIELDS = freeze([
   ),
 ] as const)
 
+/**
+ * The one persisted integer whose column may hold NULL and whose rows never do. Each of the
+ * three statements that insert an event sets its instant, from the batch's clock or from
+ * the fence instant of the task the batch ended, and no statement updates it. So an event
+ * that exists with no instant is a corrupt row, though its schema would store one.
+ * `PERSISTED_TEMPORAL_FIELDS` records the column as nullable because its schema is, and
+ * that entry is a released declaration. Whoever asks whether a stored NULL is a value of a
+ * field asks here as well: the operator's reads do, and so does the invariant library.
+ */
+export const PERSISTED_INTEGER_NEVER_NULL: PersistedIntegerBounds =
+  PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms
+
 export type PersistedTemporalFieldDescriptor = (typeof PERSISTED_TEMPORAL_FIELDS)[number]
 export type PersistedTemporalFieldId = PersistedTemporalFieldDescriptor['id']
 export type PersistedTemporalTable = PersistedTemporalFieldDescriptor['table']
@@ -676,16 +688,21 @@ export function persistedPositiveClaimGeneration(scope: string, row: SqlRow): nu
   return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
 }
 
+/** The column a persisted field's bounds are for: what follows the table in the field's name. */
+export function persistedIntegerColumn(bounds: PersistedIntegerBounds): string {
+  const separator = bounds.field.indexOf('.')
+  if (separator < 0 || separator === bounds.field.length - 1) {
+    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
+  }
+  return bounds.field.slice(separator + 1)
+}
+
 function decodePersistedRowInteger(
   scope: string,
   row: SqlRow,
   bounds: PersistedIntegerBounds,
 ): number {
-  const separator = bounds.field.indexOf('.')
-  if (separator < 0 || separator === bounds.field.length - 1) {
-    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
-  }
-  const column = bounds.field.slice(separator + 1)
+  const column = persistedIntegerColumn(bounds)
   const value = row[column]
   const decoded = decodeBoundedInteger(value, bounds)
   if (decoded.ok) return decoded.value

@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import {
   type Clock,
   type IdSource,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
   type SchedulerStore,
   type SqlExecutor,
   type SqlRow,
@@ -395,6 +397,9 @@ export const SENTINEL = 'sentinel-6d1c9e0a'
 
 export const QUEUE = 'q'
 
+/** The idempotency key of the completed task `seedTasks` writes, which holds the sentinel. */
+export const COMPLETED_KEY = `key-${SENTINEL}`
+
 export interface SeededTasks {
   /** Completed, with a checkpoint, params, headers and an idempotency key that hold the sentinel. */
   readonly completed: string
@@ -411,7 +416,7 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
   const store = db.store
   const params = JSON.stringify({ secret: SENTINEL })
   const completed = await store.spawn(queue, 'report', params, {
-    idempotencyKey: `key-${SENTINEL}`,
+    idempotencyKey: COMPLETED_KEY,
     headers: { trace: SENTINEL },
   })
   const failed = await store.spawn(queue, 'report', params, { maxAttempts: 1 })
@@ -450,6 +455,66 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
     cancelled: cancelled.taskId,
     pending: pending.taskId,
   }
+}
+
+/** Claim the one run of the queue that is due, which must be the task's, and activate it. */
+export async function claimActivated(db: CliDb, worker: string, taskId: string) {
+  const [run] = await db.store.claim(QUEUE, worker, { leaseSeconds: 60, limit: 1 })
+  if (run?.taskId !== taskId) throw new Error(`${worker} did not claim task ${taskId}`)
+  if ((await db.store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)) === null) {
+    throw new Error(`${worker} could not activate the run of task ${taskId}`)
+  }
+  return run
+}
+
+export interface SeededSagas {
+  /** Failed, with a saga whose one rollback ran. */
+  readonly rolledBack: string
+  /** Failed, with a saga a failed rollback halted, whose error holds the sentinel. */
+  readonly halted: string
+}
+
+/**
+ * Two tasks whose saga began, written through the current store. Call it when the queue
+ * holds no other run that is due, because each claim here must take the saga's own run.
+ */
+export async function seedSagas(db: CliDb): Promise<SeededSagas> {
+  const store = db.store
+  const cause = JSON.stringify({ name: 'Error', message: SENTINEL })
+  const ended = async (name: 'rolled-back' | 'halted'): Promise<string> => {
+    const task = await store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
+    const checkpoint = (run: { runId: string; claimToken: string }, key: string, state: string) =>
+      store.setCheckpoint(QUEUE, task.taskId, run.runId, run.claimToken, key, state, 60)
+    const forward = await claimActivated(db, `${name}-forward`, task.taskId)
+    await checkpoint(forward, `${SAGA_STARTED_PREFIX}charge`, '1')
+    await store.fail(QUEUE, forward.runId, forward.claimToken, cause, null)
+    const pass = await claimActivated(db, `${name}-pass`, task.taskId)
+    if (name === 'halted') {
+      await store.failRollback(QUEUE, pass.runId, pass.claimToken, cause, null, {
+        stepKey: 'charge',
+        errorJson: cause,
+      })
+    } else {
+      await checkpoint(pass, `${SAGA_ROLLBACK_PREFIX}charge`, 'null')
+      await store.fail(QUEUE, pass.runId, pass.claimToken, cause, null)
+    }
+    return task.taskId
+  }
+  return { rolledBack: await ended('rolled-back'), halted: await ended('halted') }
+}
+
+/**
+ * Fixture-built: a completed task whose payload is then set to NULL, which no engine path
+ * writes and the decoders refuse. Call it when the queue holds no other run that is due.
+ */
+export async function seedRefused(db: CliDb): Promise<string> {
+  const task = await db.store.spawn(QUEUE, 'report', '{}')
+  const run = await claimActivated(db, 'refused-worker', task.taskId)
+  await db.store.complete(QUEUE, run.runId, run.claimToken, '{}')
+  await db.raw.batch('fixture:contradiction', [
+    { sql: 'UPDATE tasks SET completed_payload = NULL WHERE task_id = ?', args: [task.taskId] },
+  ])
+  return task.taskId
 }
 
 /**
@@ -495,14 +560,21 @@ export async function plantNullPayload(db: CliDb): Promise<void> {
 }
 
 /** The command lines whose answers must match on every dialect, for one seeded database. */
-export function comparedLines(seeded: SeededTasks): string[][] {
+export function comparedLines(
+  seeded: SeededTasks & Partial<SeededSagas> & { readonly refused?: string },
+): string[][] {
   const lines: string[][] = [['doctor', '--queue', QUEUE, '--json']]
   for (const taskId of [...Object.values(seeded), 'no-such-task']) {
     lines.push(['result', taskId, '--queue', QUEUE, '--json'])
     lines.push(['result', taskId, '--queue', QUEUE, '--json', '--reveal'])
     lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json'])
     lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json', '--reveal'])
+    lines.push(['inspect', taskId, '--queue', QUEUE, '--json'])
+    lines.push(['inspect', taskId, '--queue', QUEUE, '--json', '--reveal'])
   }
   lines.push(['checkpoints', seeded.completed, '--queue', QUEUE, '--json', '--attempt', '1'])
+  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
+  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
+  lines.push(['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])
   return lines
 }

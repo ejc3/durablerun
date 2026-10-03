@@ -1,6 +1,7 @@
 import type {
   ClaimedRun,
   SchedulerStore,
+  SpawnOptions,
   SqlExecutor,
   SqlRow,
   SqlStatement,
@@ -70,6 +71,20 @@ export async function withFixture<T>(
   }
   await fixture.close()
   return result
+}
+
+/** Spawn a task with no params, failing the scenario unless the call created it with a run. */
+export async function spawnedRun(
+  store: SchedulerStore,
+  queue: string,
+  taskName: string,
+  options?: SpawnOptions,
+): Promise<{ taskId: string; runId: string }> {
+  const spawned = await store.spawn(queue, taskName, '{}', options)
+  if (!spawned.created || spawned.runId === null) {
+    throw new Error(`expected the spawn of ${taskName} to create a task with a run`)
+  }
+  return { taskId: spawned.taskId, runId: spawned.runId }
 }
 
 /** Claim exactly one run from `queue`, failing the scenario when nothing is claimable. */

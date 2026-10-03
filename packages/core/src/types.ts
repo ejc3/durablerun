@@ -230,3 +230,127 @@ export interface RollbackOutcome {
   outcome: 'complete' | 'failed'
   errorJson?: string
 }
+
+/**
+ * A persisted integer an operator read consumed whose stored value is outside the bounds
+ * core holds that field to (`PERSISTED_INTEGER_BOUNDS`), or is no exact integer at all: a
+ * fraction, text, or a NULL in a column the engine writes with every row. The
+ * read reports it here and answers null for the field: it is never skipped and never thrown.
+ */
+export interface CorruptInteger {
+  /** The field as core's bounds name it, such as `runs.claim_gen`. */
+  readonly field: string
+  /** The run whose row holds it, for a field of a run or of a wait. */
+  readonly runId?: string
+  /** The step of the wait that holds it. */
+  readonly stepName?: string
+  /** The event whose row holds it. */
+  readonly eventName?: string
+  readonly reason: 'not-an-exact-integer' | 'out-of-range'
+  /** What kind of value the store returned: `number`, `bigint`, `string`, `null`, and so on. */
+  readonly stored: string
+  /** The stored value as text, when it is a number. A value of any other kind is not copied. */
+  readonly value?: string
+}
+
+/** A task's own row, as an operator read reports it. */
+export interface TaskRowFacts {
+  readonly taskId: string
+  readonly queue: string
+  readonly taskName: string
+  /** The stored state, as written. `outcome` says whether the engine's decoder accepts it. */
+  readonly state: string
+  readonly attempts: number | null
+  readonly maxAttempts: number | null
+  readonly infraRetries: number | null
+  readonly enqueueAtMs: number | null
+  readonly firstStartedAtMs: number | null
+  /** The cancellation deadline, or null when the task has none. */
+  readonly cancelAtMs: number | null
+  /** The key the task was spawned under: a caller's, the engine's for a child, or none. */
+  readonly idempotencyKey: string | null
+  /** The parent a child's key names (`parseChildSpawnKey`), or null for any other key. */
+  readonly parentTaskId: string | null
+  /** Whether the task's saga began (DESIGN.md §3.10). */
+  readonly sagaBegan: boolean
+}
+
+/**
+ * A task's outcome as `getTaskResult` decodes it, or the words the decoders refused the row
+ * with. The words can quote a stored value.
+ */
+export type TaskOutcomeFacts = { readonly result: TaskResult } | { readonly refused: string }
+
+/** One run of a task, as an operator read reports it. */
+export interface RunFacts {
+  readonly runId: string
+  /** The queue the run's own row names, which is the task's unless the rows are corrupt. */
+  readonly queue: string
+  readonly state: string
+  readonly attempt: number | null
+  readonly claimGen: number | null
+  readonly activatedGen: number | null
+  readonly relaunchCount: number | null
+  /** The lease's expiry, or null when the run holds none. */
+  readonly claimExpiresAtMs: number | null
+  readonly heartbeatAtMs: number | null
+  readonly availableAtMs: number | null
+  /** The event the run is parked on or was woken by, and the step that awaits it. */
+  readonly wakeEvent: string | null
+  readonly wakeStep: string | null
+  readonly startedAtMs: number | null
+  readonly completedAtMs: number | null
+  readonly failedAtMs: number | null
+}
+
+/** One registered wait of one of a task's runs. */
+export interface WaitFacts {
+  readonly runId: string
+  readonly stepName: string
+  readonly eventName: string
+  readonly status: string
+  /** When the wait times out, or null for a wait with no timeout. */
+  readonly timeoutAtMs: number | null
+  readonly createdAtMs: number | null
+}
+
+/**
+ * Whether an event has been emitted, and when. It exists once it has been emitted, which is
+ * when its row exists, and only an event that exists has an instant. The instant of one
+ * that exists is null when the stored value is corrupt, and the `corrupt` list of the same
+ * answer names it.
+ */
+export type EmittedEvent =
+  | { readonly exists: false; readonly emittedAtMs: null }
+  | { readonly exists: true; readonly emittedAtMs: number | null }
+
+/** An event one of a task's runs awaits or was woken by. */
+export type AwaitedEventFacts = { readonly eventName: string } & EmittedEvent
+
+/**
+ * Everything an operator read reports of one task. Every member but `fakeClock` is read
+ * from one snapshot of the database, and `fakeClock` straight after it. It holds no params,
+ * headers, event payload, run result or checkpoint state. The outcome is the one
+ * `getTaskResult` answers with, so it holds what that holds.
+ *
+ * Every list has one order on every dialect, and no database collation decides it: runs by
+ * their ordinal and then by run id, waits by run id and then by step, and events by name,
+ * each string compared by Unicode code point, which is the order of its UTF-8 bytes.
+ */
+export interface TaskFacts {
+  /** Database time when the snapshot was read. */
+  readonly nowMs: number | null
+  /** Whether the test clock is set, so `nowMs` is the time a test wrote and not the server's. */
+  readonly fakeClock: boolean
+  readonly task: TaskRowFacts
+  readonly outcome: TaskOutcomeFacts
+  readonly runs: readonly RunFacts[]
+  readonly waits: readonly WaitFacts[]
+  readonly events: readonly AwaitedEventFacts[]
+  readonly corrupt: readonly CorruptInteger[]
+}
+
+/** Whether an event has been emitted, and when. Nothing here is derived from its payload. */
+export type EventState =
+  | (Extract<EmittedEvent, { exists: false }> & { readonly corrupt: readonly [] })
+  | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })

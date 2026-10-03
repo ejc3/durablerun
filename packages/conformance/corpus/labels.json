@@ -26,5 +26,8 @@
   "run-task": ["read"],
   "rollback-tries": ["read"],
   "refusal-state": ["read"],
-  "task-done-state": ["read"]
+  "task-done-state": ["read"],
+  "task-facts": ["read"],
+  "task-id-by-key": ["read"],
+  "event-state": ["read"]
 }
