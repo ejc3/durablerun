@@ -1,7 +1,12 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { DEFAULT_MAX_ATTEMPTS, type TaskFacts, taskDoneEventName } from '@durablerun/core'
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  SAGA_STARTED_PREFIX,
+  type TaskFacts,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, type CommandSpec, parseInvocation, usage } from '../src/commands.js'
 import {
@@ -271,6 +276,97 @@ describe('explain on libSQL', () => {
       'sleeping-on-a-timer',
     ])
   }, 120_000)
+
+  it('names a run asleep until its retry delay or its rollback delay has run, and reads a parent through to such a child', async () => {
+    /** The cause, the verdict and the instant of an answer, with the cause as plain text. */
+    const read = (answer: Answer) => ({
+      cause: String(answer.cause),
+      verdict: answer.verdict,
+      nextTransitionAtMs: answer.nextTransitionAtMs,
+    })
+    const backingOff = {
+      cause: 'backing-off',
+      verdict: 'waiting',
+      nextTransitionAtMs: NOW_MS + 30_000,
+    }
+    const failure = '{"name":"Error"}'
+    // A retry: the worker fails the run with attempts left and a delay, as every default
+    // retry does, and the store inserts the next run asleep until the delay has run.
+    const db = await openCliDb('libsql', 'explain-backoff')
+    try {
+      const task = await db.store.spawn(QUEUE, 'job', '{}', { maxAttempts: 3 })
+      const run = await claimActivated(db, 'w-first', task.taskId)
+      await db.store.fail(QUEUE, run.runId, run.claimToken, failure, { delaySeconds: 30 })
+      expect(read(await explain(db, task.taskId))).toEqual(backingOff)
+      // Once the delay has run the next claim takes the run, so it is a due run like any
+      // other: waiting inside the grace, and stuck one millisecond past it.
+      const at = (ms: number) => db.admin.setFakeNowEpochMs(ms)
+      await at(NOW_MS + 30_000 + DUE_GRACE_MS)
+      expect(read(await explain(db, task.taskId))).toEqual({
+        cause: 'sleeping-past-its-wake',
+        verdict: 'waiting',
+        nextTransitionAtMs: NOW_MS + 30_000,
+      })
+      await at(NOW_MS + 30_000 + DUE_GRACE_MS + 1)
+      expect(read(await explain(db, task.taskId))).toEqual({
+        cause: 'sleeping-past-its-wake',
+        verdict: 'stuck',
+        nextTransitionAtMs: null,
+      })
+      const claimed = await db.store.claim(QUEUE, 'w-second', { leaseSeconds: 60, limit: 5 })
+      expect(claimed.map((one) => one.taskId)).toEqual([task.taskId])
+    } finally {
+      await db.close()
+    }
+    // A rollback pass: a rollback failed with budget left and a delay, and the next pass
+    // sleeps until the delay has run.
+    const saga = await openCliDb('libsql', 'explain-backoff-rollback')
+    try {
+      const task = await saga.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
+      const forward = await claimActivated(saga, 'w-forward', task.taskId)
+      await saga.store.setCheckpoint(
+        QUEUE,
+        task.taskId,
+        forward.runId,
+        forward.claimToken,
+        `${SAGA_STARTED_PREFIX}charge`,
+        '1',
+        60,
+      )
+      await saga.store.fail(QUEUE, forward.runId, forward.claimToken, failure, null)
+      const pass = await claimActivated(saga, 'w-pass', task.taskId)
+      await saga.store.failRollback(
+        QUEUE,
+        pass.runId,
+        pass.claimToken,
+        failure,
+        { delaySeconds: 30 },
+        { stepKey: 'charge', errorJson: failure },
+      )
+      expect(read(await explain(saga, task.taskId))).toEqual(backingOff)
+    } finally {
+      await saga.close()
+    }
+    // A parent parked on a child that is backing off waits as the child does.
+    const family = await openCliDb('libsql', 'explain-backoff-child')
+    try {
+      const [parent, child] = await chainOfAwaits(family, 2)
+      const run = await claimActivated(family, 'w-child', child ?? '')
+      await family.store.fail(QUEUE, run.runId, run.claimToken, failure, { delaySeconds: 30 })
+      const answer = await explain(family, parent ?? '')
+      expect({
+        ...read(answer),
+        deepest: { ...answer.deepest, cause: String(answer.deepest?.cause) },
+      }).toEqual({
+        cause: 'awaiting-a-child',
+        verdict: 'waiting',
+        nextTransitionAtMs: null,
+        deepest: { taskId: child, cause: 'backing-off', verdict: 'waiting' },
+      })
+    } finally {
+      await family.close()
+    }
+  }, 60_000)
 
   it('follows an await of a child one hop at a time to depth 8, and reports the deepest cause', async () => {
     /** The task ids of the chain of awaits an answer followed, the named task first. */
