@@ -10,6 +10,12 @@ export const TERMINAL_STATES = Object.freeze(['completed', 'failed', 'cancelled'
 /** The live states a claim may take: a run that is waiting to start or to wake. */
 export const QUEUED_STATES = Object.freeze(['pending', 'sleeping'] as const)
 
+/**
+ * The statuses a wait row holds, which every dialect's schema checks: registered, and
+ * delivered to the run it woke.
+ */
+export const WAIT_STATUSES = Object.freeze(['waiting', 'delivered'] as const)
+
 export type LiveState = (typeof LIVE_STATES)[number]
 export type TerminalState = (typeof TERMINAL_STATES)[number]
 export type TaskState = LiveState | TerminalState

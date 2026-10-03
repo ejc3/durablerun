@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
-import { DEFAULT_MAX_ATTEMPTS } from '@durablerun/core'
+import { DEFAULT_MAX_ATTEMPTS, type TaskFacts } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, usage } from '../src/commands.js'
+import { factsView } from '../src/inspect.js'
+import { userValue } from '../src/render.js'
 import {
   COMPLETED_KEY,
   NOW_MS,
@@ -185,6 +187,87 @@ describe('inspect on libSQL', () => {
     } finally {
       await db.close()
     }
+  })
+
+  it("prints a state or a status that is not one of the engine's own as a hidden value unless --reveal", () => {
+    // Every schema checks these columns, so no row a store wrote holds such a value, and the
+    // view is given the facts directly.
+    const rogue = `rogue-${SENTINEL}`
+    const facts: TaskFacts = {
+      nowMs: NOW_MS,
+      fakeClock: true,
+      task: {
+        taskId: 't',
+        queue: QUEUE,
+        taskName: 'report',
+        state: rogue,
+        attempts: 0,
+        maxAttempts: DEFAULT_MAX_ATTEMPTS,
+        infraRetries: 0,
+        enqueueAtMs: NOW_MS,
+        firstStartedAtMs: null,
+        cancelAtMs: null,
+        idempotencyKey: null,
+        parentTaskId: null,
+        sagaBegan: false,
+      },
+      outcome: { refused: `task t has unknown state ${rogue}` },
+      runs: [
+        {
+          runId: 'r',
+          queue: QUEUE,
+          state: rogue,
+          attempt: 1,
+          claimGen: 0,
+          activatedGen: 0,
+          relaunchCount: 0,
+          claimExpiresAtMs: null,
+          heartbeatAtMs: null,
+          availableAtMs: NOW_MS,
+          wakeEvent: null,
+          wakeStep: null,
+          startedAtMs: null,
+          completedAtMs: null,
+          failedAtMs: null,
+        },
+      ],
+      waits: [
+        {
+          runId: 'r',
+          stepName: 's',
+          eventName: 'e',
+          status: rogue,
+          timeoutAtMs: null,
+          createdAtMs: NOW_MS,
+        },
+      ],
+      events: [],
+      corrupt: [],
+    }
+    const shown = (given: TaskFacts, reveal: boolean) => {
+      const view = factsView(given, {}, reveal) as unknown as {
+        task: { state: unknown }
+        runs: { state: unknown }[]
+        waits: { status: unknown }[]
+      }
+      return { task: view.task.state, run: view.runs[0]?.state, wait: view.waits[0]?.status }
+    }
+    const hidden = userValue(rogue, false)
+    expect(
+      shown(facts, false),
+      'mutation-verdict:behavior:cli-inspect-hides-an-unknown-state',
+    ).toEqual({ task: hidden, run: hidden, wait: hidden })
+    expect(JSON.stringify(hidden)).not.toContain(SENTINEL)
+    const revealed = userValue(rogue, true)
+    expect(shown(facts, true)).toEqual({ task: revealed, run: revealed, wait: revealed })
+    // One of the engine's own prints as it is.
+    const known: TaskFacts = {
+      ...facts,
+      task: { ...facts.task, state: 'cancelled' },
+      runs: facts.runs.map((run) => ({ ...run, state: 'sleeping' })),
+      waits: facts.waits.map((wait) => ({ ...wait, status: 'delivered' })),
+    }
+    expect(shown(known, false)).toEqual({ task: 'cancelled', run: 'sleeping', wait: 'delivered' })
   })
 
   it('takes a task id or --key, one of them and not both, and refuses each other line before a store opens', async () => {
