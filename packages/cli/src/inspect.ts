@@ -127,14 +127,15 @@ export function factsView(
 }
 
 /**
- * The runs and waits whose stored state or status is not one of the engine's own, each by
- * its field and the ids that name its row. The stored text is left out: nothing vouches
- * for it.
+ * The task, the runs and the waits whose stored state or status is not one of the engine's
+ * own, each by its field and the ids that name its row: none for the task, which the
+ * answer already names. The stored text is left out: nothing vouches for it.
  */
 export function statesNotTheEngines(
   facts: TaskFacts,
-): { readonly field: string; readonly runId: string; readonly stepName?: string }[] {
+): { readonly field: string; readonly runId?: string; readonly stepName?: string }[] {
   return [
+    ...(isState(facts.task.state) ? [] : [{ field: 'tasks.state' }]),
     ...facts.runs
       .filter((run) => !isState(run.state))
       .map((run) => ({ field: 'runs.state', runId: run.runId })),

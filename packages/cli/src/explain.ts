@@ -47,9 +47,11 @@ export const CHILD_HOPS = 8
 /**
  * How a cause gets its verdict: a verdict of its own, `late` (`waiting` until the instant
  * it names is more than DUE_GRACE_MS past, `stuck` from then), or `child` (the verdict of
- * the cause the awaited child was followed to).
+ * the cause the awaited child was followed to). No cause may have `stuck` as a verdict of
+ * its own: `stuck` means that a move the driver owes is late, and only the `late` rule
+ * measures that.
  */
-type Rule = Verdict | 'late' | 'child'
+type Rule = Exclude<Verdict, 'stuck'> | 'late' | 'child'
 
 interface CauseSpec {
   readonly verdict: Rule
@@ -270,8 +272,8 @@ const isAhead = ({ facts }: View, at: number | null): at is number =>
 
 /**
  * What is not readable, named and never quoted: whether the outcome decoded, each corrupt
- * integer by its field and the ids of its row, and each run or wait whose state or status
- * is not the engine's own.
+ * integer by its field and the ids of its row, and the task and each run or wait whose
+ * state or status is not the engine's own.
  */
 const unreadableArm: Arm = ({ facts }) =>
   factsAreReadable(facts)
