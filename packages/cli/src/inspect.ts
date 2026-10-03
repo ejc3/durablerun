@@ -127,6 +127,24 @@ export function factsView(
 }
 
 /**
+ * The runs and waits whose stored state or status is not one of the engine's own, each by
+ * its field and the ids that name its row. The stored text is left out: nothing vouches
+ * for it.
+ */
+export function statesNotTheEngines(
+  facts: TaskFacts,
+): { readonly field: string; readonly runId: string; readonly stepName?: string }[] {
+  return [
+    ...facts.runs
+      .filter((run) => !isState(run.state))
+      .map((run) => ({ field: 'runs.state', runId: run.runId })),
+    ...facts.waits
+      .filter((wait) => !isStatus(wait.status))
+      .map((wait) => ({ field: 'waits.status', runId: wait.runId, stepName: wait.stepName })),
+  ]
+}
+
+/**
  * Whether every row the facts were read from was readable: the outcome decoded, no integer
  * was corrupt, and every run's state and every wait's status is one of the engine's own. A
  * task's own state needs no check here, because the outcome's decoder refuses any other.

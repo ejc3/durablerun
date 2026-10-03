@@ -19,6 +19,7 @@ import {
   HUNG_RUN_MS,
   VERDICTS,
   type Verdict,
+  answerView,
   diagnose,
   pastedLine,
   suggestion,
@@ -590,21 +591,18 @@ describe('explain on libSQL', () => {
         verdict: 'waiting',
         deepest: { taskId: last, cause: 'pending-due-unclaimed', verdict: 'waiting' },
       })
-      // The tasks waiting on an event are the ones this read saw: each task along the chain
-      // is listed under the completion event of the child it awaits.
-      const waiting: unknown[] = []
+      // Each task along the chain names the completion event of the child it awaits. No
+      // answer lists the tasks that wait on an event: no read finds them yet.
+      const events: unknown[] = []
       for (
         let hop: Answer | undefined = answer;
         hop?.cause === 'awaiting-a-child';
         hop = hop.awaits
       ) {
-        waiting.push([hop.facts.event, hop.facts.waitingTasks])
+        events.push(hop.facts.event)
       }
-      expect(waiting).toEqual(
-        chain
-          .slice(0, CHILD_HOPS)
-          .map((taskId, index) => [taskDoneEventName(chain[index + 1] ?? ''), [taskId]]),
-      )
+      expect(events).toEqual(chain.slice(1, CHILD_HOPS + 1).map(taskDoneEventName))
+      expect(JSON.stringify(answer)).not.toContain('waitingTasks')
       // A child the driver is late for makes every task that waits on it stuck, and the next
       // command is the one for the child: none yet, because `tick` is not in the table.
       await seedWorld(db).at(NOW_MS + DUE_GRACE_MS + 1)
@@ -634,17 +632,17 @@ describe('explain on libSQL', () => {
         }
       })
     }
-    // A command table that already holds the verbs a later build adds, each with the flag
-    // that confirms a write, so the builder is asked about them too.
+    // A command table that already holds the verbs a later build adds, each as main.ts
+    // demands a command that writes to be: the store named again with a required --target,
+    // and the flag that confirms the write. So the builder is asked about them too.
     const drive = (verb: string, positionals: string[]): CommandSpec => ({
-      ...COMMANDS.result,
+      ...COMMANDS.migrate,
       verb: verb as CommandSpec['verb'],
       positionals,
       flags: {
-        ...COMMANDS.result.flags,
-        yes: { type: 'boolean', description: 'confirm the change' },
+        ...COMMANDS.migrate.flags,
+        queue: { type: 'string', required: true, value: 'Q', description: 'the queue' },
       },
-      writes: true,
     })
     const later: Readonly<Record<string, CommandSpec>> = {
       ...COMMANDS,
@@ -654,10 +652,13 @@ describe('explain on libSQL', () => {
       emit: drive('emit', []),
     }
     const built: string[][] = []
+    const withheld = new Set<string>()
     for (const cause of Object.keys(CAUSES) as Cause[]) {
       for (const verdict of VERDICTS) {
-        const argv = suggestion({ cause, verdict, taskId: 'a-task' }, QUEUE, later)
-        if (argv !== null) built.push([...argv])
+        const next = suggestion({ cause, verdict, taskId: 'a-task' }, QUEUE, later)
+        if (next === null) continue
+        if ('withheld' in next) withheld.add(next.withheld)
+        else built.push([...next])
       }
     }
     for (const argv of [...emitted, ...built]) {
@@ -666,11 +667,19 @@ describe('explain on libSQL', () => {
         'mutation-verdict:behavior:cli-explain-suggests-no-yes',
       ).toEqual({ argv, confirms: false, emits: false })
     }
-    // Every suggestion a command of today's table carries parses as that command.
-    for (const argv of emitted) expect(parseInvocation(argv).spec.verb).toBe(argv[0])
+    // Every suggestion parses as the command it names, the ones printed and the ones built
+    // against the later table alike. What the later table's writes would need is withheld,
+    // with the reason: `explain` has no value for --target.
+    for (const argv of [...emitted, ...built]) {
+      expect(parseInvocation(argv).spec.verb).toBe(argv[0])
+    }
     expect(new Set(emitted.map((argv) => argv[0]))).toEqual(new Set(['result', 'inspect']))
-    expect(new Set(built.map((argv) => argv[0]))).toEqual(
-      new Set(['result', 'inspect', 'sweep', 'tick']),
+    expect(new Set(built.map((argv) => argv[0]))).toEqual(new Set(['result', 'inspect']))
+    expect(withheld).toEqual(
+      new Set([
+        'explain knows no value for --target of sweep',
+        'explain knows no value for --target of tick',
+      ]),
     )
     // A waiting verdict owes no command, whatever the cause.
     for (const cause of Object.keys(CAUSES) as Cause[]) {
@@ -700,14 +709,13 @@ describe('explain on libSQL', () => {
       const cause = line.slice(0, line.indexOf(':')) as Cause
       expect(suggestion({ cause, verdict: 'stuck', taskId: 'a-task' }, QUEUE)).toBeNull()
     }
-    // A verb in the table whose argument or required flag `explain` knows no value for is a
-    // defect of the table of causes, and is refused out loud.
+    // A command whose argument `explain` has no value for is withheld the same way.
     const unknown: CommandSpec = { ...COMMANDS.result, positionals: ['somethingElse'] }
-    expect(() =>
+    expect(
       suggestion({ cause: 'completed', verdict: 'ok', taskId: 'a-task' }, QUEUE, {
         result: unknown,
       }),
-    ).toThrow(/explain knows no value for somethingElse of result/)
+    ).toEqual({ withheld: 'explain knows no value for <somethingElse> of result' })
   })
 
   it('builds a next command the parser of the CLI reads, for a queue whose name begins with a dash', async () => {
@@ -773,10 +781,26 @@ describe('explain on libSQL', () => {
       built,
       'mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill',
     ).toEqual({ withheld: 'explain knows no value for --target of sweep' })
+    // The diagnosis stands without the command, and the answer says why there is none.
+    const stuck: Diagnosis = {
+      taskId: 'a-task',
+      cause: 'lease-lapsed-unswept',
+      verdict: 'stuck',
+      nextTransitionAtMs: null,
+      facts: { runId: 'a-run' },
+    }
+    expect(answerView(stuck, QUEUE, { sweep })).toMatchObject({
+      taskId: 'a-task',
+      cause: 'lease-lapsed-unswept',
+      verdict: 'stuck',
+      facts: { runId: 'a-run' },
+      next: null,
+      nextWithheld: 'explain knows no value for --target of sweep',
+    })
   })
 
   it('prints a suggestion as one line a shell reads back as the same arguments', () => {
-    const argv = ['inspect', "a task's id", '--queue', 'a queue; rm -rf "$HOME"']
+    const argv = ['inspect', "a task's id", '--queue=a queue; rm -rf "$HOME"']
     const line = pastedLine(argv)
     expect(line.startsWith('pnpm cli ')).toBe(true)
     const read = spawnSync('sh', ['-c', `printf '%s\\n' ${line.slice('pnpm cli '.length)}`], {
@@ -787,9 +811,7 @@ describe('explain on libSQL', () => {
       'mutation-verdict:behavior:cli-explain-quotes-a-pasted-line',
     ).toEqual(argv)
     // A plain word is pasted as it is.
-    expect(pastedLine(['result', 'task-01', '--queue', 'q'])).toBe(
-      'pnpm cli result task-01 --queue q',
-    )
+    expect(pastedLine(['result', 'task-01', '--queue=q'])).toBe('pnpm cli result task-01 --queue=q')
   })
 
   it('prints its answer on stdout whatever it exits with, and exits 10 for a row inspect exits 10 for', async () => {
@@ -812,7 +834,7 @@ describe('explain on libSQL', () => {
         'mutation-verdict:behavior:cli-explain-prints-its-answer-on-stdout',
       ).toEqual({ exit: 10, stderr: '', named: true })
     })
-    // An integer outside its bounds, fixture-built: the cause names the field.
+    // An integer outside its bounds, fixture-built: the cause names the field and its row.
     await onSeed('libsql', seedOf('pending-due-unclaimed'), async (db, taskId) => {
       await fixture(db, 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', [taskId])
       const answer = await explain(db, taskId)
@@ -826,7 +848,11 @@ describe('explain on libSQL', () => {
         exit: 10,
         cause: 'unreadable',
         verdict: 'inconsistent',
-        facts: { outcome: 'readable', corruptFields: ['runs.claim_gen'] },
+        facts: {
+          outcome: 'readable',
+          corrupt: [{ field: 'runs.claim_gen', runId: expect.any(String) }],
+          notTheEngines: [],
+        },
         inspect: 10,
       })
     })

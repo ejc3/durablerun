@@ -7,7 +7,7 @@ import {
   taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { COMMANDS, type CommandSpec } from './commands.js'
-import { factsAreReadable } from './inspect.js'
+import { factsAreReadable, statesNotTheEngines } from './inspect.js'
 import { failureReason } from './render.js'
 
 /**
@@ -265,6 +265,11 @@ const isPast = ({ facts }: View, at: number | null): at is number =>
 const isAhead = ({ facts }: View, at: number | null): at is number =>
   at !== null && facts.nowMs !== null && at > facts.nowMs
 
+/**
+ * What is not readable, named and never quoted: whether the outcome decoded, each corrupt
+ * integer by its field and the ids of its row, and each run or wait whose state or status
+ * is not the engine's own.
+ */
 const unreadableArm: Arm = ({ facts }) =>
   factsAreReadable(facts)
     ? null
@@ -272,7 +277,13 @@ const unreadableArm: Arm = ({ facts }) =>
         cause: 'unreadable',
         facts: {
           outcome: 'result' in facts.outcome ? 'readable' : 'unreadable',
-          corruptFields: [...new Set(facts.corrupt.map((entry) => entry.field))],
+          corrupt: facts.corrupt.map(({ field, runId, stepName, eventName }) => ({
+            field,
+            runId,
+            stepName,
+            eventName,
+          })),
+          notTheEngines: statesNotTheEngines(facts),
         },
       }
 
@@ -485,12 +496,11 @@ function registeredWait({ facts }: View, run: RunFacts): WaitFacts | undefined {
   return matching.length === 1 ? matching[0] : undefined
 }
 
-/** What an await's cause says: the event, the step, and the waiting tasks this read saw. */
-const awaited = ({ task }: TaskFacts, wait: WaitFacts) => ({
+/** What an await's cause says: the run, the event it waits on, and the step that awaits it. */
+const awaited = (wait: WaitFacts) => ({
   runId: wait.runId,
   event: wait.eventName,
   step: wait.stepName,
-  waitingTasks: [task.taskId],
 })
 
 const waitOutlivesItsEventArm: RunArm = (view, run) => {
@@ -499,7 +509,7 @@ const waitOutlivesItsEventArm: RunArm = (view, run) => {
   return wait !== undefined && event?.exists === true
     ? {
         cause: 'wait-outlives-its-event',
-        facts: { ...awaited(view.facts, wait), emittedAtMs: event.emittedAtMs },
+        facts: { ...awaited(wait), emittedAtMs: event.emittedAtMs },
       }
     : null
 }
@@ -537,7 +547,7 @@ const pastItsWakeArm: RunArm = (view, run) => {
 }
 
 const awaitingAChildArm: RunArm = (view, run) => {
-  const { facts, evidence } = view
+  const { evidence } = view
   const wait = registeredWait(view, run)
   const childTaskId = wait === undefined ? null : taskIdOfDoneEvent(wait.eventName)
   if (wait === undefined || childTaskId === null) return null
@@ -546,7 +556,7 @@ const awaitingAChildArm: RunArm = (view, run) => {
     cause: 'awaiting-a-child',
     at: wait.timeoutAtMs,
     facts: {
-      ...awaited(facts, wait),
+      ...awaited(wait),
       childTaskId,
       followed: typeof evidence.child === 'string' ? evidence.child : 'followed',
     },
@@ -556,14 +566,14 @@ const awaitingAChildArm: RunArm = (view, run) => {
 const awaitingATimedEventArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
   return wait !== undefined && isAhead(view, wait.timeoutAtMs)
-    ? { cause: 'awaiting-a-timed-event', at: wait.timeoutAtMs, facts: awaited(view.facts, wait) }
+    ? { cause: 'awaiting-a-timed-event', at: wait.timeoutAtMs, facts: awaited(wait) }
     : null
 }
 
 const awaitingAnUntimedEventArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
   return wait !== undefined && wait.timeoutAtMs === null
-    ? { cause: 'awaiting-an-untimed-event', facts: awaited(view.facts, wait) }
+    ? { cause: 'awaiting-an-untimed-event', facts: awaited(wait) }
     : null
 }
 
@@ -679,34 +689,49 @@ function deepest(diagnosis: Diagnosis): Diagnosis {
   return diagnosis.child === undefined ? diagnosis : deepest(diagnosis.child)
 }
 
+/** Why a next command was not built: what its command requires that `explain` has no value for. */
+export interface Withheld {
+  readonly withheld: string
+}
+
+const noValueFor = (what: string, spec: CommandSpec): Withheld => ({
+  withheld: `explain knows no value for ${what} of ${spec.verb}`,
+})
+
 /**
- * The next command for a diagnosis, as arguments the command table parses, or null. It is
- * built from the table: the verb the cause names, each of that command's arguments, and
- * each flag it requires, filled from the queue and the task the command is for. A `waiting`
- * verdict owes no command, and a verb the table does not hold gives none, so a cause whose
- * command a later build adds prints nothing until the verb joins the table. An argument or
- * a required flag that `explain` knows no value for is refused out loud: it is a defect of
- * the cause table, and a command line with a hole in it is worse than none. No flag that
- * is not required is ever added, so no suggestion confirms a write.
+ * The next command for a diagnosis, as arguments the command table parses. It is built
+ * from the table: the verb the cause names, each of that command's arguments, and each
+ * flag it requires, filled from the queue and the task the command is for. A required flag
+ * and its value are one argument, `--queue=<value>`, so a value that begins with a dash is
+ * still read as the flag's value. No flag that is not required is ever added, so no
+ * suggestion confirms a write.
+ *
+ * The answer is null when no command is owed or known: a `waiting` verdict owes none, and
+ * a verb the table does not hold gives none, so a cause whose command a later build adds
+ * prints nothing until the verb joins the table. When the command requires an argument or
+ * a flag that `explain` has no value for, the answer says which and builds nothing: a
+ * command line with a hole in it is worse than none, and the diagnosis stands without it.
  */
 export function suggestion(
   { cause, verdict, taskId }: Pick<Diagnosis, 'cause' | 'verdict' | 'taskId'>,
   queue: string,
   commands: Readonly<Record<string, CommandSpec>> = COMMANDS,
-): readonly string[] | null {
+): readonly string[] | Withheld | null {
   const verb = CAUSES[cause].next
   const spec = verb === null ? undefined : commands[verb]
   if (spec === undefined || verdict === 'waiting') return null
   const known: Readonly<Record<string, string>> = { taskId, queue }
-  const filled = (name: string): string => {
-    const value = known[name]
-    if (value === undefined) throw new Error(`explain knows no value for ${name} of ${spec.verb}`)
-    return value
-  }
   const argv: string[] = [spec.verb]
-  for (const name of spec.positionals) argv.push(filled(name))
+  for (const name of spec.positionals) {
+    const value = known[name]
+    if (value === undefined) return noValueFor(`<${name}>`, spec)
+    argv.push(value)
+  }
   for (const [name, flag] of Object.entries(spec.flags)) {
-    if (flag.required === true) argv.push(`--${name}`, filled(name))
+    if (flag.required !== true) continue
+    const value = known[name]
+    if (value === undefined) return noValueFor(`--${name}`, spec)
+    argv.push(`--${name}=${value}`)
   }
   return argv
 }
@@ -735,20 +760,30 @@ function diagnosisView(diagnosis: Diagnosis): Record<string, unknown> {
   }
 }
 
+/** The next command as `explain` prints it, or none, with the reason when one was withheld. */
+function nextView(next: ReturnType<typeof suggestion>): Record<string, unknown> {
+  if (next === null) return { next: null }
+  if ('withheld' in next) return { next: null, nextWithheld: next.withheld }
+  return { next: { argv: next, command: pastedLine(next) } }
+}
+
 /**
  * What `explain` prints of the task it was asked about: its diagnosis, the cause at the end
  * of the awaits that were followed, when one was, and the next command, which is the one
  * for that last task.
  */
-export function answerView(diagnosis: Diagnosis, queue: string): Record<string, unknown> {
+export function answerView(
+  diagnosis: Diagnosis,
+  queue: string,
+  commands: Readonly<Record<string, CommandSpec>> = COMMANDS,
+): Record<string, unknown> {
   const last = deepest(diagnosis)
-  const argv = suggestion(last, queue)
   return {
     ...diagnosisView(diagnosis),
     ...(last === diagnosis
       ? {}
       : { deepest: { taskId: last.taskId, cause: last.cause, verdict: last.verdict } }),
-    next: argv === null ? null : { argv, command: pastedLine(argv) },
+    ...nextView(suggestion(last, queue, commands)),
   }
 }
 
