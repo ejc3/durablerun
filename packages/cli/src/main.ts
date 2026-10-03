@@ -535,11 +535,11 @@ export async function explained(
   store: Pick<OpenedStore, 'operator' | 'scheduler'>,
   queue: string,
   taskId: string,
-  hop: number,
   onTheWay: readonly string[] = [],
 ): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return null
+  const hop = onTheWay.length
   let evidence: Evidence = {}
   for (;;) {
     const asked = diagnose(facts, evidence)
@@ -552,7 +552,7 @@ export async function explained(
     } else if (hop === CHILD_HOPS) {
       evidence = { ...evidence, child: 'not-followed' }
     } else {
-      const child = await explained(store, queue, asked.taskId, hop + 1, [...onTheWay, taskId])
+      const child = await explained(store, queue, asked.taskId, [...onTheWay, taskId])
       evidence = { ...evidence, child: child?.diagnosis ?? 'absent' }
     }
   }
@@ -568,7 +568,7 @@ const explain: Handler = async (context) => {
   const named = await namedTask(context)
   if ('exit' in named) return named
   const { queue, taskId } = named
-  const found = await explained(context.store, queue, taskId, 0)
+  const found = await explained(context.store, queue, taskId)
   if (found === null) return noSuchTask(queue, taskId)
   const { facts, diagnosis } = found
   return {

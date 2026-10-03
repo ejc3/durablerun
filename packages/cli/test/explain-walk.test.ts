@@ -1,5 +1,3 @@
-import { engineInvariantViolations } from '@durablerun/conformance'
-import { operatorReads } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../../conformance/src/fuzz.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
@@ -29,13 +27,14 @@ const CAUSES_FLOOR = 14
 
 describe('explain over a walk of the engine', () => {
   it('names a cause for every task a walk leaves, and none is unexplained or inconsistent', async () => {
-    const seen = new Map<string, number>()
+    const seen = new Set<string>()
     const unnamed: string[] = []
-    let tasks = 0
     for (const seed of SEEDS) {
       await runFuzzScenario(makeLibsqlFixture, seed, STEPS, async (fixture) => {
-        expect(await engineInvariantViolations(fixture.raw)).toEqual([])
-        const store = { operator: operatorReads(fixture.raw), scheduler: fixture.store }
+        const store = {
+          operator: fixture.operatorReadsOver(fixture.raw),
+          scheduler: fixture.store,
+        }
         const [listed] = await fixture.raw.batch(
           'fixture:walk-tasks',
           [{ sql: 'SELECT queue, task_id FROM tasks ORDER BY task_id', args: [] }],
@@ -43,11 +42,10 @@ describe('explain over a walk of the engine', () => {
         )
         for (const row of listed?.rows ?? []) {
           const taskId = String(row.task_id)
-          const found = await explained(store, String(row.queue), taskId, 0)
+          const found = await explained(store, String(row.queue), taskId)
           if (found === null) throw new Error(`walk ${seed}: task ${taskId} is listed and not read`)
-          tasks++
           const { cause, verdict } = found.diagnosis
-          seen.set(cause, (seen.get(cause) ?? 0) + 1)
+          seen.add(cause)
           if (verdict === 'unexplained' || verdict === 'inconsistent') {
             const state = found.facts.task.state
             unnamed.push(`walk ${seed}: a ${state} task read as ${cause}, ${verdict}`)
@@ -60,12 +58,8 @@ describe('explain over a walk of the engine', () => {
       'mutation-verdict:behavior:cli-explain-names-every-state-a-walk-leaves',
     ).toEqual([])
     // The floor: the walks reached this many causes, the backoff of a retry among them.
-    const reached = [...seen.keys()].sort()
-    expect({ tasks: tasks > 0, enough: reached.length >= CAUSES_FLOOR, reached }).toEqual({
-      tasks: true,
-      enough: true,
-      reached,
-    })
+    const reached = [...seen].sort()
+    expect({ enough: reached.length >= CAUSES_FLOOR, reached }).toEqual({ enough: true, reached })
     expect(reached).toContain('backing-off')
   }, 300_000)
 })

@@ -28,9 +28,9 @@ import type { StoreOpener } from '../src/open-store.js'
 import {
   EXPLAIN_SEEDS,
   type ExplainSeed,
+  SEED_WORKER,
   asleep,
   chainOfAwaits,
-  SEED_WORKER,
   fixture,
   onSeed,
   parkedOnAnEvent,
@@ -76,6 +76,35 @@ async function explain(db: CliDb, taskId: string, opener?: StoreOpener): Promise
   const run = await runCli(['explain', taskId, '--queue', QUEUE, '--json'], db.env, opener)
   return { ...(JSON.parse(run.stdout) as Answer), exit: run.exit }
 }
+
+/** An answer, and how many times the facts of a task were read for it. */
+async function ask(db: CliDb, taskId: string) {
+  const recording = recordingOpener()
+  const answer = await explain(db, taskId, recording.opener)
+  const reads = recording.sent().filter((batch) => batch.label === 'task-facts').length
+  return { answer, reads }
+}
+
+/**
+ * A stand-in for a command a later build adds: `migrate`, the table's own command that
+ * writes, under another verb and with a required --queue. So it requires --target, which
+ * main.ts demands of a command that writes, and it takes the flag that confirms the write.
+ */
+const drive = (verb: string, positionals: string[]): CommandSpec => ({
+  ...COMMANDS.migrate,
+  verb: verb as CommandSpec['verb'],
+  positionals,
+  flags: {
+    ...COMMANDS.migrate.flags,
+    queue: { type: 'string', required: true, value: 'Q', description: 'the queue' },
+  },
+})
+
+/** The arguments a POSIX shell reads back from the one line `explain` prints to paste. */
+const shellReads = (line: string): string[] =>
+  spawnSync('sh', ['-c', `printf '%s\\n' ${line.slice('pnpm cli '.length)}`], { encoding: 'utf8' })
+    .stdout.split('\n')
+    .slice(0, -1)
 
 function seedOf(cause: Cause): ExplainSeed {
   const seed = EXPLAIN_SEEDS.find((one) => one.cause === cause)
@@ -340,20 +369,10 @@ describe('explain on libSQL', () => {
     // An await with no timeout has no clock of its own, and the task's deadline is one.
     const untimed = await openCliDb('libsql', 'explain-deadline-untimed')
     try {
-      const task = await untimed.store.spawn(QUEUE, 'job', '{}', {
+      const taskId = await parkedOnAnEvent(untimed, null, {
         cancellation: { maxDurationSeconds: 60 },
       })
-      const run = await claimActivated(untimed, 'w-await', task.taskId)
-      await untimed.store.awaitEvent(
-        QUEUE,
-        task.taskId,
-        run.runId,
-        run.claimToken,
-        'approve',
-        'approval',
-        null,
-      )
-      expect(read(await explain(untimed, task.taskId))).toEqual({
+      expect(read(await explain(untimed, taskId))).toEqual({
         cause: 'awaiting-an-untimed-event',
         verdict: 'waiting',
         nextTransitionAtMs: NOW_MS + 60_000,
@@ -445,9 +464,9 @@ describe('explain on libSQL', () => {
   }, 120_000)
 
   it('names a run asleep until its retry delay or its rollback delay has run, and reads a parent through to such a child', async () => {
-    /** The cause, the verdict and the instant of an answer, with the cause as plain text. */
+    /** The cause, the verdict and the instant of an answer. */
     const read = (answer: Answer) => ({
-      cause: String(answer.cause),
+      cause: answer.cause,
       verdict: answer.verdict,
       nextTransitionAtMs: answer.nextTransitionAtMs,
     })
@@ -457,34 +476,28 @@ describe('explain on libSQL', () => {
       nextTransitionAtMs: NOW_MS + 30_000,
     }
     const failure = '{"name":"Error"}'
-    // A retry: the worker fails the run with attempts left and a delay, as every default
-    // retry does, and the store inserts the next run asleep until the delay has run.
-    const db = await openCliDb('libsql', 'explain-backoff')
-    try {
-      const task = await db.store.spawn(QUEUE, 'job', '{}', { maxAttempts: 3 })
-      const run = await claimActivated(db, 'w-first', task.taskId)
-      await db.store.fail(QUEUE, run.runId, run.claimToken, failure, { delaySeconds: 30 })
-      expect(read(await explain(db, task.taskId))).toEqual(backingOff)
+    // A retry, which is the seed of the cause: the worker fails the run with attempts left
+    // and a delay, as every default retry does, and the store inserts the next run asleep
+    // until the delay has run.
+    await onSeed('libsql', seedOf('backing-off'), async (db, taskId, at) => {
+      expect(read(await explain(db, taskId))).toEqual(backingOff)
       // Once the delay has run the next claim takes the run, so it is a due run like any
       // other: waiting inside the grace, and stuck one millisecond past it.
-      const at = (ms: number) => db.admin.setFakeNowEpochMs(ms)
       await at(NOW_MS + 30_000 + DUE_GRACE_MS)
-      expect(read(await explain(db, task.taskId))).toEqual({
+      expect(read(await explain(db, taskId))).toEqual({
         cause: 'sleeping-past-its-wake',
         verdict: 'waiting',
         nextTransitionAtMs: NOW_MS + 30_000,
       })
       await at(NOW_MS + 30_000 + DUE_GRACE_MS + 1)
-      expect(read(await explain(db, task.taskId))).toEqual({
+      expect(read(await explain(db, taskId))).toEqual({
         cause: 'sleeping-past-its-wake',
         verdict: 'stuck',
         nextTransitionAtMs: null,
       })
       const claimed = await db.store.claim(QUEUE, 'w-second', { leaseSeconds: 60, limit: 5 })
-      expect(claimed.map((one) => one.taskId)).toEqual([task.taskId])
-    } finally {
-      await db.close()
-    }
+      expect(claimed.map((one) => one.taskId)).toEqual([taskId])
+    })
     // A rollback pass: a rollback failed with budget left and a delay, and the next pass
     // sleeps until the delay has run.
     const saga = await openCliDb('libsql', 'explain-backoff-rollback')
@@ -521,10 +534,7 @@ describe('explain on libSQL', () => {
       const run = await claimActivated(family, 'w-child', child ?? '')
       await family.store.fail(QUEUE, run.runId, run.claimToken, failure, { delaySeconds: 30 })
       const answer = await explain(family, parent ?? '')
-      expect({
-        ...read(answer),
-        deepest: { ...answer.deepest, cause: String(answer.deepest?.cause) },
-      }).toEqual({
+      expect({ ...read(answer), deepest: answer.deepest }).toEqual({
         cause: 'awaiting-a-child',
         verdict: 'waiting',
         nextTransitionAtMs: null,
@@ -541,13 +551,6 @@ describe('explain on libSQL', () => {
       const chain = [taskId]
       for (let hop = answer.awaits; hop !== undefined; hop = hop.awaits) chain.push(hop.taskId)
       return chain
-    }
-    /** An answer, and how many times the facts of a task were read for it. */
-    const ask = async (db: CliDb, taskId: string) => {
-      const recording = recordingOpener()
-      const answer = await explain(db, taskId, recording.opener)
-      const reads = recording.sent().filter((batch) => batch.label === 'task-facts').length
-      return { answer, reads }
     }
     // Ten tasks, each but the last parked on the next. The ninth is CHILD_HOPS awaits from
     // the first, so its own child is left unread, and nothing vouches for what that child is
@@ -620,13 +623,12 @@ describe('explain on libSQL', () => {
 
   it('reads a ring of awaits once: a task that waits on itself, and two that wait on each other', async () => {
     const reads = async (db: CliDb, taskId: string) => {
-      const recording = recordingOpener()
-      const answer = await explain(db, taskId, recording.opener)
+      const asked = await ask(db, taskId)
       return {
-        cause: answer.cause,
-        verdict: answer.verdict,
-        followed: [answer.facts.followed, answer.awaits?.facts.followed],
-        reads: recording.sent().filter((batch) => batch.label === 'task-facts').length,
+        cause: asked.answer.cause,
+        verdict: asked.answer.verdict,
+        followed: [asked.answer.facts.followed, asked.answer.awaits?.facts.followed],
+        reads: asked.reads,
       }
     }
     // The store lets a run await any task of its queue, its own among them.
@@ -697,15 +699,6 @@ describe('explain on libSQL', () => {
     // A command table that already holds the verbs a later build adds, each as main.ts
     // demands a command that writes to be: the store named again with a required --target,
     // and the flag that confirms the write. So the builder is asked about them too.
-    const drive = (verb: string, positionals: string[]): CommandSpec => ({
-      ...COMMANDS.migrate,
-      verb: verb as CommandSpec['verb'],
-      positionals,
-      flags: {
-        ...COMMANDS.migrate.flags,
-        queue: { type: 'string', required: true, value: 'Q', description: 'the queue' },
-      },
-    })
     const later: Readonly<Record<string, CommandSpec>> = {
       ...COMMANDS,
       sweep: drive('sweep', []),
@@ -785,9 +778,7 @@ describe('explain on libSQL', () => {
     try {
       for (const queue of ['-q', '--json']) {
         const task = await db.store.spawn(queue, 'job', '{}')
-        const [run] = await db.store.claim(queue, `w${queue}`, { leaseSeconds: 60, limit: 1 })
-        if (run === undefined) throw new Error(`nothing to claim in ${queue}`)
-        await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(db, `w${queue}`, task.taskId, queue)
         await db.store.complete(queue, run.runId, run.claimToken, '{}')
         const printed = await runCli(['explain', task.taskId, `--queue=${queue}`, '--json'], db.env)
         const next = (JSON.parse(printed.stdout) as Answer).next
@@ -806,12 +797,7 @@ describe('explain on libSQL', () => {
           'mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument',
         ).toEqual({ queue, parsed: { verb: 'result', taskId: task.taskId, queue } })
         // The one line to paste is the same arguments, as a shell reads it back.
-        const read = spawnSync(
-          'sh',
-          ['-c', `printf '%s\\n' ${next.command.slice('pnpm cli '.length)}`],
-          { encoding: 'utf8' },
-        )
-        expect(read.stdout.split('\n').slice(0, -1)).toEqual(next.argv)
+        expect(shellReads(next.command)).toEqual(next.argv)
       }
     } finally {
       await db.close()
@@ -820,14 +806,7 @@ describe('explain on libSQL', () => {
 
   it('withholds a next command it cannot fill, and says what it has no value for', () => {
     // What main.ts demands of a command that writes: the store named again with --target.
-    const sweep: CommandSpec = {
-      ...COMMANDS.migrate,
-      verb: 'sweep' as CommandSpec['verb'],
-      flags: {
-        ...COMMANDS.migrate.flags,
-        queue: { type: 'string', required: true, value: 'Q', description: 'the queue to sweep' },
-      },
-    }
+    const sweep = drive('sweep', [])
     const built = (() => {
       try {
         return suggestion(
@@ -865,13 +844,9 @@ describe('explain on libSQL', () => {
     const argv = ['inspect', "a task's id", '--queue=a queue; rm -rf "$HOME"']
     const line = pastedLine(argv)
     expect(line.startsWith('pnpm cli ')).toBe(true)
-    const read = spawnSync('sh', ['-c', `printf '%s\\n' ${line.slice('pnpm cli '.length)}`], {
-      encoding: 'utf8',
-    })
-    expect(
-      read.stdout.split('\n').slice(0, -1),
-      'mutation-verdict:behavior:cli-explain-quotes-a-pasted-line',
-    ).toEqual(argv)
+    expect(shellReads(line), 'mutation-verdict:behavior:cli-explain-quotes-a-pasted-line').toEqual(
+      argv,
+    )
     // A plain word is pasted as it is.
     expect(pastedLine(['result', 'task-01', '--queue=q'])).toBe('pnpm cli result task-01 --queue=q')
   })

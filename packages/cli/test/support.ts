@@ -458,10 +458,10 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
 }
 
 /** Claim the one run of the queue that is due, which must be the task's, and activate it. */
-export async function claimActivated(db: CliDb, worker: string, taskId: string) {
-  const [run] = await db.store.claim(QUEUE, worker, { leaseSeconds: 60, limit: 1 })
+export async function claimActivated(db: CliDb, worker: string, taskId: string, queue = QUEUE) {
+  const [run] = await db.store.claim(queue, worker, { leaseSeconds: 60, limit: 1 })
   if (run?.taskId !== taskId) throw new Error(`${worker} did not claim task ${taskId}`)
-  if ((await db.store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)) === null) {
+  if ((await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)) === null) {
     throw new Error(`${worker} could not activate the run of task ${taskId}`)
   }
   return run
