@@ -337,10 +337,11 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '080f8444e8d748c0b9c1969f4a7368af37c4f9c2e72b9a1c4361bca5ee5536bd':
-              # The operator's reads and `inspect` register thirty-five mutations: one for
+              # The operator's reads and `inspect` register thirty-eight mutations: one for
               # each persisted integer the reads consume, and the others for database time,
               # a stored NULL, the numbers, the order of each list, the check of a read's
-              # strings, a child's key read back, and the rules of `inspect`. Every verdict
+              # strings, a child's key read back, the rules of `inspect`, and the invariant
+              # library's refusal of an event with no instant. Every verdict
               # marker of their cases is newer than the base registry, so each is exempted
               # there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
@@ -377,6 +378,9 @@ jobs:
                   "mutation-verdict:behavior:operator-reads-null-instant-is-corrupt",
                   "mutation-verdict:behavior:cli-inspect-prints-a-snapshot-on-stdout",
                   "mutation-verdict:behavior:cli-inspect-hides-an-unknown-state",
+                  "mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-run-state",
+                  "mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-wait-status",
+                  "mutation-verdict:behavior:invariants-refuse-an-event-with-no-instant",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

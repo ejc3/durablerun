@@ -18128,6 +18128,57 @@ VERDICTS.update(
 VERDICTS["cli-inspect-hides-an-unknown-run-state"] = VERDICTS["cli-inspect-hides-an-unknown-state"]
 VERDICTS["cli-inspect-hides-an-unknown-wait-status"] = VERDICTS["cli-inspect-hides-an-unknown-state"]
 
+# What a snapshot's exit and the invariant library hold of a row no engine path writes: a
+# run's state or a wait's status that is not the engine's own makes `inspect` exit 10, and
+# an event that exists with no instant is an invariant violation.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-inspect-exits-10-for-an-unknown-run-state",
+            "packages/cli/src/inspect.ts",
+            "    facts.runs.every((run) => isState(run.state)) &&\n",
+            "    true && // MUTATION: a run's state is not held to the engine's own\n",
+            "inspect exits 0 for a task one of whose runs holds a state that is not the engine's own, so a script reads a row no engine path writes as a clean one",
+        ),
+        (
+            "cli-inspect-exits-10-for-an-unknown-wait-status",
+            "packages/cli/src/inspect.ts",
+            "    facts.waits.every((wait) => isStatus(wait.status))\n",
+            "    true // MUTATION: a wait's status is not held to the engine's own\n",
+            "inspect exits 0 for a task one of whose waits holds a status that is not the engine's own, so a script reads a row no engine path writes as a clean one",
+        ),
+        (
+            "invariants-refuse-an-event-with-no-instant",
+            "packages/conformance/src/invariants.ts",
+            "    if (value === null && field.nullable && field.bounds !== PERSISTED_INTEGER_NEVER_NULL) return\n",
+            "    if (value === null && field.nullable) return // MUTATION: an event's instant may be NULL, as its column's schema says\n",
+            "the invariant library passes an event that exists with no instant, which no engine path writes, so every conformance case, simulation and fuzz walk passes a row that inspect exits 10 on",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-inspect-exits-10-for-an-unknown-run-state": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/inspect.test.ts",
+            "inspect on libSQL exits 10 for a run's state or a wait's status that is not one of the engine's own",
+            "mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-run-state",
+        ),
+        "cli-inspect-exits-10-for-an-unknown-wait-status": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/inspect.test.ts",
+            "inspect on libSQL exits 10 for a run's state or a wait's status that is not one of the engine's own",
+            "mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-wait-status",
+        ),
+        "invariants-refuse-an-event-with-no-instant": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption flags an event that exists with no instant, which no engine path writes",
+            "mutation-verdict:behavior:invariants-refuse-an-event-with-no-instant",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -22036,7 +22087,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1184:
+        if len(MUTATIONS) != 1187:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
