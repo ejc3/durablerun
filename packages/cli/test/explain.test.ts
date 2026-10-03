@@ -576,6 +576,46 @@ describe('explain on libSQL', () => {
     }
   }, 60_000)
 
+  it('says of a due run that carries the wake fields of an await whether its event exists', async () => {
+    const read = (answer: Answer) => ({
+      cause: answer.cause,
+      verdict: answer.verdict,
+      event: answer.facts.event,
+      eventExists: answer.facts.eventExists,
+    })
+    const woken = { cause: 'woken-unclaimed', verdict: 'waiting', event: 'approval' }
+    // An emit woke the run, and the event it left exists.
+    await onSeed('libsql', seedOf('woken-unclaimed'), async (db, taskId) => {
+      expect(read(await explain(db, taskId))).toEqual({ ...woken, eventExists: true })
+    })
+    // An await that timed out, a failure for good, and a revival: the run that follows
+    // carries the await's wake fields, and nobody emitted the event.
+    const db = await openCliDb('libsql', 'explain-revived-after-a-timeout')
+    try {
+      const task = await db.store.spawn(QUEUE, 'job', '{}', { maxAttempts: 1 })
+      const first = await claimActivated(db, 'w-first', task.taskId)
+      await db.store.awaitEvent(
+        QUEUE,
+        task.taskId,
+        first.runId,
+        first.claimToken,
+        'approve',
+        'approval',
+        30,
+      )
+      await db.admin.setFakeNowEpochMs(NOW_MS + 30_000)
+      const again = await claimActivated(db, 'w-again', task.taskId)
+      await db.store.fail(QUEUE, again.runId, again.claimToken, '{"name":"Error"}', null)
+      expect(await db.store.retryTask(QUEUE, task.taskId)).not.toBeNull()
+      expect(
+        read(await explain(db, task.taskId)),
+        'mutation-verdict:behavior:cli-explain-says-whether-a-wake-event-exists',
+      ).toEqual({ ...woken, eventExists: false })
+    } finally {
+      await db.close()
+    }
+  })
+
   it('follows an await of a child one hop at a time to depth 8, and reports the deepest cause', async () => {
     /** The task ids of the chain of awaits an answer followed, the named task first. */
     const followed = (answer: Answer, taskId: string): string[] => {
@@ -1018,11 +1058,7 @@ describe('explain on libSQL', () => {
         exit: 10,
         cause: 'unreadable',
         verdict: 'inconsistent',
-        facts: {
-          outcome: 'readable',
-          corrupt: [{ field: 'runs.claim_gen', runId: expect.any(String) }],
-          notTheEngines: [],
-        },
+        facts: { notReadable: [{ field: 'runs.claim_gen', runId: expect.any(String) }] },
         inspect: 10,
       })
     })
@@ -1346,31 +1382,11 @@ describe('diagnose', () => {
       },
       'mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field',
     ).toEqual({
-      run: [
-        'unreadable',
-        { outcome: 'readable', corrupt: [], notTheEngines: [{ field: 'runs.state', runId: 'r' }] },
-      ],
-      wait: [
-        'unreadable',
-        {
-          outcome: 'readable',
-          corrupt: [],
-          notTheEngines: [{ field: 'waits.status', runId: 'r', stepName: 's' }],
-        },
-      ],
-      integer: [
-        'unreadable',
-        {
-          outcome: 'readable',
-          corrupt: [{ field: 'runs.attempt', runId: 'r' }],
-          notTheEngines: [],
-        },
-      ],
-      outcome: ['unreadable', { outcome: 'unreadable', corrupt: [], notTheEngines: [] }],
-      task: [
-        'unreadable',
-        { outcome: 'unreadable', corrupt: [], notTheEngines: [{ field: 'tasks.state' }] },
-      ],
+      run: ['unreadable', { notReadable: [{ field: 'runs.state', runId: 'r' }] }],
+      wait: ['unreadable', { notReadable: [{ field: 'waits.status', runId: 'r', stepName: 's' }] }],
+      integer: ['unreadable', { notReadable: [{ field: 'runs.attempt', runId: 'r' }] }],
+      outcome: ['unreadable', { notReadable: [{ field: 'outcome' }] }],
+      task: ['unreadable', { notReadable: [{ field: 'outcome' }, { field: 'tasks.state' }] }],
     })
   })
 

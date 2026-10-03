@@ -126,15 +126,31 @@ export function factsView(
   }
 }
 
+/** One thing in a task's facts that is not readable, by its field and the ids that name its row. */
+export interface NotReadable {
+  readonly field: string
+  readonly runId?: string | undefined
+  readonly stepName?: string | undefined
+  readonly eventName?: string | undefined
+}
+
 /**
- * The task, the runs and the waits whose stored state or status is not one of the engine's
- * own, each by its field and the ids that name its row: none for the task, which the
- * answer already names. The stored text is left out: nothing vouches for it.
+ * What in a task's facts is not readable, each thing by its field and the ids that name
+ * its row: an outcome the decoders refuse, every corrupt integer, and the task and each run
+ * or wait whose stored state or status is not one of the engine's own. The stored text is
+ * left out: nothing vouches for it. A task's facts are readable when this list is empty.
+ * It is the one definition: `inspect` exits `unreadable` on a list that is not empty, and
+ * `explain` answers the cause `unreadable` and prints the list.
  */
-export function statesNotTheEngines(
-  facts: TaskFacts,
-): { readonly field: string; readonly runId?: string; readonly stepName?: string }[] {
+export function whatIsNotReadable(facts: TaskFacts): NotReadable[] {
   return [
+    ...('result' in facts.outcome ? [] : [{ field: 'outcome' }]),
+    ...facts.corrupt.map(({ field, runId, stepName, eventName }) => ({
+      field,
+      runId,
+      stepName,
+      eventName,
+    })),
     ...(isState(facts.task.state) ? [] : [{ field: 'tasks.state' }]),
     ...facts.runs
       .filter((run) => !isState(run.state))
@@ -143,18 +159,4 @@ export function statesNotTheEngines(
       .filter((wait) => !isStatus(wait.status))
       .map((wait) => ({ field: 'waits.status', runId: wait.runId, stepName: wait.stepName })),
   ]
-}
-
-/**
- * Whether every row the facts were read from was readable: the outcome decoded, no integer
- * was corrupt, and every run's state and every wait's status is one of the engine's own. A
- * task's own state needs no check here, because the outcome's decoder refuses any other.
- */
-export function factsAreReadable(facts: TaskFacts): boolean {
-  return (
-    'result' in facts.outcome &&
-    facts.corrupt.length === 0 &&
-    facts.runs.every((run) => isState(run.state)) &&
-    facts.waits.every((wait) => isStatus(wait.status))
-  )
 }

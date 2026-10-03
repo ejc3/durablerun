@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_ATTEMPTS, type TaskFacts } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, usage } from '../src/commands.js'
-import { factsAreReadable, factsView } from '../src/inspect.js'
+import { factsView, whatIsNotReadable } from '../src/inspect.js'
 import { userValue } from '../src/render.js'
 import {
   COMPLETED_KEY,
@@ -318,8 +318,8 @@ describe('inspect on libSQL', () => {
     const own = { task: 'pending', run: 'sleeping', wait: 'waiting' }
     expect(
       {
-        own: factsAreReadable(factsHolding(own)),
-        rogueWait: factsAreReadable(factsHolding({ ...own, wait: ROGUE })),
+        own: whatIsNotReadable(factsHolding(own)).length === 0,
+        rogueWait: whatIsNotReadable(factsHolding({ ...own, wait: ROGUE })).length === 0,
       },
       'mutation-verdict:behavior:cli-inspect-exits-10-for-an-unknown-wait-status',
     ).toEqual({ own: true, rogueWait: false })

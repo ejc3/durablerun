@@ -7,7 +7,7 @@ import {
   taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { COMMANDS, type CommandSpec } from './commands.js'
-import { factsAreReadable, statesNotTheEngines } from './inspect.js'
+import { whatIsNotReadable } from './inspect.js'
 import { failureReason } from './render.js'
 
 /**
@@ -135,7 +135,8 @@ export const CAUSES = Object.freeze({
   'woken-unclaimed': {
     verdict: 'late',
     next: 'tick',
-    meaning: 'the run holds a wake from the event named and is due, and no claim has taken it',
+    meaning:
+      'the run is due and carries the wake fields of an await of the event named, and no claim has taken it',
   },
   'pending-due-unclaimed': {
     verdict: 'late',
@@ -304,26 +305,13 @@ const isAhead = ({ facts }: View, at: number | null): at is number =>
   at !== null && facts.nowMs !== null && at > facts.nowMs
 
 /**
- * What is not readable, named and never quoted: whether the outcome decoded, each corrupt
- * integer by its field and the ids of its row, and the task and each run or wait whose
- * state or status is not the engine's own.
+ * A task whose facts are not readable, with what is not: the list `inspect` exits
+ * `unreadable` on, which names each thing by its field and its row and quotes nothing.
  */
-const unreadableArm: Arm = ({ facts }) =>
-  factsAreReadable(facts)
-    ? null
-    : {
-        cause: 'unreadable',
-        facts: {
-          outcome: 'result' in facts.outcome ? 'readable' : 'unreadable',
-          corrupt: facts.corrupt.map(({ field, runId, stepName, eventName }) => ({
-            field,
-            runId,
-            stepName,
-            eventName,
-          })),
-          notTheEngines: statesNotTheEngines(facts),
-        },
-      }
+const unreadableArm: Arm = ({ facts }) => {
+  const notReadable = whatIsNotReadable(facts)
+  return notReadable.length === 0 ? null : { cause: 'unreadable', facts: { notReadable } }
+}
 
 /** A task's state and its live runs, which a cause names when the two do not fit together. */
 const liveRuns = ({ facts, live }: View) => ({
@@ -455,12 +443,25 @@ const pendingDelayedArm: RunArm = (view, run) =>
       }
     : null
 
+/**
+ * Whether the event whose wake fields a run carries exists. An emit that woke the run left
+ * the event, and a run that follows an await that timed out carries the same fields for an
+ * event nobody emitted.
+ */
+const wakeEventExists = ({ facts }: View, run: RunFacts): boolean =>
+  facts.events.some((event) => event.eventName === run.wakeEvent && event.exists)
+
 const wokenUnclaimedArm: RunArm = (view, run) =>
   run.state === 'pending' && isPast(view, run.availableAtMs) && run.wakeEvent !== null
     ? {
         cause: 'woken-unclaimed',
         at: run.availableAtMs,
-        facts: { runId: run.runId, event: run.wakeEvent, step: run.wakeStep },
+        facts: {
+          runId: run.runId,
+          event: run.wakeEvent,
+          step: run.wakeStep,
+          eventExists: wakeEventExists(view, run),
+        },
       }
     : null
 

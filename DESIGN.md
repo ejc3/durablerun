@@ -5775,7 +5775,7 @@ one, and a test parses both and requires them equal.
 | running-past-the-hung-bound | ok | inspect | the run was claimed once and has run under a live lease for longer than the hung-run bound |
 | running-under-a-live-lease | ok | none | the run is claimed under a lease that has not expired |
 | pending-delayed | waiting | none | the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out |
-| woken-unclaimed | late | tick | the run holds a wake from the event named and is due, and no claim has taken it |
+| woken-unclaimed | late | tick | the run is due and carries the wake fields of an await of the event named, and no claim has taken it |
 | pending-due-unclaimed | late | tick | the run is due, and no claim has taken it |
 | backing-off | waiting | none | the run follows a failed run and sleeps until its retry delay or its rollback delay has run |
 | never-started | waiting | none | the run was claimed and parked again before any worker started it, which a worker does for a task name it has no handler for |
@@ -5810,6 +5810,11 @@ That run is the only sleeping run no claim has ever taken: every other sleeper w
 by the worker that held it. It is `backing-off`, `waiting`, with the end of the delay as its
 next instant. Once the delay has run it is a due run like any other sleeper,
 `sleeping-past-its-wake`.
+
+`woken-unclaimed` is a due run that carries the wake fields of an await, the event and the
+step. An emit that woke the run leaves them. So does an await that timed out, when the run
+that follows it, a retry or a revival, carries them on, and then nobody emitted the event.
+The facts say whether the event exists, under `eventExists`, which tells the two apart.
 
 Two causes name a task no deployed build runs. The current worker reads the claimed task's
 name before it starts the run, and parks a run it has no handler for with `deferLaunch`
@@ -5915,9 +5920,11 @@ and sha256 unless revealed, as the reason a decoder refused that row with does. 
 prints an ended task's outcome as `result` prints it, redacted the same way. Nothing else
 in its answer is a value a user wrote: it holds ids, task names, event names, step keys,
 states and reason names of the engine's own, counts, instants and flags. Its cause for a
-row that is not readable names each corrupt integer by its field and the ids of its row,
-and the task and each run or wait whose state or status is not the engine's own by the
-same, and quotes no stored value.
+row that is not readable prints one list, `notReadable`: an outcome the decoders refuse,
+each corrupt integer by its field and the ids of its row, and the task and each run or wait
+whose state or status is not the engine's own by the same. It quotes no stored value. One
+function builds that list, and a task's facts are readable when it is empty, so `inspect`
+exits 10 exactly when `explain` would name something.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an

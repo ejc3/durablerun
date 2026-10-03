@@ -32,7 +32,7 @@ import {
   readUnreadableRow,
   ringClosedBy,
 } from './explain.js'
-import { factsAreReadable, factsView } from './inspect.js'
+import { factsView, whatIsNotReadable } from './inspect.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
@@ -510,7 +510,7 @@ const inspect: Handler = async (context) => {
       ? resultView(facts.outcome.result, reveal)
       : unreadable({ state: 'unreadable' }, facts.outcome.refused, reveal).view
   return {
-    exit: factsAreReadable(facts) ? 'done' : 'unreadable',
+    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'unreadable',
     holdsFacts: true,
     view: { queue, taskId, ...factsView(facts, outcome, reveal) },
   }
