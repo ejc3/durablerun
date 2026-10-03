@@ -212,6 +212,8 @@ export interface Diagnosis {
    * the move. Null for every other verdict.
    */
   readonly nextTransitionAtMs: number | null
+  /** Whether the task has ended, which the verdict of a task that waits for it turns on. */
+  readonly ended: boolean
   /** The facts behind the cause. None is a value a user wrote. */
   readonly facts: Readonly<Record<string, unknown>>
   /** What the child this task awaits was diagnosed as, when it was followed. */
@@ -631,10 +633,11 @@ function firstFound(view: View): Found | Needed | null {
 
 /**
  * The verdict of a task that awaits a child. A child that is waiting, stuck, inconsistent
- * or unexplained gives its verdict to the task that waits for it, and a child a worker is
- * running makes it `waiting`. A child that has ended would have woken the run in the batch
- * that ended it, so a run still parked on it is `unexplained`, as is a child the queue does
- * not hold and a child that was not followed. Tasks that wait on each other in a ring, or a
+ * or unexplained gives its verdict to the task that waits for it. A child that is `ok` and
+ * has not ended makes it `waiting`, whatever that child's cause is called: an `ok` task
+ * that has not ended is one a worker is running. A child that has ended would have woken
+ * the run in the batch that ended it, so a run still parked on it is `unexplained`, as is
+ * a child the queue does not hold and a child that was not followed. Tasks that wait on each other in a ring, or a
  * task that waits on itself, are `waiting`: nothing is owed to them, and only a timeout or
  * a cancellation ends the wait.
  */
@@ -642,7 +645,7 @@ function verdictThrough(child: ChildEvidence | undefined): Verdict {
   if (child === 'ring') return 'waiting'
   if (child === undefined || typeof child === 'string') return 'unexplained'
   if (child.verdict !== 'ok') return child.verdict
-  return child.cause === 'running-under-a-live-lease' ? 'waiting' : 'unexplained'
+  return child.ended ? 'unexplained' : 'waiting'
 }
 
 /** The verdict a cause's rule gives, for a cause that is `lateMs` past the instant it names. */
@@ -677,6 +680,7 @@ export function diagnose(facts: TaskFacts, evidence: Evidence = {}): Diagnosis |
     cause: found.cause,
     verdict,
     nextTransitionAtMs: verdict === 'waiting' ? next : null,
+    ended: isTerminalState(facts.task.state),
     facts: {
       ...found.facts,
       ...(rule === 'late' ? { dueAtMs: at, lateByMs: lateMs } : {}),

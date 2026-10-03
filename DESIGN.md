@@ -5850,7 +5850,8 @@ each diagnosis under `awaits` and, when a child was followed, names the last und
 `deepest`. The next command is the one for that last task. A task 8 awaits away has its own
 child left unread, so a chain of awaits costs at most nine reads of facts. A task takes the
 verdict of what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up
-as they are, and a child whose run is claimed under a live lease makes its parent `waiting`.
+as they are, and a child that is `ok` and has not ended makes its parent `waiting`: that is
+a child whose run is claimed under a live lease, however long it has run.
 The store lets a run await any task of its queue, so a task can wait on itself, and tasks
 can wait on each other in a ring. A child that is already on the way is not read a second
 time, and the task that waits on it is `waiting`: nothing is owed to a ring, and only a

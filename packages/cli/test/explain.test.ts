@@ -859,6 +859,7 @@ describe('explain on libSQL', () => {
       cause: 'lease-lapsed-unswept',
       verdict: 'stuck',
       nextTransitionAtMs: null,
+      ended: false,
       facts: { runId: 'a-run' },
     }
     expect(answerView(stuck, QUEUE, { sweep })).toMatchObject({
@@ -1323,11 +1324,12 @@ describe('diagnose', () => {
       const answer = answered(diagnose(parent, evidence))
       return [answer.cause, answer.verdict, answer.nextTransitionAtMs, answer.facts.followed]
     }
-    const childIs = (cause: Cause, verdict: Verdict): Diagnosis => ({
+    const childIs = (cause: Cause, verdict: Verdict, ended = false): Diagnosis => ({
       taskId: 'the-child',
       cause,
       verdict,
       nextTransitionAtMs: null,
+      ended,
       facts: {},
     })
     expect(
@@ -1336,11 +1338,13 @@ describe('diagnose', () => {
         notFollowed: through({ child: 'not-followed' }),
         waiting: through({ child: childIs('sleeping-on-a-timer', 'waiting') }),
         running: through({ child: childIs('running-under-a-live-lease', 'ok') }),
+        // An ok child that has not ended is one a worker runs, whatever its cause is called.
+        runningLong: through({ child: childIs('running-past-the-hung-bound', 'ok') }),
         stuck: through({ child: childIs('pending-due-unclaimed', 'stuck') }),
         inconsistent: through({ child: childIs('unreadable', 'inconsistent') }),
         unexplained: through({ child: childIs('unexplained', 'unexplained') }),
         // A child that ended woke its waiters in the batch that ended it.
-        ended: through({ child: childIs('completed', 'ok') }),
+        ended: through({ child: childIs('completed', 'ok', true) }),
       },
       'mutation-verdict:behavior:cli-explain-vouches-for-no-child-it-cannot-read-as-live',
     ).toEqual({
@@ -1349,6 +1353,7 @@ describe('diagnose', () => {
       // The parent's own next instant is its await's timeout.
       waiting: ['awaiting-a-child', 'waiting', NOW_MS + 60_000, 'followed'],
       running: ['awaiting-a-child', 'waiting', NOW_MS + 60_000, 'followed'],
+      runningLong: ['awaiting-a-child', 'waiting', NOW_MS + 60_000, 'followed'],
       stuck: ['awaiting-a-child', 'stuck', null, 'followed'],
       inconsistent: ['awaiting-a-child', 'inconsistent', null, 'followed'],
       unexplained: ['awaiting-a-child', 'unexplained', null, 'followed'],
