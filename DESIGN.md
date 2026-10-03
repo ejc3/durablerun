@@ -5662,6 +5662,14 @@ whose test clock was left set never sees a run come due. `inspect --key` reads t
 the two answers exit 8 for a key that found it a moment before. Nothing deletes a task
 today, and the retention purge of section 3.12 will.
 
+The events of a snapshot are those of the task's own queue, and the reads name an event by
+its name alone. A run takes its queue from its task's row or from the run it succeeds, a
+wait registers only under a claimed run of its own queue whose task is in that queue, and
+no statement changes either queue, so no engine path gives a task a run or a wait in
+another queue. The invariant library flags such a row. Read from a database where one was
+planted, an event that two queues hold under one name is answered from the first row that
+names it.
+
 The facts hold no params, headers, event payload, run result or checkpoint state. The
 outcome is the one exception, and it is the one `result` prints: `task-facts` selects the
 columns `decodeTaskResult` reads and the two values `decodeRollbackOutcome` reads, as
@@ -5679,8 +5687,9 @@ why it was refused, and the value itself when it is a number. It is never skippe
 thrown. `next-wake` does the opposite with an instant outside its bounds and leaves it out,
 because a driver must not arm a timer on it. An inspect tool that hides a corrupt row
 defeats its purpose, so it reports the row. `inspect` prints every fact it read, on stdout,
-and exits 10 when the outcome is unreadable or the list is not empty, so a script does not
-take a corrupt row for a clean answer.
+and exits 10 when the outcome is unreadable, when the list is not empty, or when a run's
+state or a wait's status is not one of the engine's own, so a script does not take a
+corrupt row for a clean answer.
 
 A stored NULL is a value where the column's schema stores one, as the lease expiry of a run
 that holds no lease is. Core has one definition of that, `storedNullIsAValue`, which reads
@@ -5721,13 +5730,22 @@ and sha256 unless revealed, as the reason a decoder refused that row with does.
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
 ASCII name, so a plain sort gives it), which is the same on every dialect apart from the
-object under `dialect`: the URL scheme and the store's schema window. In human text the stream follows what the answer holds. An answer that
-carries what the command read from the store prints on stdout whatever the command exits
-with, and the exit code alone tells a script how it ended: `inspect` prints its snapshot
-there when it exits 10. A failure that read nothing prints on stderr: a usage error, a
+object under `dialect`: the URL scheme and the store's schema window.
+
+In human text one rule decides the stream. An answer prints on stdout when the command
+exits 0. An answer its handler marks as the snapshot the command exists to print also
+prints on stdout, whatever the command exits with, so the exit code alone tells a script
+how it ended. The snapshot of `inspect` is the one answer marked so today, and it prints
+there when it exits 10. Every other answer that does not exit 0 is a refusal and prints on
+stderr. That holds when the refusal names a fact about the store. On a database recorded
+at a schema version outside the window, `doctor`, `inspect`, `result` and `checkpoints`
+exit 5 and print the recorded version on stderr. `migrate` without `--yes` exits 2 and
+prints the version it starts from and the versions it would apply on stderr, and a
+`migrate` that fails partway prints the versions it applied there. A usage error, a
 refused call, a store that is unavailable, a task that is not there, and the answer of
-`result` or `checkpoints` for a row the decoders refuse, which holds no fact of the row.
-`explain`, `stuck` and `stats` follow the same rule.
+`result` or `checkpoints` for a row the decoders refuse print there too. `explain`,
+`stuck` and `stats` follow it the same way: the report each exists to print is marked and
+prints on stdout whatever it exits with, and each of their refusals prints on stderr.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -5744,7 +5762,7 @@ same table, which a test holds equal to this one.
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
 | 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
-| 10 | unreadable | a stored row the store's decoders refuse, or a stored integer outside its bounds; what refused a row prints only with --reveal, because it can quote the row |
+| 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
 nothing. For `migrate` it holds because each version's write is fenced by the version

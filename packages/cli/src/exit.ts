@@ -46,7 +46,7 @@ export const EXITS = Object.freeze([
     code: 10,
     name: 'unreadable',
     meaning:
-      "a stored row the store's decoders refuse, or a stored integer outside its bounds; what refused a row prints only with --reveal, because it can quote the row",
+      "a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row",
   },
 ] as const)
 

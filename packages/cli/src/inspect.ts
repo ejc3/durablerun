@@ -126,7 +126,16 @@ export function factsView(
   }
 }
 
-/** Whether every row the facts were read from was readable: the outcome decoded, and no integer was corrupt. */
+/**
+ * Whether every row the facts were read from was readable: the outcome decoded, no integer
+ * was corrupt, and every run's state and every wait's status is one of the engine's own. A
+ * task's own state needs no check here, because the outcome's decoder refuses any other.
+ */
 export function factsAreReadable(facts: TaskFacts): boolean {
-  return 'result' in facts.outcome && facts.corrupt.length === 0
+  return (
+    'result' in facts.outcome &&
+    facts.corrupt.length === 0 &&
+    facts.runs.every((run) => isState(run.state)) &&
+    facts.waits.every((wait) => isStatus(wait.status))
+  )
 }

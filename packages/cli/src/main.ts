@@ -66,10 +66,11 @@ interface Answer {
   /** Human lines that replace the generic rendering of the view. */
   readonly text?: readonly string[]
   /**
-   * The view holds what the command read from the store. Such an answer prints on stdout
-   * whatever the command exits with, and the exit code alone tells a script how it ended.
-   * An answer without it that did not exit `done` holds only why the command failed, and
-   * prints on stderr.
+   * The view is the snapshot this command exists to print. A handler sets it by hand, and
+   * such an answer prints on stdout whatever the command exits with, so the exit code alone
+   * tells a script how it ended. Every other answer that did not exit `done` is a refusal
+   * and prints on stderr, one that names a fact about the store among them: the recorded
+   * schema version of a database outside the window, or the versions `migrate` would apply.
    */
   readonly holdsFacts?: true
 }
@@ -449,9 +450,10 @@ function noSuchTask(queue: string, taskId: string): Answer {
 
 /**
  * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
- * The facts print whole whatever they hold, on stdout. A row the decoders refuse, or an
- * integer outside its bounds, is printed where it stands and the command exits
- * `unreadable`, so a script does not read a corrupt row as a clean answer.
+ * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
+ * integer outside its bounds, or a state or status that is not the engine's own is printed
+ * where it stands and the command exits `unreadable`, so a script does not read a corrupt
+ * row as a clean answer.
  */
 const inspect: Handler = async ({ invocation, store, reveal }) => {
   const queue = invocation.strings.queue ?? ''
