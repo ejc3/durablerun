@@ -247,6 +247,33 @@ describe("how an operator's read decodes a row", () => {
     })
   })
 
+  it("lists an event that exists with no instant, in a task's facts and in an event's state", async () => {
+    const { reads } = readsAnswering({
+      ...facts(TASK, [
+        run({ run_id: 'r1', wake_event: 'woken', emitted_event: 'woken', emitted_at_ms: null }),
+      ]),
+      'event-state': [[{ emitted_at_ms: null }]],
+    })
+    const listed = {
+      field: 'events.emitted_at_ms',
+      eventName: 'woken',
+      reason: 'not-an-exact-integer',
+      stored: 'null',
+    }
+    const answer = await reads.taskFacts('q', 't')
+    expect({ events: answer?.events, corrupt: answer?.corrupt }).toEqual({
+      events: [{ eventName: 'woken', exists: true, emittedAtMs: null }],
+      corrupt: [listed],
+    })
+    expect(await reads.eventState('q', 'woken')).toEqual({
+      exists: true,
+      emittedAtMs: null,
+      corrupt: [listed],
+    })
+    // A NULL the engine writes is a value: the run above holds no lease and has not started.
+    expect(answer?.runs[0]).toMatchObject({ claimExpiresAtMs: null, startedAtMs: null })
+  })
+
   it('answers a row the decoders refuse as the outcome, and throws every other error as itself', async () => {
     const contradiction = { ...TASK, state: 'completed' }
     const refusedRow = await readsAnswering(facts(contradiction)).reads.taskFacts('q', 't1')

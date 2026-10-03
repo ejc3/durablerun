@@ -1171,6 +1171,26 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             },
           ],
         })
+        // So is an event that exists with no instant. Fixture-built: every statement that
+        // writes an event sets its instant.
+        await f.raw.batch('fixture:null-instant', [
+          {
+            sql: 'UPDATE events SET emitted_at_ms = NULL WHERE queue = ? AND event_name = ?',
+            args: [Q, 'approval'],
+          },
+        ])
+        expect(await reads.eventState(Q, 'approval')).toEqual({
+          exists: true,
+          emittedAtMs: null,
+          corrupt: [
+            {
+              field: 'events.emitted_at_ms',
+              eventName: 'approval',
+              reason: 'not-an-exact-integer',
+              stored: 'null',
+            },
+          ],
+        })
       }))
 
     it('refuses a string no store keeps, or one past the width, at every place, and sends nothing', () =>
