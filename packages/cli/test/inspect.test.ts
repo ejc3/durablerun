@@ -164,6 +164,29 @@ describe('inspect on libSQL', () => {
     }
   })
 
+  it('prints the snapshot on stdout in text as it does with --json, whatever it exits with', async () => {
+    const db = await openCliDb('libsql', 'inspect-corrupt-text')
+    try {
+      const seeded = await seedTasks(db)
+      // Fixture-built: a claim generation no engine path writes.
+      await db.raw.batch('fixture:corrupt', [
+        { sql: 'UPDATE runs SET claim_gen = -3 WHERE task_id = ?', args: [seeded.pending] },
+      ])
+      const run = await runCli(['inspect', seeded.pending, '--queue', QUEUE], db.env)
+      expect(
+        {
+          exit: run.exit,
+          stderr: run.stderr,
+          theTask: run.stdout.includes('  state: pending\n'),
+          theCorruptField: run.stdout.includes('runs.claim_gen'),
+        },
+        'mutation-verdict:behavior:cli-inspect-prints-a-snapshot-on-stdout',
+      ).toEqual({ exit: 10, stderr: '', theTask: true, theCorruptField: true })
+    } finally {
+      await db.close()
+    }
+  })
+
   it('takes a task id or --key, one of them and not both, and refuses each other line before a store opens', async () => {
     expect(usage(COMMANDS.inspect)).toBe(
       'inspect (<taskId> | --key <K>) [--json] --queue <Q> [--reveal]',
