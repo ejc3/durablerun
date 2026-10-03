@@ -5692,13 +5692,21 @@ state or a wait's status is not one of the engine's own, so a script does not ta
 corrupt row for a clean answer.
 
 A stored NULL is a value where the column's schema stores one, as the lease expiry of a run
-that holds no lease is. Core has one definition of that, `storedNullIsAValue`, which reads
+that holds no lease is. The operator's reads take a column's schema from
 `STORE_TABLE_COLUMNS`, the columns a conformance case holds equal to every dialect's
-catalog. It has one exception. `events.emitted_at_ms` may hold NULL by its schema, and each
+catalog. One column is an exception, and core names it once, as
+`PERSISTED_INTEGER_NEVER_NULL`: `events.emitted_at_ms` may hold NULL by its schema, and each
 of the three statements that insert an event sets it, from the batch's clock or from the
 fence instant of the task the batch ended, and no statement updates it. So an event that
-exists with no instant is a row no engine path writes. It is listed as corrupt, with the
-kind of its stored value given as `null`, and so is a database time that is NULL.
+exists with no instant is a row no engine path writes. Two readers ask whether a stored NULL
+is a value of a field, and both read that one name, so they agree about such a row. The
+operator's reads list it as corrupt, with the kind of its stored value given as `null`. The
+invariant library, which every conformance case, simulation and fuzz walk runs over the
+rows, flags it under the storage condition of that field. Core's table of temporal fields,
+`PERSISTED_TEMPORAL_FIELDS`, still records the column as nullable: it records the schema,
+and its entries are a released declaration. A schema version that made the column NOT NULL
+would change the table and remove the exception. A database time that is NULL is listed as
+corrupt too.
 
 Every count and instant is a JavaScript number on every dialect, whichever form the driver
 returned it in. Every list has one order on every dialect: runs by their ordinal and then by

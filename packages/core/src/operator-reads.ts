@@ -33,6 +33,7 @@ import {
   DERIVED_INTEGER_BOUNDS,
   type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
+  PERSISTED_INTEGER_NEVER_NULL,
   type PersistedIntegerBounds,
   decodeBoundedInteger,
   persistedIntegerColumn,
@@ -108,19 +109,17 @@ const FLAG = freeze({ min: 0, max: 1 })
 /** The row an integer was read from, as a corrupt entry names it. */
 type RowIdentity = Pick<CorruptInteger, 'runId' | 'stepName' | 'eventName'>
 
-/**
- * The one persisted integer whose column may hold NULL and whose rows never do. Each of the
- * three statements that insert an event sets its instant, from the batch's clock or from
- * the fence instant of the task the batch ended, and no statement updates it. So an event
- * that exists with no instant is a corrupt row, though its schema would store one.
- */
-const WRITTEN_WITH_EVERY_ROW: PersistedIntegerBounds = EVENT.emitted_at_ms
+/** The one persisted integer whose column may hold NULL and whose rows never do, as core names it. */
+const WRITTEN_WITH_EVERY_ROW: PersistedIntegerBounds = PERSISTED_INTEGER_NEVER_NULL
 
 /**
- * Whether each persisted integer's column may hold NULL by its schema, by field. It is built
- * once from `STORE_TABLE_COLUMNS`, which a conformance case holds equal to every dialect's
- * catalog, and a persisted integer that no statement builder names stops this module
- * loading.
+ * Whether a persisted integer's column may hold NULL by its schema, by field, for the
+ * tables `STORE_TABLE_COLUMNS` names, which a conformance case holds equal to every
+ * dialect's catalog. It is built once. A persisted integer of one of those tables that no
+ * statement builder names stops this module loading. The integers of `drivers` are not
+ * here, because no statement builder names that table, and a read of one would be refused
+ * where it asks below. The second half of the check in the loop is for the type checker: a
+ * key of `fields` always has a value.
  */
 const SCHEMA_STORES_NULL = ((): Readonly<Record<string, boolean>> => {
   const stores = createObject(null) as Record<string, boolean>

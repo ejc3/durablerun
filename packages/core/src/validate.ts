@@ -601,6 +601,18 @@ export const PERSISTED_TEMPORAL_FIELDS = freeze([
   ),
 ] as const)
 
+/**
+ * The one persisted integer whose column may hold NULL and whose rows never do. Each of the
+ * three statements that insert an event sets its instant, from the batch's clock or from
+ * the fence instant of the task the batch ended, and no statement updates it. So an event
+ * that exists with no instant is a corrupt row, though its schema would store one.
+ * `PERSISTED_TEMPORAL_FIELDS` records the column as nullable because its schema is, and
+ * that entry is a released declaration. Whoever asks whether a stored NULL is a value of a
+ * field asks here as well: the operator's reads do, and so does the invariant library.
+ */
+export const PERSISTED_INTEGER_NEVER_NULL: PersistedIntegerBounds =
+  PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms
+
 export type PersistedTemporalFieldDescriptor = (typeof PERSISTED_TEMPORAL_FIELDS)[number]
 export type PersistedTemporalFieldId = PersistedTemporalFieldDescriptor['id']
 export type PersistedTemporalTable = PersistedTemporalFieldDescriptor['table']
