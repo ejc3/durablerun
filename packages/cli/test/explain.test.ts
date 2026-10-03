@@ -29,6 +29,7 @@ import {
   type ExplainSeed,
   asleep,
   chainOfAwaits,
+  SEED_WORKER,
   fixture,
   onSeed,
   seedWorld,
@@ -157,6 +158,18 @@ describe('explain on libSQL', () => {
           { control: seed.control, cause: answer.cause, stuck: answer.verdict === 'stuck' },
           'mutation-verdict:behavior:cli-explain-answers-stuck-for-no-healthy-state',
         ).toEqual({ control: seed.control, cause: seed.cause, stuck: false })
+        if (seed.control === 'a live lease') {
+          // The same lease kept alive past the hung-run bound: a long pass, and still not stuck.
+          await at(NOW_MS + HUNG_RUN_MS - 1_000)
+          const beat = await db.store.heartbeat(QUEUE, String(answer.facts.runId), SEED_WORKER, 60)
+          expect(beat.held).toBe(true)
+          await at(NOW_MS + HUNG_RUN_MS + 1)
+          const long = await explain(db, taskId)
+          expect({ cause: long.cause, stuck: long.verdict === 'stuck' }).toEqual({
+            cause: 'running-past-the-hung-bound',
+            stuck: false,
+          })
+        }
         if (!never.includes(seed.control ?? '')) return
         await at(NOW_MS + 365 * 86_400_000)
         const later = await explain(db, taskId)
@@ -224,7 +237,7 @@ describe('explain on libSQL', () => {
         'mutation-verdict:behavior:cli-explain-hung-bound-ends-after-its-last-millisecond',
       ).toEqual({
         atTheEdge: ['running-under-a-live-lease', 'ok'],
-        past: ['running-past-the-hung-bound', 'stuck', HUNG_RUN_MS + 1],
+        past: ['running-past-the-hung-bound', 'ok', HUNG_RUN_MS + 1],
       })
     })
     // A run that slept and was claimed again: no fact says when its second pass began, so
@@ -547,7 +560,7 @@ describe('explain on libSQL', () => {
     for (const argv of emitted) expect(parseInvocation(argv).spec.verb).toBe(argv[0])
     expect(new Set(emitted.map((argv) => argv[0]))).toEqual(new Set(['result', 'inspect']))
     expect(new Set(built.map((argv) => argv[0]))).toEqual(
-      new Set(['result', 'inspect', 'sweep', 'tick', 'cancel']),
+      new Set(['result', 'inspect', 'sweep', 'tick']),
     )
     // A waiting verdict owes no command, whatever the cause.
     for (const cause of Object.keys(CAUSES) as Cause[]) {
@@ -568,7 +581,6 @@ describe('explain on libSQL', () => {
     expect(notYet).toEqual([
       'cancellation-deadline-passed: sweep',
       'lease-lapsed-unswept: sweep',
-      'running-past-the-hung-bound: cancel',
       'woken-unclaimed: tick',
       'pending-due-unclaimed: tick',
       'sleeping-past-its-wake: tick',

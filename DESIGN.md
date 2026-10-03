@@ -5767,7 +5767,7 @@ one, and a test parses both and requires them equal.
 | task-and-run-states-differ | inconsistent | inspect | the task's state is not its live run's state |
 | cancellation-deadline-passed | late | sweep | the task's cancellation deadline passed, and no sweep has cancelled it |
 | lease-lapsed-unswept | late | sweep | the run's lease expired, and no sweep has taken the run back |
-| running-past-the-hung-bound | stuck | cancel | the run was claimed once and has run under a live lease for longer than the hung-run bound |
+| running-past-the-hung-bound | ok | inspect | the run was claimed once and has run under a live lease for longer than the hung-run bound |
 | running-under-a-live-lease | ok | none | the run is claimed under a lease that has not expired |
 | pending-delayed | waiting | none | the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out |
 | woken-unclaimed | late | tick | the run holds a wake from the event named and is due, and no claim has taken it |

@@ -32,10 +32,12 @@ export type Verdict = (typeof VERDICTS)[number]
 export const DUE_GRACE_MS = 120_000
 
 /**
- * How long one pass may run under a live lease before the verdict is `stuck`. A worker
+ * How long a first pass may run under a live lease before `explain` names it. A worker
  * whose handler hangs keeps its lease alive, so the lease never lapses and the sweep never
- * takes the run. Only a run claimed once is held to it: its pass began when it started,
- * and no fact says when a later pass of a run began.
+ * takes the run. Nothing is owed to such a run, so the verdict stays `ok`: the cause says
+ * the pass is long, and whether to cancel it is the operator's call. Only a run claimed
+ * once is held to the bound: its pass began when it started, and no fact says when a later
+ * pass of a run began.
  */
 export const HUNG_RUN_MS = 3_600_000
 
@@ -111,8 +113,8 @@ export const CAUSES = Object.freeze({
     meaning: "the run's lease expired, and no sweep has taken the run back",
   },
   'running-past-the-hung-bound': {
-    verdict: 'stuck',
-    next: 'cancel',
+    verdict: 'ok',
+    next: 'inspect',
     meaning:
       'the run was claimed once and has run under a live lease for longer than the hung-run bound',
   },
@@ -383,7 +385,14 @@ const hungArm: RunArm = (view, run) => {
     runningForMs > HUNG_RUN_MS
     ? {
         cause: 'running-past-the-hung-bound',
-        facts: { ...lease(run), startedAtMs: run.startedAtMs, runningForMs },
+        facts: {
+          ...lease(run),
+          startedAtMs: run.startedAtMs,
+          runningForMs,
+          ...(view.facts.task.cancelAtMs === null
+            ? {}
+            : { cancelAtMs: view.facts.task.cancelAtMs }),
+        },
       }
     : null
 }

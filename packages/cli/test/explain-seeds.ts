@@ -63,13 +63,16 @@ export async function onSeed<T>(
 
 type SpawnOptions = Parameters<CliDb['store']['spawn']>[3]
 
+/** The claim token of the worker that starts a seed's first run. */
+export const SEED_WORKER = 'w-seed'
+
 const spawn = (db: CliDb, name = 'job', options: SpawnOptions = {}) =>
   db.store.spawn(QUEUE, name, '{}', options)
 
 /** A task whose one run a worker claimed and started. Call it when no other run is due. */
 async function started(db: CliDb, options: SpawnOptions = {}) {
   const task = await spawn(db, 'job', options)
-  const run = await claimActivated(db, 'w-seed', task.taskId)
+  const run = await claimActivated(db, SEED_WORKER, task.taskId)
   return { taskId: task.taskId, run }
 }
 
@@ -234,7 +237,7 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
   },
   {
     cause: 'running-past-the-hung-bound',
-    verdict: 'stuck',
+    verdict: 'ok',
     name: 'a run its worker has kept alive for a millisecond more than the hung-run bound',
     marker: 'mutation-verdict:behavior:cli-explain-arm-running-past-the-hung-bound',
     build: async ({ db, at }) => {
