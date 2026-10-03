@@ -207,11 +207,12 @@ export interface Diagnosis {
   readonly cause: Cause
   readonly verdict: Verdict
   /**
-   * For a `waiting` verdict, the earliest instant from which a clock lets the engine move
-   * the task, or null when no clock does: the instant the run comes due or its await times
-   * out, or the task's cancellation deadline when that is ahead and comes first. It is at
-   * or before database time when the run is already due and the driver's next tick owes
-   * the move. Null for every other verdict.
+   * For a `waiting` verdict, the earliest instant from which a clock of the task's own lets
+   * the engine move it, or null when it has none: the instant its run comes due or its
+   * await times out, or its cancellation deadline when that is ahead and comes first. It is
+   * at or before database time when the run is already due and the driver's next tick owes
+   * the move. The clocks of a child the task awaits are not in it: they are in the child's
+   * diagnosis, and the child's ending is what wakes the task. Null for every other verdict.
    */
   readonly nextTransitionAtMs: number | null
   /** Whether the task has ended, which the verdict of a task that waits for it turns on. */

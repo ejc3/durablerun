@@ -5,12 +5,17 @@ import { explained } from '../src/main.js'
 
 /**
  * The seeds of `explain` are one for each cause of its table, which holds that every cause
- * has a state. This case holds the other direction, which is the property: every state the
- * engine leaves a task in has a cause. It runs the conformance package's fuzz walk on
- * libSQL, a seeded random walk over the store's whole transition surface, and when a walk
- * ends it diagnoses every task the walk left, as the command does, through the same reads
- * and the same evidence. The walk holds the engine's invariants at every tenth step and at
- * its end, so each task it leaves is in a state the engine may leave it in.
+ * has a state. This case holds the other direction, which is the property, for the states
+ * a walk reaches: every state the engine leaves a task in has a cause. It runs the
+ * conformance package's fuzz walk on libSQL, a seeded random walk that calls spawn, claim,
+ * activate, heartbeat, reschedule, complete, fail, failRollback, setCheckpoint, awaitEvent,
+ * awaitTaskDone, emitEvent, cancelTask, expireLeaseNow and sweep, and moves the clock. It
+ * never calls suspendRun, deferLaunch or retryTask, so a sleep with its checkpoint, a
+ * deferred launch and a revived task are states the seeds hold and this case does not.
+ * When a walk ends the case diagnoses every task the walk left, as the command does,
+ * through the same reads and the same evidence. The walk holds the engine's invariants at
+ * every tenth step and at its end, so each task it leaves is in a state the engine may
+ * leave it in.
  */
 
 /** The walks: these seeds, each this many steps. A failing seed replays exactly. */

@@ -5793,14 +5793,17 @@ answer. So a live task whose one live run agrees with it and whose cancellation 
 passed is named by that deadline whatever the run is doing, because the sweep cancels the
 task next (section 3.1, step 0).
 
-`nextTransitionAtMs` is the earliest instant from which a clock lets the engine move a
-`waiting` task: the instant its run comes due or its await times out, or the task's
+`nextTransitionAtMs` is the earliest instant from which a clock of the task's own lets the
+engine move a `waiting` task: the instant its run comes due or its await times out, or the task's
 cancellation deadline when that is ahead and comes first, at which the sweep cancels the
 task. An await with no timeout whose task has a deadline names the deadline. For a run that
 is already due the instant is at or before database time. That is so for a `late` cause
 inside the grace, which names the instant the cause turns on, and for a never-started run
-whose timer has passed. It is null when no clock moves the task, and for every verdict but
-`waiting`. The cancellation deadline of a task that has not ended prints among the facts of
+whose timer has passed. It is null when the task has no clock of its own, and for every
+verdict but `waiting`. For an await of a child the instant is the parent's own, its await's
+timeout or its deadline. The child's instants print under `awaits`, and the child's ending
+is what wakes the parent, so a clock that moves the child can move the parent before the
+instant the parent prints, or when it prints none. The cancellation deadline of a task that has not ended prints among the facts of
 every cause, as `cancelAtMs`.
 
 When a worker fails a run with attempts left and a delay, as every retry under the default

@@ -11,7 +11,7 @@ import {
 } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import { engineHistoryViolations } from './engine-history.js'
-import type { StoreFixtureFactory } from './fixture.js'
+import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { HELD_PLACES, OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
 import {
   awaitOwned,
@@ -78,7 +78,7 @@ export async function runFuzzScenario(
   makeFixture: StoreFixtureFactory,
   seed: number | string,
   steps: number,
-  afterWalk?: (fixture: Awaited<ReturnType<StoreFixtureFactory>>) => Promise<void>,
+  afterWalk?: (fixture: StoreFixture) => Promise<void>,
 ): Promise<FuzzStats> {
   return withFixture(makeFixture, `fuzz-${seed}`, async (f) => {
     const stats = await runWalk(f, seed, steps)
@@ -87,11 +87,7 @@ export async function runFuzzScenario(
   })
 }
 
-async function runWalk(
-  f: Awaited<ReturnType<StoreFixtureFactory>>,
-  seed: number | string,
-  steps: number,
-): Promise<FuzzStats> {
+async function runWalk(f: StoreFixture, seed: number | string, steps: number): Promise<FuzzStats> {
   const rng = new Rng(`fuzz-${seed}`)
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
