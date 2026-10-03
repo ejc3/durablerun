@@ -1054,7 +1054,7 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             await set('fixture:restore', original)
           }
         }
-        return { f, rows, reads, clean, stored, set, factsWhile }
+        return { f, rows, reads, clean, original, stored, set, factsWhile }
       }
 
       for (const { table, column, field, min, max } of FIELDS) {
@@ -1127,12 +1127,20 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             ? `${field} is not read: a stored NULL changes no answer`
             : `${field} holding NULL is a value, or is listed as corrupt where no engine path writes one`
         it(title, async () => {
-          const { rows, reads, clean, stored, set, factsWhile } = await columnOf(table, column)
+          const { rows, reads, clean, original, stored, set, factsWhile } = await columnOf(
+            table,
+            column,
+          )
           const { planted, facts } = await factsWhile(async () => {
-            // Only a column whose schema refuses NULL may refuse this.
-            await set('fixture:null', null).catch((error: unknown) => {
+            // Only a column whose schema refuses NULL may refuse this, and only the NULL may
+            // be what it refused: the same statement then sets the column to the value it
+            // holds, which must succeed, so the statement and the row are shown to be right.
+            try {
+              await set('fixture:null', null)
+            } catch (error) {
               if (nullable) throw error
-            })
+              await set('fixture:same-value', original)
+            }
             return (await stored()) === null
           })
           const readAsNull = read !== undefined && planted
