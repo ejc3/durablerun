@@ -2,6 +2,7 @@ import {
   type AwaitedEventFacts,
   type CorruptInteger,
   DEFAULT_MAX_ATTEMPTS,
+  type HeldOperatorReads,
   INFRA_BACKOFF_SECONDS,
   InvalidDurableStringError,
   OPERATOR_READ_METHODS,
@@ -11,7 +12,6 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   type RunFacts,
   SAGA_ROLLBACK_PREFIX,
-  SAGA_STARTED_PREFIX,
   type SpawnOptions,
   type SqlExecutor,
   type SqlResult,
@@ -23,7 +23,7 @@ import {
   taskDoneEventName,
 } from '@durablerun/core'
 import { RecordingExecutor } from '@durablerun/core/testing'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
   type StorageCorruption,
   type StoreFixture,
@@ -32,6 +32,8 @@ import {
   executeStorageCorruption,
 } from './fixture.js'
 import { snapshot } from './poison-matrix.js'
+import { OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH, withAt } from './port-strings.js'
+import { CAUSE, ROLLBACK_BOOM, failedRollback, startStep } from './sagas.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -39,6 +41,7 @@ import {
   claimActivated,
   claimOne,
   readOne,
+  spawnedRun,
   withFixture,
 } from './scenario.js'
 
@@ -58,8 +61,6 @@ import {
 
 const Q = 'q'
 const START = 1_000_000
-const CAUSE = '{"name":"ForwardBoom"}'
-const ROLLBACK_BOOM = '{"name":"RollbackBoom"}'
 
 interface Seeded {
   readonly taskId: string
@@ -72,11 +73,8 @@ interface World {
   at(ms: number): Promise<void>
 }
 
-async function spawn(f: StoreFixture, taskName: string, options?: SpawnOptions) {
-  const spawned = await f.store.spawn(Q, taskName, '{}', options)
-  if (!spawned.created || spawned.runId === null) throw new Error(`${taskName} was not created`)
-  return { taskId: spawned.taskId, runId: spawned.runId }
-}
+const spawn = (f: StoreFixture, taskName: string, options?: SpawnOptions) =>
+  spawnedRun(f.store, Q, taskName, options)
 
 const taskOf = (taskId: string, over: Partial<TaskRowFacts> = {}): TaskRowFacts => ({
   taskId,
@@ -114,6 +112,19 @@ const runOf = (runId: string, over: Partial<RunFacts> = {}): RunFacts => ({
   ...over,
 })
 
+/** A wait registered at `START + 1_000`, which is when every seed that parks a run parks it. */
+const waitOf = (
+  wait: Pick<WaitFacts, 'runId' | 'stepName' | 'eventName'>,
+  timeoutAtMs: number | null,
+): WaitFacts => ({
+  runId: wait.runId,
+  stepName: wait.stepName,
+  eventName: wait.eventName,
+  status: 'waiting',
+  timeoutAtMs,
+  createdAtMs: START + 1_000,
+})
+
 /** A run that was claimed once and activated at `START`, which is where most seeds begin. */
 const startedRun = (runId: string, over: Partial<RunFacts> = {}): RunFacts =>
   runOf(runId, { claimGen: 1, activatedGen: 1, startedAtMs: START, ...over })
@@ -149,11 +160,42 @@ async function parkedOn(
   return { taskId: task.taskId, runId: run.runId, stepName: 'approve', eventName: 'approval' }
 }
 
+/** A task awaiting an event, under a timeout or with none. */
+const awaiting = (timeoutSeconds: number | null) => ({
+  name:
+    timeoutSeconds === null
+      ? 'a task awaiting an event with no timeout'
+      : 'a task awaiting an event under a timeout',
+  build: async (world: World): Promise<Seeded> => {
+    const parked = await parkedOn(world, timeoutSeconds)
+    const timesOutAt = timeoutSeconds === null ? null : START + 1_000 + timeoutSeconds * 1_000
+    return {
+      taskId: parked.taskId,
+      expected: answer(
+        START + 1_000,
+        taskOf(parked.taskId, { state: 'sleeping', firstStartedAtMs: START }),
+        [
+          startedRun(parked.runId, {
+            state: 'sleeping',
+            availableAtMs: timesOutAt,
+            wakeEvent: parked.eventName,
+            wakeStep: parked.stepName,
+          }),
+        ],
+        {
+          waits: [waitOf(parked, timesOutAt)],
+          events: [{ eventName: parked.eventName, exists: false, emittedAtMs: null }],
+        },
+      ),
+    }
+  },
+})
+
 /** A task whose one registered step started and whose failure began its saga, with its first pass. */
-async function rollingBack({ f, at }: World) {
+async function sagaAtItsFirstPass({ f, at }: World) {
   const task = await spawn(f, 'saga', { maxAttempts: 1 })
   const forward = await claimActivated(f.store, Q, 'w-forward')
-  await checkpointOwned(f.store, Q, forward, `${SAGA_STARTED_PREFIX}a`, '1', 60)
+  await startStep(f, forward, 'a', 1)
   await at(START + 1_000)
   expect(await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)).toEqual({
     rollingBack: true,
@@ -161,6 +203,19 @@ async function rollingBack({ f, at }: World) {
   const pass = await claimActivated(f.store, Q, 'w-pass')
   return { task, forward, pass }
 }
+
+/** The task of a saga that ended in failure after one pass. */
+const endedSaga = (taskId: string): TaskRowFacts =>
+  taskOf(taskId, {
+    taskName: 'saga',
+    state: 'failed',
+    // The pass is one ordinal past the budget, and the pass that ends the task charges its
+    // own ordinal, as any failing run does.
+    attempts: 2,
+    maxAttempts: 2,
+    firstStartedAtMs: START,
+    sagaBegan: true,
+  })
 
 /** What a saga's two runs read as once the pass that ended it failed at `endedAt`. */
 const sagaRuns = (forwardId: string, passId: string, endedAt: number): RunFacts[] => [
@@ -289,74 +344,7 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
       }
     },
   },
-  {
-    name: 'a task awaiting an event under a timeout',
-    build: async (world) => {
-      const parked = await parkedOn(world, 300)
-      return {
-        taskId: parked.taskId,
-        expected: answer(
-          START + 1_000,
-          taskOf(parked.taskId, { state: 'sleeping', firstStartedAtMs: START }),
-          [
-            startedRun(parked.runId, {
-              state: 'sleeping',
-              availableAtMs: START + 301_000,
-              wakeEvent: 'approval',
-              wakeStep: 'approve',
-            }),
-          ],
-          {
-            waits: [
-              {
-                runId: parked.runId,
-                stepName: 'approve',
-                eventName: 'approval',
-                status: 'waiting',
-                timeoutAtMs: START + 301_000,
-                createdAtMs: START + 1_000,
-              },
-            ],
-            events: [{ eventName: 'approval', exists: false, emittedAtMs: null }],
-          },
-        ),
-      }
-    },
-  },
-  {
-    name: 'a task awaiting an event with no timeout',
-    build: async (world) => {
-      const parked = await parkedOn(world, null)
-      return {
-        taskId: parked.taskId,
-        expected: answer(
-          START + 1_000,
-          taskOf(parked.taskId, { state: 'sleeping', firstStartedAtMs: START }),
-          [
-            startedRun(parked.runId, {
-              state: 'sleeping',
-              availableAtMs: null,
-              wakeEvent: 'approval',
-              wakeStep: 'approve',
-            }),
-          ],
-          {
-            waits: [
-              {
-                runId: parked.runId,
-                stepName: 'approve',
-                eventName: 'approval',
-                status: 'waiting',
-                timeoutAtMs: null,
-                createdAtMs: START + 1_000,
-              },
-            ],
-            events: [{ eventName: 'approval', exists: false, emittedAtMs: null }],
-          },
-        ),
-      }
-    },
-  },
+  ...[300, null].map(awaiting),
   {
     name: 'a task an emitted event woke, which no worker has claimed',
     build: async (world) => {
@@ -469,7 +457,7 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
     name: 'a saga whose rollback ran',
     build: async (world) => {
       const { f, at } = world
-      const { task, forward, pass } = await rollingBack(world)
+      const { task, forward, pass } = await sagaAtItsFirstPass(world)
       await checkpointOwned(f.store, Q, pass, `${SAGA_ROLLBACK_PREFIX}a`, 'null', 60)
       await at(START + 2_000)
       await f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)
@@ -477,16 +465,7 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
         taskId: task.taskId,
         expected: answer(
           START + 2_000,
-          taskOf(task.taskId, {
-            taskName: 'saga',
-            state: 'failed',
-            // The pass is one ordinal past the budget, and the pass that ends the task
-            // charges its own ordinal, as any failing run does.
-            attempts: 2,
-            maxAttempts: 2,
-            firstStartedAtMs: START,
-            sagaBegan: true,
-          }),
+          endedSaga(task.taskId),
           sagaRuns(forward.runId, pass.runId, START + 2_000),
           {
             outcome: {
@@ -505,24 +484,14 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
     name: 'a saga a failed rollback halted',
     build: async (world) => {
       const { f, at } = world
-      const { task, forward, pass } = await rollingBack(world)
+      const { task, forward, pass } = await sagaAtItsFirstPass(world)
       await at(START + 2_000)
-      await f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, {
-        stepKey: 'a',
-        errorJson: ROLLBACK_BOOM,
-      })
+      await f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, failedRollback('a'))
       return {
         taskId: task.taskId,
         expected: answer(
           START + 2_000,
-          taskOf(task.taskId, {
-            taskName: 'saga',
-            state: 'failed',
-            attempts: 2,
-            maxAttempts: 2,
-            firstStartedAtMs: START,
-            sagaBegan: true,
-          }),
+          endedSaga(task.taskId),
           sagaRuns(forward.runId, pass.runId, START + 2_000),
           {
             outcome: {
@@ -561,14 +530,7 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
           ],
           {
             waits: [
-              {
-                runId: parentRun.runId,
-                stepName: 'await-child',
-                eventName: done,
-                status: 'waiting',
-                timeoutAtMs: null,
-                createdAtMs: START + 1_000,
-              },
+              waitOf({ runId: parentRun.runId, stepName: 'await-child', eventName: done }, null),
             ],
             events: [{ eventName: done, exists: false, emittedAtMs: null }],
           },
@@ -702,48 +664,6 @@ const SEEDS: readonly { readonly name: string; build(world: World): Promise<Seed
   },
 ]
 
-/** Every count and instant an answer names, by the name of its member. */
-const NUMBERS = new Set([
-  'nowMs',
-  'attempts',
-  'maxAttempts',
-  'infraRetries',
-  'enqueueAtMs',
-  'firstStartedAtMs',
-  'cancelAtMs',
-  'attempt',
-  'claimGen',
-  'activatedGen',
-  'relaunchCount',
-  'claimExpiresAtMs',
-  'heartbeatAtMs',
-  'availableAtMs',
-  'startedAtMs',
-  'completedAtMs',
-  'failedAtMs',
-  'timeoutAtMs',
-  'createdAtMs',
-  'emittedAtMs',
-])
-
-/** The counts and instants of an answer that are neither a JavaScript number nor null, and how many are numbers. */
-function numbersOf(value: unknown, path = 'facts'): { wrong: string[]; numbers: number } {
-  const found = { wrong: [] as string[], numbers: 0 }
-  if (value === null || typeof value !== 'object') return found
-  for (const [key, inner] of Object.entries(value)) {
-    const at = `${path}.${key}`
-    if (NUMBERS.has(key)) {
-      if (typeof inner === 'number') found.numbers += 1
-      else if (inner !== null) found.wrong.push(`${at} is a ${typeof inner}`)
-      continue
-    }
-    const below = numbersOf(inner, at)
-    found.wrong.push(...below.wrong)
-    found.numbers += below.numbers
-  }
-  return found
-}
-
 /** The task's outcome as `getTaskResult` answers it, or the words it refuses the row with. */
 const viaTheStore = (f: StoreFixture, taskId: string): Promise<unknown> =>
   f.store.getTaskResult(Q, taskId).then(
@@ -752,6 +672,14 @@ const viaTheStore = (f: StoreFixture, taskId: string): Promise<unknown> =>
   )
 
 type Rows = { taskId: string; runId: string; stepName: string; eventName: string }
+
+/** A seed the corrupt cases plant in: its fixture, its rows, and the answer before any plant. */
+interface Planted {
+  readonly f: StoreFixture
+  readonly rows: Rows
+  readonly reads: HeldOperatorReads
+  readonly clean: TaskFacts
+}
 
 /** The seeds the generated cases plant a value in: a parked run with its wait, and a woken run with its event. */
 const PLANTED_IN = {
@@ -768,27 +696,90 @@ type Table = 'tasks' | 'runs' | 'waits' | 'events'
 /** The four tables the reads select an integer from. They select none of `checkpoints` or `drivers`. */
 const TABLES: readonly Table[] = ['tasks', 'runs', 'waits', 'events']
 
-/** Where each persisted integer the reads consume stands in the answer. */
-const READ_AS: Readonly<Record<string, readonly (string | number)[]>> = {
-  'tasks.attempts': ['task', 'attempts'],
-  'tasks.max_attempts': ['task', 'maxAttempts'],
-  'tasks.infra_retries': ['task', 'infraRetries'],
-  'tasks.enqueue_at_ms': ['task', 'enqueueAtMs'],
-  'tasks.first_started_at_ms': ['task', 'firstStartedAtMs'],
-  'tasks.cancel_at_ms': ['task', 'cancelAtMs'],
-  'runs.attempt': ['runs', 0, 'attempt'],
-  'runs.claim_gen': ['runs', 0, 'claimGen'],
-  'runs.activated_gen': ['runs', 0, 'activatedGen'],
-  'runs.relaunch_count': ['runs', 0, 'relaunchCount'],
-  'runs.claim_expires_at_ms': ['runs', 0, 'claimExpiresAtMs'],
-  'runs.heartbeat_at_ms': ['runs', 0, 'heartbeatAtMs'],
-  'runs.available_at_ms': ['runs', 0, 'availableAtMs'],
-  'runs.started_at_ms': ['runs', 0, 'startedAtMs'],
-  'runs.completed_at_ms': ['runs', 0, 'completedAtMs'],
-  'runs.failed_at_ms': ['runs', 0, 'failedAtMs'],
-  'waits.timeout_at_ms': ['waits', 0, 'timeoutAtMs'],
-  'waits.created_at_ms': ['waits', 0, 'createdAtMs'],
-  'events.emitted_at_ms': ['events', 0, 'emittedAtMs'],
+/**
+ * Each persisted integer the reads consume: where it stands in the answer, and the
+ * registered mutation that deletes its guard. A marker is a literal because the mutation
+ * audit reads it from this source.
+ */
+const READ: Readonly<
+  Record<string, { readonly at: readonly (string | number)[]; readonly verdict: string }>
+> = {
+  'tasks.attempts': {
+    at: ['task', 'attempts'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-attempts',
+  },
+  'tasks.max_attempts': {
+    at: ['task', 'maxAttempts'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-max-attempts',
+  },
+  'tasks.infra_retries': {
+    at: ['task', 'infraRetries'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-infra-retries',
+  },
+  'tasks.enqueue_at_ms': {
+    at: ['task', 'enqueueAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-enqueue-at-ms',
+  },
+  'tasks.first_started_at_ms': {
+    at: ['task', 'firstStartedAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-first-started-at-ms',
+  },
+  'tasks.cancel_at_ms': {
+    at: ['task', 'cancelAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-tasks-cancel-at-ms',
+  },
+  'runs.attempt': {
+    at: ['runs', 0, 'attempt'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-attempt',
+  },
+  'runs.claim_gen': {
+    at: ['runs', 0, 'claimGen'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-claim-gen',
+  },
+  'runs.activated_gen': {
+    at: ['runs', 0, 'activatedGen'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-activated-gen',
+  },
+  'runs.relaunch_count': {
+    at: ['runs', 0, 'relaunchCount'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-relaunch-count',
+  },
+  'runs.claim_expires_at_ms': {
+    at: ['runs', 0, 'claimExpiresAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-claim-expires-at-ms',
+  },
+  'runs.heartbeat_at_ms': {
+    at: ['runs', 0, 'heartbeatAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-heartbeat-at-ms',
+  },
+  'runs.available_at_ms': {
+    at: ['runs', 0, 'availableAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-available-at-ms',
+  },
+  'runs.started_at_ms': {
+    at: ['runs', 0, 'startedAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-started-at-ms',
+  },
+  'runs.completed_at_ms': {
+    at: ['runs', 0, 'completedAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-completed-at-ms',
+  },
+  'runs.failed_at_ms': {
+    at: ['runs', 0, 'failedAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-runs-failed-at-ms',
+  },
+  'waits.timeout_at_ms': {
+    at: ['waits', 0, 'timeoutAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-waits-timeout-at-ms',
+  },
+  'waits.created_at_ms': {
+    at: ['waits', 0, 'createdAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-waits-created-at-ms',
+  },
+  'events.emitted_at_ms': {
+    at: ['events', 0, 'emittedAtMs'],
+    verdict: 'mutation-verdict:behavior:operator-reads-guard-events-emitted-at-ms',
+  },
 }
 
 /** The persisted integers of those tables the reads do not select, each with why. */
@@ -803,34 +794,6 @@ const NOT_READ: Readonly<Record<string, string>> = {
   'events.fence_at_ms': 'provenance, which the engine reads and an operator does not',
 }
 
-/**
- * The registered mutation that deletes each field's guard, by the field. A marker is a
- * literal because the mutation audit reads it from this source.
- */
-const GUARD_VERDICTS: Readonly<Record<string, string>> = {
-  'tasks.attempts': 'mutation-verdict:behavior:operator-reads-guard-tasks-attempts',
-  'tasks.max_attempts': 'mutation-verdict:behavior:operator-reads-guard-tasks-max-attempts',
-  'tasks.infra_retries': 'mutation-verdict:behavior:operator-reads-guard-tasks-infra-retries',
-  'tasks.enqueue_at_ms': 'mutation-verdict:behavior:operator-reads-guard-tasks-enqueue-at-ms',
-  'tasks.first_started_at_ms':
-    'mutation-verdict:behavior:operator-reads-guard-tasks-first-started-at-ms',
-  'tasks.cancel_at_ms': 'mutation-verdict:behavior:operator-reads-guard-tasks-cancel-at-ms',
-  'runs.attempt': 'mutation-verdict:behavior:operator-reads-guard-runs-attempt',
-  'runs.claim_gen': 'mutation-verdict:behavior:operator-reads-guard-runs-claim-gen',
-  'runs.activated_gen': 'mutation-verdict:behavior:operator-reads-guard-runs-activated-gen',
-  'runs.relaunch_count': 'mutation-verdict:behavior:operator-reads-guard-runs-relaunch-count',
-  'runs.claim_expires_at_ms':
-    'mutation-verdict:behavior:operator-reads-guard-runs-claim-expires-at-ms',
-  'runs.heartbeat_at_ms': 'mutation-verdict:behavior:operator-reads-guard-runs-heartbeat-at-ms',
-  'runs.available_at_ms': 'mutation-verdict:behavior:operator-reads-guard-runs-available-at-ms',
-  'runs.started_at_ms': 'mutation-verdict:behavior:operator-reads-guard-runs-started-at-ms',
-  'runs.completed_at_ms': 'mutation-verdict:behavior:operator-reads-guard-runs-completed-at-ms',
-  'runs.failed_at_ms': 'mutation-verdict:behavior:operator-reads-guard-runs-failed-at-ms',
-  'waits.timeout_at_ms': 'mutation-verdict:behavior:operator-reads-guard-waits-timeout-at-ms',
-  'waits.created_at_ms': 'mutation-verdict:behavior:operator-reads-guard-waits-created-at-ms',
-  'events.emitted_at_ms': 'mutation-verdict:behavior:operator-reads-guard-events-emitted-at-ms',
-}
-
 /** Every persisted integer of the tables the reads select from, as core's bounds name them. */
 const FIELDS = TABLES.flatMap((table) =>
   Object.entries(PERSISTED_INTEGER_BOUNDS[table]).map(([column, bounds]) => ({
@@ -841,15 +804,6 @@ const FIELDS = TABLES.flatMap((table) =>
     max: bounds.max,
   })),
 )
-
-/** A copy of an answer with null at one place, which is what a corrupt integer reads as. */
-function withNullAt(facts: TaskFacts, path: readonly (string | number)[]): unknown {
-  const copy = structuredClone(facts) as unknown
-  let holder = copy as Record<string | number, unknown>
-  for (const step of path.slice(0, -1)) holder = holder[step] as Record<string | number, unknown>
-  holder[path[path.length - 1] as string | number] = null
-  return copy
-}
 
 /** The row of a table that a seed made, as a storage corruption names it. */
 function rowOf(table: Table, rows: Rows, column: string, invalidRepresentation: string) {
@@ -892,11 +846,11 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             const recorder = new RecordingExecutor(f.raw)
             const before = await snapshot(f.raw)
             const facts = await f.operatorReadsOver(recorder).taskFacts(Q, taskId)
-            // Every count and instant is a JavaScript number, whatever the driver returned.
-            const { wrong, numbers } = numbersOf(facts)
-            expect(wrong, 'mutation-verdict:behavior:operator-reads-answer-numbers').toEqual([])
-            expect(numbers).toBeGreaterThan(8)
-            expect(facts).toEqual(expected)
+            // The expected answer holds JavaScript numbers, and equality here is strict about
+            // a value's type: a count a driver handed back as a string or a bigint fails it.
+            expect(facts, 'mutation-verdict:behavior:operator-reads-answer-numbers').toEqual(
+              expected,
+            )
             // One batch is the snapshot, the flag of the test clock follows it, and both
             // are batches of reads that change no row.
             expect(recorder.batches.map((batch) => [batch.label, batch.mode])).toEqual([
@@ -1023,99 +977,119 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
     describe('a persisted integer outside its bounds is listed, never skipped and never thrown', () => {
       it('names every persisted integer of the tables it selects from as read or as not read', () => {
         expect(FIELDS.map(({ field }) => field).sort()).toEqual(
-          [...Object.keys(READ_AS), ...Object.keys(NOT_READ)].sort(),
+          [...Object.keys(READ), ...Object.keys(NOT_READ)].sort(),
         )
-        expect(Object.keys(GUARD_VERDICTS).sort()).toEqual(Object.keys(READ_AS).sort())
+      })
+
+      /**
+       * The two seeds the cases plant in, each opened when its first case asks for it and
+       * closed after the last. Every case puts back the value it replaced, and ends by
+       * reading the answer it began with.
+       */
+      const opened: Partial<Record<keyof typeof PLANTED_IN, Promise<Planted>>> = {}
+      const open = async (seed: keyof typeof PLANTED_IN): Promise<Planted> => {
+        const f = await makeFixture(`operator-reads-corrupt-${seed}`)
+        const at = (ms: number) => f.admin.setFakeNowEpochMs(ms)
+        await at(START)
+        const rows = await PLANTED_IN[seed]({ f, at })
+        const reads = f.operatorReadsOver(f.raw)
+        const clean = await reads.taskFacts(Q, rows.taskId)
+        if (clean === null) throw new Error('the seeded task is not there')
+        return { f, rows, reads, clean }
+      }
+      afterAll(async () => {
+        for (const seed of Object.values(opened)) {
+          await seed.then(
+            ({ f }) => f.close(),
+            () => undefined,
+          )
+        }
       })
 
       for (const { table, column, field, min, max } of FIELDS) {
-        const path = READ_AS[field]
+        const read = READ[field]
         const title =
-          path === undefined
+          read === undefined
             ? `${field} is not read: a value outside its bounds changes no answer`
             : `${field} outside its bounds is listed as corrupt, read as null, and changes nothing else`
-        it(title, () =>
-          inWorld(`corrupt-${field}`, async (world) => {
-            const { f } = world
-            const rows = await PLANTED_IN[table === 'events' ? 'woken' : 'parked'](world)
-            const reads = f.operatorReadsOver(f.raw)
-            const clean = await reads.taskFacts(Q, rows.taskId)
-            if (clean === null) throw new Error('the seeded task is not there')
-            const { where, identityArgs } = corruptionTarget(rowOf(table, rows, column, 'none'))
-            const original = (
-              await readOne(
-                f.raw,
-                `SELECT ${column} AS v FROM ${table} WHERE ${where}`,
-                identityArgs,
-              )
-            )?.v
-            if (original === undefined || original instanceof Uint8Array) {
-              throw new Error(`${field} has no stored value to restore`)
-            }
-            const restore = () =>
-              f.raw.batch('fixture:restore', [
+        it(title, async () => {
+          const seed = table === 'events' ? 'woken' : 'parked'
+          opened[seed] ??= open(seed)
+          const { f, rows, reads, clean } = await opened[seed]
+          const { where, identityArgs } = corruptionTarget(rowOf(table, rows, column, 'none'))
+          const original = (
+            await readOne(f.raw, `SELECT ${column} AS v FROM ${table} WHERE ${where}`, identityArgs)
+          )?.v
+          if (original === undefined || original instanceof Uint8Array) {
+            throw new Error(`${field} has no stored value to restore`)
+          }
+          /** The answer while `plant` has put a value in the column, which is then put back. */
+          const factsWhile = async <T>(plant: () => Promise<T>) => {
+            try {
+              return { planted: await plant(), facts: await reads.taskFacts(Q, rows.taskId) }
+            } finally {
+              await f.raw.batch('fixture:restore', [
                 {
                   sql: `UPDATE ${table} SET ${column} = ? WHERE ${where}`,
                   args: [original, ...identityArgs],
                 },
               ])
-            const listed = (entry: Partial<CorruptInteger>) =>
-              path === undefined ? [] : [{ field, ...entryIdentity(table, rows), ...entry }]
-            const expectedWith = path === undefined ? clean : withNullAt(clean, path)
-            const observed: unknown[] = []
-            const expected: unknown[] = []
-            // Below the bounds, negative, and past them: every dialect stores these.
-            for (const bad of [...new Set([-1, min - 1, max + 1])]) {
-              await f.raw.batch('fixture:out-of-range', [
+            }
+          }
+          const listed = (entry: Partial<CorruptInteger>) =>
+            read === undefined ? [] : [{ field, ...entryIdentity(table, rows), ...entry }]
+          const expectedWith = read === undefined ? clean : withAt(clean, read.at, null)
+          const observed: unknown[] = []
+          const expected: unknown[] = []
+          // Below the bounds, negative, and past them: every dialect stores these.
+          for (const bad of [...new Set([-1, min - 1, max + 1])]) {
+            const { facts } = await factsWhile(() =>
+              f.raw.batch('fixture:out-of-range', [
                 {
                   sql: `UPDATE ${table} SET ${column} = ? WHERE ${where}`,
                   args: [bad, ...identityArgs],
                 },
-              ])
-              const facts = await reads.taskFacts(Q, rows.taskId)
-              observed.push({ bad, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } })
-              expected.push({
-                bad,
-                corrupt: listed({ reason: 'out-of-range', stored: 'number', value: String(bad) }),
-                rest: expectedWith,
-              })
-              await restore()
-            }
-            // A fraction, and text: a dialect whose column refuses the value has nothing to read.
-            for (const invalidRepresentation of ['fractional-real', 'non-integer'] as const) {
-              const disposition = await executeStorageCorruption(
-                f,
-                rowOf(table, rows, column, invalidRepresentation),
-              )
-              const facts = await reads.taskFacts(Q, rows.taskId)
-              const [entry] = facts?.corrupt ?? []
-              observed.push({
-                invalidRepresentation,
-                disposition,
-                corrupt: facts?.corrupt.map(({ value: _value, ...rest }) => rest),
-                // The fixture chooses the fraction it plants, and it is copied as text.
-                copied: entry?.value === undefined ? 'no value' : /^\d\.5$/.test(entry.value),
-                rest: { ...facts, corrupt: [] },
-              })
-              const injected = disposition === 'injected'
-              const fraction = invalidRepresentation === 'fractional-real'
-              expected.push({
-                invalidRepresentation,
-                disposition,
-                corrupt: injected
-                  ? listed({
-                      reason: 'not-an-exact-integer',
-                      stored: fraction ? 'number' : 'string',
-                    })
-                  : [],
-                copied: injected && fraction && path !== undefined ? true : 'no value',
-                rest: injected ? expectedWith : clean,
-              })
-              await restore()
-            }
-            expect(observed, GUARD_VERDICTS[field]).toEqual(expected)
-            expect(await reads.taskFacts(Q, rows.taskId)).toEqual(clean)
-          }))
+              ]),
+            )
+            observed.push({ bad, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } })
+            expected.push({
+              bad,
+              corrupt: listed({ reason: 'out-of-range', stored: 'number', value: String(bad) }),
+              rest: expectedWith,
+            })
+          }
+          // A fraction, and text: a dialect whose column refuses the value has nothing to read.
+          for (const invalidRepresentation of ['fractional-real', 'non-integer'] as const) {
+            const { planted: disposition, facts } = await factsWhile(() =>
+              executeStorageCorruption(f, rowOf(table, rows, column, invalidRepresentation)),
+            )
+            const [entry] = facts?.corrupt ?? []
+            observed.push({
+              invalidRepresentation,
+              disposition,
+              corrupt: facts?.corrupt.map(({ value: _value, ...rest }) => rest),
+              // The fixture chooses the fraction it plants, and it is copied as text.
+              copied: entry?.value === undefined ? 'no value' : /^\d\.5$/.test(entry.value),
+              rest: { ...facts, corrupt: [] },
+            })
+            const injected = disposition === 'injected'
+            const fraction = invalidRepresentation === 'fractional-real'
+            expected.push({
+              invalidRepresentation,
+              disposition,
+              corrupt: injected
+                ? listed({
+                    reason: 'not-an-exact-integer',
+                    stored: fraction ? 'number' : 'string',
+                  })
+                : [],
+              copied: injected && fraction && read !== undefined ? true : 'no value',
+              rest: injected ? expectedWith : clean,
+            })
+          }
+          expect(observed, read?.verdict).toEqual(expected)
+          expect(await reads.taskFacts(Q, rows.taskId)).toEqual(clean)
+        })
       }
     })
 
@@ -1203,27 +1177,28 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
       inWorld('strings', async ({ f }) => {
         const recorder = new RecordingExecutor(f.raw)
         const reads = f.operatorReadsOver(recorder)
-        const answers: unknown[] = []
+        // The names the store's port is held to: outside the domain, a value that is no
+        // string among them, and past the width.
+        const refusedNames = Object.entries({ ...OUTSIDE_THE_DOMAIN, ...PAST_THE_WIDTH })
+        const accepted: string[] = []
+        let asked = 0
         for (const method of OPERATOR_READ_METHODS) {
           for (const [index, name] of OPERATOR_READ_STRINGS[method].entries()) {
-            for (const bad of ['a\u0000b', 'a\uD800b', 'x'.repeat(256)]) {
-              const args: string[] = ['q', 'a-name']
+            for (const [what, bad] of refusedNames) {
+              const args: unknown[] = ['q', 'a-name']
               args[index] = bad
-              const call = reads[method] as (...made: string[]) => Promise<unknown>
-              answers.push({
-                place: `${method}[${index}](${name})`,
-                refused: await call(...args).then(
-                  () => false,
-                  (error: unknown) => error instanceof InvalidDurableStringError,
-                ),
-              })
+              const call = reads[method] as (...made: unknown[]) => Promise<unknown>
+              const refused = await call(...args).then(
+                () => false,
+                (error: unknown) => error instanceof InvalidDurableStringError,
+              )
+              asked += 1
+              if (!refused) accepted.push(`${method}[${index}](${name}): ${what}`)
             }
           }
         }
-        expect(
-          answers.filter((answer) => (answer as { refused: boolean }).refused !== true),
-        ).toEqual([])
-        expect(answers).toHaveLength(18)
+        expect(accepted).toEqual([])
+        expect(asked).toBe(OPERATOR_READ_METHODS.length * 2 * refusedNames.length)
         expect(recorder.batches).toEqual([])
       }))
   })

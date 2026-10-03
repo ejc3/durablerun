@@ -1,6 +1,6 @@
 import {
   FencedBatch,
-  type OperatorReads,
+  type HeldOperatorReads,
   READS_SEED,
   type SqlExecutor,
   createOperatorReads,
@@ -13,12 +13,14 @@ import { TREE_DIALECT } from './tree.js'
 /**
  * What this dialect supplies to core's operator reads: its batches, each labelled here and
  * run here, its read of the test clock, and its fragments. The reads themselves are core's
- * (`createOperatorReads`).
+ * (`createOperatorReads`). It is a class with the executor as `this.db` because that is
+ * where the batch checkers read a store's batches: sent as `this.db.batch(...)`, or run as
+ * `batch.run(this.db)`, inside a member of a class.
  */
 class LibsqlOperatorReads {
   constructor(private readonly db: SqlExecutor) {}
 
-  reads(): OperatorReads {
+  reads(): HeldOperatorReads {
     return createOperatorReads({
       run: (batch: FencedBatch) => batch.run(this.db),
       open: {
@@ -48,6 +50,6 @@ class LibsqlOperatorReads {
  * The operator's read port (`OperatorReads`) over an executor of this store. It is apart
  * from the scheduler store: no engine actor calls it, and it sends only batches of reads.
  */
-export function operatorReads(db: SqlExecutor): OperatorReads {
+export function operatorReads(db: SqlExecutor): HeldOperatorReads {
   return new LibsqlOperatorReads(db).reads()
 }

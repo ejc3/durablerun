@@ -263,9 +263,10 @@ export interface SchedulerStore {
 
 /**
  * What an operator reads of a deployment, apart from `SchedulerStore`: no engine actor calls
- * it, and nothing here writes. Each method is one batch of reads over one snapshot. Core
- * holds the one implementation (`createOperatorReads`), and each store package exports a
- * factory that reaches it with that store's batches and fragments.
+ * it, and nothing here writes. Each method is one batch of reads over one snapshot, and
+ * `taskFacts` then asks in a second batch whether the test clock is set. Core holds the one
+ * implementation (`createOperatorReads`), and each store package exports a factory that
+ * reaches it with that store's batches and fragments.
  */
 export interface OperatorReads {
   /** One snapshot of a task, its runs, its waits and the events they name, or null when the queue holds no such task. */

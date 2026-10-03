@@ -54,6 +54,19 @@ export const rollbackTriesRead = defineStatement(
 )
 
 /**
+ * The two values `decodeRollbackOutcome` reads of the row `tasks`, under the names it reads
+ * them by. Every statement that selects an outcome selects them through here, beside
+ * `TASK_RESULT_COLUMN_LIST`, so two reads cannot select an outcome two ways.
+ */
+export const rollbackSelections = (binds: {
+  rollbackOutcome: SqlFragment
+  rollbackError: SqlFragment
+}) => [
+  aliasedAs(rawSql<string | null>(binds.rollbackOutcome, 'value'), 'rollback_outcome'),
+  aliasedAs(rawSql<string | null>(binds.rollbackError, 'value'), 'rollback_error'),
+]
+
+/**
  * `task-result`: exactly the columns `decodeTaskResult` reads, of one task of one queue,
  * and the two values `decodeRollbackOutcome` reads. A rollback outcome is stored nowhere:
  * the store derives both values from the saga's checkpoints, so they are its fragments,
@@ -70,10 +83,7 @@ export const taskResultRead = defineStatement(
     treeBuilder
       .selectFrom('tasks')
       .select([...TASK_RESULT_COLUMN_LIST])
-      .select(() => [
-        aliasedAs(rawSql<string | null>(binds.rollbackOutcome, 'value'), 'rollback_outcome'),
-        aliasedAs(rawSql<string | null>(binds.rollbackError, 'value'), 'rollback_error'),
-      ])
+      .select(() => rollbackSelections(binds))
       .where('task_id', '=', binds.taskId)
       .where('queue', '=', binds.queue),
 )

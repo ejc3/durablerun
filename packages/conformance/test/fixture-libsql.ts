@@ -132,7 +132,7 @@ export async function makeLibsqlFixture(
     },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
-    operatorReadsOver: (db: SqlExecutor) => operatorReads(db),
+    operatorReadsOver: operatorReads,
     // SQLite has one writer at a time and never picks a victim: a writer that cannot get
     // the lock waits out its busy timeout and fails, and the executor runs nothing again.
     deadlocks: () => 0,

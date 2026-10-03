@@ -1,4 +1,5 @@
 import { SAGA_STARTED_PREFIX, type SqlExecutor, type SqlStatement } from '@durablerun/core'
+import { RecordingExecutor } from '@durablerun/core/testing'
 import { Client } from 'pg'
 import { expect, it } from 'vitest'
 import { operatorReads } from '../src/operator-reads.js'
@@ -573,15 +574,7 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
   await client.connect()
   try {
     await db.admin.setFakeNowEpochMs(1_000_000)
-    const seen: { label: string; index: number; sql: string }[] = []
-    const recorder: SqlExecutor = {
-      batch: (label, statements, control) => {
-        for (const [index, statement] of statements.entries()) {
-          seen.push({ label, index, sql: statement.sql })
-        }
-        return db.raw.batch(label, statements, control)
-      },
-    }
+    const recorder = new RecordingExecutor(db.raw)
     const store = new PostgresSchedulerStore(db.raw, db.ids)
     const task = await store.spawn('q', 'job', '{}', { idempotencyKey: 'order-7' })
     const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
@@ -596,9 +589,11 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     await client.query(`SET search_path TO "${db.schemaName}"`)
     const reached: Record<string, string[]> = {}
     const scans: string[] = []
-    for (const statement of seen) {
-      const name = `${statement.label}#${statement.index}`
-      const lines = await planLines(client, statement.sql)
+    const seen = recorder.batches.flatMap(({ label, statements }) =>
+      statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
+    )
+    for (const { name, sql } of seen) {
+      const lines = await planLines(client, sql)
       reached[name] = lines.flatMap((line, at) => {
         const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
         if (found === null) return []

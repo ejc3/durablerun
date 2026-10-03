@@ -676,16 +676,21 @@ export function persistedPositiveClaimGeneration(scope: string, row: SqlRow): nu
   return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
 }
 
+/** The column a persisted field's bounds are for: what follows the table in the field's name. */
+export function persistedIntegerColumn(bounds: PersistedIntegerBounds): string {
+  const separator = bounds.field.indexOf('.')
+  if (separator < 0 || separator === bounds.field.length - 1) {
+    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
+  }
+  return bounds.field.slice(separator + 1)
+}
+
 function decodePersistedRowInteger(
   scope: string,
   row: SqlRow,
   bounds: PersistedIntegerBounds,
 ): number {
-  const separator = bounds.field.indexOf('.')
-  if (separator < 0 || separator === bounds.field.length - 1) {
-    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
-  }
-  const column = bounds.field.slice(separator + 1)
+  const column = persistedIntegerColumn(bounds)
   const value = row[column]
   const decoded = decodeBoundedInteger(value, bounds)
   if (decoded.ok) return decoded.value

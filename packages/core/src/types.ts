@@ -313,22 +313,23 @@ export interface WaitFacts {
   readonly createdAtMs: number | null
 }
 
-/** An event one of a task's runs awaits or was woken by. */
-export interface AwaitedEventFacts {
-  readonly eventName: string
-  /** Whether the event has been emitted, which is whether its row exists. */
-  readonly exists: boolean
-  readonly emittedAtMs: number | null
-}
+/**
+ * An event one of a task's runs awaits or was woken by. It exists once it has been emitted,
+ * which is when its row exists, and only an event that exists has an instant.
+ */
+export type AwaitedEventFacts =
+  | { readonly eventName: string; readonly exists: false; readonly emittedAtMs: null }
+  | { readonly eventName: string; readonly exists: true; readonly emittedAtMs: number | null }
 
 /**
- * Everything an operator read reports of one task, from one snapshot of the database. It
- * holds no params, headers, event payload, run result or checkpoint state. The outcome is
- * the one `getTaskResult` answers with, so it holds what that holds.
+ * Everything an operator read reports of one task. Every member but `fakeClock` is read
+ * from one snapshot of the database, and `fakeClock` straight after it. It holds no params,
+ * headers, event payload, run result or checkpoint state. The outcome is the one
+ * `getTaskResult` answers with, so it holds what that holds.
  *
  * Every list has one order on every dialect, and no database collation decides it: runs by
- * their ordinal, then by run id, and waits and events by their names, each compared by its
- * UTF-16 code units.
+ * their ordinal and then by run id, waits by run id and then by step, and events by name,
+ * each string compared by its UTF-16 code units.
  */
 export interface TaskFacts {
   /** Database time when the snapshot was read. */
@@ -344,8 +345,10 @@ export interface TaskFacts {
 }
 
 /** Whether an event has been emitted, and when. Nothing here is derived from its payload. */
-export interface EventState {
-  readonly exists: boolean
-  readonly emittedAtMs: number | null
-  readonly corrupt: readonly CorruptInteger[]
-}
+export type EventState =
+  | { readonly exists: false; readonly emittedAtMs: null; readonly corrupt: readonly [] }
+  | {
+      readonly exists: true
+      readonly emittedAtMs: number | null
+      readonly corrupt: readonly CorruptInteger[]
+    }

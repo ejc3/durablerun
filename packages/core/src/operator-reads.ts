@@ -28,10 +28,12 @@ import type {
   WaitFacts,
 } from './types.js'
 import {
-  type BrandedIntegerBounds,
   DERIVED_INTEGER_BOUNDS,
+  type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
+  type PersistedIntegerBounds,
   decodeBoundedInteger,
+  persistedIntegerColumn,
   storageValueKind,
 } from './validate.js'
 
@@ -49,7 +51,8 @@ const {
  * What a dialect supplies to the operator's reads. Each member is a fact of the dialect:
  * its batches and how it runs one, its read of the test clock, and three fragments. The
  * statements, the decoding, the order of every list and the check of every string are
- * core's, so a dialect inherits them and cannot write them another way.
+ * core's, so a dialect inherits them: what `createOperatorReads` returns is the only value
+ * of the held type, which is the type a store's factory hands out.
  *
  * A dialect opens each batch itself and runs it itself, as it does for `TaskDoneDialect`,
  * so every batch label stays a literal at a construction site in a store, and every batch
@@ -80,6 +83,17 @@ export interface OperatorReadsDialect {
   readonly rollbackError: SqlFragment
 }
 
+declare const heldOperatorReads: unique symbol
+
+/**
+ * The operator's reads with the check of every string in front of every method. The type
+ * is nominal and `createOperatorReads` alone makes a value of it, so an object that
+ * implements `OperatorReads` on its own does not type as one. A store's factory hands this
+ * out, and the conformance fixture and the CLI's opener take nothing less, as they take a
+ * store only through `HeldPort`.
+ */
+export type HeldOperatorReads = OperatorReads & { readonly [heldOperatorReads]: true }
+
 const TASK = PERSISTED_INTEGER_BOUNDS.tasks
 const RUN = PERSISTED_INTEGER_BOUNDS.runs
 const WAIT = PERSISTED_INTEGER_BOUNDS.waits
@@ -98,23 +112,34 @@ type RowIdentity = Pick<CorruptInteger, 'runId' | 'stepName' | 'eventName'>
  * hold none says so, and a schema refuses it in one that may not.
  */
 function integersOf(row: SqlRow, corrupt: CorruptInteger[], identity: RowIdentity = {}) {
-  return (
-    bounds: BrandedIntegerBounds<string>,
-    column = bounds.field.slice(bounds.field.indexOf('.') + 1),
-  ): number | null => {
+  /** One value of the row, held to bounds, and listed under `field` when they refuse it. */
+  const held = (field: string, column: string, bounds: IntegerBounds): number | null => {
     const value = row[column]
     // A statement that did not select the column is a defect here, never a stored NULL.
     if (value === undefined) throw new TypeError(`an operator read selected no ${column}`)
     if (value === null) return null
     const decoded = decodeBoundedInteger(value, bounds)
     if (decoded.ok) return decoded.value
-    const found = { reason: decoded.reason, stored: storageValueKind(value) }
-    corrupt[corrupt.length] =
-      typeof value === 'number' || typeof value === 'bigint'
-        ? { field: bounds.field, ...identity, ...found, value: stringFrom(value) }
-        : { field: bounds.field, ...identity, ...found }
+    corrupt[corrupt.length] = {
+      field,
+      ...identity,
+      reason: decoded.reason,
+      stored: storageValueKind(value),
+      ...(typeof value === 'number' || typeof value === 'bigint'
+        ? { value: stringFrom(value) }
+        : {}),
+    }
     return null
   }
+  return Object.assign(
+    /** A persisted field, read from the column its bounds are for. */
+    (bounds: PersistedIntegerBounds) => held(bounds.field, persistedIntegerColumn(bounds), bounds),
+    /** Database time, which no column stores: the statement names where it selected it. */
+    {
+      now: (column: string) =>
+        held(DERIVED_INTEGER_BOUNDS.epoch_ms.field, column, DERIVED_INTEGER_BOUNDS.epoch_ms),
+    },
+  )
 }
 
 /**
@@ -166,12 +191,14 @@ function eventCollector(corrupt: CorruptInteger[]) {
     add(named: unknown, row: SqlRow): void {
       const eventName = textOf(named)
       if (eventName === null || found[eventName] !== undefined) return
-      const exists = row.emitted_event !== null
-      found[eventName] = {
-        eventName,
-        exists,
-        emittedAtMs: exists ? integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms) : null,
-      }
+      found[eventName] =
+        row.emitted_event === null
+          ? { eventName, exists: false, emittedAtMs: null }
+          : {
+              eventName,
+              exists: true,
+              emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),
+            }
     },
     sorted: (): AwaitedEventFacts[] =>
       objectKeys(found)
@@ -248,7 +275,7 @@ async function taskFacts(
   })
 
   return {
-    nowMs: ofTask(DERIVED_INTEGER_BOUNDS.epoch_ms, 'now_ms'),
+    nowMs: ofTask.now('now_ms'),
     fakeClock,
     task: {
       taskId,
@@ -280,22 +307,14 @@ async function taskFacts(
 }
 
 /** The corrupt list in one order whatever order a dialect returned its rows in. */
-function sortedCorrupt(corrupt: CorruptInteger[]): CorruptInteger[] {
-  const place = (entry: CorruptInteger): string[] => [
-    entry.field,
-    entry.runId ?? '',
-    entry.stepName ?? '',
-    entry.eventName ?? '',
-  ]
-  return corrupt.sort((left, right) => {
-    const [from, to] = [place(left), place(right)]
-    for (let index = 0; index < from.length; index++) {
-      const order = byCodeUnits(from[index] as string, to[index] as string)
-      if (order !== 0) return order
-    }
-    return 0
-  })
-}
+const sortedCorrupt = (corrupt: CorruptInteger[]): CorruptInteger[] =>
+  corrupt.sort(
+    (left, right) =>
+      byCodeUnits(left.field, right.field) ||
+      byCodeUnits(left.runId ?? '', right.runId ?? '') ||
+      byCodeUnits(left.stepName ?? '', right.stepName ?? '') ||
+      byCodeUnits(left.eventName ?? '', right.eventName ?? ''),
+  )
 
 async function taskIdByKey(
   dialect: OperatorReadsDialect,
@@ -329,7 +348,7 @@ async function eventState(
  * port gains is checked once the table names its strings, which the table's type makes it
  * do. A refusal is a rejected promise, as a store's is.
  */
-export function createOperatorReads(dialect: OperatorReadsDialect): OperatorReads {
+export function createOperatorReads(dialect: OperatorReadsDialect): HeldOperatorReads {
   const entries: OperatorReads = {
     taskFacts: (queue, taskId) => taskFacts(dialect, queue, taskId),
     taskIdByKey: (queue, idempotencyKey) => taskIdByKey(dialect, queue, idempotencyKey),
@@ -349,5 +368,5 @@ export function createOperatorReads(dialect: OperatorReadsDialect): OperatorRead
       return apply(entry, undefined, args)
     }
   }
-  return freeze(held) as OperatorReads
+  return freeze(held) as HeldOperatorReads
 }

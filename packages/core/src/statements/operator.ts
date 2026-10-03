@@ -8,6 +8,7 @@ import {
 } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
+import { rollbackSelections } from './reads.js'
 
 /**
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
@@ -23,9 +24,9 @@ import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
 /**
  * `task-facts`' task: one task of one queue, and database time as that read saw it. It is
  * the one statement of its batch that reads the clock. It selects the columns
- * `decodeTaskResult` reads and the two values `decodeRollbackOutcome` reads, as
- * `task-result` does, so the outcome is decoded by the decoders `getTaskResult` calls and
- * by nothing else. Whether the saga began is a flag, 1 or 0, written inline.
+ * `decodeTaskResult` reads and the two values `decodeRollbackOutcome` reads, through the
+ * list and the selections `task-result` selects them through, so the outcome is decoded by
+ * the decoders `getTaskResult` calls and by nothing else. Whether the saga began is a flag, 1 or 0, written inline.
  */
 export const taskFactsTaskRead = defineStatement(
   'task-facts task',
@@ -51,8 +52,7 @@ export const taskFactsTaskRead = defineStatement(
         'idempotency_key',
       ])
       .select((eb) => [
-        aliasedAs(rawSql<string | null>(binds.rollbackOutcome, 'value'), 'rollback_outcome'),
-        aliasedAs(rawSql<string | null>(binds.rollbackError, 'value'), 'rollback_error'),
+        ...rollbackSelections(binds),
         aliasedAs(nowValue, 'now_ms'),
         eb
           .case()
