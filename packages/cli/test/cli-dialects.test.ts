@@ -175,8 +175,20 @@ describe('the CLI on every selected dialect', () => {
           await db.recordNewer()
           const before = await db.dump()
           for (const spec of STORE_COMMANDS) {
-            const run = await runCli(commandLine(spec, db, seeded.completed), db.env)
+            const line = commandLine(spec, db, seeded.completed)
+            const run = await runCli(line, db.env)
             expect({ verb: spec.verb, exit: run.exit }).toEqual({ verb: spec.verb, exit: 5 })
+            // In text the refusal prints on stderr, though it names the version recorded.
+            const text = await runCli(
+              line.filter((argument) => argument !== '--json'),
+              db.env,
+            )
+            expect({
+              verb: spec.verb,
+              exit: text.exit,
+              stdout: text.stdout,
+              namesTheVersion: text.stderr.includes('recordedSchemaVersion: '),
+            }).toEqual({ verb: spec.verb, exit: 5, stdout: '', namesTheVersion: true })
           }
           expect(await db.dump()).toBe(before)
         } finally {

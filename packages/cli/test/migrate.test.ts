@@ -26,6 +26,14 @@ describe('migrate on libSQL', () => {
         wouldApply: [10],
       })
       expect(run.stderr).toContain('version 10')
+      // In text the refusal prints on stderr, though it names the versions it would apply.
+      const text = await runCli(['migrate', '--target', db.target], db.env)
+      expect({
+        exit: text.exit,
+        stdout: text.stdout,
+        from: text.stderr.includes('from: 9\n'),
+        wouldApply: text.stderr.includes('wouldApply: 10\n'),
+      }).toEqual({ exit: 2, stdout: '', from: true, wouldApply: true })
     } finally {
       await db.close()
     }
