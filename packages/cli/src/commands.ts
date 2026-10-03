@@ -8,7 +8,15 @@ import type { ExitName } from './exit.js'
  * one of those places and missed in another.
  */
 
-export const VERBS = ['help', 'doctor', 'migrate', 'result', 'checkpoints', 'inspect'] as const
+export const VERBS = [
+  'help',
+  'doctor',
+  'migrate',
+  'result',
+  'checkpoints',
+  'inspect',
+  'explain',
+] as const
 export type Verb = (typeof VERBS)[number]
 
 export interface FlagSpec {
@@ -82,8 +90,21 @@ const READ_FLAGS = {
   },
 } as const satisfies Record<string, FlagSpec>
 
+/** The flags of a read that names its task by an id or by an idempotency key. */
+const TASK_OR_KEY_FLAGS = {
+  ...READ_FLAGS,
+  key: {
+    type: 'string',
+    value: 'K',
+    description: 'the idempotency key the task was spawned under, in place of its id',
+  },
+} as const satisfies Record<string, FlagSpec>
+
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
+const CHECKPOINTS: PortUse = { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] }
+const TASK_ID_BY_KEY: PortUse = { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] }
+const TASK_FACTS: PortUse = { call: 'operator.taskFacts', labels: ['task-facts', 'fake-clock'] }
 
 /** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
@@ -176,11 +197,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: false,
     repeat: 'read',
-    ports: [
-      SCHEMA_VERSION,
-      TASK_RESULT,
-      { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] },
-    ],
+    ports: [SCHEMA_VERSION, TASK_RESULT, CHECKPOINTS],
     exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
     faults: READ_FAULTS,
   },
@@ -190,22 +207,26 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
       'one snapshot of a task: its row, its outcome, its runs, its waits, and the events they name',
     positionals: ['taskId'],
     alternative: { positional: 'taskId', flag: 'key' },
-    flags: {
-      ...READ_FLAGS,
-      key: {
-        type: 'string',
-        value: 'K',
-        description: 'the idempotency key the task was spawned under, in place of its id',
-      },
-    },
+    flags: TASK_OR_KEY_FLAGS,
     opensStore: true,
     writes: false,
     repeat: 'read',
-    ports: [
-      SCHEMA_VERSION,
-      { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] },
-      { call: 'operator.taskFacts', labels: ['task-facts', 'fake-clock'] },
-    ],
+    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS],
+    exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
+    faults: READ_FAULTS,
+  },
+  explain: {
+    verb: 'explain',
+    summary:
+      'why a task is where it is: one cause from a closed table, a verdict, and the facts behind it',
+    positionals: ['taskId'],
+    alternative: { positional: 'taskId', flag: 'key' },
+    flags: TASK_OR_KEY_FLAGS,
+    opensStore: true,
+    writes: false,
+    repeat: 'read',
+    // The checkpoints are read only for a started run parked on a timer and no event.
+    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS],
     exits: [...STORE_EXITS, 'refused', 'not-found', 'unreadable'],
     faults: READ_FAULTS,
   },

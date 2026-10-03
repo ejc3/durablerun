@@ -571,10 +571,14 @@ export function comparedLines(
     lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json', '--reveal'])
     lines.push(['inspect', taskId, '--queue', QUEUE, '--json'])
     lines.push(['inspect', taskId, '--queue', QUEUE, '--json', '--reveal'])
+    lines.push(['explain', taskId, '--queue', QUEUE, '--json'])
+    lines.push(['explain', taskId, '--queue', QUEUE, '--json', '--reveal'])
   }
   lines.push(['checkpoints', seeded.completed, '--queue', QUEUE, '--json', '--attempt', '1'])
-  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
-  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
-  lines.push(['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])
+  for (const verb of ['inspect', 'explain']) {
+    lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
+    lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
+    lines.push([verb, '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])
+  }
   return lines
 }

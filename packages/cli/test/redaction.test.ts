@@ -79,6 +79,20 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     ],
     shows: true,
   },
+  explain: {
+    lines: (_db, seeded) => [
+      // An ended task's outcome prints as `result` prints it, so these reach the sentinel.
+      ...Object.values(seeded).map((taskId) => ['explain', taskId, '--queue', QUEUE]),
+      ['explain', '--key', COMPLETED_KEY, '--queue', QUEUE],
+      ['explain', '--key', `no-task-has-${SENTINEL}`, '--queue', QUEUE],
+      ['explain', 'no-such-task', '--queue', QUEUE],
+      // Refusals: an id and a key together, neither, and a key with no queue.
+      ['explain', seeded.completed, '--key', COMPLETED_KEY, '--queue', QUEUE],
+      ['explain', '--queue', QUEUE],
+      ['explain', '--key', COMPLETED_KEY],
+    ],
+    shows: true,
+  },
 }
 
 /**
@@ -194,6 +208,10 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
   inspect: () => [
     ['inspect', 'a-task', '--queue', QUEUE],
     ['inspect', '--key', 'a-key', '--queue', QUEUE],
+  ],
+  explain: () => [
+    ['explain', 'a-task', '--queue', QUEUE],
+    ['explain', '--key', 'a-key', '--queue', QUEUE],
   ],
 }
 
@@ -365,6 +383,10 @@ describe('redaction', () => {
 
   it('inspect prints no value a user wrote without --reveal', async () => {
     await runCase('inspect', 'mutation-verdict:behavior:cli-inspect-redacts-the-key')
+  })
+
+  it('explain prints no value a user wrote without --reveal', async () => {
+    await runCase('explain', 'mutation-verdict:behavior:cli-explain-redacts-the-outcome')
   })
 
   it("result prints a failure reason the task's code wrote as its length and sha256", () => {

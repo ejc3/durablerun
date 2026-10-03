@@ -5557,8 +5557,8 @@ carries on from where the first run stopped), each port call it makes with every
 label that call can send, the exit codes it gives, and the exit a fault at each of its
 batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
 table. A command may name one argument that a flag stands in for, and it then takes one of
-the two and never both: `inspect` takes a task id or `--key`. The commands so far are
-`help`, `doctor`, `migrate`, `result`, `checkpoints` and `inspect`.
+the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands so
+far are `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect` and `explain`.
 
 **Transport.** Every command but `help` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
@@ -5718,6 +5718,150 @@ plane against one from U+E000 to U+FFFF. No statement orders its rows, because a
 sorts by the database's collation, which differs between the dialects and between two
 servers of one dialect.
 
+**Why a task is where it is.** `explain (<taskId> | --key <idempotencyKey>) --queue Q` reads
+the facts `inspect` reads and hands them to `diagnose` (`src/explain.ts`), which answers one
+cause from a closed table, a verdict, the facts behind the cause, and, for a `waiting`
+verdict, `nextTransitionAtMs`. `diagnose` is pure: it reads no clock and no store, and
+database time is one of the facts. What the facts of one task do not hold it asks for by
+name, and `explain` reads that and asks again. It asks for two things: how many checkpoints
+the task has committed, for a started run parked on a timer and no event, which
+`getCheckpoints` answers, and the diagnosis of the child, for a run parked on a child's
+completion. So `explain` sends the batches `inspect` sends and, for that one shape of run,
+`get-checkpoints`. It adds no statement and no batch.
+
+A verdict says whether a move is owed to the task, never whether the task did well. A task
+that failed for good is `ok`: nothing will move it and nothing should.
+
+- `ok`: the task has ended, or its run is claimed under a lease that has not expired.
+- `waiting`: the next move is a clock's, an event's, a child's or a later build's, or it is
+  the driver's and is not late yet.
+- `stuck`: a move the driver owes is late, or a run has run past the hung-run bound.
+- `inconsistent`: a row is not readable, or the rows disagree in a way no engine path writes.
+- `unexplained`: no cause of the table takes the facts. It is the answer when every arm
+  declines, so a state nobody listed is never read as a healthy one.
+
+No verdict and no cause says a run can be claimed: a claim's admission reads what the facts
+do not hold, the stored retry strategy and headers among it. A verdict is the CLI's reading
+for an operator. The engine reads none of it, and the lease stays the only truth about who
+may run a task (section 3.9).
+
+Each cause has one rule for its verdict, the table's second column. It is a verdict of its
+own, or `late`, or `child`. A `late` cause is `waiting` until the instant it names is more
+than the grace in the past, and `stuck` from the next millisecond on: the grace is
+`DUE_GRACE_MS`, 120 seconds, two periods of the once-a-minute cron tick that backs a
+serverless deployment (section 3.1). A `child` cause takes the verdict of the cause its
+awaited child was followed to. The third column is the verb of the command that looks closer
+or clears the cause, and `none` where there is none. The table in `src/explain.ts` is this
+one, and a test parses both and requires them equal.
+
+| Cause | Verdict | Next | Meaning |
+| --- | --- | --- | --- |
+| unreadable | inconsistent | inspect | a stored row the decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own |
+| terminal-task-with-a-live-run | inconsistent | inspect | the task has ended and one of its runs is still live, which no engine path writes |
+| completed | ok | result | the task completed |
+| cancelled | ok | result | the task was cancelled |
+| failed-by-an-engine-reason | ok | result | the engine failed the task, for the reason named |
+| failed-attempts-exhausted | ok | result | the task's code failed and no attempt of its budget is left |
+| failed-with-no-retry | ok | result | the task's code failed and its worker asked for no retry, with attempts left |
+| live-task-without-one-live-run | inconsistent | inspect | the task is live and does not have exactly one live run |
+| task-and-run-states-differ | inconsistent | inspect | the task's state is not its live run's state |
+| cancellation-deadline-passed | late | sweep | the task's cancellation deadline passed, and no sweep has cancelled it |
+| lease-lapsed-unswept | late | sweep | the run's lease expired, and no sweep has taken the run back |
+| running-past-the-hung-bound | stuck | cancel | the run was claimed once and has run under a live lease for longer than the hung-run bound |
+| running-under-a-live-lease | ok | none | the run is claimed under a lease that has not expired |
+| pending-delayed | waiting | none | the run is not due yet: a start delay or a backoff holds it |
+| woken-unclaimed | late | tick | the run holds a wake from the event named and is due, and no claim has taken it |
+| pending-due-unclaimed | late | tick | the run is due, and no claim has taken it |
+| never-started | waiting | none | the run was claimed and parked again before any worker started it, which a worker does for a task name it has no handler for |
+| wait-outlives-its-event | inconsistent | inspect | the run waits on an event that exists, which no engine path writes |
+| never-started-alpha1-form | waiting | none | the run was started and parked on a timer with no checkpoint committed, which the release alpha.1 does for a task name it has no handler for |
+| sleeping-past-its-wake | late | tick | the run's timer or its await's timeout has passed, and no claim has taken it |
+| awaiting-a-child | child | inspect | the run waits for the child task named to end |
+| awaiting-a-timed-event | waiting | none | the run waits on the event named, until its timeout |
+| awaiting-an-untimed-event | waiting | none | the run waits on the event named, with no timeout |
+| sleeping-on-a-timer | waiting | none | the run sleeps until its timer |
+| unexplained | unexplained | inspect | no cause of this table takes the facts |
+
+The causes are asked in the table's order, and the first whose condition holds is the
+answer. So a live task whose one live run agrees with it and whose cancellation deadline has
+passed is named by that deadline whatever the run is doing, because the sweep cancels the
+task next (section 3.1, step 0). `nextTransitionAtMs` is the instant from which the engine
+may move a `waiting` run: the instant the run comes due, or the instant its await times out.
+For a run that is already due it is an instant at or before database time. That is so for a
+`late` cause inside the grace, which names the instant the cause turns on, and for a
+never-started run whose timer has passed. It is null when no clock moves the run, as for an
+await with no timeout, and for every verdict but `waiting`.
+
+Two causes name a task no deployed build runs. The current worker reads the claimed task's
+name before it starts the run, and parks a run it has no handler for with `deferLaunch`
+(section 3.2), which leaves the run asleep on a timer with its claim generation ahead of its
+activation generation and no wait registered. That is `never-started`. No other call of a
+worker in this repository leaves a run so: the worker activates a run before it runs a line
+of the task, and the sweep reopens a lost launch as pending. The store's port does not
+refuse `reschedule` or `suspendRun` from a claim that was never activated, so a caller of
+the port that is not that worker can write the same row, and `explain` reads it the same
+way. The release alpha.1 starts the run first and then parks it with `reschedule`, 15 to 24
+seconds on, so its rows are those of a sleep but for one thing: a sleep parks with its
+checkpoint in one transition (`suspendRun`), in alpha.1 as now, and the deferral commits
+none. A started run parked on a timer and no event whose task has no checkpoint is
+`never-started-alpha1-form`. One whose task has a checkpoint is `sleeping-on-a-timer`, or
+`sleeping-past-its-wake` once the timer has passed. A task that committed a checkpoint and
+is then deferred by an alpha.1 build reads as a sleeper, and its timer says when it is next
+due either way. Both never-started causes and
+an await with no timeout are `waiting` however long they have stood. The first is the
+rolling-deploy deferral doing what it is for, and the name may be a typo or its build not
+deployed. The second is how an approval looks. One known limit: the store's read of
+checkpoints leaves out a row whose owner ordinal is outside its bounds, so a sleeping task
+whose every checkpoint row is corrupt that way reads as a task with none, and `explain`
+names it `never-started-alpha1-form`. A case pins that, and a read that lists such a row
+closes it.
+
+A worker whose handler hangs keeps its lease alive, so the lease never lapses and the sweep
+never takes the run. `running-past-the-hung-bound` names a run that has run under a live
+lease for more than `HUNG_RUN_MS`, 60 minutes. Only a run claimed once is held to it, whose
+pass began when the run started. No fact says when a later pass of a run began, so a run
+that slept and was claimed again is `running-under-a-live-lease` however long it runs. The
+bound is the CLI's, not the engine's: a task whose first pass is meant to run longer reads
+as `stuck` while its worker is healthy.
+
+An await of a child is followed. `diagnose` names the child a run is parked on, from the
+event `$task-done:<id>`, `explain` reads that task's facts and diagnoses it the same way,
+and so on for `CHILD_HOPS`, 8 awaits, from the task it was asked about. The answer nests
+each diagnosis under `awaits` and, when a child was followed, names the last under
+`deepest`. The next command is the one for that last task. A task 8 awaits away has its own child left unread, so a chain of
+awaits, or a ring of them, costs at most nine reads of facts. A task takes the verdict of
+what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up as they are,
+and a child whose run is claimed under a live lease makes its parent `waiting`. Three cases
+are `unexplained`: a child the queue does not hold, a child that was not followed, and a
+child that has ended. The batch that ends a task wakes every run parked on it (section
+3.2), so a run still parked was read a moment before its child ended, or waits on a task
+that a build older than child tasks ended with no completion event. An await under a
+timeout that has passed is `sleeping-past-its-wake`, and its child is not followed.
+
+For an await, the facts name the event, the step, and under `waitingTasks` the tasks this
+read saw waiting on it: the task explained, and along a chain each task under the completion
+event of the child it awaits. No read lists every task that waits on an event. PR5.3c adds
+that read, and `explain` then prints its list.
+
+The next command is built from the command table: the verb the cause names, each of that
+command's arguments, and each flag it requires, filled from the queue `explain` was given
+and the id of the task the command is for. A command that requires something else is
+refused out loud, as a defect of the cause table. It prints as arguments (`next.argv`) and as one line to paste
+(`next.command`). No flag a command does not require is ever added, so no suggestion carries
+`--yes`, and no cause names `emit`: for an await with no timeout `explain` prints the
+event's name as a fact, and whether to emit it is the operator's call. A `waiting` verdict
+prints no next command. Neither does a cause whose verb the table does not hold: `sweep`,
+`tick` and `cancel` join the table with the drive verbs (PR5.3d), and until then the six
+causes that name them print none. A test lists those six, so the pull request that adds the
+verbs has to say there what each then prints.
+
+`explain` exits 0 for every task it could read, whatever the verdict: a verdict is not an
+exit code. It exits 10 when a row it read is one `inspect` exits 10 for, the task's or that
+of a child it followed, or when the decoders refuse a checkpoint row it asked for. It exits
+8 when the queue does not hold the task it was asked about, or no task was spawned under
+the key. Its answer is the report the command exists to
+print, so it prints on stdout whatever the exit.
+
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
@@ -5733,7 +5877,11 @@ step key, the same way beside the parent it names. When no task was spawned unde
 `inspect` was given, its answer does not quote the key. A task's state, a run's state and a
 wait's status print when they are one of the engine's own. Any other text there is a stored
 value nothing vouches for, which every schema's check refuses, and it prints as its length
-and sha256 unless revealed, as the reason a decoder refused that row with does.
+and sha256 unless revealed, as the reason a decoder refused that row with does. `explain`
+prints an ended task's outcome as `result` prints it, redacted the same way. Nothing else
+in its answer is a value a user wrote: it holds ids, task names, event names, step keys,
+states and reason names of the engine's own, counts, instants and flags, and its cause for
+a row that is not readable names the fields that are corrupt and quotes no stored value.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
@@ -5743,17 +5891,17 @@ object under `dialect`: the URL scheme and the store's schema window.
 In human text one rule decides the stream. An answer prints on stdout when the command
 exits 0. An answer its handler marks as the snapshot the command exists to print also
 prints on stdout, whatever the command exits with, so the exit code alone tells a script
-how it ended. The snapshot of `inspect` is the one answer marked so today, and it prints
-there when it exits 10. Every other answer that does not exit 0 is a refusal and prints on
+how it ended. The snapshot of `inspect` and the answer of `explain` are the two marked so
+today, and each prints there when it exits 10. Every other answer that does not exit 0 is a refusal and prints on
 stderr. That holds when the refusal names a fact about the store. On a database recorded
-at a schema version outside the window, `doctor`, `inspect`, `result` and `checkpoints`
-exit 5 and print the recorded version on stderr. `migrate` without `--yes` exits 2 and
+at a schema version outside the window, `doctor`, `inspect`, `explain`, `result` and
+`checkpoints` exit 5 and print the recorded version on stderr. `migrate` without `--yes` exits 2 and
 prints the version it starts from and the versions it would apply on stderr, and a
 `migrate` that fails partway prints the versions it applied there. A usage error, a
 refused call, a store that is unavailable, a task that is not there, and the answer of
-`result` or `checkpoints` for a row the decoders refuse print there too. `explain`,
-`stuck` and `stats` follow it the same way: the report each exists to print is marked and
-prints on stdout whatever it exits with, and each of their refusals prints on stderr.
+`result` or `checkpoints` for a row the decoders refuse print there too. `stuck` and `stats`
+will follow it the same way: the report each exists to print is marked and prints on stdout
+whatever it exits with, and each of their refusals prints on stderr.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -5792,7 +5940,9 @@ SimWorld's SimCrash. It meets every batch every store command sends, one sending
 time, on each dialect, from each starting state the command runs from: `migrate` from a
 database that was never initialized, from version 5 and from one version below the
 build's, and each read from the current version. `inspect` runs by an idempotency key,
-which sends the read by key and then every batch a read by a task id sends. The command
+which sends the read by key and then every batch a read by a task id sends. `explain` runs
+by the key of a run asleep on a timer, which sends each batch it declares, and of a parent
+parked on its child, where a fault meets the reads of both tasks. The command
 table declares exit 6 for
 the first two and the exit of a clean run for duplicate, except at the batches whose lost
 answer `migrate` recovers, where it declares 0 for crash-after by label:

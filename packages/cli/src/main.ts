@@ -6,7 +6,9 @@ import {
   SchemaMismatchError,
   SchemaNotInitializedError,
   StoreUnavailableError,
+  type TaskFacts,
   isPortRefusal,
+  isTerminalState,
 } from '@durablerun/core'
 import {
   COMMANDS,
@@ -19,6 +21,17 @@ import {
   usage,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
+import {
+  CHILD_HOPS,
+  type Diagnosis,
+  type Evidence,
+  deepest,
+  diagnose,
+  diagnosisView,
+  pastedLine,
+  readUnreadableRow,
+  suggestion,
+} from './explain.js'
 import { factsAreReadable, factsView } from './inspect.js'
 import {
   MissingDatabaseError,
@@ -449,13 +462,13 @@ function noSuchTask(queue: string, taskId: string): Answer {
 }
 
 /**
- * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
- * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
- * integer outside its bounds, or a state or status that is not the engine's own is printed
- * where it stands and the command exits `unreadable`, so a script does not read a corrupt
- * row as a clean answer.
+ * The task a command names by its id or by the idempotency key it was spawned under, read
+ * after the schema window is checked, or the answer that refuses.
  */
-const inspect: Handler = async ({ invocation, store, reveal }) => {
+async function namedTask({
+  invocation,
+  store,
+}: Context): Promise<{ readonly queue: string; readonly taskId: string } | Answer> {
   const queue = invocation.strings.queue ?? ''
   const key = invocation.strings.key
   const version = await readableVersion(store)
@@ -468,6 +481,21 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
     // The key is a value a user wrote, so the answer does not quote it.
     return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
   }
+  return { queue, taskId }
+}
+
+/**
+ * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
+ * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
+ * integer outside its bounds, or a state or status that is not the engine's own is printed
+ * where it stands and the command exits `unreadable`, so a script does not read a corrupt
+ * row as a clean answer.
+ */
+const inspect: Handler = async (context) => {
+  const named = await namedTask(context)
+  if ('exit' in named) return named
+  const { queue, taskId } = named
+  const { store, reveal } = context
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return noSuchTask(queue, taskId)
   // The outcome is rendered as `result` renders it, a refused row included.
@@ -482,10 +510,92 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
   }
 }
 
+/** How many checkpoints a task has committed, or that a row of them is one the decoders refuse. */
+async function checkpointCount(
+  store: OpenedStore,
+  queue: string,
+  taskId: string,
+): Promise<number | 'unreadable'> {
+  try {
+    return (await store.scheduler.getCheckpoints(queue, taskId, MAX_RUN_ORDINAL)).length
+  } catch (error) {
+    if (!isUnreadableRow(error)) throw error
+    return 'unreadable'
+  }
+}
+
+/**
+ * One task's facts and what `diagnose` says of them, or null for a task the queue does not
+ * hold. `diagnose` names the evidence a cause turns on, and it is read here and handed
+ * back: the task's checkpoints, or the child the task awaits, which is diagnosed the same
+ * way. A task that is CHILD_HOPS awaits from the one named has its own child left unread,
+ * so a chain of awaits, or a ring of them, costs a bounded number of reads.
+ */
+async function explained(
+  store: OpenedStore,
+  queue: string,
+  taskId: string,
+  hop: number,
+): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
+  const facts = await store.operator.taskFacts(queue, taskId)
+  if (facts === null) return null
+  let evidence: Evidence = {}
+  for (;;) {
+    const asked = diagnose(facts, evidence)
+    if (!('needs' in asked)) return { facts, diagnosis: asked }
+    if (asked.needs in evidence) throw new Error(`diagnose asked for ${asked.needs} twice`)
+    if (asked.needs === 'checkpoints') {
+      evidence = { ...evidence, checkpoints: await checkpointCount(store, queue, taskId) }
+    } else if (hop === CHILD_HOPS) {
+      evidence = { ...evidence, child: 'not-followed' }
+    } else {
+      const child = await explained(store, queue, asked.taskId, hop + 1)
+      evidence = { ...evidence, child: child?.diagnosis ?? 'absent' }
+    }
+  }
+}
+
+/**
+ * Why a task is where it is: one cause from the closed table, a verdict, and the facts
+ * behind it, on stdout whatever the command exits with. A verdict is not an exit code. The
+ * command exits `done` for every task it could read, and `unreadable` when a row it read,
+ * the task's or that of a child it followed, is one `inspect` exits `unreadable` for.
+ */
+const explain: Handler = async (context) => {
+  const named = await namedTask(context)
+  if ('exit' in named) return named
+  const { queue, taskId } = named
+  const found = await explained(context.store, queue, taskId, 0)
+  if (found === null) return noSuchTask(queue, taskId)
+  const { facts, diagnosis } = found
+  const last = deepest(diagnosis)
+  const argv = suggestion(last, queue)
+  return {
+    exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',
+    holdsFacts: true,
+    view: {
+      queue,
+      ...diagnosisView(diagnosis),
+      databaseNowEpochMs: facts.nowMs,
+      fakeClock: facts.fakeClock,
+      // The cause at the end of the awaits that were followed, when there is one.
+      ...(last === diagnosis
+        ? {}
+        : { deepest: { taskId: last.taskId, cause: last.cause, verdict: last.verdict } }),
+      // An ended task's outcome, rendered as `result` renders it.
+      ...(isTerminalState(facts.task.state) && 'result' in facts.outcome
+        ? { outcome: resultView(facts.outcome.result, context.reveal) }
+        : {}),
+      next: argv === null ? null : { argv, command: pastedLine(argv) },
+    },
+  }
+}
+
 const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze({
   doctor,
   migrate,
   result,
   checkpoints,
   inspect,
+  explain,
 })
