@@ -246,6 +246,48 @@ describe('explain on libSQL', () => {
     })
   }, 60_000)
 
+  it('a healthy first pass past the hung-run bound is not stuck, and no cancel is suggested for it', async () => {
+    const db = await openCliDb('libsql', 'explain-hung-healthy')
+    try {
+      // The task says for itself how long it may run: two hours from its first start.
+      const task = await db.store.spawn(QUEUE, 'job', '{}', {
+        cancellation: { maxDurationSeconds: 7200 },
+      })
+      const run = await claimActivated(db, 'w-long', task.taskId)
+      await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS - 1_000)
+      expect((await db.store.heartbeat(QUEUE, run.runId, run.claimToken, 60)).held).toBe(true)
+      await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS + 1)
+      const answer = await explain(db, task.taskId)
+      // Nothing is owed to a run under a live lease: the sweep takes nothing.
+      expect(await db.store.sweep(QUEUE, 10)).toEqual([])
+      expect(
+        { cause: answer.cause, verdict: answer.verdict, cancelAtMs: answer.facts.cancelAtMs },
+        'mutation-verdict:behavior:cli-explain-a-run-past-the-hung-bound-is-not-stuck',
+      ).toEqual({
+        cause: 'running-past-the-hung-bound',
+        verdict: 'ok',
+        cancelAtMs: NOW_MS + 7_200_000,
+      })
+      // Against a command table that holds `cancel`, the next command is still a look.
+      const cancel: CommandSpec = {
+        ...COMMANDS.result,
+        verb: 'cancel' as CommandSpec['verb'],
+        writes: true,
+      }
+      const built = suggestion(
+        { cause: answer.cause, verdict: answer.verdict, taskId: task.taskId },
+        QUEUE,
+        { ...COMMANDS, cancel },
+      )
+      expect(
+        { built: Array.isArray(built) ? built[0] : built, printed: answer.next?.argv[0] },
+        'mutation-verdict:behavior:cli-explain-never-suggests-cancel',
+      ).toEqual({ built: 'inspect', printed: 'inspect' })
+    } finally {
+      await db.close()
+    }
+  })
+
   it('at nextTransitionAtMs a claim takes the run, and one millisecond earlier none does', async () => {
     const moved: string[] = []
     for (const seed of EXPLAIN_SEEDS.filter((one) => one.verdict === 'waiting')) {
