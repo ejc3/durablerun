@@ -117,6 +117,13 @@ describe('inspect on libSQL', () => {
           printed: false,
         })
       }
+      // An answer that read nothing prints on stderr in text, and nothing on stdout.
+      const text = await runCli(['inspect', 'no-such-task', '--queue', QUEUE], db.env)
+      expect({
+        exit: text.exit,
+        stdout: text.stdout,
+        said: text.stderr.includes(`no task no-such-task in queue ${QUEUE}`),
+      }).toEqual({ exit: 8, stdout: '', said: true })
       // The key finds a task of its own queue alone.
       const elsewhere = await runCli(
         ['inspect', '--key', COMPLETED_KEY, '--queue', 'another-queue', '--json'],
