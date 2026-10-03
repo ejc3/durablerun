@@ -208,7 +208,18 @@ describe("how an operator's read decodes a row", () => {
       ),
     )
     const answer = await reads.taskFacts('q', 't')
-    expect(answer?.corrupt).toEqual([
+    expect(
+      {
+        nowMs: answer?.nowMs,
+        listed: answer?.corrupt.some((entry) => entry.field === 'derived.epoch_ms'),
+      },
+      'mutation-verdict:behavior:operator-reads-guard-database-time',
+    ).toEqual({ nowMs: null, listed: true })
+    // The list has one order, by field and then by row, whatever order the rows were read in.
+    expect(
+      answer?.corrupt,
+      'mutation-verdict:behavior:operator-reads-order-the-corrupt-list',
+    ).toEqual([
       { field: 'derived.epoch_ms', reason: 'not-an-exact-integer', stored: 'number', value: '1.5' },
       { field: 'runs.attempt', runId: 'r1', reason: 'out-of-range', stored: 'number', value: '0' },
       {
@@ -318,8 +329,8 @@ describe("how an operator's read decodes a row", () => {
 })
 
 describe("the order of an operator's lists", () => {
-  // Two names whose order by UTF-16 code units is the reverse of their order by code point,
-  // which is the order SQLite's own comparison and a UTF-8 byte comparison give.
+  // Two names whose order by code point, which is the order a comparison of their UTF-8
+  // bytes gives, is the reverse of their order by UTF-16 code units.
   const ASTRAL = '\u{1F600}'
   const HIGH_BASIC_PLANE = '\uFF5E'
 
@@ -333,10 +344,13 @@ describe("the order of an operator's lists", () => {
       ]),
     )
     const answer = await reads.taskFacts('q', 't')
-    expect(answer?.runs.map((one) => one.runId)).toEqual(['r-b', 'r-c', 'r-a', 'r-z'])
+    expect(
+      answer?.runs.map((one) => one.runId),
+      'mutation-verdict:behavior:operator-reads-order-runs',
+    ).toEqual(['r-b', 'r-c', 'r-a', 'r-z'])
   })
 
-  it('orders waits and events by UTF-16 code units, whatever order a store returned them in', async () => {
+  it('orders waits and events by code point, whatever order a store returned them in', async () => {
     const steps = ['b', HIGH_BASIC_PLANE, 'B', ASTRAL, '_', 'a']
     const { reads } = readsAnswering(
       facts(
@@ -355,12 +369,12 @@ describe("the order of an operator's lists", () => {
       ),
     )
     const answer = await reads.taskFacts('q', 't')
-    const sorted = ['B', '_', 'a', 'b', ASTRAL, HIGH_BASIC_PLANE]
-    expect(answer?.waits.map((one) => `${one.runId}/${one.stepName}`)).toEqual([
-      'r1/z',
-      ...sorted.map((step) => `r2/${step}`),
-    ])
-    expect(answer?.events).toEqual([
+    const sorted = ['B', '_', 'a', 'b', HIGH_BASIC_PLANE, ASTRAL]
+    expect(
+      answer?.waits.map((one) => `${one.runId}/${one.stepName}`),
+      'mutation-verdict:behavior:operator-reads-order-their-own-lists',
+    ).toEqual(['r1/z', ...sorted.map((step) => `r2/${step}`)])
+    expect(answer?.events, 'mutation-verdict:behavior:operator-reads-order-events').toEqual([
       ...sorted.map((step) => ({
         eventName: `e-${step}`,
         // An event is read once, from the first row that names it.

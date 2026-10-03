@@ -315,12 +315,17 @@ export interface WaitFacts {
 }
 
 /**
- * An event one of a task's runs awaits or was woken by. It exists once it has been emitted,
- * which is when its row exists, and only an event that exists has an instant.
+ * Whether an event has been emitted, and when. It exists once it has been emitted, which is
+ * when its row exists, and only an event that exists has an instant. The instant of one
+ * that exists is null when the stored value is corrupt, and the `corrupt` list of the same
+ * answer names it.
  */
-export type AwaitedEventFacts =
-  | { readonly eventName: string; readonly exists: false; readonly emittedAtMs: null }
-  | { readonly eventName: string; readonly exists: true; readonly emittedAtMs: number | null }
+export type EmittedEvent =
+  | { readonly exists: false; readonly emittedAtMs: null }
+  | { readonly exists: true; readonly emittedAtMs: number | null }
+
+/** An event one of a task's runs awaits or was woken by. */
+export type AwaitedEventFacts = { readonly eventName: string } & EmittedEvent
 
 /**
  * Everything an operator read reports of one task. Every member but `fakeClock` is read
@@ -330,7 +335,7 @@ export type AwaitedEventFacts =
  *
  * Every list has one order on every dialect, and no database collation decides it: runs by
  * their ordinal and then by run id, waits by run id and then by step, and events by name,
- * each string compared by its UTF-16 code units.
+ * each string compared by Unicode code point, which is the order of its UTF-8 bytes.
  */
 export interface TaskFacts {
   /** Database time when the snapshot was read. */
@@ -346,10 +351,4 @@ export interface TaskFacts {
 }
 
 /** Whether an event has been emitted, and when. Nothing here is derived from its payload. */
-export type EventState =
-  | { readonly exists: false; readonly emittedAtMs: null; readonly corrupt: readonly [] }
-  | {
-      readonly exists: true
-      readonly emittedAtMs: number | null
-      readonly corrupt: readonly CorruptInteger[]
-    }
+export type EventState = EmittedEvent & { readonly corrupt: readonly CorruptInteger[] }

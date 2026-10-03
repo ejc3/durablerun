@@ -22,6 +22,7 @@ import { decodeTaskResult } from './task-result.js'
 import type {
   AwaitedEventFacts,
   CorruptInteger,
+  EmittedEvent,
   EventState,
   RunFacts,
   TaskFacts,
@@ -45,6 +46,7 @@ const {
   PromiseReject: rejected,
   RangeError: TrustedRangeError,
   ReflectApply: apply,
+  StringCharCodeAt: charCodeAt,
   StringFrom: stringFrom,
 } = TASK_INTRINSICS
 
@@ -197,9 +199,28 @@ function flagOf(what: string, value: unknown): boolean {
 const textOf = (value: unknown): string | null =>
   value === null || value === undefined ? null : stringFrom(value)
 
-/** The order of two strings by their UTF-16 code units, which no database collation decides. */
-const byCodeUnits = (left: string, right: string): number =>
-  left < right ? -1 : left > right ? 1 : 0
+/**
+ * Where a UTF-16 code unit stands in code point order. A surrogate is half of a character
+ * past the basic plane, and such a character sorts after every character of the plane, so
+ * the surrogates move above U+E000 to U+FFFF and those move down into the gap.
+ */
+const codePointRank = (unit: number): number =>
+  unit < 0xd800 ? unit : unit < 0xe000 ? unit + 0x2000 : unit - 0x800
+
+/**
+ * The order of two strings by Unicode code point, which is the order of their UTF-8 bytes.
+ * No database collation decides it, and an implementation whose strings are UTF-8 gets the
+ * same order from a plain comparison of bytes.
+ */
+function byCodePoints(left: string, right: string): number {
+  const shared = left.length < right.length ? left.length : right.length
+  for (let index = 0; index < shared; index++) {
+    const leftUnit = charCodeAt(left, index)
+    const rightUnit = charCodeAt(right, index)
+    if (leftUnit !== rightUnit) return codePointRank(leftUnit) - codePointRank(rightUnit)
+  }
+  return left.length - right.length
+}
 
 /** A number that may be absent, with the absent ones last. */
 const absentLast = (left: number | null, right: number | null): number =>
@@ -221,6 +242,17 @@ function outcomeOf(taskId: string, row: SqlRow): TaskOutcomeFacts {
   }
 }
 
+const NOT_EMITTED: EmittedEvent = freeze({ exists: false, emittedAtMs: null })
+
+/**
+ * An event's own row, however a statement reached it: joined to a run or a wait that names
+ * the event, or selected by its key. Both reads decode its instant here.
+ */
+const emittedEvent = (row: SqlRow, corrupt: CorruptInteger[], eventName: string): EmittedEvent => ({
+  exists: true,
+  emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),
+})
+
 /** The events a task's runs and waits name, each read once, from the rows that joined it. */
 function eventCollector(corrupt: CorruptInteger[]) {
   const found = createObject(null) as Record<string, AwaitedEventFacts>
@@ -229,18 +261,14 @@ function eventCollector(corrupt: CorruptInteger[]) {
     add(named: unknown, row: SqlRow): void {
       const eventName = textOf(named)
       if (eventName === null || found[eventName] !== undefined) return
-      found[eventName] =
-        row.emitted_event === null
-          ? { eventName, exists: false, emittedAtMs: null }
-          : {
-              eventName,
-              exists: true,
-              emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),
-            }
+      found[eventName] = {
+        eventName,
+        ...(row.emitted_event === null ? NOT_EMITTED : emittedEvent(row, corrupt, eventName)),
+      }
     },
     sorted: (): AwaitedEventFacts[] =>
       objectKeys(found)
-        .sort(byCodeUnits)
+        .sort(byCodePoints)
         .map((eventName) => found[eventName] as AwaitedEventFacts),
   }
 }
@@ -333,11 +361,11 @@ async function taskFacts(
     outcome: outcomeOf(taskId, task),
     runs: runs.sort(
       (left, right) =>
-        absentLast(left.attempt, right.attempt) || byCodeUnits(left.runId, right.runId),
+        absentLast(left.attempt, right.attempt) || byCodePoints(left.runId, right.runId),
     ),
     waits: waits.sort(
       (left, right) =>
-        byCodeUnits(left.runId, right.runId) || byCodeUnits(left.stepName, right.stepName),
+        byCodePoints(left.runId, right.runId) || byCodePoints(left.stepName, right.stepName),
     ),
     events: events.sorted(),
     corrupt: sortedCorrupt(corrupt),
@@ -348,10 +376,10 @@ async function taskFacts(
 const sortedCorrupt = (corrupt: CorruptInteger[]): CorruptInteger[] =>
   corrupt.sort(
     (left, right) =>
-      byCodeUnits(left.field, right.field) ||
-      byCodeUnits(left.runId ?? '', right.runId ?? '') ||
-      byCodeUnits(left.stepName ?? '', right.stepName ?? '') ||
-      byCodeUnits(left.eventName ?? '', right.eventName ?? ''),
+      byCodePoints(left.field, right.field) ||
+      byCodePoints(left.runId ?? '', right.runId ?? '') ||
+      byCodePoints(left.stepName ?? '', right.stepName ?? '') ||
+      byCodePoints(left.eventName ?? '', right.eventName ?? ''),
   )
 
 async function taskIdByKey(
@@ -373,10 +401,9 @@ async function eventState(
   const b = dialect.open.eventState()
   b.readTree('event', eventStateRead({ queue, eventName }))
   const row = readRows(b, await dialect.run(b), 'event')[0]
-  if (row === undefined) return { exists: false, emittedAtMs: null, corrupt: [] }
+  if (row === undefined) return { ...NOT_EMITTED, corrupt: [] }
   const corrupt: CorruptInteger[] = []
-  const emittedAtMs = integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms)
-  return { exists: true, emittedAtMs, corrupt }
+  return { ...emittedEvent(row, corrupt, eventName), corrupt }
 }
 
 /**

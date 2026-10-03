@@ -947,12 +947,12 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
         ).toEqual([])
       }))
 
-    it('orders waits and events by their UTF-16 code units, which no collation of the database decides', () =>
+    it('orders waits and events by code point, which no collation of the database decides', () =>
       inWorld('order', async (world) => {
         const { f } = world
         const parked = await parkedOn(world, null)
         // Fixture-built: a run registers one wait, so the others are written as rows. The
-        // names sort one way by code unit, another by code point, and a third by a
+        // names sort one way by code point, another by UTF-16 code unit, and a third by a
         // linguistic collation.
         const names = ['b', 'Z', '_', 'A', 'é', '\u{1F600}', '～']
         await f.raw.batch(
@@ -967,10 +967,12 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
         )
         await f.store.emitEvent(Q, 'on-Z', '{}')
         const facts = await f.operatorReadsOver(f.raw).taskFacts(Q, parked.taskId)
-        const sorted = ['A', 'Z', '_', 'approve', 'b', 'é', '\u{1F600}', '～']
+        // The last two tell the orders apart: by UTF-16 code unit the character past the
+        // basic plane, whose first unit is a surrogate, would come before U+FF5E.
+        const sorted = ['A', 'Z', '_', 'approve', 'b', 'é', '～', '\u{1F600}']
         expect(
           facts?.waits.map((wait) => wait.stepName),
-          'mutation-verdict:behavior:operator-reads-order-their-own-lists',
+          'mutation-verdict:behavior:operator-reads-order-by-code-point',
         ).toEqual(sorted)
         expect(facts?.events.map((event) => event.eventName)).toEqual([
           'approval',
@@ -979,8 +981,8 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
           'on-_',
           'on-b',
           'on-é',
-          'on-\u{1F600}',
           'on-～',
+          'on-\u{1F600}',
         ])
         expect(facts?.events.filter((event) => event.exists)).toEqual([
           { eventName: 'on-Z', exists: true, emittedAtMs: START + 1_000 },
