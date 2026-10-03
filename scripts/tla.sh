@@ -125,8 +125,9 @@ run_small() { # run_small <name> <cfg> <module>: a side model, on every scope
 }
 run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
 
-# The side models: the child-task completion event (specs/ChildTasks.tla) and
-# sagas (specs/Sagas.tla). A side model is a <Model>.tla enrolled by the mutant
+# The side models: the child-task completion event (specs/ChildTasks.tla),
+# sagas (specs/Sagas.tla), and the purge of terminal task units
+# (specs/Retention.tla). A side model is a <Model>.tla enrolled by the mutant
 # list beside it, <Model>.mutants.json. What belongs to a model is decided here,
 # once, from file names: a cfg belongs to the enrolled model with the longest
 # name that begins it, a <Model>Probe*.cfg of it is a vacuity probe, and every
