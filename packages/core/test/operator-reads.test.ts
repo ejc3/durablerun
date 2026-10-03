@@ -203,8 +203,29 @@ describe("how an operator's read decodes a row", () => {
     const { reads } = readsAnswering(
       facts(
         { ...TASK, attempts: -1, max_attempts: '5', now_ms: 1.5 },
-        [run({ run_id: 'r1', attempt: 0, claim_expires_at_ms: 253_402_300_799_001 })],
-        [wait({ run_id: 'r1', step_name: 's', timeout_at_ms: -1 })],
+        // Two rows hold each corrupt field of a run, of a wait and of an event, answered
+        // here in the reverse of their order, so the order by row is held as well.
+        [
+          run({
+            run_id: 'r1',
+            attempt: 0,
+            claim_expires_at_ms: 253_402_300_799_001,
+            wake_event: 'zeta',
+            emitted_event: 'zeta',
+            emitted_at_ms: -1,
+          }),
+          run({
+            run_id: 'r0',
+            attempt: 0,
+            wake_event: 'alpha',
+            emitted_event: 'alpha',
+            emitted_at_ms: -1,
+          }),
+        ],
+        [
+          wait({ run_id: 'r1', step_name: 's', timeout_at_ms: -1 }),
+          wait({ run_id: 'r1', step_name: 'a', timeout_at_ms: -1 }),
+        ],
       ),
     )
     const answer = await reads.taskFacts('q', 't')
@@ -221,6 +242,21 @@ describe("how an operator's read decodes a row", () => {
       'mutation-verdict:behavior:operator-reads-order-the-corrupt-list',
     ).toEqual([
       { field: 'derived.epoch_ms', reason: 'not-an-exact-integer', stored: 'number', value: '1.5' },
+      {
+        field: 'events.emitted_at_ms',
+        eventName: 'alpha',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-1',
+      },
+      {
+        field: 'events.emitted_at_ms',
+        eventName: 'zeta',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-1',
+      },
+      { field: 'runs.attempt', runId: 'r0', reason: 'out-of-range', stored: 'number', value: '0' },
       { field: 'runs.attempt', runId: 'r1', reason: 'out-of-range', stored: 'number', value: '0' },
       {
         field: 'runs.claim_expires_at_ms',
@@ -235,6 +271,14 @@ describe("how an operator's read decodes a row", () => {
       {
         field: 'waits.timeout_at_ms',
         runId: 'r1',
+        stepName: 'a',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-1',
+      },
+      {
+        field: 'waits.timeout_at_ms',
+        runId: 'r1',
         stepName: 's',
         reason: 'out-of-range',
         stored: 'number',
@@ -245,8 +289,8 @@ describe("how an operator's read decodes a row", () => {
       nowMs: answer?.nowMs,
       attempts: answer?.task.attempts,
       maxAttempts: answer?.task.maxAttempts,
-      attempt: answer?.runs[0]?.attempt,
-      claimExpiresAtMs: answer?.runs[0]?.claimExpiresAtMs,
+      attempt: answer?.runs[1]?.attempt,
+      claimExpiresAtMs: answer?.runs[1]?.claimExpiresAtMs,
       timeoutAtMs: answer?.waits[0]?.timeoutAtMs,
     }).toEqual({
       nowMs: null,
@@ -272,7 +316,10 @@ describe("how an operator's read decodes a row", () => {
       stored: 'null',
     }
     const answer = await reads.taskFacts('q', 't')
-    expect({ events: answer?.events, corrupt: answer?.corrupt }).toEqual({
+    expect(
+      { events: answer?.events, corrupt: answer?.corrupt },
+      'mutation-verdict:behavior:operator-reads-null-instant-is-corrupt',
+    ).toEqual({
       events: [{ eventName: 'woken', exists: true, emittedAtMs: null }],
       corrupt: [listed],
     })
@@ -351,7 +398,8 @@ describe("the order of an operator's lists", () => {
   })
 
   it('orders waits and events by code point, whatever order a store returned them in', async () => {
-    const steps = ['b', HIGH_BASIC_PLANE, 'B', ASTRAL, '_', 'a']
+    // `a` and `ab` hold that a string sorts before a longer one it begins.
+    const steps = ['b', HIGH_BASIC_PLANE, 'B', 'ab', ASTRAL, '_', 'a']
     const { reads } = readsAnswering(
       facts(
         TASK,
@@ -369,7 +417,7 @@ describe("the order of an operator's lists", () => {
       ),
     )
     const answer = await reads.taskFacts('q', 't')
-    const sorted = ['B', '_', 'a', 'b', HIGH_BASIC_PLANE, ASTRAL]
+    const sorted = ['B', '_', 'a', 'ab', 'b', HIGH_BASIC_PLANE, ASTRAL]
     expect(
       answer?.waits.map((one) => `${one.runId}/${one.stepName}`),
       'mutation-verdict:behavior:operator-reads-order-their-own-lists',

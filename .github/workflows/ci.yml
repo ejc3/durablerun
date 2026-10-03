@@ -337,11 +337,12 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '080f8444e8d748c0b9c1969f4a7368af37c4f9c2e72b9a1c4361bca5ee5536bd':
-              # The operator's reads and `inspect` register twenty-five mutations: one for
-              # each persisted integer the reads consume, and one each for the numbers, the
-              # order of a list, the check of a read's strings, a child's key read back, and
-              # the two rules of `inspect`. Every verdict marker of their cases is newer than
-              # the base registry, so each is exempted there. No base entry is re-aimed.
+              # The operator's reads and `inspect` register thirty-five mutations: one for
+              # each persisted integer the reads consume, and the others for database time,
+              # a stored NULL, the numbers, the order of each list, the check of a read's
+              # strings, a child's key read back, and the rules of `inspect`. Every verdict
+              # marker of their cases is newer than the base registry, so each is exempted
+              # there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:operator-reads-guard-tasks-attempts",
                   "mutation-verdict:behavior:operator-reads-guard-tasks-max-attempts",
@@ -368,6 +369,14 @@ jobs:
                   "mutation-verdict:behavior:child-spawn-key-reads-back",
                   "mutation-verdict:behavior:cli-inspect-redacts-the-key",
                   "mutation-verdict:behavior:cli-inspect-exits-10-for-a-corrupt-row",
+                  "mutation-verdict:behavior:operator-reads-guard-database-time",
+                  "mutation-verdict:behavior:operator-reads-order-the-corrupt-list",
+                  "mutation-verdict:behavior:operator-reads-order-runs",
+                  "mutation-verdict:behavior:operator-reads-order-events",
+                  "mutation-verdict:behavior:operator-reads-order-by-code-point",
+                  "mutation-verdict:behavior:operator-reads-null-instant-is-corrupt",
+                  "mutation-verdict:behavior:cli-inspect-prints-a-snapshot-on-stdout",
+                  "mutation-verdict:behavior:cli-inspect-hides-an-unknown-state",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

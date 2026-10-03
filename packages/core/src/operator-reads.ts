@@ -368,19 +368,16 @@ async function taskFacts(
         byCodePoints(left.runId, right.runId) || byCodePoints(left.stepName, right.stepName),
     ),
     events: events.sorted(),
-    corrupt: sortedCorrupt(corrupt),
+    corrupt: corrupt.sort(corruptOrder),
   }
 }
 
-/** The corrupt list in one order whatever order a dialect returned its rows in. */
-const sortedCorrupt = (corrupt: CorruptInteger[]): CorruptInteger[] =>
-  corrupt.sort(
-    (left, right) =>
-      byCodePoints(left.field, right.field) ||
-      byCodePoints(left.runId ?? '', right.runId ?? '') ||
-      byCodePoints(left.stepName ?? '', right.stepName ?? '') ||
-      byCodePoints(left.eventName ?? '', right.eventName ?? ''),
-  )
+/** The order of the corrupt list: by field and then by row, whatever order the rows were read in. */
+const corruptOrder = (left: CorruptInteger, right: CorruptInteger): number =>
+  byCodePoints(left.field, right.field) ||
+  byCodePoints(left.runId ?? '', right.runId ?? '') ||
+  byCodePoints(left.stepName ?? '', right.stepName ?? '') ||
+  byCodePoints(left.eventName ?? '', right.eventName ?? '')
 
 async function taskIdByKey(
   dialect: OperatorReadsDialect,

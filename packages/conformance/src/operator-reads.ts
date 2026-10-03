@@ -809,15 +809,6 @@ const FIELDS = TABLES.flatMap((table) =>
   })),
 )
 
-/**
- * The registered mutation that takes a stored NULL for a value of the one field whose
- * column may hold one and whose rows never do. A marker is a literal because the mutation
- * audit reads it from this source.
- */
-const NULL_VERDICT: Readonly<Record<string, string>> = {
-  'events.emitted_at_ms': 'mutation-verdict:behavior:operator-reads-null-instant-is-corrupt',
-}
-
 /** The row of a table that a seed made, as a storage corruption names it. */
 function rowOf(table: Table, rows: Rows, column: string, invalidRepresentation: string) {
   const identity = {
@@ -1117,6 +1108,8 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
        * A stored NULL. A column whose schema refuses one has nothing to read. Where the
        * schema stores one, core's one definition says whether it is a value of the field or
        * a corrupt one (`storedNullIsAValue`), and each case holds the read to what it says.
+       * What the definition says of an event's instant is held apart from it, by the case
+       * of an event's state below and by core's own case, which each write the answer out.
        */
       for (const { table, column, field, bounds } of FIELDS) {
         const read = READ[field]
@@ -1134,10 +1127,7 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             return (await stored()) === null
           })
           const readAsNull = read !== undefined && planted
-          expect(
-            { planted, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } },
-            NULL_VERDICT[field],
-          ).toEqual({
+          expect({ planted, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } }).toEqual({
             // The schema decides whether the column stores a NULL at all.
             planted: stores,
             corrupt:

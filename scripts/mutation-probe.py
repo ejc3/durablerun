@@ -17770,8 +17770,8 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-guard-events-emitted-at-ms",
             "packages/core/src/operator-reads.ts",
-            "              emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),\n",
-            "              emittedAtMs: row.emitted_at_ms as number, // MUTATION: the guard of events.emitted_at_ms is deleted\n",
+            "  emittedAtMs: integersOf(row, corrupt, { eventName })(EVENT.emitted_at_ms),\n",
+            "  emittedAtMs: row.emitted_at_ms as number, // MUTATION: the guard of events.emitted_at_ms is deleted\n",
             "an operator reads a stored events.emitted_at_ms outside its bounds as a fact of the task, and the corrupt list does not name it",
         ),
         (
@@ -17784,7 +17784,7 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-order-their-own-lists",
             "packages/core/src/operator-reads.ts",
-            "    waits: waits.sort(\n      (left, right) =>\n        byCodeUnits(left.runId, right.runId) || byCodeUnits(left.stepName, right.stepName),\n    ),\n",
+            "    waits: waits.sort(\n      (left, right) =>\n        byCodePoints(left.runId, right.runId) || byCodePoints(left.stepName, right.stepName),\n    ),\n",
             "    waits, // MUTATION: the waits keep the order the store returned them in\n",
             "a task's waits come back in the order of each database's own collation, so the same task prints differently on two dialects",
         ),
@@ -17962,10 +17962,9 @@ VERDICTS.update(
         ),
         "operator-reads-order-their-own-lists": ExpectedVerdict(
             "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "operator reads [libsql] orders waits and events by their UTF-16 code units, which no collation of the database decides",
+            "packages/core/test/operator-reads.test.ts",
+            "the order of an operator's lists orders waits and events by code point, whatever order a store returned them in",
             "mutation-verdict:behavior:operator-reads-order-their-own-lists",
-            "packages/conformance/src/operator-reads.ts",
         ),
         "operator-read-check-runs-before-the-entry": ExpectedVerdict(
             "behavior",
@@ -17993,6 +17992,141 @@ VERDICTS.update(
         ),
     }
 )
+
+# More of the operator's reads and `inspect`: database time is held to its bounds like a
+# stored integer, an event that exists with no instant is corrupt, every list has an order
+# core gives it, strings compare by code point, a snapshot prints on stdout whatever the
+# command exits with, and a stored state or status that is not the engine's own is hidden.
+# One case owns each, and the three places a state or a status prints share one case.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operator-reads-guard-database-time",
+            "packages/core/src/operator-reads.ts",
+            "    nowMs: ofTask.now('now_ms'),\n",
+            "    nowMs: task.now_ms as number, // MUTATION: database time is read with no guard\n",
+            "an operator reads a database time that is no exact integer as the time of the snapshot, and the corrupt list does not name it",
+        ),
+        (
+            "operator-reads-order-the-corrupt-list",
+            "packages/core/src/operator-reads.ts",
+            "    corrupt: corrupt.sort(corruptOrder),\n",
+            "    corrupt, // MUTATION: the corrupt list keeps the order its rows were read in\n",
+            "the corrupt list comes back in the order each dialect returned a task's rows in, so the same corrupt task prints differently on two dialects",
+        ),
+        (
+            "operator-reads-order-runs",
+            "packages/core/src/operator-reads.ts",
+            "    runs: runs.sort(\n      (left, right) =>\n        absentLast(left.attempt, right.attempt) || byCodePoints(left.runId, right.runId),\n    ),\n",
+            "    runs, // MUTATION: the runs keep the order the store returned them in\n",
+            "a task's runs come back in the order each dialect returned them in, so the first run printed is not the first attempt",
+        ),
+        (
+            "operator-reads-order-events",
+            "packages/core/src/operator-reads.ts",
+            "        .sort(byCodePoints)\n",
+            "        // MUTATION: the events keep the order their rows first named them in\n",
+            "the events a task's runs and waits name come back in the order the rows named them, which differs between dialects",
+        ),
+        (
+            "operator-reads-order-by-code-point",
+            "packages/core/src/operator-reads.ts",
+            "  unit < 0xd800 ? unit : unit < 0xe000 ? unit + 0x2000 : unit - 0x800\n",
+            "  unit < 0xd800 ? unit : unit < 0xe000 ? unit : unit // MUTATION: strings compare by UTF-16 code unit\n",
+            "every list is ordered by UTF-16 code units, so a name past the basic plane sorts before one from U+E000 to U+FFFF, where an implementation that compares UTF-8 bytes puts it after",
+        ),
+        (
+            "operator-reads-null-instant-is-corrupt",
+            "packages/core/src/operator-reads.ts",
+            "  if (bounds === WRITTEN_WITH_EVERY_ROW) return false\n",
+            "  // MUTATION: an event's instant may be NULL, as its column's schema says\n",
+            "an event that exists with no instant, which no engine path writes, is answered as an event with a null instant and an empty corrupt list",
+        ),
+        (
+            "cli-inspect-prints-a-snapshot-on-stdout",
+            "packages/cli/src/main.ts",
+            "  else (failed && answer.holdsFacts !== true ? io.err : io.out)(humanText(document))\n",
+            "  else (failed ? io.err : io.out)(humanText(document)) // MUTATION: a snapshot that exits unreadable prints on stderr\n",
+            "inspect of a task with a corrupt row prints nothing on stdout in text mode, so an operator who pipes it reads an empty answer",
+        ),
+        (
+            "cli-inspect-hides-an-unknown-state",
+            "packages/cli/src/inspect.ts",
+            "  state: oneOf(STATES, task.state, reveal),\n",
+            "  state: task.state, // MUTATION: a task's stored state prints whatever it holds\n",
+            "inspect prints a task's stored state in the clear when it is not one of the engine's own, without --reveal",
+        ),
+        (
+            "cli-inspect-hides-an-unknown-run-state",
+            "packages/cli/src/inspect.ts",
+            "  state: oneOf(STATES, run.state, reveal),\n",
+            "  state: run.state, // MUTATION: a run's stored state prints whatever it holds\n",
+            "inspect prints a run's stored state in the clear when it is not one of the engine's own, without --reveal",
+        ),
+        (
+            "cli-inspect-hides-an-unknown-wait-status",
+            "packages/cli/src/inspect.ts",
+            "  status: oneOf(STATUSES, wait.status, reveal),\n",
+            "  status: wait.status, // MUTATION: a wait's stored status prints whatever it holds\n",
+            "inspect prints a wait's stored status in the clear when it is not one of the engine's own, without --reveal",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "operator-reads-guard-database-time": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read decodes a row lists an integer outside its bounds or of another kind, reads it as null, and throws nothing",
+            "mutation-verdict:behavior:operator-reads-guard-database-time",
+        ),
+        "operator-reads-order-the-corrupt-list": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read decodes a row lists an integer outside its bounds or of another kind, reads it as null, and throws nothing",
+            "mutation-verdict:behavior:operator-reads-order-the-corrupt-list",
+        ),
+        "operator-reads-order-runs": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "the order of an operator's lists orders runs by their ordinal, then by run id, with an ordinal it could not read last",
+            "mutation-verdict:behavior:operator-reads-order-runs",
+        ),
+        "operator-reads-order-events": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "the order of an operator's lists orders waits and events by code point, whatever order a store returned them in",
+            "mutation-verdict:behavior:operator-reads-order-events",
+        ),
+        "operator-reads-order-by-code-point": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads [libsql] orders waits and events by code point, which no collation of the database decides",
+            "mutation-verdict:behavior:operator-reads-order-by-code-point",
+            "packages/conformance/src/operator-reads.ts",
+        ),
+        "operator-reads-null-instant-is-corrupt": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read decodes a row lists an event that exists with no instant, in a task's facts and in an event's state",
+            "mutation-verdict:behavior:operator-reads-null-instant-is-corrupt",
+        ),
+        "cli-inspect-prints-a-snapshot-on-stdout": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/inspect.test.ts",
+            "inspect on libSQL prints the snapshot on stdout in text as it does with --json, whatever it exits with",
+            "mutation-verdict:behavior:cli-inspect-prints-a-snapshot-on-stdout",
+        ),
+        "cli-inspect-hides-an-unknown-state": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/inspect.test.ts",
+            "inspect on libSQL prints a state or a status that is not one of the engine's own as a hidden value unless --reveal",
+            "mutation-verdict:behavior:cli-inspect-hides-an-unknown-state",
+        ),
+    }
+)
+VERDICTS["cli-inspect-hides-an-unknown-run-state"] = VERDICTS["cli-inspect-hides-an-unknown-state"]
+VERDICTS["cli-inspect-hides-an-unknown-wait-status"] = VERDICTS["cli-inspect-hides-an-unknown-state"]
 
 MUTATIONS = [
     Mutation(
@@ -21902,7 +22036,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1174:
+        if len(MUTATIONS) != 1184:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
