@@ -5732,10 +5732,13 @@ completion. So `explain` sends the batches `inspect` sends and, for that one sha
 A verdict says whether a move is owed to the task, never whether the task did well. A task
 that failed for good is `ok`: nothing will move it and nothing should.
 
-- `ok`: the task has ended, or its run is claimed under a lease that has not expired.
+- `ok`: the task has ended, or its run is claimed under a lease that has not expired,
+  however long it has run.
 - `waiting`: the next move is a clock's, an event's, a child's or a later build's, or it is
   the driver's and is not late yet.
-- `stuck`: a move the driver owes is late, or a run has run past the hung-run bound.
+- `stuck`: a move the driver owes is late. It means nothing else, and no cause has it as a
+  verdict of its own: the type of the table refuses one, so a task is `stuck` only by the
+  `late` rule below, its own or that of a child it waits for.
 - `inconsistent`: a row is not readable, or the rows disagree in a way no engine path writes.
 - `unexplained`: no cause of the table takes the facts. It is the answer when every arm
   declines, so a state nobody listed is never read as a healthy one.
@@ -5786,12 +5789,25 @@ one, and a test parses both and requires them equal.
 The causes are asked in the table's order, and the first whose condition holds is the
 answer. So a live task whose one live run agrees with it and whose cancellation deadline has
 passed is named by that deadline whatever the run is doing, because the sweep cancels the
-task next (section 3.1, step 0). `nextTransitionAtMs` is the instant from which the engine
-may move a `waiting` run: the instant the run comes due, or the instant its await times out.
-For a run that is already due it is an instant at or before database time. That is so for a
-`late` cause inside the grace, which names the instant the cause turns on, and for a
-never-started run whose timer has passed. It is null when no clock moves the run, as for an
-await with no timeout, and for every verdict but `waiting`.
+task next (section 3.1, step 0).
+
+`nextTransitionAtMs` is the earliest instant from which a clock lets the engine move a
+`waiting` task: the instant its run comes due or its await times out, or the task's
+cancellation deadline when that is ahead and comes first, at which the sweep cancels the
+task. An await with no timeout whose task has a deadline names the deadline. For a run that
+is already due the instant is at or before database time. That is so for a `late` cause
+inside the grace, which names the instant the cause turns on, and for a never-started run
+whose timer has passed. It is null when no clock moves the task, and for every verdict but
+`waiting`. The cancellation deadline of a task that has not ended prints among the facts of
+every cause, as `cancelAtMs`.
+
+When a worker fails a run with attempts left and a delay, as every retry under the default
+strategy does, the store inserts the next run asleep until the delay has run, and it does
+the same for the rollback pass that follows a failed rollback with a delay (section 3.10).
+That run is the only sleeping run no claim has ever taken: every other sleeper was parked
+by the worker that held it. It is `backing-off`, `waiting`, with the end of the delay as its
+next instant. Once the delay has run it is a due run like any other sleeper,
+`sleeping-past-its-wake`.
 
 Two causes name a task no deployed build runs. The current worker reads the claimed task's
 name before it starts the run, and parks a run it has no handler for with `deferLaunch`
@@ -5808,60 +5824,71 @@ none. A started run parked on a timer and no event whose task has no checkpoint 
 `never-started-alpha1-form`. One whose task has a checkpoint is `sleeping-on-a-timer`, or
 `sleeping-past-its-wake` once the timer has passed. A task that committed a checkpoint and
 is then deferred by an alpha.1 build reads as a sleeper, and its timer says when it is next
-due either way. Both never-started causes and
-an await with no timeout are `waiting` however long they have stood. The first is the
-rolling-deploy deferral doing what it is for, and the name may be a typo or its build not
-deployed. The second is how an approval looks. One known limit: the store's read of
-checkpoints leaves out a row whose owner ordinal is outside its bounds, so a sleeping task
-whose every checkpoint row is corrupt that way reads as a task with none, and `explain`
-names it `never-started-alpha1-form`. A case pins that, and a read that lists such a row
-closes it.
+due either way. Both never-started causes and an await with no timeout are `waiting`
+however long they have stood. The first is the rolling-deploy deferral doing what it is
+for, and the name may be a typo or its build not deployed. The second is how an approval
+looks. One known limit: the store's read of checkpoints leaves out a row whose owner ordinal
+is outside its bounds, so a sleeping task whose every checkpoint row is corrupt that way
+reads as a task with none, and `explain` names it `never-started-alpha1-form`. A case pins
+that, and a read that lists such a row closes it.
 
 A worker whose handler hangs keeps its lease alive, so the lease never lapses and the sweep
-never takes the run. `running-past-the-hung-bound` names a run that has run under a live
-lease for more than `HUNG_RUN_MS`, 60 minutes. Only a run claimed once is held to it, whose
-pass began when the run started. No fact says when a later pass of a run began, so a run
-that slept and was claimed again is `running-under-a-live-lease` however long it runs. The
-bound is the CLI's, not the engine's: a task whose first pass is meant to run longer reads
-as `stuck` while its worker is healthy.
+never takes the run. `running-past-the-hung-bound` names a run whose first pass has run
+under a live lease for more than `HUNG_RUN_MS`, 60 minutes. Its verdict is `ok`, because
+nothing is owed to a run under a live lease, and its next command is `inspect`. The cause
+says the pass is long. Whether to cancel a run that may be healthy is the operator's call,
+as whether to emit an event is, and `explain` suggests neither. The bound is held to the
+first pass only: a run claimed once began its pass when it started, and no fact says when a
+later pass of a run began, so a run that slept and was claimed again is
+`running-under-a-live-lease` however long it runs. The bound is the CLI's, and the task's
+own bound, its cancellation deadline, prints beside it.
 
 An await of a child is followed. `diagnose` names the child a run is parked on, from the
 event `$task-done:<id>`, `explain` reads that task's facts and diagnoses it the same way,
 and so on for `CHILD_HOPS`, 8 awaits, from the task it was asked about. The answer nests
 each diagnosis under `awaits` and, when a child was followed, names the last under
-`deepest`. The next command is the one for that last task. A task 8 awaits away has its own child left unread, so a chain of
-awaits, or a ring of them, costs at most nine reads of facts. A task takes the verdict of
-what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up as they are,
-and a child whose run is claimed under a live lease makes its parent `waiting`. Three cases
-are `unexplained`: a child the queue does not hold, a child that was not followed, and a
-child that has ended. The batch that ends a task wakes every run parked on it (section
-3.2), so a run still parked was read a moment before its child ended, or waits on a task
-that a build older than child tasks ended with no completion event. An await under a
-timeout that has passed is `sleeping-past-its-wake`, and its child is not followed.
+`deepest`. The next command is the one for that last task. A task 8 awaits away has its own
+child left unread, so a chain of awaits costs at most nine reads of facts. A task takes the
+verdict of what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up
+as they are, and a child whose run is claimed under a live lease makes its parent `waiting`.
+The store lets a run await any task of its queue, so a task can wait on itself, and tasks
+can wait on each other in a ring. A child that is already on the way is not read a second
+time, and the task that waits on it is `waiting`: nothing is owed to a ring, and only a
+timeout or a cancellation ends the wait. Three cases are `unexplained`: a child the queue
+does not hold, a child that was not followed, and a child that has ended. The batch that
+ends a task wakes every run parked on it (section 3.2), and `explain` reads a parent and
+its child in two snapshots. So a run still parked on an ended child was read a moment
+before the child ended, and asking again answers it, or it waits on a task that a build
+older than child tasks ended with no completion event. An await under a timeout that has
+passed is `sleeping-past-its-wake`, and its child is not followed.
 
-For an await, the facts name the event, the step, and under `waitingTasks` the tasks this
-read saw waiting on it: the task explained, and along a chain each task under the completion
-event of the child it awaits. No read lists every task that waits on an event. PR5.3c adds
-that read, and `explain` then prints its list.
+For an await, the facts name the run, the event and the step. They list no waiting tasks.
+No read lists the tasks that wait on an event, and a list that held only the task `explain`
+read would say that one task waits when many may. PR5.3c adds that read, and the field with
+it.
 
 The next command is built from the command table: the verb the cause names, each of that
 command's arguments, and each flag it requires, filled from the queue `explain` was given
-and the id of the task the command is for. A command that requires something else is
-refused out loud, as a defect of the cause table. It prints as arguments (`next.argv`) and as one line to paste
-(`next.command`). No flag a command does not require is ever added, so no suggestion carries
-`--yes`, and no cause names `emit`: for an await with no timeout `explain` prints the
-event's name as a fact, and whether to emit it is the operator's call. A `waiting` verdict
-prints no next command. Neither does a cause whose verb the table does not hold: `sweep`,
-`tick` and `cancel` join the table with the drive verbs (PR5.3d), and until then the six
-causes that name them print none. A test lists those six, so the pull request that adds the
-verbs has to say there what each then prints.
+and the id of the task the command is for. A required flag and its value are one argument,
+`--queue=<value>`, so a queue whose name begins with a dash is still read as the flag's
+value. It prints as arguments (`next.argv`) and as one line to paste (`next.command`). No
+flag a command does not require is ever added, so no suggestion carries `--yes`, and no
+cause names `emit` or `cancel`: for an await with no timeout `explain` prints the event's
+name as a fact, and whether to emit it is the operator's call. A `waiting` verdict prints no
+next command. Neither does a cause whose verb the table does not hold: `sweep` and `tick`
+join the table with the drive verbs (PR5.3d), and until then the five causes that name them
+print none. A test lists those five, so the pull request that adds the verbs has to say
+there what each then prints. When a command requires an argument or a flag that `explain`
+has no value for, it builds no command, prints `next` as null, and says what it had no
+value for under `nextWithheld`. The diagnosis prints either way. A command that writes
+requires `--target`, and `explain` has no value for it today.
 
 `explain` exits 0 for every task it could read, whatever the verdict: a verdict is not an
 exit code. It exits 10 when a row it read is one `inspect` exits 10 for, the task's or that
 of a child it followed, or when the decoders refuse a checkpoint row it asked for. It exits
 8 when the queue does not hold the task it was asked about, or no task was spawned under
-the key. Its answer is the report the command exists to
-print, so it prints on stdout whatever the exit.
+the key. Its answer is the report the command exists to print, so it prints on stdout
+whatever the exit.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
@@ -5881,8 +5908,10 @@ value nothing vouches for, which every schema's check refuses, and it prints as 
 and sha256 unless revealed, as the reason a decoder refused that row with does. `explain`
 prints an ended task's outcome as `result` prints it, redacted the same way. Nothing else
 in its answer is a value a user wrote: it holds ids, task names, event names, step keys,
-states and reason names of the engine's own, counts, instants and flags, and its cause for
-a row that is not readable names the fields that are corrupt and quotes no stored value.
+states and reason names of the engine's own, counts, instants and flags. Its cause for a
+row that is not readable names each corrupt integer by its field and the ids of its row,
+and the task and each run or wait whose state or status is not the engine's own by the
+same, and quotes no stored value.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
