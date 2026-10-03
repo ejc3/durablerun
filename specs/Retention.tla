@@ -75,8 +75,8 @@
 \*    RetentionProbeUnfencedMaterialize shows the orphan event a purge leaves
 \*    beside an unfenced one.
 \*
-\* TWO CONTRACT CHANGES follow from deleting task rows, and DESIGN.md S3.12
-\* states them for the maintainer's approval:
+\* TWO CONTRACT CHANGES follow from deleting task rows.  DESIGN.md S3.12
+\* states them, and the maintainer approved them on 2026-10-03:
 \*  - An idempotency key dedupes for the window of its task's terminal state.
 \*    A producer that redelivers a key after its task was purged gets a fresh
 \*    task (RetentionProbeRedeliveredKey).

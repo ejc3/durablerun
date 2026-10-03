@@ -327,9 +327,8 @@ accepts it.
     refuses a quoted label that no store sends. PR5.2c2 turns them into
     mappings, and each invariant names its executable twin. Red: deleting any
     conjunct of Purge's guard while TLC stays green fails the mutant check. This
-    is met on PR5.2a's branch, and by the Order paragraph that pull request does
-    not merge before the maintainer approves the two contract changes of
-    DESIGN.md section 3.12. `pnpm verify:tla` finds no error on four
+    is met. The maintainer approved the two contract changes of DESIGN.md
+    section 3.12 on 2026-10-03, which that pull request waited for. `pnpm verify:tla` finds no error on four
     configurations: the parent in the child's queue, in another queue, no parent
     (which also lets an older build end the child under a wait and lifts the
     third party's window), and a policy that purges failed tasks.
@@ -492,8 +491,9 @@ alpha.1 runs on a database the CLI migrated. Then PR5.3b1 (after PR5.3a),
 PR5.3b2 (after PR5.3b1), PR5.3c (after PR5.3b1; it takes schema version 11), and
 PR5.3d (after PR5.3b2 and PR5.3c). PR5.2a is spec first: specs/Retention.tla
 under TLC and DESIGN.md section 3.12, with no TypeScript and no SQL. It depends
-only on this record, is built beside PR5.3b1 to PR5.3d, and merges after PR5.3d,
-so no second implementation PR is in flight. Then PR5.2c1 (after PR5.2a),
+only on this record and holds no implementation, so it merges on the
+maintainer's approval of its two contract changes (2026-10-03), ahead of PR5.3b1
+to PR5.3d, and no second implementation PR is in flight. Then PR5.2c1 (after PR5.2a),
 PR5.2c2 (after PR5.2c1 and PR5.3c; schema version 12 is its first commit, and it
 is the one PR that can delete durable state), PR5.2d (after PR5.2c2 and PR5.3d),
 PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
@@ -570,14 +570,15 @@ no call failing when that query ran first under no write lock), with a dry-run
 example's own migrate or receipt script from an alpha.1 checkout, whose
 `migrate()` takes a database at versions 0 to 4 up to 5 and refuses one recorded
 above 5; if the harness fails at some version, the deployed database stays at 5
-and retention there needs an alpha.2 release. Retention numbers and two contract
-changes: the completed and cancelled windows, whether failed tasks are ever
+and retention there needs an alpha.2 release. Retention numbers: the completed and
+cancelled windows, whether failed tasks are ever
 purged (the plan keeps them, so a failed parent keeps its children), the
 producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
-unit cap, and approval of the two contract changes PR5.2a writes into DESIGN.md
-section 3.12, that an idempotency key dedupes for the window of its task's
-terminal state and that a child handle is valid until its unit is purged, after
-which an await is refused loudly. The one released-surface change:
+unit cap. No longer held: the maintainer approved on 2026-10-03 the two contract
+changes PR5.2a writes into DESIGN.md section 3.12, that an idempotency key
+dedupes for the window of its task's terminal state and that a child handle is
+valid until its unit is purged, after which an await is refused loudly. The one
+released-surface change:
 `FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
 checkpoints and to events, which needs a `changed` entry in
 scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
@@ -5781,10 +5782,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   metrics as `stats` and `sizes` in PR5.3c, line 37. The quota alerting, the
   BLOCKED runbook and the fleet migration sweep need accounts, are not in that
   milestone, and stay here. From PR3.3: event cleanup must not remove a
-  completion event whose task can still be awaited. The milestone proposes one
+  completion event whose task can still be awaited. The milestone makes one
   relaxation of it: a child handle is valid until its unit is purged, after
   which an await is refused loudly and registers no wait. PR5.2a writes it into
-  DESIGN.md section 3.12, and it holds only once the maintainer approves it.
+  DESIGN.md section 3.12, and the maintainer approved it on 2026-10-03.
 - **PR5.2a retention spec**: DONE. `specs/Retention.tla` models the purge of
   whole terminal task units ahead of any SQL (DESIGN.md §3.12): one child, its
   spawning parent in the child's queue, in another queue, or absent, and a third
@@ -5795,8 +5796,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   precondition: its ledger block lists `PurgeChild` and `PurgeHolder` as having
   no batch, and PR5.2c2's purge batch turns that line into a mapping. The two
   contract changes of §3.12, an idempotency key that dedupes for its task's
-  window and a child handle valid until its unit is purged, await the
-  maintainer's approval. The design recorded an alternative for the parent
+  window and a child handle valid until its unit is purged, were approved by
+  the maintainer on 2026-10-03. The design recorded an alternative for the parent
   condition, a `tasks.parent_task_id` column written at spawn, to be taken if
   TLC refuted the argument that the reserved key names the parent. TLC found no
   counterexample against the barrier as designed, which shows that B5 suffices

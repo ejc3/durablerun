@@ -148,8 +148,8 @@
 \*  - Event GC / iterable events: events are one-shot by contract (S3.8.3);
 \*    occurrence ids live in the event NAME, outside the model.  The purge of a
 \*    whole terminal task unit, which would delete the task's completion event
-\*    with the task, is proposed in DESIGN.md S3.12, pending the maintainer's
-\*    approval, and modeled in Retention.tla, beside the actions it can race.
+\*    with the task, is stated in DESIGN.md S3.12 and modeled in Retention.tla,
+\*    beside the actions it can race.
 \*  - The dedicated-placement wait state 'delivered' (materialize-on-resume,
 \*    S3.8.3): this spec models the INLINE placement -- durable-at-emit,
 \*    waits deleted at emit.  Dedicated placement adds run-DB ordering on
@@ -1412,8 +1412,8 @@ LeaseAuthority ==
 \* PROPERTY (events): first-write-wins immutability -- once an event's
 \* payload is written it NEVER changes (a re-emit is a payload no-op; there
 \* is no delete in this model's scope).  An event is never rewritten.
-\* DESIGN.md S3.12 proposes, pending the maintainer's approval, that a
-\* completion event may be deleted with its task's whole unit, which
+\* DESIGN.md S3.12 states that a purge, once built, deletes a
+\* completion event with its task's whole unit, which
 \* Retention.tla models; caller events are never deleted.
 EventImmutable ==
   [][ \A e \in Events :

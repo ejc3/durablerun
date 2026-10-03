@@ -1206,10 +1206,10 @@ One invocation executes one claimed run to its next suspension point:
     deadline bounds it, as it bounds an await cycle.
   - The completion event outlives every await of it. Event cleanup must not
     remove one while its task can still be awaited, or a late await would
-    register a wait that nothing will ever wake. Retention (§3.12) proposes
-    relaxing this, awaiting the maintainer's approval: a completion event goes
-    only with its task's whole unit, and an await after that is refused and
-    registers nothing.
+    register a wait that nothing will ever wake. Retention (§3.12) relaxes
+    this, which the maintainer approved on 2026-10-03: once a purge exists, a
+    completion event goes only with its task's whole unit, and an await after
+    that is refused and registers nothing.
   - A timed await that comes due consumes its wait row and returns no
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
@@ -5649,19 +5649,15 @@ that run printed. A read also leaves every table as it found it, and `migrate` l
 recorded version between the one it started from and the build's; across several
 versions that can be neither the state it started from nor the one it would finish at.
 
-### 3.12 Retention: the purge of terminal task units (proposed, modeled, not built)
-
-Section 3.11 is the operator surface, which PR5.3a writes. This section keeps
-its number so that the two can land in either order, and until 3.11 lands, 3.10
-is followed by 3.12.
+### 3.12 Retention: the purge of terminal task units (modeled, not built)
 
 Tasks, runs, checkpoints, and events grow without bound today: no store
 deletes one. This section is the protocol that bounds them by deleting whole
 terminal task units. `specs/Retention.tla` models it ahead of its
 SQL, and TLC checks it. No store sends a purge batch yet, so the model's ledger
-lists the purge as having no batch, and the two contract changes at the end of
-this section await the maintainer's approval before anything that depends on
-them is built.
+lists the purge as having no batch. The maintainer approved the two contract
+changes at the end of this section on 2026-10-03, so the pull requests that
+depend on them can be built.
 
 - **The unit.** One terminal task and what only it owns: its task row, its
   runs, its checkpoints, the waits naming its runs, and its completion event
@@ -5785,7 +5781,7 @@ them is built.
   Each cancelled run then holds the other task's outcome. BUILD.md records the
   remedy as an option with its trigger.
 
-**Two contract changes, proposed and awaiting the maintainer's approval.** Both
+**Two contract changes, which the maintainer approved on 2026-10-03.** Both
 follow from bounding rows by deleting task rows.
 
 1. **An idempotency key dedupes for the window of its task's terminal state.**
