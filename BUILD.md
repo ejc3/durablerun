@@ -88,9 +88,9 @@ accepts it.
     5 to the build's, and `result` reads what alpha.1 wrote exactly as alpha.1's
     own getTaskResult does. Red: a planted migration that adds a NOT NULL column
     with no default fails the alpha.1 cycle by name. This is met.
-    `packages/cli/test/cli-dialects.test.ts`, on each dialect: "doctor, result
-    and checkpoints print the JSON libSQL prints, apart from the fields under
-    dialect", through `main` with a seeded IdSource; "a read command sends only
+    `packages/cli/test/cli-dialects.test.ts`, on each dialect: "doctor, result,
+    checkpoints and inspect print the JSON libSQL prints, apart from the fields
+    under dialect", through `main` with a seeded IdSource; "a read command sends only
     read batches, each with a label the command table declares"; "every store
     command exits 5 on a database a newer build migrated, and changes no table";
     "migrate without --yes changes nothing, and with --yes prints each version
@@ -138,7 +138,10 @@ accepts it.
     command table: every command has a sentinel case, and none prints the
     sentinel without --reveal", in human text and in `--json`, with the refusals
     `result` and `checkpoints` give among its lines. No verb of PR5.3a prints an
-    event payload or a key. Redaction removed from the result renderer fails
+    event payload or a key. PR5.3b1's `inspect` prints an idempotency key, as
+    its length and sha256, and "inspect prints no value a user wrote without
+    --reveal" holds it with the key among its command lines, a key no task has
+    and a refused line that carries one included. Redaction removed from the result renderer fails
     "result prints no value a user wrote without --reveal". "result prints a
     failed rollback's error as its length and sha256" redacts errors named
     `$SagaStateCorrupt`, `$RollbackNotRegistered` and a name that is neither,
@@ -194,7 +197,10 @@ accepts it.
     StoreUnavailableError to exit 0, fails "a read that meets an unavailable
     store before its batch exits 6 and changes nothing". The PRs that add
     `enqueue`, `cancel`, `retry` and `selftest` hold what the line says of them,
-    and PR5.3d holds its red.
+    and PR5.3d holds its red. PR5.3b1 adds `inspect` to the same surface, from
+    the current version by an idempotency key, which sends the read by key and
+    then every batch a read by a task id sends, so each batch it declares
+    (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -210,7 +216,37 @@ accepts it.
     a task from its idempotency key. Every count and instant is a JavaScript
     number on all three dialects, and no list order depends on a text collation.
     Red: a count returned as a string fails that dialect by name, and deleting
-    one field's guard fails that field's corrupt case. NOT MET.
+    one field's guard fails that field's corrupt case. This is met.
+    `packages/conformance/src/operator-reads.ts` is the `operator-reads`
+    surface, and `enrollment.test.ts` holds it as the thirteenth behind the one
+    door. On each dialect, "answers every seeded state with one canonical
+    answer, the same on every dialect" compares eighteen states, a saga whose
+    rollback ran, a saga a failed rollback halted and a fixture-built row the
+    decoders refuse among them, with an expected answer written out from what
+    the scenario did. Each of those cases also holds every count and instant to
+    a JavaScript number, the read to one snapshot batch and the test clock's
+    batch in read mode with no row changed, and the outcome to the one
+    `getTaskResult` answers. "<field> outside its bounds is listed as corrupt,
+    read as null, and changes nothing else" is generated from core's bounds for
+    each of the nineteen persisted integers the reads consume, with a value
+    below the bounds, a negative one, one past them, a fraction and text, and
+    the eight integers of those tables the reads do not select get a case that
+    nothing changes. "finds a task by its idempotency key, in its own queue
+    alone, and a child by the key the engine built" holds `taskIdByKey`, "says
+    whether an event exists and when it was emitted, a completion event
+    included, and nothing of its payload" holds `eventState`, and "orders waits
+    and events by their UTF-16 code units, which no collation of the database
+    decides" holds the order under names a linguistic collation sorts
+    otherwise. `packages/cli/test/cli-dialects.test.ts` holds, on each dialect,
+    "inspect prints the outcome result prints for every seeded outcome, a
+    saga's rollback and a row the decoders refuse among them", and
+    `packages/cli/test/inspect.test.ts` holds the read by key, the exit for a
+    corrupt row and the usage. The two reds are registered mutations of core's
+    one implementation: `operator-reads-answer-numbers`, which answers a count
+    as a string, fails every seeded state of the dialect it runs on, under that
+    dialect's name, and each of the nineteen `operator-reads-guard-<table>-
+    <column>` mutations, which delete one field's guard, fails that field's
+    corrupt case.
 36. PR5.3b2: `explain` names the seeded cause. Seeds are built by driving the
     real engine under fake time wherever an engine path reaches the state, and
     the states no engine path reaches (unreadable, unexplained, and the corrupt
@@ -5797,6 +5833,55 @@ these three things; nothing else in the system does I/O, time, or randomness.
     specifier. The resolver reads the specifiers TypeScript's scanner finds, so an
     `import(name)` whose `name` is a variable yields none, and biome's rule does not see it
     either. Trigger: a computed dynamic import in packages/cli.
+- **PR5.3b1 operator reads and inspect**: IN REVIEW. Exit test line 35 of the operable
+  alpha milestone. Core gains `OperatorReads` (`taskFacts`, `taskIdByKey`, `eventState`), a
+  read port apart from `SchedulerStore`, with one implementation (`createOperatorReads`)
+  over shared statement trees, and each store package exports a factory,
+  `operatorReads(executor)`. Both are additions to the released surface of core and of
+  store-libsql, and no released declaration changes. The conformance door gains a
+  thirteenth surface, `operator-reads`. The CLI gains `inspect (<taskId> | --key
+  <idempotencyKey>) --queue Q`, and DESIGN.md section 3.11 holds the port, the `corrupt`
+  decision, and the ruling that `eventState` answers whether an event exists and when it
+  was emitted and nothing of its payload. No schema version and no write batch is added.
+  Four batch labels are new, all reads: `task-facts`, `task-id-by-key` and `event-state`
+  are statement trees, and `fake-clock` is text. The registry holds 1174 mutations where
+  main holds 1149: one for each of the nineteen persisted integers the reads consume, and
+  one each for the numbers, the order of a list, the check of a read's strings, a child's
+  key read back, the redaction of a key by `inspect`, and its exit for a corrupt row. The
+  base gate's arm is keyed on main's digest and exempts their twenty-five markers, and one
+  pinned pair installs this tree's `scripts/text-statements.json` over main's.
+  - Where the build differs from the plan, and why. (1) A store opens and runs each batch
+    of the reads, and core holds the one implementation over what the store hands it, where
+    the plan said one implementation over an executor: the label ledger, the batch lint,
+    the corpus's source case and the fault matrix read batch labels from a store's
+    sources, as they do for a child await. (2) Whether the test clock is set is a text
+    statement in a batch of its own, `fake-clock`, where the plan put it in the snapshot: a
+    statement tree that names the test clock's row is refused as a second clock. It is
+    listed in `scripts/text-statements.json` with that reason. (3) `task-facts` selects the
+    outcome's columns and the rollback's attempt record, because the two decoders read
+    them, where the plan said it selects no payload and no checkpoint state. It selects no
+    params, headers, event payload, run result or other checkpoint state, and a case
+    watches the rows the executor returns to hold that. (4) `inspect` exits 10 when the
+    outcome is unreadable or a consumed integer is corrupt, with every fact printed, so
+    that a script does not read a corrupt row as a clean answer. The plan named no exit
+    for it. (5) The reads use a store's saga fragments and none of its eligibility
+    fragments, which the plan listed: they report rows and decide nothing about what the
+    engine may do next, which `explain` says from the facts. (6) No statement orders its
+    rows, and core orders every list by UTF-16 code units, because a text column sorts by
+    the database's collation.
+  - Option for the fuzz walk, not built, with its trigger: ask `taskFacts` of every task at
+    quiescence, and require an empty `corrupt` list and the outcome `getTaskResult` gives.
+    The surface asks it of eighteen seeded states. Trigger: a state the engine reaches that
+    `taskFacts` answers with a corrupt entry or a refused outcome.
+  - Option for the outcome, not built, with its trigger: one core function for the two
+    decoder calls, used by `getTaskResult` in the three stores and by `taskFacts`. Today
+    four call sites hold the same three lines, and the surface holds `taskFacts` equal to
+    `getTaskResult` for every seeded outcome. Trigger: a third decoder, or a change to how
+    the two results are combined.
+  - Option for the saga's rows, not built, with its trigger: plant a corrupt value in a
+    row of `checkpoints`. The reads select no integer of that table and reach it only
+    through a store's saga fragments, which `task-result` already sends. Trigger: an
+    operator read that selects a checkpoint's own columns.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
