@@ -6156,6 +6156,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the driver is late as well. (9) `nextTransitionAtMs` is the earliest instant a clock
     moves the task, so a cancellation deadline that comes before the run's wake is the
     instant, and the sweep is what moves the task there.
+  - The one review of this pull request found twelve things, one of them HIGH, and
+    `postmortems/pr5.3b2-explain-review.md` holds the round. Ten count. Fixed here: a run
+    asleep in the backoff of a retry or of a delayed rollback pass has a cause, a run past
+    the hung-run bound is `ok` and is never told to cancel, `nextTransitionAtMs` takes a
+    cancellation deadline that comes first, a suggestion's flag and its value are one
+    argument, a suggestion that cannot be filled is withheld with its reason, `unreadable`
+    names the row and the field, and `waitingTasks` is gone. Built for the class: a case
+    that diagnoses every task a fuzz walk of the engine leaves, which found on its first
+    run that a ring of awaits read as `unexplained` too. What was not built is in the
+    options below, each with its trigger.
   - Measured while building, and left as they are. The store's port lets `reschedule`,
     `suspendRun` and `awaitEvent` park a claim that was never activated, which no worker of
     this repository does. `explain` reads such a run with no wait as `never-started`, and
