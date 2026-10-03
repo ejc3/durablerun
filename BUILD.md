@@ -6175,6 +6175,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that diagnoses every task a fuzz walk of the engine leaves, which found on its first
     run that a ring of awaits read as `unexplained` too. What was not built is in the
     options below, each with its trigger.
+  - A narrow re-review of that fold found nine more things, one of them MEDIUM, and the
+    same postmortem holds both rounds. Six count, and five of the six were made by the
+    fold. Fixed here: a parent waits for any child that is `ok` and has not ended, where a
+    child past the hung-run bound left its parent `unexplained`; a ring of awaits that no
+    timeout and no cancellation deadline ends is `stuck`; `woken-unclaimed` says what its
+    rows hold and whether the event exists; one function says what is not readable, for
+    `inspect`'s exit and `explain`'s cause alike; and three statements say what the code
+    does. No review follows this fold: each fix was checked by running what it changes.
   - Measured while building, and left as they are. The store's port lets `reschedule`,
     `suspendRun` and `awaitEvent` park a claim that was never activated, which no worker of
     this repository does. `explain` reads such a run with no wait as `never-started`, and
