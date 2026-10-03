@@ -10,6 +10,7 @@ import type { OperatorReads } from './ports.js'
 import type { SqlRow } from './primitives.js'
 import { decodeRollbackOutcome } from './sagas.js'
 import type { SqlFragment } from './sql-tree.js'
+import { STORE_TABLE_COLUMNS } from './store-tables.js'
 import {
   eventStateRead,
   taskFactsRunsRead,
@@ -106,18 +107,51 @@ const FLAG = freeze({ min: 0, max: 1 })
 type RowIdentity = Pick<CorruptInteger, 'runId' | 'stepName' | 'eventName'>
 
 /**
+ * The one persisted integer whose column may hold NULL and whose rows never do. Each of the
+ * three statements that insert an event sets its instant, from the batch's clock or from
+ * the fence instant of the task the batch ended, and no statement updates it. So an event
+ * that exists with no instant is a corrupt row, though its schema would store one.
+ */
+const WRITTEN_WITH_EVERY_ROW: PersistedIntegerBounds = EVENT.emitted_at_ms
+
+/**
+ * Whether a stored NULL is a value of a persisted integer, or a corrupt one. A column's
+ * schema says whether it may hold NULL (`STORE_TABLE_COLUMNS`, which a conformance case
+ * holds equal to every dialect's catalog), and that is the answer for every column but the
+ * one above. The reads ask here, and so does their conformance surface.
+ */
+export function storedNullIsAValue(bounds: PersistedIntegerBounds): boolean {
+  if (bounds === WRITTEN_WITH_EVERY_ROW) return false
+  const column = persistedIntegerColumn(bounds)
+  const table = bounds.field.slice(0, bounds.field.length - column.length - 1)
+  const tables: Readonly<Record<string, Readonly<Record<string, { readonly nullable: boolean }>>>> =
+    STORE_TABLE_COLUMNS
+  const spec = tables[table]?.[column]
+  if (spec === undefined) {
+    throw new TypeError(`no statement builder names the column ${bounds.field}`)
+  }
+  return spec.nullable
+}
+
+/**
  * The reader of one row's integers. Each is held to the bounds of its own field. A value
  * outside them, or one that is no exact integer, is listed in `corrupt` with the row it
- * came from and read as null. NULL reads as null and is listed nowhere: a column that may
- * hold none says so, and a schema refuses it in one that may not.
+ * came from and read as null. A stored NULL is read as null and listed nowhere where it is
+ * a value of the field (`storedNullIsAValue`), and is listed like any other corrupt value
+ * where it is not.
  */
 function integersOf(row: SqlRow, corrupt: CorruptInteger[], identity: RowIdentity = {}) {
   /** One value of the row, held to bounds, and listed under `field` when they refuse it. */
-  const held = (field: string, column: string, bounds: IntegerBounds): number | null => {
+  const held = (
+    field: string,
+    column: string,
+    bounds: IntegerBounds,
+    nullIsAValue: boolean,
+  ): number | null => {
     const value = row[column]
     // A statement that did not select the column is a defect here, never a stored NULL.
     if (value === undefined) throw new TypeError(`an operator read selected no ${column}`)
-    if (value === null) return null
+    if (value === null && nullIsAValue) return null
     const decoded = decodeBoundedInteger(value, bounds)
     if (decoded.ok) return decoded.value
     corrupt[corrupt.length] = {
@@ -133,11 +167,15 @@ function integersOf(row: SqlRow, corrupt: CorruptInteger[], identity: RowIdentit
   }
   return Object.assign(
     /** A persisted field, read from the column its bounds are for. */
-    (bounds: PersistedIntegerBounds) => held(bounds.field, persistedIntegerColumn(bounds), bounds),
-    /** Database time, which no column stores: the statement names where it selected it. */
+    (bounds: PersistedIntegerBounds) =>
+      held(bounds.field, persistedIntegerColumn(bounds), bounds, storedNullIsAValue(bounds)),
+    /**
+     * Database time, which no column stores and which is never NULL: the statement names
+     * where it selected it.
+     */
     {
       now: (column: string) =>
-        held(DERIVED_INTEGER_BOUNDS.epoch_ms.field, column, DERIVED_INTEGER_BOUNDS.epoch_ms),
+        held(DERIVED_INTEGER_BOUNDS.epoch_ms.field, column, DERIVED_INTEGER_BOUNDS.epoch_ms, false),
     },
   )
 }

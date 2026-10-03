@@ -8,10 +8,12 @@ import {
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
   PERSISTED_INTEGER_BOUNDS,
+  type PersistedIntegerBounds,
   REASON_CANCELLED,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   type RunFacts,
   SAGA_ROLLBACK_PREFIX,
+  STORE_TABLE_COLUMNS,
   type SpawnOptions,
   type SqlExecutor,
   type SqlResult,
@@ -20,6 +22,7 @@ import {
   type TaskRowFacts,
   type WaitFacts,
   childSpawnKey,
+  storedNullIsAValue,
   taskDoneEventName,
 } from '@durablerun/core'
 import { RecordingExecutor } from '@durablerun/core/testing'
@@ -800,10 +803,20 @@ const FIELDS = TABLES.flatMap((table) =>
     table,
     column,
     field: `${table}.${column}`,
+    bounds: bounds as PersistedIntegerBounds,
     min: bounds.min,
     max: bounds.max,
   })),
 )
+
+/**
+ * The registered mutation that takes a stored NULL for a value of the one field whose
+ * column may hold one and whose rows never do. A marker is a literal because the mutation
+ * audit reads it from this source.
+ */
+const NULL_VERDICT: Readonly<Record<string, string>> = {
+  'events.emitted_at_ms': 'mutation-verdict:behavior:operator-reads-null-instant-is-corrupt',
+}
 
 /** The row of a table that a seed made, as a storage corruption names it. */
 function rowOf(table: Table, rows: Rows, column: string, invalidRepresentation: string) {
@@ -1006,6 +1019,41 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
         }
       })
 
+      /**
+       * The stored column a field stands in, in the row its seed made, and the answer while
+       * a case holds another value there. The value the case replaced is put back.
+       */
+      const columnOf = async (table: Table, column: string) => {
+        const seed = table === 'events' ? 'woken' : 'parked'
+        opened[seed] ??= open(seed)
+        const { f, rows, reads, clean } = await opened[seed]
+        const { where, identityArgs } = corruptionTarget(rowOf(table, rows, column, 'none'))
+        const stored = async () =>
+          (await readOne(f.raw, `SELECT ${column} AS v FROM ${table} WHERE ${where}`, identityArgs))
+            ?.v
+        const original = await stored()
+        if (original === undefined || original instanceof Uint8Array) {
+          throw new Error(`${table}.${column} has no stored value to restore`)
+        }
+        /** The column set to a value, as one statement. */
+        const set = (label: string, value: typeof original) =>
+          f.raw.batch(label, [
+            {
+              sql: `UPDATE ${table} SET ${column} = ? WHERE ${where}`,
+              args: [value, ...identityArgs],
+            },
+          ])
+        /** The answer while `plant` has put a value in the column, which is then put back. */
+        const factsWhile = async <T>(plant: () => Promise<T>) => {
+          try {
+            return { planted: await plant(), facts: await reads.taskFacts(Q, rows.taskId) }
+          } finally {
+            await set('fixture:restore', original)
+          }
+        }
+        return { f, rows, reads, clean, stored, set, factsWhile }
+      }
+
       for (const { table, column, field, min, max } of FIELDS) {
         const read = READ[field]
         const title =
@@ -1013,29 +1061,7 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             ? `${field} is not read: a value outside its bounds changes no answer`
             : `${field} outside its bounds is listed as corrupt, read as null, and changes nothing else`
         it(title, async () => {
-          const seed = table === 'events' ? 'woken' : 'parked'
-          opened[seed] ??= open(seed)
-          const { f, rows, reads, clean } = await opened[seed]
-          const { where, identityArgs } = corruptionTarget(rowOf(table, rows, column, 'none'))
-          const original = (
-            await readOne(f.raw, `SELECT ${column} AS v FROM ${table} WHERE ${where}`, identityArgs)
-          )?.v
-          if (original === undefined || original instanceof Uint8Array) {
-            throw new Error(`${field} has no stored value to restore`)
-          }
-          /** The answer while `plant` has put a value in the column, which is then put back. */
-          const factsWhile = async <T>(plant: () => Promise<T>) => {
-            try {
-              return { planted: await plant(), facts: await reads.taskFacts(Q, rows.taskId) }
-            } finally {
-              await f.raw.batch('fixture:restore', [
-                {
-                  sql: `UPDATE ${table} SET ${column} = ? WHERE ${where}`,
-                  args: [original, ...identityArgs],
-                },
-              ])
-            }
-          }
+          const { f, rows, reads, clean, set, factsWhile } = await columnOf(table, column)
           const listed = (entry: Partial<CorruptInteger>) =>
             read === undefined ? [] : [{ field, ...entryIdentity(table, rows), ...entry }]
           const expectedWith = read === undefined ? clean : withAt(clean, read.at, null)
@@ -1043,14 +1069,7 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
           const expected: unknown[] = []
           // Below the bounds, negative, and past them: every dialect stores these.
           for (const bad of [...new Set([-1, min - 1, max + 1])]) {
-            const { facts } = await factsWhile(() =>
-              f.raw.batch('fixture:out-of-range', [
-                {
-                  sql: `UPDATE ${table} SET ${column} = ? WHERE ${where}`,
-                  args: [bad, ...identityArgs],
-                },
-              ]),
-            )
+            const { facts } = await factsWhile(() => set('fixture:out-of-range', bad))
             observed.push({ bad, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } })
             expected.push({
               bad,
@@ -1088,6 +1107,50 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
             })
           }
           expect(observed, read?.verdict).toEqual(expected)
+          expect(await reads.taskFacts(Q, rows.taskId)).toEqual(clean)
+        })
+      }
+
+      /**
+       * A stored NULL. A column whose schema refuses one has nothing to read. Where the
+       * schema stores one, core's one definition says whether it is a value of the field or
+       * a corrupt one (`storedNullIsAValue`), and each case holds the read to what it says.
+       */
+      for (const { table, column, field, bounds } of FIELDS) {
+        const read = READ[field]
+        const title =
+          read === undefined
+            ? `${field} is not read: a stored NULL changes no answer`
+            : `${field} holding NULL is a value or is listed as corrupt, as core's one definition says`
+        it(title, async () => {
+          const { rows, reads, clean, stored, set, factsWhile } = await columnOf(table, column)
+          const columns: Readonly<Record<string, { readonly nullable: boolean }>> =
+            STORE_TABLE_COLUMNS[table]
+          const stores = columns[column]?.nullable
+          const { planted, facts } = await factsWhile(async () => {
+            await set('fixture:null', null).catch(() => undefined)
+            return (await stored()) === null
+          })
+          const readAsNull = read !== undefined && planted
+          expect(
+            { planted, corrupt: facts?.corrupt, rest: { ...facts, corrupt: [] } },
+            NULL_VERDICT[field],
+          ).toEqual({
+            // The schema decides whether the column stores a NULL at all.
+            planted: stores,
+            corrupt:
+              readAsNull && !storedNullIsAValue(bounds)
+                ? [
+                    {
+                      field,
+                      ...entryIdentity(table, rows),
+                      reason: 'not-an-exact-integer',
+                      stored: 'null',
+                    },
+                  ]
+                : [],
+            rest: readAsNull ? withAt(clean, read.at, null) : clean,
+          })
           expect(await reads.taskFacts(Q, rows.taskId)).toEqual(clean)
         })
       }

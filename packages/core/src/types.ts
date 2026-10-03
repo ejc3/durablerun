@@ -233,7 +233,8 @@ export interface RollbackOutcome {
 
 /**
  * A persisted integer an operator read consumed whose stored value is outside the bounds
- * core holds that field to (`PERSISTED_INTEGER_BOUNDS`), or is no exact integer at all. The
+ * core holds that field to (`PERSISTED_INTEGER_BOUNDS`), or is no exact integer at all: a
+ * fraction, text, or a NULL where the engine never writes one (`storedNullIsAValue`). The
  * read reports it here and answers null for the field: it is never skipped and never thrown.
  */
 export interface CorruptInteger {
@@ -246,7 +247,7 @@ export interface CorruptInteger {
   /** The event whose row holds it. */
   readonly eventName?: string
   readonly reason: 'not-an-exact-integer' | 'out-of-range'
-  /** What kind of value the store returned: `number`, `bigint`, `string`, and so on. */
+  /** What kind of value the store returned: `number`, `bigint`, `string`, `null`, and so on. */
   readonly stored: string
   /** The stored value as text, when it is a number. A value of any other kind is not copied. */
   readonly value?: string
