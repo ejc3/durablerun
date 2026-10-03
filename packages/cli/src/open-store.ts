@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import type {
+  HeldOperatorReads,
   IdSource,
   OperatorReads,
   SchedulerStore,
@@ -85,7 +86,7 @@ interface Opened {
   readonly notes: SchemaVersionNotes
   admin(db: SqlExecutor): StoreAdmin
   scheduler(db: SqlExecutor, ids: IdSource): SchedulerStore
-  operator(db: SqlExecutor): OperatorReads
+  operator(db: SqlExecutor): HeldOperatorReads
   close(): Promise<void>
 }
 
@@ -113,7 +114,7 @@ const libsql: Loader = async (url, token, mayCreate, target) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.LibsqlStoreAdmin(db),
     scheduler: (db, ids) => new store.LibsqlSchedulerStore(db, ids),
-    operator: (db) => store.operatorReads(db),
+    operator: store.operatorReads,
     close: async () => executor.close(),
   }
 }
@@ -128,7 +129,7 @@ const postgres: Loader = async (url, token) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.PostgresStoreAdmin(db),
     scheduler: (db, ids) => new store.PostgresSchedulerStore(db, ids),
-    operator: (db) => store.operatorReads(db),
+    operator: store.operatorReads,
     close: () => executor.close(),
   }
 }
@@ -143,7 +144,7 @@ const mysql: Loader = async (url, token) => {
     notes: store.SCHEMA_VERSION_NOTES,
     admin: (db) => new store.MysqlStoreAdmin(db),
     scheduler: (db, ids) => new store.MysqlSchedulerStore(db, ids),
-    operator: (db) => store.operatorReads(db),
+    operator: store.operatorReads,
     close: () => executor.close(),
   }
 }

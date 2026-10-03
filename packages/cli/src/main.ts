@@ -427,19 +427,17 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
     if (!isUnreadableRow(error)) throw error
     return { queue, taskId, unreadable: error.message }
   }
-  return {
-    exit: 'not-found',
-    view: {
-      queue,
-      taskId,
-      error: { kind: 'not-found', message: `no task ${taskId} in queue ${queue}` },
-    },
-  }
+  return noSuchTask(queue, taskId)
 }
 
 /** The answer for a task the queue does not hold. `message` quotes no value a user wrote. */
 function notFound(view: Record<string, unknown>, message: string): Answer {
   return { exit: 'not-found', view: { ...view, error: { kind: 'not-found', message } } }
+}
+
+/** The answer for a task id the queue holds no task under. A task id prints. */
+function noSuchTask(queue: string, taskId: string): Answer {
+  return notFound({ queue, taskId }, `no task ${taskId} in queue ${queue}`)
 }
 
 /**
@@ -462,7 +460,7 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
     return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
   }
   const facts = await store.operator.taskFacts(queue, taskId)
-  if (facts === null) return notFound({ queue, taskId }, `no task ${taskId} in queue ${queue}`)
+  if (facts === null) return noSuchTask(queue, taskId)
   // The outcome is rendered as `result` renders it, a refused row included.
   const outcome =
     'result' in facts.outcome

@@ -232,22 +232,38 @@ export function faultExit(spec: CommandSpec, label: string, fault: CliFault): Ex
   return spec.faults[fault]
 }
 
+const shownFlag = (name: string, flag: FlagSpec): string =>
+  flag.type === 'string' ? `--${name} <${flag.value ?? 'value'}>` : `--${name}`
+
+/**
+ * The flag that may stand in for one of a command's arguments, as usage shows it, or
+ * undefined for a command with no such pair. A pair that names an argument or a string flag
+ * the command does not have is refused here, where parsing and usage both ask, so a
+ * misspelt pair cannot fall back to requiring the argument in silence.
+ */
+function alternativeOf(
+  spec: CommandSpec,
+): { readonly positional: string; readonly flag: string; readonly shown: string } | undefined {
+  const pair = spec.alternative
+  if (pair === undefined) return undefined
+  const flag = spec.flags[pair.flag]
+  if (!spec.positionals.includes(pair.positional) || flag?.type !== 'string') {
+    throw new Error(
+      `${spec.verb}: its alternative must name one of its arguments and one of its string flags`,
+    )
+  }
+  return { ...pair, shown: shownFlag(pair.flag, flag) }
+}
+
 export function usage(spec: CommandSpec): string {
-  const shown = (name: string, flag: FlagSpec): string =>
-    flag.type === 'string' ? `--${name} <${flag.value ?? 'value'}>` : `--${name}`
-  const instead = spec.alternative
+  const instead = alternativeOf(spec)
   const parts: string[] = [spec.verb]
   for (const name of spec.positionals) {
-    const flag = instead?.positional === name ? spec.flags[instead.flag] : undefined
-    parts.push(
-      instead === undefined || flag === undefined
-        ? `<${name}>`
-        : `<${name}> | ${shown(instead.flag, flag)}`,
-    )
+    parts.push(instead?.positional === name ? `(<${name}> | ${instead.shown})` : `<${name}>`)
   }
   for (const [name, flag] of Object.entries(spec.flags)) {
     if (name === instead?.flag) continue
-    parts.push(flag.required === true ? shown(name, flag) : `[${shown(name, flag)}]`)
+    parts.push(flag.required === true ? shownFlag(name, flag) : `[${shownFlag(name, flag)}]`)
   }
   return parts.join(' ')
 }
@@ -294,7 +310,7 @@ export function parseInvocation(argv: readonly string[]): Invocation {
     )
   }
   // An argument a flag stands in for is not taken when the flag is given.
-  const instead = spec.alternative
+  const instead = alternativeOf(spec)
   const byFlag = instead !== undefined && typeof parsed.values[instead.flag] === 'string'
   const taken = spec.positionals.filter((name) => !(byFlag && name === instead?.positional))
   if (parsed.positionals.length !== taken.length) {

@@ -1,7 +1,18 @@
 import { createHash } from 'node:crypto'
+import { DEFAULT_MAX_ATTEMPTS } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, usage } from '../src/commands.js'
-import { COMPLETED_KEY, NOW_MS, QUEUE, SENTINEL, openCliDb, runCli, seedTasks } from './support.js'
+import {
+  COMPLETED_KEY,
+  NOW_MS,
+  QUEUE,
+  SENTINEL,
+  claimActivated,
+  openCliDb,
+  recordingOpener,
+  runCli,
+  seedTasks,
+} from './support.js'
 
 /** An answer printed with --json. */
 const parsed = (stdout: string) => JSON.parse(stdout) as Record<string, unknown>
@@ -29,7 +40,7 @@ describe('inspect on libSQL', () => {
           taskName: 'report',
           state: 'pending',
           attempts: 0,
-          maxAttempts: 5,
+          maxAttempts: DEFAULT_MAX_ATTEMPTS,
           infraRetries: 0,
           // The task was enqueued with a start an hour off.
           enqueueAtMs: NOW_MS + 3_600_000,
@@ -153,40 +164,36 @@ describe('inspect on libSQL', () => {
     }
   })
 
-  it('takes a task id or --key, one of them and not both', async () => {
-    const db = await openCliDb('libsql', 'inspect-usage')
-    try {
-      const seeded = await seedTasks(db)
-      expect(usage(COMMANDS.inspect)).toBe(
-        'inspect <taskId> | --key <K> [--json] --queue <Q> [--reveal]',
-      )
-      for (const argv of [
-        ['inspect', '--queue', QUEUE],
-        ['inspect', seeded.completed, '--key', COMPLETED_KEY, '--queue', QUEUE],
-        ['inspect', seeded.completed, seeded.failed, '--queue', QUEUE],
-        ['inspect', seeded.completed],
-      ]) {
-        const run = await runCli([...argv, '--json'], db.env)
-        expect({ argv: argv.length, exit: run.exit, kind: parsed(run.stdout).error }).toMatchObject(
-          {
-            argv: argv.length,
-            exit: 2,
-            kind: { kind: 'usage' },
-          },
-        )
-      }
-    } finally {
-      await db.close()
+  it('takes a task id or --key, one of them and not both, and refuses each other line before a store opens', async () => {
+    expect(usage(COMMANDS.inspect)).toBe(
+      'inspect (<taskId> | --key <K>) [--json] --queue <Q> [--reveal]',
+    )
+    // A pair that names a flag the command does not have is refused, never dropped.
+    expect(() =>
+      usage({ ...COMMANDS.inspect, alternative: { positional: 'taskId', flag: 'kye' } }),
+    ).toThrow(/its alternative must name one of its arguments and one of its string flags/)
+    const { opener, sent } = recordingOpener()
+    for (const argv of [
+      ['inspect', '--queue', QUEUE],
+      ['inspect', 'a-task', '--key', 'a-key', '--queue', QUEUE],
+      ['inspect', 'a-task', 'another-task', '--queue', QUEUE],
+      ['inspect', 'a-task'],
+    ]) {
+      const run = await runCli([...argv, '--json'], { DURABLERUN_STORE_URL: ':memory:' }, opener)
+      expect({ argv: argv.length, exit: run.exit, error: parsed(run.stdout).error }).toMatchObject({
+        argv: argv.length,
+        exit: 2,
+        error: { kind: 'usage' },
+      })
     }
+    expect(sent()).toEqual([])
   })
 
   it("prints the parent a child's key names, and the key itself as its length and sha256", async () => {
     const db = await openCliDb('libsql', 'inspect-child')
     try {
       const parent = await db.store.spawn(QUEUE, 'parent', '{}')
-      const [run] = await db.store.claim(QUEUE, 'w-parent', { leaseSeconds: 60, limit: 1 })
-      if (run === undefined) throw new Error('the parent was not claimed')
-      await db.store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)
+      const run = await claimActivated(db, 'w-parent', parent.taskId)
       const child = await db.store.spawn(QUEUE, 'child', '{}', {
         childOf: {
           parentQueue: QUEUE,
