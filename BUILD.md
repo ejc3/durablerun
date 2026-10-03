@@ -236,10 +236,11 @@ accepts it.
     each of the nineteen persisted integers the reads consume, with a value
     below the bounds, a negative one, one past them, a fraction and text, and
     the eight integers of those tables the reads do not select get a case that
-    nothing changes. "<field> holding NULL is a value or is listed as corrupt,
-    as core's one definition says" is generated for the same nineteen integers:
-    the column's schema decides whether a NULL is stored at all, and
-    `storedNullIsAValue` decides whether the read lists it. "finds a task by
+    nothing changes. "<field> holding NULL is a value, or is listed as corrupt
+    where no engine path writes one" is generated for the same nineteen
+    integers: the column's schema decides whether a NULL is stored at all, and
+    the surface names for itself the one column whose rows never hold one,
+    apart from core's own definition. "finds a task by
     its idempotency key, in its own queue alone, and a child by the key the
     engine built" holds `taskIdByKey`, "says whether an event exists and when
     it was emitted, a completion event included, and nothing of its payload"
@@ -5957,6 +5958,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     engine may do next, which `explain` says from the facts. (6) No statement orders its
     rows, and core orders every list by Unicode code point, which is the order of UTF-8
     bytes, because a text column sorts by the database's collation.
+  - The one review of this pull request found eleven things, two of them defects it
+    demonstrated, and `postmortems/pr5.3b1-operator-reads-review.md` holds the round. Fixed
+    here: an `inspect` that exits 10 prints its snapshot on stdout in text mode as it did
+    with `--json`, an event that exists with no instant is listed as corrupt, a stored state
+    or status that is not the engine's own prints hidden, every list is ordered by code
+    point where it was ordered by UTF-16 code units, the top view of `inspect` is held to
+    the type of the facts, and one function decodes an event's instant. What was not built
+    is recorded in the options below, each with its trigger.
   - Measured while pinning the plans, and left as it is: on PostgreSQL, schema version 7
     changes the collation of `meta`'s key, which rebuilds that index over rows the
     migrations updated in place, and the server does not use an index built that way while
@@ -6000,6 +6009,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that holds them equal, or one file. They are the same apart from the class name, shaped
     as a class so that the batch checkers, which read text, see each label inside a
     member. Trigger: a fourth file of this shape, or batch checkers that read trees.
+  - Option for the stream an answer prints on, not built, with its trigger: make it part of
+    the answer's type, so that an answer which fails cannot be built without saying whether
+    it holds what the command read. Today a handler marks such an answer by hand, and a
+    case for each answer holds it. Trigger: the second command whose answer holds facts
+    when it fails.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
