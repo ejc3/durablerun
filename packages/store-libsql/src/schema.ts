@@ -319,12 +319,13 @@ export const MIGRATIONS: Migration[] = [
     //
     // The second term of its predicate is what keeps the engine's statements off it. Every
     // task has an enqueue instant, so the term leaves no task out. SQLite uses a partial
-    // index only for a statement whose own WHERE implies the index's, and no statement the
-    // engine sends compares the enqueue instant. Without the term every follow-on that
+    // index only for a statement whose own WHERE holds the index's terms, and no statement
+    // the engine sends tests the enqueue instant. Without the term every follow-on that
     // updates a task by its key was planned through this index, by its queue and its state,
     // and read every live task of that state: the plan test named 25 statements of 14
-    // batches, the claim's among them. A read that means to use the index compares the
-    // enqueue instant, which implies the term.
+    // batches, the claim's among them. A read that means to use the index writes both terms
+    // as they stand here. Measured on the SQLite this store runs on (3.45), a comparison of
+    // the instant is not taken for the second term, and the test for NULL is.
     version: 11,
     statements: [
       `CREATE INDEX IF NOT EXISTS tasks_live ON tasks (queue, state, enqueue_at_ms)
