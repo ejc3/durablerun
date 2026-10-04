@@ -354,12 +354,12 @@ jobs:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == '45d4fc7e8f217d199ca3d7dbf52f38e42db7fd5eee844e5117b04fb99f6a0bbb':
-              # The operator's reads of a queue register eighty-one mutations: twenty-nine for
+              # The operator's reads of a queue register eighty-five mutations: thirty-three for
               # how core decodes a leg, a gauge, a count and a list, twenty-six for what a dialect
               # decides, held on libSQL against the engine and against a dump of every table,
               # twenty for the exits and the streams of `stuck`, `stats` and `sizes` and for the
               # waiters `explain` lists, and six for what bounds a due range in the libSQL plan
-              # test. Their cases carry seventy-four verdict markers. Each is newer than the base
+              # test. Their cases carry seventy-six verdict markers. Each is newer than the base
               # registry, so each is exempted there. One base entry is re-aimed: the lines of the libSQL claim's
               # admission that it mutates moved out of `claim` into `claimEligibility`, which the
               # claim and the operator's read of what a claim is owed to share.
@@ -412,6 +412,7 @@ jobs:
                   "mutation-verdict:behavior:operator-reads-list-a-row-whose-instant-is-not-readable",
                   "mutation-verdict:behavior:operator-reads-list-a-task-once-it-is-as-old-as-asked",
                   "mutation-verdict:behavior:operator-reads-list-a-task-whose-enqueue-instant-is-not-readable",
+                  "mutation-verdict:behavior:operator-reads-merge-every-window-of-deadlines",
                   "mutation-verdict:behavior:operator-reads-merge-the-live-legs-oldest-first",
                   "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
                   "mutation-verdict:behavior:operator-reads-name-the-head-of-the-queue",
@@ -423,6 +424,7 @@ jobs:
                   "mutation-verdict:behavior:operator-reads-refuse-a-count-that-is-no-integer",
                   "mutation-verdict:behavior:operator-reads-refuse-a-limit-past-the-cap",
                   "mutation-verdict:behavior:operator-reads-refuse-an-age-or-a-limit-it-cannot-take",
+                  "mutation-verdict:behavior:operator-reads-say-what-a-window-showed",
                   "mutation-verdict:behavior:operator-reads-say-when-a-leg-holds-more",
                   "mutation-verdict:behavior:operator-reads-say-when-more-tasks-are-as-old",
                   "mutation-verdict:behavior:operator-reads-say-whether-a-lapsed-run-was-started",

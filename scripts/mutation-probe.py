@@ -19207,22 +19207,22 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-list-a-row-once-its-grace-has-run",
             "packages/core/src/operator-reads.ts",
-            "    .filter((one) => one.at === null || nowMs === null || one.at <= nowMs - agedMs)\n",
-            "    .filter((one) => one.at === null || nowMs === null || one.at <= nowMs + agedMs) // MUTATION: the grace is added where it is taken away\n",
+            "  at === null || nowMs === null || at <= nowMs - agedMs\n",
+            "  at === null || nowMs === null || at <= nowMs + agedMs // MUTATION: the grace is added where it is taken away\n",
             "a move is listed before it has been owed for the grace, so stuck reports the next tick's work as late",
         ),
         (
             "operator-finder-lists-a-move-at-the-instant-it-comes-due",
             "packages/core/src/operator-reads.ts",
-            "    .filter((one) => one.at === null || nowMs === null || one.at <= nowMs - agedMs)\n",
-            "    .filter((one) => one.at === null || nowMs === null || one.at < nowMs - agedMs) // MUTATION: a move that comes due this millisecond is not listed\n",
+            "  at === null || nowMs === null || at <= nowMs - agedMs\n",
+            "  at === null || nowMs === null || at < nowMs - agedMs // MUTATION: a move that comes due this millisecond is not listed\n",
             "with no grace the finder leaves out a lease that expires this millisecond, which the sweep takes back, so the finder and the engine disagree at the instant a move comes due",
         ),
         (
             "operator-reads-list-a-row-whose-instant-is-not-readable",
             "packages/core/src/operator-reads.ts",
-            "    .filter((one) => one.at === null || nowMs === null || one.at <= nowMs - agedMs)\n",
-            "    .filter((one) => one.at !== null && (nowMs === null || one.at <= nowMs - agedMs)) // MUTATION: a row with no readable instant is left out\n",
+            "  at === null || nowMs === null || at <= nowMs - agedMs\n",
+            "  at !== null && (nowMs === null || at <= nowMs - agedMs) // MUTATION: a row with no readable instant is left out\n",
             "a row whose instant is not readable is named as corrupt and left out of its leg, so the report hides the row it says is broken",
         ),
         (
@@ -19662,15 +19662,15 @@ MUTATION_SPECS.extend(
         (
             "operator-finder-lists-every-due-run-in-one-leg",
             "packages/core/src/operator-reads.ts",
-            "    .filter((row) => !held.has(stringFrom(row[idColumn])))\n",
-            "    .filter((row) => held.has(stringFrom(row[idColumn]))) // MUTATION: the rows the engine's leg answered are listed as the ones it does not take\n",
+            "    if (held.has(id)) {\n",
+            "    if (!held.has(id)) { // MUTATION: the rows the engine's leg answered are listed as the ones it does not take\n",
             "a due run a claim takes is listed a second time as one no claim admits, and a due run a claim refuses is in no leg",
         ),
         (
             "operator-finder-lists-the-due-runs-a-claim-refuses",
             "packages/core/src/operator-reads.ts",
-            "    .slice(0, limit + 1)\n",
-            "    .slice(0, 0) // MUTATION: no row of a window is examined\n",
+            "  for (const raw of read) {\n",
+            "  for (const raw of read.slice(0, 0)) { // MUTATION: no row of a window is examined\n",
             "a row a move is owed to that the engine will never take is in no leg of stuck at any grace, so --fail-if-any exits 0 for it",
         ),
         (
@@ -19732,14 +19732,14 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-settle-a-window-row-only-ahead-of-the-last-taken",
             "packages/core/src/operator-reads.ts",
-            "    last === undefined ? candidates : candidates.filter((row) => sortsBefore(placeOf(row), last))\n",
-            "    last === undefined ? candidates : candidates // MUTATION: a row behind the last the engine's leg answered is listed as one it does not take\n",
+            "    if (last === undefined || sortsBefore(placeOf(row), last)) {\n",
+            "    if (last === undefined || placeOf(row) !== last) { // MUTATION: a row behind the last the engine's leg answered is listed as one it does not take\n",
             "a run a claim would take further down its order is listed as one no claim admits",
         ),
         (
             "operator-reads-say-when-a-window-left-rows-unsettled",
             "packages/core/src/operator-reads.ts",
-            "  return { rows, unexamined: read.length > limit + 1 || rows.length < candidates.length }\n",
+            "  return { rows, unexamined: unsettled || past }\n",
             "  return { rows, unexamined: false } // MUTATION: a window never says it left rows unsettled\n",
             "a leg of what the engine does not take reads as complete when rows lie past its window",
         ),
@@ -19770,6 +19770,34 @@ MUTATION_SPECS.extend(
             "  owed.deadlineNotCancelled.rows.length\n",
             "  0 // MUTATION: a passed deadline no sweep cancels is listed and not counted\n",
             "stuck --fail-if-any exits 0 for a queue whose only listed row is a deadline no sweep will act on",
+        ),
+        (
+            "operator-reads-hold-an-unsettled-row-to-the-grace",
+            "packages/core/src/operator-reads.ts",
+            "    } else if (aged(row.dueAtMs)) {\n",
+            "    } else if (aged(null)) { // MUTATION: a row the window did not settle counts whatever its age\n",
+            "a healthy backlog younger than the grace prints unexamined true, so the word says nothing an operator can act on",
+        ),
+        (
+            "operator-reads-hold-the-rows-past-a-window-to-the-grace",
+            "packages/core/src/operator-reads.ts",
+            "  const past = read.length > limit + 1 && aged(endsAt)\n",
+            "  const past = read.length > limit + 1 // MUTATION: rows past a full window count whatever the age of its last row\n",
+            "a full window of rows younger than the grace prints unexamined true, though no row past it could be listed",
+        ),
+        (
+            "operator-reads-examine-every-row-of-a-window",
+            "packages/core/src/operator-reads.ts",
+            "  for (const raw of read) {\n",
+            "  for (const raw of read.slice(0, limit + 1)) { // MUTATION: the last row a window read is not examined\n",
+            "one run a claim takes beside many it refuses lists the limit and says atLeast false, with one more refused row read",
+        ),
+        (
+            "operator-reads-merge-every-window-of-deadlines",
+            "packages/core/src/operator-reads.ts",
+            "  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed(notCancelled, byTask)\n",
+            "  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed(notCancelled.slice(0, 1), byTask) // MUTATION: only the first window of deadlines is listed\n",
+            "on a store that reads one window of deadlines to a live state, a running or sleeping task no sweep will cancel is in no leg of stuck",
         ),
     )
 )
@@ -20286,6 +20314,30 @@ VERDICTS.update(
             "packages/cli/test/queue-verbs.test.ts",
             "stuck on libSQL lists a task past its cancellation deadline that no sweep cancels, names it as one, and exits 9 for it with --fail-if-any",
             "mutation-verdict:behavior:cli-stuck-counts-a-deadline-no-sweep-cancels",
+        ),
+        "operator-reads-hold-an-unsettled-row-to-the-grace": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs says with atLeast what a window showed, and with unexamined only what the grace could list",
+            "mutation-verdict:behavior:operator-reads-say-what-a-window-showed",
+        ),
+        "operator-reads-hold-the-rows-past-a-window-to-the-grace": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs says with atLeast what a window showed, and with unexamined only what the grace could list",
+            "mutation-verdict:behavior:operator-reads-say-what-a-window-showed",
+        ),
+        "operator-reads-examine-every-row-of-a-window": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs says with atLeast what a window showed, and with unexamined only what the grace could list",
+            "mutation-verdict:behavior:operator-reads-say-what-a-window-showed",
+        ),
+        "operator-reads-merge-every-window-of-deadlines": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs lists the tasks no sweep cancels from every window of deadlines, oldest first",
+            "mutation-verdict:behavior:operator-reads-merge-every-window-of-deadlines",
         ),
     }
 )
@@ -24201,7 +24253,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1340:
+        if len(MUTATIONS) != 1344:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
