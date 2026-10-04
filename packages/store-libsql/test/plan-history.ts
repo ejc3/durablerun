@@ -130,6 +130,7 @@ export async function recordHistory(
   await operator.queueStatus('q')
   await operator.tableRows('q')
   await operator.eventWaiters('q', 'event')
+  await operator.agedTasks('q', { olderThanSeconds: 0, limit: 20 })
   const childRun = await startedOf(child.taskId)
   await store.complete('q', childRun.runId, childRun.claimToken, '{}')
   const wokenParent = await startedOf(parent.taskId)

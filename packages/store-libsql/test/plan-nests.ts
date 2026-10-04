@@ -81,8 +81,13 @@ export const ENTITY_COLUMNS = [
  * A column an index hands work out in the order of: what is due to run, whose lease has
  * expired, whose start deadline has passed. A range on one reads what is due, in order,
  * and the statement's limit says how much of it. The plan does not show the limit.
+ *
+ * `enqueue_at_ms` is the one that is no deadline. An operator's read of a queue's oldest
+ * live tasks reads the index of live tasks in the order they were enqueued, under a limit,
+ * and no statement the engine sends ranges over it. Every statement that reads such a range
+ * is named in the plan test's tables with what bounds it, as the others are.
  */
-const DUE_COLUMNS = ['available_at_ms', 'claim_expires_at_ms', 'cancel_at_ms']
+const DUE_COLUMNS = ['available_at_ms', 'claim_expires_at_ms', 'cancel_at_ms', 'enqueue_at_ms']
 
 /** `keyed` reads one entity's rows, `due` reads what is due in index order, `walk` a backlog. */
 const REACHES = ['keyed', 'due', 'walk'] as const

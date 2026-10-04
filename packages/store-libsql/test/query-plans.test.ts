@@ -832,6 +832,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
   /** Every run of one state that holds an available instant: a range with no upper end. */
   const RUNS_COUNTED =
     'SEARCH r USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>?)'
+  /** Every live task of one state, in the order they were enqueued: a range with no upper end. */
+  const LIVE_TASKS = 'SEARCH t USING INDEX tasks_live (queue=? AND state=? AND enqueue_at_ms>?)'
   const DRIVEN_BY_A_DUE_RANGE: Readonly<
     Record<string, { drivers: readonly string[]; boundedBy: string }>
   > = {
@@ -880,6 +882,17 @@ describe('every statement a store ships, by the nests of its plan', () => {
       ranges: ['SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>?)'],
       boundedBy: 'LIMIT',
     },
+    // The gauge of live tasks: the live tasks of each state, oldest first, up to one row
+    // past the cap. The fifth statement of the batch reads the clock and no table.
+    'queue-status/read#5': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    'queue-status/read#6': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    'queue-status/read#7': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    // An operator's read of a queue's oldest live tasks: each state's, oldest first, up to
+    // one row past the limit it was asked for. It grows with the queue's live tasks by
+    // design, up to that limit.
+    'aged-tasks/read#0': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    'aged-tasks/read#1': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    'aged-tasks/read#2': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
   }
 
   /** A statement's name: where the corpus holds it, or for text its place in its batch. */
