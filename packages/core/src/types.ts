@@ -394,6 +394,17 @@ export interface LapsedRun extends OverdueRun {
   readonly activated: boolean | null
 }
 
+/**
+ * A run that is due and that no claim admits: what a claim requires of a run and its task
+ * is not true of it, so no claim takes it however long it has been due. The sweep takes it
+ * only when its task is also past its cancellation deadline, and `cancelOverdue` then
+ * lists that task.
+ */
+export interface UnadmittedRun extends OverdueRun {
+  /** The state the run is in: `pending`, or `sleeping` past its wake. */
+  readonly state: 'pending' | 'sleeping'
+}
+
 /** A live task whose cancellation deadline has passed, which the sweep cancels. */
 export interface OverdueTask {
   readonly taskId: string
@@ -416,11 +427,13 @@ export interface StuckRunsOptions {
 
 /**
  * The runs and tasks of one queue that a move of the driver is owed to and has been for at
- * least the grace, in four legs, each oldest first and each stopped at the limit. A leg
- * holds what the engine's own statement would take: `dueUnclaimed` and `sleepingPastWake`
- * are the pending and the sleeping runs a claim takes, `leaseLapsed` and `cancelOverdue`
- * are what the sweep's scan finds. A run under a lapsed lease whose task is also past its
- * deadline is in both of the last two, and the sweep takes it by either arm. Every member
+ * least the grace, in five legs, each oldest first and each stopped at the limit. Four hold
+ * what the engine's own statement would take: `dueUnclaimed` and `sleepingPastWake` are the
+ * pending and the sleeping runs a claim takes, `leaseLapsed` and `cancelOverdue` are what
+ * the sweep's scan finds. A run under a lapsed lease whose task is also past its deadline
+ * is in both of the last two, and the sweep takes it by either arm. The fifth,
+ * `dueNotAdmitted`, holds the due runs a claim refuses, so every run that is due is in
+ * `dueUnclaimed`, in `sleepingPastWake` or in it, and in one of them only. Every member
  * but `fakeClock` is read from one snapshot, and `fakeClock` straight after it.
  */
 export interface StuckRuns {
@@ -429,6 +442,7 @@ export interface StuckRuns {
   readonly fakeClock: boolean
   readonly dueUnclaimed: Capped<OverdueRun>
   readonly sleepingPastWake: Capped<OverdueRun>
+  readonly dueNotAdmitted: Capped<UnadmittedRun>
   readonly leaseLapsed: Capped<LapsedRun>
   readonly cancelOverdue: Capped<OverdueTask>
   readonly corrupt: readonly CorruptInteger[]

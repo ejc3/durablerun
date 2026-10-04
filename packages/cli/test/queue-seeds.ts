@@ -16,6 +16,8 @@ export interface OwedQueue {
   readonly abandoned: string
   /** The task that must start within 45 seconds, which no claim takes. */
   readonly doomed: string
+  /** That task's run, which is due from the seed's start and which no claim admits once the 45 seconds have passed. */
+  readonly doomedRun: string
 }
 
 /** The instant the abandoned run's lease expires, by which every move of `owedQueue` is owed. */
@@ -60,6 +62,7 @@ export async function owedQueue(db: CliDb): Promise<OwedQueue> {
     sleeper: sleeper.runId,
     abandoned: abandoned.runId,
     doomed: doomed.taskId,
+    doomedRun: await runOf(db, doomed.taskId),
   }
 }
 

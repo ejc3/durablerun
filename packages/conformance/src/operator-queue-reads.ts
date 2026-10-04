@@ -29,7 +29,10 @@ import { awaitOwned, claimActivated, claimOne } from './scenario.js'
  * Two properties carry the weight, and each is held by something that is not the reads.
  * The finder agrees with the engine: read with no grace, the runs it lists as owed a claim
  * are the runs a claim then takes, and the runs and tasks it lists as owed a sweep are
- * what a sweep then reclaims or cancels. That is a statement about every state the engine
+ * what a sweep then reclaims or cancels. Every run a dump shows as due is in one of the
+ * three legs of due runs, and a due run the finder lists as one no claim admits is left
+ * where it was by the claim and by the sweep, unless its task is past its deadline. That
+ * is a statement about every state the engine
  * leaves a queue in, so it is asked of the states a fuzz walk of the engine leaves, with a
  * floor on what the walks reached, as well as of a queue seeded by hand, at the instant
  * each move comes due and one millisecond before it. The gauges and the row counts equal
@@ -126,6 +129,7 @@ const report = (nowMs: number, legs: Record<string, unknown> = {}) => ({
   fakeClock: true,
   dueUnclaimed: NONE,
   sleepingPastWake: NONE,
+  dueNotAdmitted: NONE,
   leaseLapsed: NONE,
   cancelOverdue: NONE,
   corrupt: [],
@@ -139,6 +143,9 @@ const legsAtLater = (seeded: SeededQueue) => ({
     owedRun(seeded.asleep, 'asleep', WAKES_AT, LATER),
     owedRun(seeded.timed, 'awaits-under-a-timeout', TIMES_OUT_AT, LATER),
   ),
+  // The run of the task that is past its deadline: due since it was spawned, and refused
+  // by a claim since the deadline passed.
+  dueNotAdmitted: all({ ...owedRun(seeded.doomed, 'doomed', START, LATER), state: 'pending' }),
   leaseLapsed: all(
     { ...owedRun(seeded.running, 'running', LEASES_END_AT, LATER), activated: true },
     { ...owedRun(seeded.lost, 'launch-lost', LEASES_END_AT, LATER), activated: false },
@@ -169,6 +176,10 @@ interface Reached {
   cancelled: number
   /** Runs under a lapsed lease whose task was also past its deadline, which are in two legs. */
   inBothLegs: number
+  /** Due runs a claim refuses. */
+  dueNotAdmitted: number
+  /** Those of them whose task is not past its deadline, which no move comes to. */
+  leftToNoMove: number
   /** Live tasks enqueued at least `AGED_SECONDS` before a reading, which the read of the oldest lists. */
   agedLive: number
   /** Live tasks enqueued more recently than that, which it leaves out. */
@@ -182,6 +193,8 @@ const nothingReached = (): Reached => ({
   claimTimeouts: 0,
   cancelled: 0,
   inBothLegs: 0,
+  dueNotAdmitted: 0,
+  leftToNoMove: 0,
   agedLive: 0,
   youngLive: 0,
 })
@@ -198,6 +211,12 @@ const nothingReached = (): Reached => ({
  * which arm takes it is decided by which batch lands first: the cancellation alone, or the
  * reclaim and then the cancellation of what the reclaim left. Such a row is held to being
  * taken by an arm, and every other row to its own arm exactly.
+ *
+ * The due runs are held from both sides. Every run a dump of the tables shows as due is in
+ * one of the three legs of due runs, under its own state, and in one only. The claim takes
+ * the two legs it is owed to and nothing else, so it takes no run of the third. And a run
+ * of the third whose task is not past its deadline is in the state it was in once the
+ * claim and the sweep have both run: no move of the engine comes to it.
  */
 async function finderAgainstTheEngine(
   f: StoreFixture,
@@ -208,12 +227,39 @@ async function finderAgainstTheEngine(
   const owed = await f
     .operatorReadsOver(f.raw)
     .stuckRuns(Q, { graceSeconds: 0, limit: OPERATOR_LIST_CAP })
-  const legs = [owed.dueUnclaimed, owed.sleepingPastWake, owed.leaseLapsed, owed.cancelOverdue]
+  const legs = [
+    owed.dueUnclaimed,
+    owed.sleepingPastWake,
+    owed.dueNotAdmitted,
+    owed.leaseLapsed,
+    owed.cancelOverdue,
+  ]
   expect({ where, more: legs.map((leg) => leg.atLeast), corrupt: owed.corrupt }).toEqual({
     where,
-    more: [false, false, false, false],
+    more: [false, false, false, false, false],
     corrupt: [],
   })
+  // Every run that is due, counted here from a dump: pending or sleeping, with an
+  // available instant inside its bounds that is at or before the time the report is dated.
+  const nowMs = owed.nowMs ?? Number.NaN
+  const dueInTheDump = (await snapshot(f.raw)).runs
+    .filter((run) => run.queue === Q && (run.state === 'pending' || run.state === 'sleeping'))
+    .filter((run) => {
+      const at = instantOf(run, 'available_at_ms')
+      return at !== null && at >= 0 && at <= MAX_EPOCH_MS && at <= nowMs
+    })
+    .map((run) => `${String(run.state)} ${String(run.run_id)}`)
+  expect(
+    {
+      where,
+      due: sorted([
+        ...owed.dueUnclaimed.rows.map((run) => `pending ${run.runId}`),
+        ...owed.sleepingPastWake.rows.map((run) => `sleeping ${run.runId}`),
+        ...owed.dueNotAdmitted.rows.map((run) => `${run.state} ${run.runId}`),
+      ]),
+    },
+    'every due run is in one leg of due runs, under its state',
+  ).toEqual({ where, due: sorted(dueInTheDump) })
 
   const claimed = await f.store.claim(Q, claimToken, {
     leaseSeconds: 60,
@@ -264,6 +310,21 @@ async function finderAgainstTheEngine(
       .filter((run) => !reclaimedRuns.has(run.runId) && !cancelled.has(run.taskId))
       .map((run) => `${where}: no arm of the sweep took ${run.runId}`),
   ).toEqual([])
+  // A due run no claim admits is where it was: the claim did not take it, and the sweep
+  // takes such a run only by cancelling a task that is past its deadline.
+  const leftToNoMove = owed.dueNotAdmitted.rows.filter((run) => !pastTheirDeadline.has(run.taskId))
+  const stateNow = new Map(
+    (await snapshot(f.raw)).runs.map((run) => [String(run.run_id), String(run.state)]),
+  )
+  expect(
+    {
+      where,
+      moved: leftToNoMove
+        .filter((run) => stateNow.get(run.runId) !== run.state)
+        .map((run) => `${run.runId} is ${stateNow.get(run.runId)}`),
+    },
+    'neither a claim nor a sweep takes a due run no claim admits',
+  ).toEqual({ where, moved: [] })
   // What the finder said of each lapsed run is what the sweep then did with it: it fails a
   // run that was started, and reopens a launch that was lost.
   const started = new Map(owed.leaseLapsed.rows.map((run) => [run.runId, run.activated]))
@@ -281,6 +342,8 @@ async function finderAgainstTheEngine(
   reached.claimTimeouts += reclaimed.filter((outcome) => outcome.kind === 'claim-timeout').length
   reached.cancelled += cancelled.size
   reached.inBothLegs += inBothLegs.length
+  reached.dueNotAdmitted += owed.dueNotAdmitted.rows.length
+  reached.leftToNoMove += leftToNoMove.length
 }
 
 /** A stored instant of a dumped row, or null where the row holds none. */
@@ -455,8 +518,13 @@ const ROUNDS_AHEAD_MS = [0, 31_000, 62_000, 300_000, 4_000_000]
  * 26 younger ones, which the read of the oldest live tasks tells apart.
  * Each floor sits below that, so a change to the walk that moves a seed does not fail the
  * case for a row or two, and a walk that stops reaching a kind of move does.
+ *
+ * One leg has no floor. The walks left no due run that a claim refuses, at any reading:
+ * measured, zero of them. So what the walks hold of that leg is that it is empty when
+ * every due run of the dump is one a claim takes, and the runs a claim refuses are held by
+ * the seeded cases, which build them.
  */
-const FLOORS: Reached = {
+const FLOORS: Omit<Reached, 'dueNotAdmitted' | 'leftToNoMove'> = {
   dueUnclaimed: 60,
   sleepingPastWake: 8,
   lostLaunches: 70,
@@ -496,19 +564,20 @@ export function operatorQueueReadsConformance(
         const before = await snapshot(f.raw)
         // Seventy seconds on: the run that slept and the await that timed out are due, both
         // leases have lapsed, and the task that was never started is past its deadline, so
-        // no claim takes its run. The delayed run and the await with no timeout are owed
-        // nothing.
+        // no claim takes its run, which is listed as one no claim admits. The delayed run
+        // and the await with no timeout are owed nothing.
         expect(
           await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 }),
           'mutation-verdict:behavior:operator-finder-answers-a-seeded-queue',
         ).toEqual(report(LATER, legsAtLater(seeded)))
-        // A grace of 45 seconds keeps what has been owed for that long: the run due for 70
-        // and the sleeper due for 50, and neither a lease that lapsed 10 ago nor a deadline
-        // that passed 40 ago.
+        // A grace of 45 seconds keeps what has been owed for that long: the two runs due
+        // for 70, one of which no claim admits, and the sleeper due for 50, and neither a
+        // lease that lapsed 10 ago nor a deadline that passed 40 ago.
         expect(await reads.stuckRuns(Q, { graceSeconds: 45, limit: 10 })).toEqual(
           report(LATER, {
             dueUnclaimed: all(owedRun(seeded.due, 'due', START, LATER)),
             sleepingPastWake: all(owedRun(seeded.asleep, 'asleep', WAKES_AT, LATER)),
+            dueNotAdmitted: legsAtLater(seeded).dueNotAdmitted,
           }),
         )
         // A limit of one lists the oldest of each leg, and says which legs hold more.
@@ -692,6 +761,11 @@ export function operatorQueueReadsConformance(
                   run.runId,
                   run.lateByMs,
                 ]),
+                ...owed.dueNotAdmitted.rows.map((run) => [
+                  'dueNotAdmitted',
+                  run.runId,
+                  run.lateByMs,
+                ]),
                 ...owed.leaseLapsed.rows.map((run) => ['leaseLapsed', run.runId, run.lateByMs]),
                 ...owed.cancelOverdue.rows.map((task) => [
                   'cancelOverdue',
@@ -745,7 +819,7 @@ export function operatorQueueReadsConformance(
         })
       }
       // The floor: a set of walks that leaves nothing owed proves nothing, and fails.
-      const missed = (Object.keys(FLOORS) as (keyof Reached)[]).filter(
+      const missed = (Object.keys(FLOORS) as (keyof typeof FLOORS)[]).filter(
         (kind) => reached[kind] < FLOORS[kind],
       )
       // A floor that is missed prints everything the walks reached.
@@ -814,15 +888,116 @@ export function operatorQueueReadsConformance(
           ],
         })
         // The engine takes none of the three: its own predicates hold each instant to its
-        // bounds. So the finder lists none of them, and what it does list is what the
-        // engine takes.
-        const { sleepingPastWake, leaseLapsed } = legsAtLater(seeded)
+        // bounds. So no leg lists the run whose available instant is outside its bounds, or
+        // the run whose lease expiry is, or the task under its deadline. That task's run is
+        // due, and a claim refuses the run of a task whose deadline it cannot read, so the
+        // run is listed as one no claim admits, and no move comes to it. What the finder
+        // lists beside it is what the engine takes.
+        const { sleepingPastWake, dueNotAdmitted, leaseLapsed } = legsAtLater(seeded)
         expect(await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })).toEqual(
-          report(LATER, { sleepingPastWake, leaseLapsed: all(...leaseLapsed.rows.slice(1)) }),
+          report(LATER, {
+            sleepingPastWake,
+            dueNotAdmitted,
+            leaseLapsed: all(...leaseLapsed.rows.slice(1)),
+          }),
         )
         const reached = nothingReached()
         await finderAgainstTheEngine(f, 'beside three corrupt rows', 'corrupt', reached)
-        expect(reached).toEqual({ ...nothingReached(), sleepingPastWake: 2, lostLaunches: 1 })
+        expect(reached).toEqual({
+          ...nothingReached(),
+          sleepingPastWake: 2,
+          lostLaunches: 1,
+          dueNotAdmitted: 1,
+          leftToNoMove: 1,
+        })
+      }))
+
+    it('lists a due run that no claim admits, and neither a claim nor a sweep takes it unless its task is past its deadline', () =>
+      inWorld('queue-not-admitted', async (world) => {
+        const { f, at } = world
+        // Fixture-built: no engine path writes a retry strategy that is not JSON, or a
+        // count of relaunches below zero. A claim refuses the run of a task with the first,
+        // and a run with the second.
+        const byItsTask = await spawn(f, 'refused-by-its-task')
+        await f.raw.batch('fixture:not-admitted', [
+          {
+            sql: "UPDATE tasks SET retry_strategy = 'not json' WHERE task_id = ?",
+            args: [byItsTask.taskId],
+          },
+        ])
+        const itself = await spawn(f, 'refused-itself')
+        const napping = await claimActivated(f.store, Q, 'w-refused')
+        await f.store.suspendRun(
+          Q,
+          napping.runId,
+          napping.claimToken,
+          { inSeconds: 20 },
+          { key: '$sleep:nap', stateJson: 'null' },
+        )
+        await f.raw.batch('fixture:not-admitted', [
+          { sql: 'UPDATE runs SET relaunch_count = -1 WHERE run_id = ?', args: [itself.runId] },
+        ])
+        const doomed = await spawn(f, 'doomed', { cancellation: { maxDelaySeconds: 30 } })
+        const healthy = await spawn(f, 'healthy')
+        await at(LATER)
+        const reads = f.operatorReadsOver(f.raw)
+        const refused = (task: Spawned, taskName: string, state: string, dueAtMs: number) => ({
+          ...owedRun(task, taskName, dueAtMs, LATER),
+          state,
+        })
+        // Oldest first, and the two due since the start in the order of their run ids.
+        const sinceTheStart = [
+          refused(byItsTask, 'refused-by-its-task', 'pending', START),
+          refused(doomed, 'doomed', 'pending', START),
+        ].sort((left, right) => (left.runId < right.runId ? -1 : 1))
+        const dueNotAdmitted = all(
+          ...sinceTheStart,
+          refused(itself, 'refused-itself', 'sleeping', WAKES_AT),
+        )
+        const expected = report(LATER, {
+          dueUnclaimed: all(owedRun(healthy, 'healthy', START, LATER)),
+          dueNotAdmitted,
+          cancelOverdue: all({
+            taskId: doomed.taskId,
+            taskName: 'doomed',
+            state: 'pending',
+            runId: doomed.runId,
+            dueAtMs: DEADLINE_AT,
+            lateByMs: LATER - DEADLINE_AT,
+          }),
+        })
+        expect(await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })).toEqual(expected)
+        // A limit of two lists the two oldest of both states, and says the leg holds more.
+        expect((await reads.stuckRuns(Q, { graceSeconds: 0, limit: 2 })).dueNotAdmitted).toEqual({
+          rows: sinceTheStart,
+          atLeast: true,
+        })
+        // The gauges count all four due runs: a gauge applies none of a claim's admission.
+        const status = await reads.queueStatus(Q)
+        expect({
+          pendingRunsDue: status.gauges.pendingRunsDue,
+          sleepingRunsDue: status.gauges.sleepingRunsDue,
+        }).toEqual({ pendingRunsDue: exactly(3), sleepingRunsDue: exactly(1) })
+        // The claim takes the healthy run alone, the sweep cancels the task past its
+        // deadline, and no move comes to the other two.
+        const reached = nothingReached()
+        await finderAgainstTheEngine(f, 'beside three runs no claim admits', 'refused', reached)
+        expect(reached).toEqual({
+          ...nothingReached(),
+          dueUnclaimed: 1,
+          cancelled: 1,
+          dueNotAdmitted: 3,
+          leftToNoMove: 2,
+        })
+        // They are still listed, and nothing else is.
+        expect(await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })).toEqual(
+          report(LATER, {
+            dueNotAdmitted: all(
+              ...sinceTheStart.filter((run) => run.runId !== doomed.runId),
+              refused(itself, 'refused-itself', 'sleeping', WAKES_AT),
+            ),
+          }),
+        )
       }))
 
     it('lists the live tasks of a queue enqueued at least so long ago, oldest first, each with its age, and no task that ended', () =>

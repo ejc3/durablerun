@@ -69,6 +69,8 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
     owed: {
       pendingRuns: dueByQueue('r'),
       sleepingRuns: dueByQueue('r'),
+      refusedPendingRuns: dueByQueue('r'),
+      refusedSleepingRuns: dueByQueue('r'),
       expiredClaims: dueByQueue('r'),
       dueCancels: dueByQueue('t'),
     },
@@ -481,13 +483,18 @@ type Stored = SqlRow[string]
 /** Database time in every case below, unless the case says otherwise. */
 const NOW = 10_000
 
-/** `stuck-runs` answers its five statements in order: pending, sleeping, lapsed, cancels, database time. */
+/**
+ * `stuck-runs` answers its seven statements in order: pending, sleeping, lapsed, cancels,
+ * the pending and the sleeping runs a claim refuses, database time.
+ */
 const stuck = (
   legs: {
     pending?: SqlRow[]
     sleeping?: SqlRow[]
     lapsed?: SqlRow[]
     cancels?: SqlRow[]
+    refusedPending?: SqlRow[]
+    refusedSleeping?: SqlRow[]
   },
   now: SqlRow[] = [{ now_ms: NOW }],
 ) => ({
@@ -496,6 +503,8 @@ const stuck = (
     legs.sleeping ?? [],
     legs.lapsed ?? [],
     legs.cancels ?? [],
+    legs.refusedPending ?? [],
+    legs.refusedSleeping ?? [],
     now,
   ],
 })
@@ -597,7 +606,7 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
     expect(
       (args['stuck-runs'] ?? []).map((bound) => bound.at(-1)),
       'mutation-verdict:behavior:operator-reads-read-a-leg-one-row-past-its-limit',
-    ).toEqual([3, 3, 3, 3, undefined])
+    ).toEqual([3, 3, 3, 3, 3, 3, undefined])
     expect(
       {
         dueUnclaimed: [listed(answer.dueUnclaimed), answer.dueUnclaimed.atLeast],
@@ -627,6 +636,40 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
     // One batch is the snapshot, and the flag of the test clock follows it.
     expect(sent).toEqual(['stuck-runs', 'fake-clock'])
     expect(answer.fakeClock).toBe(false)
+  })
+
+  it('lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more', async () => {
+    // Database time is 10,000 and the grace one second. Each state is answered oldest
+    // first, as a store answers it, and the leg is the oldest of both.
+    const refused = stuck({
+      refusedPending: [dueRun('p-old', 1_000), dueRun('p-young', 7_000), dueRun('p-inside', 9_500)],
+      refusedSleeping: [dueRun('s-mid', 4_000), dueRun('s-last', 8_000)],
+    })
+    const leg = async (limit: number) => {
+      const answer = await readsAnswering(refused).reads.stuckRuns('q', { graceSeconds: 1, limit })
+      return {
+        rows: answer.dueNotAdmitted.rows.map((row) => [row.runId, row.state, row.lateByMs]),
+        atLeast: answer.dueNotAdmitted.atLeast,
+        others: [
+          answer.dueUnclaimed,
+          answer.sleepingPastWake,
+          answer.leaseLapsed,
+          answer.cancelOverdue,
+        ].map((other) => other.rows.length),
+      }
+    }
+    const oldestThree = [
+      ['p-old', 'pending', 9_000],
+      ['s-mid', 'sleeping', 6_000],
+      ['p-young', 'pending', 3_000],
+    ]
+    expect(await leg(3)).toEqual({ rows: oldestThree, atLeast: true, others: [0, 0, 0, 0] })
+    // Four have been due for the grace, and the fifth has not.
+    expect(await leg(4)).toEqual({
+      rows: [...oldestThree, ['s-last', 'sleeping', 2_000]],
+      atLeast: false,
+      others: [0, 0, 0, 0],
+    })
   })
 
   it('orders a leg oldest first, and rows of one instant by id in code point order', async () => {

@@ -5977,15 +5977,17 @@ whatever the exit.
 **What the driver owes a queue.** `stuck --queue Q [--grace D] [--limit N] [--older-than D]
 [--fail-if-any]` lists the runs and tasks of one queue that a move of the driver is owed to,
 and has been for at least the grace. `stuck` the command and `stuck` the verdict are two
-things. The verdict is `explain`'s reading of one task. The command lists rows of a queue,
-and a row of its four legs is a row the engine's next claim or sweep would take. It says
-nothing of why, and `explain` of the row's task does.
+things. The verdict is `explain`'s reading of one task. The command lists rows of a queue in
+five legs. A row of four of them is a row the engine's next claim or sweep would take, and
+a row of the fifth is a due run that no claim will take. How the two relate is said below.
 
-`stuckRuns(queue, { graceSeconds, limit })` answers four legs, each oldest first.
+`stuckRuns(queue, { graceSeconds, limit })` answers five legs, each oldest first.
 
 - `dueUnclaimed`: the pending runs a claim would take.
 - `sleepingPastWake`: the sleeping runs a claim would take, whose timer, backoff or await's
   timeout has passed.
+- `dueNotAdmitted`: the pending and the sleeping runs that are due and that a claim refuses,
+  each with its state. No claim takes such a run, however long it has been due.
 - `leaseLapsed`: the running runs whose lease has expired, which the sweep takes back. Each
   says whether a worker started it under its newest claim, as `activated`: the sweep fails a
   run that was started, and reopens a launch that was lost.
@@ -6002,15 +6004,41 @@ claim leg however long it has been due. The legs do not go through the claim's c
 subquery, which locks rows and holds the claim's limit: they read the rows it reads without
 it.
 
-One batch, `stuck-runs`, holds the four reads and then a read of the clock, in one read-only
-snapshot. Each leg compares with the clock in SQL, as the engine's statement does. The
+Such a run is in `dueNotAdmitted`. That leg holds the claim's due predicate and the same
+requirement negated, `(claimEligibility) IS NOT TRUE`, which is true of a run the
+requirement is false for and of one it is NULL for, and a claim takes a run for neither. So
+every run the claim's due predicate holds is in one of `dueUnclaimed`, `sleepingPastWake`
+and `dueNotAdmitted`, and in one only. The run of a task past its cancellation deadline is
+in the third, and the sweep cancels that task. A claim also refuses a run or a task that
+holds a row it cannot run safely, such as a stored retry strategy that is not JSON, which no
+engine path writes. No move of the engine comes to such a run: the claim passes it over at
+every tick, the sweep has nothing of it to take, and it stays in the leg for as long as the
+row stays as it is. A leg that listed only what the engine would take left that run out of
+every leg at any grace, which is what this leg is for.
+
+One batch, `stuck-runs`, holds six reads and then a read of the clock, in one read-only
+snapshot: the four legs the engine would take, then the pending and the sleeping runs a
+claim refuses, which core merges into one leg. Each read compares with the clock in SQL, as
+the engine's statement does. The
 report is dated by the batch's last statement, so no leg saw a later clock than the one its
 rows are dated against. Whether the test clock is set follows in `fake-clock`, as it does
 for `taskFacts`.
 
+The two reads of `dueNotAdmitted` cost more than the other four. A LIMIT bounds what a read
+answers and not what it reads. A read of the runs a claim takes stops at its limit, because
+beside a backlog nearly every due run is one. A read of the runs a claim refuses passes over
+each run a claim admits, so beside a backlog of due runs with none refused it tests every
+due run of its state. Measured on libSQL, on a loaded machine: beside 2,000 due pending
+runs the read of the pending runs a claim refuses took 13 ms, and beside 20,000 it took
+114 ms, where the read of the pending runs a claim takes took under 1 ms beside both. That
+is what it costs to say that no due run is refused. The libSQL plan test names the two
+statements with that bound and not with their LIMIT, and BUILD.md records the option of a
+bound on how many due runs they test.
+
 The grace is applied in core, once, to every leg: a row is listed when the instant its move
-came due is at or before database time less the grace. With a grace of zero the legs are
-what a claim and a sweep at that instant take. A row is listed from the millisecond its
+came due is at or before database time less the grace. With a grace of zero four legs are
+what a claim and a sweep at that instant take, and the fifth is every other run that is
+due. A row is listed from the millisecond its
 grace has run. `explain` calls the same move `stuck` one millisecond later, because its rule
 is a move more than the grace in the past: at exactly the grace the command lists the row
 and the verdict is still `waiting`. A leg is read one row past its limit, so `atLeast` says
@@ -6022,14 +6050,17 @@ A run under a lapsed lease whose task is also past its deadline is in two legs,
 finding, side by side, the cancellations first. Over a libSQL file, which runs one batch at
 a time, the cancellation took such a run in every walk of the conformance cases. On
 PostgreSQL and MySQL either the cancellation or the reclaim lands first. The row is owed a
-sweep either way.
+sweep either way. A due run whose task is past its deadline is listed twice as well: the
+run in `dueNotAdmitted`, and its task in `cancelOverdue` with its newest live run.
 
 Every integer a leg selects is decoded under the bounds core gives its field, and one that
 fails is listed in `corrupt` with the run or the task that holds it. Such a row is listed
 whatever the grace, because nothing says it is inside the grace. Through a store an instant
 outside its bounds does not reach a leg: each leg's predicate holds its instant to its
 bounds as the engine's does, so the engine takes no such row and the legs list none. The
-gauges below count it.
+gauges below count it. A claim refuses the run of a task whose cancellation deadline is
+outside its bounds, so that run, when it is due, is in `dueNotAdmitted`. The leg does not
+select the deadline, and `stats` is what names it.
 
 `agedTasks(queue, { olderThanSeconds, limit })` lists the live tasks of a queue that were
 enqueued at least so long ago, oldest first, each with its age. An age is not a defect:
@@ -6054,13 +6085,30 @@ to a list. A duration is a whole number and a unit, `s`, `m`, `h` or `d`, of at 
 years. A grace, an age or a limit the command cannot read exits 2 before anything is sent.
 
 Listing a row is the command doing what it says, so it exits 0. With `--fail-if-any` it
-exits 9 when any row is listed: a row of any of the four legs, and with `--older-than` a
+exits 9 when any row is listed: a row of any of the five legs, and with `--older-than` a
 row of `agedLive` as well. A healthy run under a live lease is in no leg however long it has
 run, so it does not make `--fail-if-any` exit 9 unless the operator asked for live tasks by
 their age. The command exits 10 when its report names a row that is not readable, in the
 legs or in `agedLive`, and that comes before 9, so a script never takes a report with a
 corrupt row for a count. The report prints on stdout whatever the exit. `listed` is the
-number of rows over every list, and a run in two legs counts in both.
+number of rows over every list. A run in two legs counts in both, and a due run with its
+task past its deadline counts once for the run and once for the task.
+
+**How `stuck`, `stats` and `explain` relate.** The three read the same rows and ask
+different things of them. `stats` counts: `pendingRunsDue` and `sleepingRunsDue` are the
+runs of each state whose instant is at or before database time, with nothing of a claim's
+admission, and `claimLagMs` is how long the oldest of them has been due. `stuck` lists:
+with a grace of zero, the runs those two gauges count are the runs of `dueUnclaimed`,
+`sleepingPastWake` and `dueNotAdmitted`, each in one leg, up to the limit. The conformance
+cases hold both to one dump of the tables: the gauges equal a count of it, and every run
+the dump shows as due is in one of the three legs under its own state. So when `claimLagMs`
+is more than a grace, `stuck` under that grace lists a row, and `--fail-if-any` exits 9 or
+10. `explain` reads one task. For a run that is due it names `pending-due-unclaimed`,
+`woken-unclaimed` or `sleeping-past-its-wake`, with the verdict `stuck` once the run is more
+than `DUE_GRACE_MS` late, and under the default grace `stuck` the command lists that run.
+`explain` does not test what a claim requires. It gives a run no claim admits the cause and
+the verdict it gives any due run, and it does not say that no tick will take the run. The
+leg `stuck` lists the run in is what tells the two apart.
 
 **A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, three
 instants and an age. A gauge is a count of rows that stops at 1,000 (`OPERATOR_GAUGE_CAP`),
@@ -6102,7 +6150,7 @@ What a gauge is not:
 - It is not what a claim would take. A gauge counts rows by their state and their instant
   and applies nothing of a claim's or a sweep's admission. A pending run that is due and
   whose task is past its deadline is in `pendingRunsDue`, and no claim takes it. `stuck`
-  lists what the engine would take.
+  lists what the engine would take, and lists that run apart, in `dueNotAdmitted`.
 - It is not a rate. Nothing here says how many runs were claimed or ended in a minute. A
   rate is two readings and the reader's own clock.
 - It is not a histogram. `claimLagMs` is the wait of the head of the queue, and says

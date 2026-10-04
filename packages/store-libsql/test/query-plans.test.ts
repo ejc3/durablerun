@@ -834,6 +834,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'SEARCH r USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>?)'
   /** Every live task of one state, in the order they were enqueued: a range with no upper end. */
   const LIVE_TASKS = 'SEARCH t USING INDEX tasks_live (queue=? AND state=? AND enqueue_at_ms>?)'
+  /** Where the cost of the legs of due runs a claim refuses is recorded, with its option. */
+  const THE_REFUSED_ARE_FEW =
+    'BUILD.md PR5.3c: a leg of the due runs a claim refuses reads every due run of its state until it has its limit of refused ones'
   const DRIVEN_BY_A_DUE_RANGE: Readonly<
     Record<string, { drivers: readonly string[]; boundedBy: string }>
   > = {
@@ -848,6 +851,11 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'stuck-runs/read#1': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
     'stuck-runs/read#2': { drivers: [LEASES], boundedBy: 'LIMIT' },
     'stuck-runs/read#3': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
+    // The due runs of one state that a claim refuses. The LIMIT bounds what a leg answers
+    // and not what it reads: a due run a claim admits is read and passed over, so beside a
+    // backlog of due runs with none refused the leg reads every due run of its state.
+    'stuck-runs/read#4': { drivers: [RUNS_DUE], boundedBy: THE_REFUSED_ARE_FEW },
+    'stuck-runs/read#5': { drivers: [RUNS_DUE], boundedBy: THE_REFUSED_ARE_FEW },
   }
 
   /**

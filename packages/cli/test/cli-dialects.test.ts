@@ -171,17 +171,19 @@ describe('the CLI on every selected dialect', () => {
             answer: withoutDialect(expected?.stdout ?? '{}'),
           })
         }
-        // The comparison is of answers that hold rows: four are listed, and that exits 9
-        // when it was asked to.
+        // The comparison is of answers that hold rows: five are listed, the run of the task
+        // past its deadline among them as one no claim admits, and that exits 9 when it was
+        // asked to. A grace of 30 seconds and a limit of one list the two runs due for a
+        // minute and the sleeper due for half of one.
         const listed = (line: readonly string[]) => {
           const { exit, stdout } = answers.get(line.join(' ')) ?? { exit: -1, stdout: '{}' }
           return { exit, listed: (JSON.parse(stdout) as { listed?: number }).listed }
         }
         expect(OWED_LINES.slice(0, 5).map(listed)).toEqual([
           { exit: 0, listed: 0 },
-          { exit: 0, listed: 4 },
-          { exit: exitCode('found'), listed: 4 },
-          { exit: 0, listed: 2 },
+          { exit: 0, listed: 5 },
+          { exit: exitCode('found'), listed: 5 },
+          { exit: 0, listed: 3 },
           // The four live tasks, each a minute old, and no row of a leg under the default grace.
           { exit: exitCode('found'), listed: 4 },
         ])

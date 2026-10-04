@@ -50,6 +50,7 @@ import type {
   TableRows,
   TaskFacts,
   TaskOutcomeFacts,
+  UnadmittedRun,
   WaitFacts,
 } from './types.js'
 import {
@@ -129,11 +130,15 @@ export interface OperatorReadsDialect {
    * with the queue bound: over a run `r` and its task `t`, a claim's candidates of one
    * state and the sweep's expired claims, and over a task `t`, the sweep's due
    * cancellations. A store hands out the predicate its claim and its sweep are built from,
-   * so a leg of `stuck-runs` cannot mean anything the engine does not.
+   * so a leg of `stuck-runs` cannot mean anything the engine does not. The two `refused`
+   * members are the due runs of one state that the claim refuses: the claim's due
+   * predicate, with what the claim requires of a run and its task negated.
    */
   readonly owed: {
     pendingRuns(queue: string): SqlFragment
     sleepingRuns(queue: string): SqlFragment
+    refusedPendingRuns(queue: string): SqlFragment
+    refusedSleepingRuns(queue: string): SqlFragment
     expiredClaims(queue: string): SqlFragment
     dueCancels(queue: string): SqlFragment
   }
@@ -671,6 +676,16 @@ async function stuckRuns(
     overdueCancelsRead({ limit: limit + 1, due: owed.dueCancels(queue), liveRunOfTask }),
     OPERATOR_REPORT_DRIFT,
   )
+  b.readTree(
+    'refused-pending',
+    runs(owed.refusedPendingRuns(queue), 'available_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  b.readTree(
+    'refused-sleeping',
+    runs(owed.refusedSleepingRuns(queue), 'available_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
   b.readTree('now', databaseNowRead({}), OPERATOR_REPORT_DRIFT)
   const ran = await dialect.run(b)
   const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
@@ -721,6 +736,17 @@ async function stuckRuns(
     )
   const dueUnclaimed = owedRuns('pending')
   const sleepingPastWake = owedRuns('sleeping')
+  // One leg of the two states, each read oldest first and one row past the limit, so the
+  // oldest of both are among the rows read.
+  const refused = (leg: string, state: UnadmittedRun['state']) =>
+    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state }))
+  const dueNotAdmitted: Capped<UnadmittedRun> = owedFor(
+    [...refused('refused-pending', 'pending'), ...refused('refused-sleeping', 'sleeping')],
+    byRun,
+    nowMs,
+    graceMs,
+    limit,
+  )
   const leaseLapsed: Capped<LapsedRun> = owedFor(lapsed, byRun, nowMs, graceMs, limit)
   const cancelOverdue: Capped<OverdueTask> = owedFor(
     cancels,
@@ -734,6 +760,7 @@ async function stuckRuns(
     fakeClock,
     dueUnclaimed,
     sleepingPastWake,
+    dueNotAdmitted,
     leaseLapsed,
     cancelOverdue,
     corrupt: inOrder(corrupt),

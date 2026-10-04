@@ -31,7 +31,13 @@ import {
  * `operator-reads` surface, against the engine and against a dump of every table.
  */
 
-const LEGS = ['dueUnclaimed', 'sleepingPastWake', 'leaseLapsed', 'cancelOverdue'] as const
+const LEGS = [
+  'dueUnclaimed',
+  'sleepingPastWake',
+  'dueNotAdmitted',
+  'leaseLapsed',
+  'cancelOverdue',
+] as const
 type Leg = (typeof LEGS)[number]
 
 interface Row {
@@ -72,6 +78,7 @@ async function stuck(db: CliDb, flags: readonly string[] = [], opener?: StoreOpe
 const NO_ROW: Readonly<Record<Leg, string[]>> = {
   dueUnclaimed: [],
   sleepingPastWake: [],
+  dueNotAdmitted: [],
   leaseLapsed: [],
   cancelOverdue: [],
 }
@@ -93,6 +100,9 @@ describe('stuck on libSQL', () => {
       const everyLeg = {
         dueUnclaimed: [seeded.due],
         sleepingPastWake: [seeded.sleeper],
+        // The run of the task past its deadline: a claim refuses it, and the sweep cancels
+        // its task.
+        dueNotAdmitted: [seeded.doomedRun],
         leaseLapsed: [seeded.abandoned],
         cancelOverdue: [seeded.doomed],
       }
@@ -113,26 +123,28 @@ describe('stuck on libSQL', () => {
         listed: 0,
         ids: NO_ROW,
       })
-      // At grace 0 it lists what a claim and a sweep would take this instant. The lease
-      // expires at this very millisecond, and its run is listed.
+      // At grace 0 it lists what a claim and a sweep would take this instant, and the due
+      // run a claim refuses. The lease expires at this very millisecond, and its run is
+      // listed.
       const now = await stuck(db, ['--grace', '0s'])
       expect({ exit: now.exit, listed: now.listed, ids: now.ids }).toEqual({
         exit: 0,
-        listed: 4,
+        listed: 5,
         ids: everyLeg,
       })
       expect(
         LEGS.map((leg) => now.answer[leg].rows.map((row) => row.lateByMs)),
-        'how late each move is: the due run a minute, the sleeper half of one, the lease not at all, the deadline a quarter',
-      ).toEqual([[60_000], [30_000], [0], [15_000]])
+        'how late each move is: the due run a minute, the sleeper half of one, the refused run a minute, the lease not at all, the deadline a quarter',
+      ).toEqual([[60_000], [30_000], [60_000], [0], [15_000]])
       expect(now.answer.leaseLapsed.rows[0]?.activated).toBe(true)
-      // A grace between the two lists the one move owed that long.
+      // A grace between the two lists the two runs that have been due that long.
       expect((await stuck(db, ['--grace', '1m'])).ids).toEqual({
         ...NO_ROW,
         dueUnclaimed: [seeded.due],
+        dueNotAdmitted: [seeded.doomedRun],
       })
       expect((await stuck(db, ['--grace', '61s'])).ids).toEqual(NO_ROW)
-      // Once the grace has run for the last of them, the default lists all four.
+      // Once the grace has run for the last of them, the default lists all five.
       await db.admin.setFakeNowEpochMs(OWED_AT_MS + DUE_GRACE_MS)
       const later = await stuck(db)
       expect({ exit: later.exit, ids: later.ids }).toEqual({ exit: 0, ids: everyLeg })
@@ -150,7 +162,9 @@ describe('stuck on libSQL', () => {
         'exit: done',
         `queue: ${QUEUE}`,
         'graceSeconds: 0',
-        'listed: 4',
+        'listed: 5',
+        'dueNotAdmitted:',
+        '      state: pending',
         'leaseLapsed:',
         `      runId: ${seeded.abandoned}`,
         '      activated: true',

@@ -10,6 +10,7 @@ import {
   type QueueStatus,
   type StuckRuns,
   type TableRows,
+  type UnadmittedRun,
 } from '@durablerun/core'
 import { type Printed, corruptView } from './inspect.js'
 
@@ -24,6 +25,16 @@ const overdueRunView = (run: OverdueRun): Printed<OverdueRun> => ({
   runId: run.runId,
   taskId: run.taskId,
   taskName: run.taskName,
+  attempt: run.attempt,
+  dueAtMs: run.dueAtMs,
+  lateByMs: run.lateByMs,
+})
+
+const unadmittedRunView = (run: UnadmittedRun): Printed<UnadmittedRun> => ({
+  runId: run.runId,
+  taskId: run.taskId,
+  taskName: run.taskName,
+  state: run.state,
   attempt: run.attempt,
   dueAtMs: run.dueAtMs,
   lateByMs: run.lateByMs,
@@ -51,11 +62,14 @@ const legView = <Row>(leg: Capped<Row>, view: (row: Row) => unknown): Printed<Ca
 
 /**
  * How many rows the legs list between them, which is what `--fail-if-any` asks about. A run
- * under a lapsed lease whose task is also past its deadline is a row of two legs.
+ * under a lapsed lease whose task is also past its deadline is a row of two legs, and so is
+ * a due run no claim admits whose task is past its deadline: its run is in `dueNotAdmitted`
+ * and its task in `cancelOverdue`.
  */
 export const rowsListed = (owed: StuckRuns): number =>
   owed.dueUnclaimed.rows.length +
   owed.sleepingPastWake.rows.length +
+  owed.dueNotAdmitted.rows.length +
   owed.leaseLapsed.rows.length +
   owed.cancelOverdue.rows.length
 
@@ -68,6 +82,7 @@ export function stuckView(
     fakeClock: owed.fakeClock,
     dueUnclaimed: legView(owed.dueUnclaimed, overdueRunView),
     sleepingPastWake: legView(owed.sleepingPastWake, overdueRunView),
+    dueNotAdmitted: legView(owed.dueNotAdmitted, unadmittedRunView),
     leaseLapsed: legView(owed.leaseLapsed, lapsedRunView),
     cancelOverdue: legView(owed.cancelOverdue, overdueTaskView),
     corrupt: owed.corrupt.map(corruptView),

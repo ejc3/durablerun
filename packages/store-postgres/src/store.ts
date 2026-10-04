@@ -458,6 +458,21 @@ export const CLAIM_OWED_PENDING = claimOwed('pending')
 export const CLAIM_OWED_SLEEPING = claimOwed('sleeping')
 
 /**
+ * The runs of one state that are due, as the claim's candidates are, and that the claim
+ * refuses, over a run `r` and its task `t`: what the claim requires of the two
+ * (`claimEligibility`) is not true of them. It is `claimOwed` with that requirement
+ * negated, so every due run of the state is in one of the two and none is in both.
+ * `IS NOT TRUE` holds for a requirement that is false and for one that is NULL, and a
+ * claim takes a run for neither. Each binds the queue once.
+ */
+const claimRefuses = (state: 'pending' | 'sleeping'): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${runAvailableDue('r', NOW)}
+  AND (${claimEligibility('r', 't')}) IS NOT TRUE`
+export const CLAIM_REFUSES_PENDING = claimRefuses('pending')
+export const CLAIM_REFUSES_SLEEPING = claimRefuses('sleeping')
+
+/**
  * The rows each gauge of the operator's `queue-status` counts: the runs of one state whose
  * instant is stored at all, and the live tasks whose cancellation deadline is. None holds
  * its instant to bounds, because a gauge counts a row whose instant its bounds refuse, and

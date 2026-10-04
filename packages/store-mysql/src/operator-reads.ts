@@ -10,6 +10,8 @@ import { rollbackError, rollbackOutcome, runOwnedByTask, sagaBegan } from './fra
 import {
   CLAIM_OWED_PENDING,
   CLAIM_OWED_SLEEPING,
+  CLAIM_REFUSES_PENDING,
+  CLAIM_REFUSES_SLEEPING,
   COUNTED_DEADLINES,
   COUNTED_PENDING_RUNS,
   COUNTED_RUNNING_RUNS,
@@ -66,10 +68,13 @@ class MysqlOperatorReads {
       rollbackError: sqlFragment(rollbackError('tasks')),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
       liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
-      // What the claim and the sweep of this store would take now, by their own predicates.
+      // What the claim and the sweep of this store would take now, by their own predicates,
+      // and the due runs its claim refuses, by the claim's own predicate negated.
       owed: {
         pendingRuns: (queue) => sqlFragment(CLAIM_OWED_PENDING, [queue]),
         sleepingRuns: (queue) => sqlFragment(CLAIM_OWED_SLEEPING, [queue]),
+        refusedPendingRuns: (queue) => sqlFragment(CLAIM_REFUSES_PENDING, [queue]),
+        refusedSleepingRuns: (queue) => sqlFragment(CLAIM_REFUSES_SLEEPING, [queue]),
         expiredClaims: (queue) => sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
         dueCancels: (queue) => sqlFragment(SWEEP_CANCELS_DUE, [queue]),
       },

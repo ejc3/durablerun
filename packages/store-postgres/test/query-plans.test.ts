@@ -705,6 +705,16 @@ it("reads a queue for an operator through the index of each leg's instant, and s
       'waits_pkey on waits w',
       'runs_task_attempt on runs higher',
     ]
+    // The same tables through the same indexes, in the order the planner tests what a
+    // claim requires when the leg keeps the runs it is not true of.
+    const aClaimRefuses = [
+      'runs_poll on runs r',
+      'tasks_pkey on tasks t',
+      'runs_task_attempt on runs sibling',
+      'waits_event on waits w',
+      'waits_pkey on waits w_1',
+      'runs_task_attempt on runs higher',
+    ]
     expect(
       Object.fromEntries(
         Object.entries(reached)
@@ -727,8 +737,11 @@ it("reads a queue for an operator through the index of each leg's instant, and s
       ],
       // Tasks past their deadline, by the index of deadlines.
       'stuck-runs#3': ['tasks_cancel on tasks t', 'runs_task_attempt on runs ownership_run'],
+      // The due runs a claim refuses, pending and then sleeping, by their due instant.
+      'stuck-runs#4': aClaimRefuses,
+      'stuck-runs#5': aClaimRefuses,
       // The clock, which reads `meta` and nothing else.
-      'stuck-runs#4': [],
+      'stuck-runs#6': [],
       'queue-status#0': [
         "runs_poll on runs r: ((queue = $1) AND (state = 'pending'::text) AND (available_at_ms IS NOT NULL))",
       ],
