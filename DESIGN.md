@@ -6126,6 +6126,16 @@ than `DUE_GRACE_MS` late, and under the default grace `stuck` the command lists 
 the verdict it gives any due run, and it does not say that no tick will take the run. The
 leg `stuck` lists the run in is what tells the two apart.
 
+The two legs of the sweep are not split as the legs of due runs are. `leaseLapsed` and
+`cancelOverdue` hold what the sweep's scan takes and nothing else. A running run under a
+lapsed lease that the scan's own admission refuses, as one whose stored generations no
+engine path writes is, is counted by `runningRunsLapsed`, is called `stuck` by `explain`,
+and is in no leg. The same holds of a task past its deadline that the scan refuses. Tried
+on libSQL with a started run whose `activated_gen` was set past its `claim_gen`, an hour
+after its lease lapsed: the sweep took nothing, `stuck --grace 0s --fail-if-any` listed
+nothing and exited 0, `stats` counted one lapsed lease, and `explain` answered
+`lease-lapsed-unswept` and `stuck`. BUILD.md records the two legs that would list such rows.
+
 **A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, three
 instants and an age. A gauge is a count of rows that stops at 1,000 (`OPERATOR_GAUGE_CAP`),
 with `atLeast` true when the queue holds more.
