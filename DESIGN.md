@@ -4014,6 +4014,28 @@ not depend on careful reading:
   the refusal of every string place before anything is sent. It reads what the seeds reach:
   a corrupt value in a row of `checkpoints` reaches the facts only through a store's saga
   fragments, and no case plants one.
+- *The retention surface* (`conformance/src/retention.ts`): what the purge of §3.12 will
+  rely on, held on each dialect before any store can delete. For each terminal batch
+  label, with the cases generated from `TERMINAL_BATCH_LABELS`, a task is made ready at
+  one instant and ended by that batch at a later one. `tasks.fence_at_ms` must then read
+  the ending instant, and so must the instant of the completion event the batch wrote,
+  and the rows must pass `engineHistoryViolations`. For each write label and each terminal
+  state, with the cells generated from `MATRIX_WRITE_LABELS` and `TERMINAL_STATES`, the
+  engine ends the poison matrix's seeded task, the clock moves on five seconds, and the
+  label is invoked on the ended task and then on a healthy trigger. The label's batch must
+  run and change something, the call on the healthy trigger must not throw, and every
+  task that had ended must read the state and the stamp it read before. The one exception
+  is a failed task that `retry-task` revives, whose stamp must read the instant of the
+  revival. Three more cases write by hand the rows a wrong purge would leave, with nothing
+  else wrong: a task row with no run, the spawn memo of a live task whose child is gone,
+  and a wait on the completion event of a task that is gone with its event.
+  `engineHistoryViolations` must answer each with its one finding. A case nobody has seen
+  fail holds nothing, so `conformance/test/retention-reds.test.ts` runs every stamp case
+  and every cell on libSQL over a store bent to do what the case forbids. With core's
+  generated update writing NULL for the instant, the seven stamp cases fail by their own
+  assertion, and a registered mutation holds that for the `fail` case. A statement that
+  writes a task row and leaves the instant out is refused earlier, when its batch is built
+  (§3.4 rule 8).
 - *The counts of this document* (`conformance/test/design-counts.test.ts`): a
   count stated here for a property the code pins carries a marker straight
   after the number, an HTML comment that names the property, and the test
@@ -6027,10 +6049,13 @@ depend on them can be built.
 - **Age.** A unit's age is read from `tasks.fence_at_ms`, the stamp its
   terminal batch writes from the ending run's instant, compared in SQL against
   database now minus the window, so a client passes only a duration (§3.4 rule
-  3). A NULL stamp is never selected. The stamp is the last write of the task
-  row, not only of its ending: the stamp of a task that has slept for days is
-  days old. So the age alone never selects a task, and the barrier reads the
-  state beside it (`RetentionProbeLiveTask`).
+  3). A NULL stamp is never selected. Every batch that ends a task writes the
+  stamp, and once a task has ended only `retry-task` moves it, when it revives
+  a failed task, so the revived task's age starts again. The retention surface
+  (`conformance/src/retention.ts`) holds both on each dialect. The stamp is the
+  last write of the task row, not only of its ending: the stamp of a task that
+  has slept for days is days old. So the age alone never selects a task, and
+  the barrier reads the state beside it (`RetentionProbeLiveTask`).
 - **The barrier.** A unit is purged only when all five conditions hold, read
   inside the purge batch's compare-and-set, at the instant of deletion. A list
   of candidates read earlier is only a list of candidates.
@@ -6168,30 +6193,48 @@ can race: spawn and its replay, every terminal batch with its completion event
 and wake, the three awaits, the woken claim and the timed wait, sagas,
 `retryTask`, an older build's ending, and database time. TLC checks these
 properties under weak fairness on every configuration. Each names its
-executable twin: the ones the invariant library already has, and the ones
-PR5.2c1 and PR5.2c2 add, which the table names by the PR that builds them.
+executable twin: the ones the invariant library has, the three conditions of
+`retentionViolations`, which `engineHistoryViolations` runs behind every
+surface that judges a history, and the ones PR5.2c2 and PR5.2d add, which the
+table names by the PR that builds them.
 
 | Property | What it says | Executable twin |
 |---|---|---|
-| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2); for a task row with no run: a condition PR5.2c1 adds |
+| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2); for a task row with no run: `task-without-a-run` |
 | `PurgeOnlyDeadAndOld` | only a task in a policy state, a window old, is purged | the barrier grid's state and age legs (PR5.2c2) |
-| `ReplayableParentKeepsChild` | a parent that can still run finds its child | a live or revivable task's `$spawn` memo names an existing task (PR5.2c1), and the consequence oracle (PR5.2c2) |
-| `NoStrandedWaiter` | a wait on a completion event has its task | a wait on a completion event has its task or its event (PR5.2c1) |
+| `ReplayableParentKeepsChild` | a parent that can still run finds its child | `spawn-memo-without-its-task`: a live task, or a failed one whose saga never began, holds no spawn memo whose child is gone; and the consequence oracle (PR5.2c2) |
+| `NoStrandedWaiter` | a wait on a completion event has its task | `completion-wait-without-its-task-or-event`: a wait on a completion event has that task in its queue, or the event |
 | `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
 | `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the purge label's crash and duplicate cells (PR5.2c2) |
 | `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
 | `TypeOK` | the variables keep their types | none needed |
 
-`WholeUnit` has two halves, and the invariant library holds one of them today:
-no run, checkpoint, wait, or completion event outlives its task. The other half,
-a terminal task row whose runs were deleted, has no executable twin yet. The
-library flags a task with no run only while the task is live, and its accounting
-conditions skip a task with no run, so a purge that deleted the runs,
-checkpoints, and event but kept the task row would pass `engineHistoryViolations`.
-PR5.2c1 adds the condition that every task row has a run, as issue #103 records.
-The condition holds today, because every task is inserted with its first run and
-nothing deletes a run.
+`WholeUnit` has two halves. The invariant library holds one: no run,
+checkpoint, wait, or completion event outlives its task. `retentionViolations`
+(`conformance/src/retention-rows.ts`) holds the other, that every task row has
+a run. The library flags a task with no run only while the task is live, and
+its accounting conditions skip a task with no run, so without this condition a
+purge that deleted a unit's runs, checkpoints, and event and kept its task row
+would pass every row check. The checker is not part of the invariant library,
+because that library also judges rows the poison matrix writes by hand, and
+the matrix seeds a completed task with no run.
+
+The checker's other two conditions read the rows as a replay and a waiter
+would. A parent's child is read from the stored spawn memo, a checkpoint whose
+name starts with `$spawn:` and whose state is the child handle `ctx.spawn`
+returned, and never from a child's key. A memo of such a parent that holds no
+child handle is named too, because no replay can read it as a child. The
+parents held are the ones that can still run their code: a live task, one that
+is rolling back included, and a failed task whose saga never began, which
+`retryTask` revives. The children of a completed or cancelled parent are not
+held, as B5 does not hold them. The children of a parent that failed with a
+saga are not held either: B5 keeps them, and the model's property, which this
+condition is the twin of, does not. A wait is held to its own queue, because a
+completion event lives in its task's queue, so only a task or an event of the
+wait's queue can wake it. Every surface that judges a history passes all three
+conditions today, since nothing deletes a task. Each is seen failing on rows
+written by hand, on every dialect.
 
 Each mutant in `specs/Retention.mutants.json` deletes or bends one guard of the
 barrier or the batch and is caught by the property it names, and each probe

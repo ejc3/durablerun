@@ -490,7 +490,40 @@ accepts it.
     raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
     terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
     a path exists today, its fix lands in this PR as its own red-then-green
-    pair. NOT MET.
+    pair. This is met. The stamp cases and the cells passed on their first run
+    on the three dialects, so no terminal path left the stamp NULL or wrong, and
+    the engine is unchanged. `packages/conformance/src/retention.ts` is the
+    `retention` surface, the fourteenth behind the one enrollment door, which
+    line 42 extends. On each dialect, "<label> stamps the task it ends with the
+    ending instant" is generated from `TERMINAL_BATCH_LABELS` over the
+    child-task surface's `TERMINAL_BATCHES`, a list its own inventory case holds
+    equal to the labels: the task is made ready at one instant and ended at
+    least 2.5 seconds later, and the row's stamp and the completion event's
+    instant must both read the ending instant. "<label> leaves the stamp of a
+    <state> task where its ending put it" is generated for each of the 21 write
+    labels and the three terminal states, 63 cells a dialect, and the cell of
+    `retry-task` over a failed task expects the stamp at the instant of the
+    revival. `packages/conformance/src/retention-rows.ts` holds the three
+    conditions as `retentionViolations`, the fourth checker
+    `engineHistoryViolations` runs: `task-without-a-run`,
+    `spawn-memo-without-its-task` and
+    `completion-wait-without-its-task-or-event`. "names a task row whose runs
+    are gone", "names the spawn memo of a live task whose child is gone" and
+    "names a wait on the completion event of a task that is gone with its event"
+    write those rows with raw fixture SQL on each dialect. Each failed by name
+    on libSQL, PostgreSQL and MySQL before its condition existed, answering an
+    empty list where its one finding was expected.
+    `packages/conformance/test/retention-rows.test.ts` holds the edges of each
+    condition, `packages/sdk/test/child-tasks.test.ts` holds that the memo and
+    the wait the SDK writes are the ones the checker reads, and
+    `packages/conformance/test/retention-reds.test.ts` runs each of the 7 stamp
+    cases and the 63 cells over a store that does what the case forbids. The
+    red: with core's generated update writing NULL for the instant, all seven
+    stamp cases failed by name, and the registered mutation
+    `terminal-batch-stamps-the-ending-instant` holds that plant to the `fail`
+    case. A statement that writes a task row and leaves the instant out is
+    refused when its batch is built. Eleven more registered mutations hold the
+    helper's fourth checker and the three conditions with their edges.
 42. PR5.2c2: purge removes exactly what the model allows, whole units only, on
     the three dialects. The barrier grid crosses terminal state (completed,
     failed with a saga, failed without, cancelled) with spawning-parent state
@@ -512,8 +545,9 @@ accepts it.
     the purge label leave a whole unit or none. A contest of four purgers beside
     a claimer, a sweeper and a spawner reusing purged keys shows `deadlocks() ==
     0` on PostgreSQL and MySQL, whole units after every round
-    (run-owner-missing, checkpoint-owner-run-missing, wait-run-missing, and
-    every completion event names an existing task), and no spawn throwing the
+    (run-owner-missing, checkpoint-owner-run-missing, wait-run-missing,
+    task-without-a-run, and every completion event names an existing task), and
+    no spawn throwing the
     error for a lost task insert. No purge statement uses SKIP LOCKED. The
     native purge-versus-await race runs in the shared `retention` surface on
     every dialect. Core refuses a window under 3,600 seconds. Each barrier
@@ -6226,6 +6260,53 @@ these three things; nothing else in the system does I/O, time, or randomness.
     well. `diagnose` reads facts that the operator-reads surface already holds equal on the
     three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
     names differently on two dialects.
+- **PR5.2c1 the terminal stamp and the retention row checks**: IN REVIEW. Exit test line 41
+  of the operable alpha milestone. No statement, no batch and no schema version is added, no
+  released declaration changes, and core, the stores, the SDK and the CLI are unchanged
+  outside one SDK test. The conformance package gains the `retention` surface, the
+  fourteenth behind the one door, and `retentionViolations`, the fourth checker
+  `engineHistoryViolations` runs. No terminal path left `tasks.fence_at_ms` NULL or wrong,
+  and no existing surface tripped a new condition. The registry holds 1257 mutations where
+  main holds 1245: one for the stamp a terminal batch writes, one for the helper's fourth
+  checker, and ten for the three conditions and their edges. The base gate's arm is keyed on
+  main's digest and exempts their eight markers. It re-aims no entry of main's registry.
+  - Where the build differs from the plan, and why. (1) The stamp cases, the cells and the
+    three fixture cases are a surface of their own, `retention`, where the plan put them
+    beside the lists they are generated from. Line 42 already names the shared `retention`
+    surface, so the cases the purge will add to have one home. The cell's observer is in the
+    poison matrix's file, beside the seeds and the invocations it reuses. (2) The second condition
+    also names a spawn memo that holds no child handle, for a task that can still run its
+    code. No replay can read such a memo as a child, so it names no existing task. (3)
+    "Revivable" is read as the model reads it: a failed task whose saga never began. A task
+    that is rolling back is live, and is held. (4) A wait has its task only when the task is
+    in the wait's own queue, and its event likewise, because a completion event lives in its
+    task's queue. (5) The findings of each condition are ordered by code unit, so the
+    checker's answer does not depend on the order a database returns rows in. (6) The task a
+    cell starts from is ended by the engine, through `complete`, `fail` or `cancelTask`, and
+    not written by hand, so the stamp the cell holds still is one a terminal batch wrote.
+  - Seen failing. Before the checker existed the three fixture cases failed by name on each
+    dialect. With `fence_at_ms: null` planted in core's generated update, all seven stamp
+    cases failed by their own assertion. With the instant left out of that update, all seven
+    failed by name as well. With it left out of `complete`'s task mirror, or of the cancel
+    compare-and-set, core's build rules refused the batch, and the stamp case of `complete`,
+    and those of `cancel-task` and `sweep:cancel`, failed by name with the rule's message.
+    The cells have no plant in the engine: every cell is run over a bent store instead,
+    which moves the ended task's stamp after the label's batch.
+  - Option for the helper's first case, not built, with its trigger: rename "names a defect
+    of each of its three checkers", which the helper outgrew when it gained a fourth. A
+    registered verdict names its case by title, and the base gate grades this pull request
+    with main's registry, whose arm may add or re-aim entries and never change a verdict.
+    The case's comment says which three it means. Trigger: the next pull request that edits
+    `engine-history.test.ts`, whose base registry is this one.
+  - Option for the spawn memo's name, not built, with its trigger: one constant in core for
+    the prefix of the checkpoint a spawn memo is stored under, read by the SDK and by the
+    checker. Today the SDK spells `$spawn:` where it builds the key and the checker spells
+    it again, and the SDK's case of a child whose rows are gone holds the two together.
+    Trigger: a second reader of a spawn memo outside the SDK.
+  - Option for the cells, not built, with its trigger: a fourth pre-state, a task that
+    failed with a saga, which `retry-task` refuses. The three cells of `retry-task` hold a
+    completed and a cancelled task still and a failed one revived. Trigger: PR5.2c2, whose
+    barrier grid builds a saga-failed task.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
