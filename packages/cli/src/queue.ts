@@ -131,9 +131,11 @@ const gaugesView = <Name extends string>(
 /**
  * What `stats` prints of a queue's state, every member of it, with the cap of its gauges
  * and one word for the whole: `quiet` when every gauge is zero, and `active` otherwise. It
- * never says a queue is well. A gauge counts rows by their state and their instant, so a
- * queue whose every run waits on an event nobody emits is `quiet`, and so is one whose
- * driver has stopped with nothing enqueued.
+ * never says a queue is well. `quiet` says the queue holds no live task, and that is as
+ * true of a queue whose driver has stopped with nothing enqueued as of a healthy idle one.
+ * `active` says only that some gauge is not zero. A queue whose every run waits on an
+ * event nobody emits is `active`, by the gauge of its live tasks, and the word says
+ * nothing of whether its work is moving.
  */
 export function statsView(status: QueueStatus): Printed<Omit<QueueStatus, 'nowMs'>> & {
   readonly databaseNowEpochMs: unknown

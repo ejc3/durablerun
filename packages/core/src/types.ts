@@ -495,9 +495,11 @@ export interface QueueStatus {
    */
   readonly leaseHeadroomMs: number | null
   /**
-   * The earliest instant any row a gauge counts holds, past or to come, or null when none
-   * holds one. Where every stored instant is readable it is the instant the store's own
-   * read of a queue's next wake answers.
+   * The earliest instant a run or a cancellation deadline that a gauge counts holds, past
+   * or to come, or null when none holds one. The enqueue instant of a live task is not
+   * among them, though the gauge of live tasks reads it: it is when a task entered the
+   * queue, and no move comes due at it. Where every stored instant is readable it is the
+   * instant the store's own read of a queue's next wake answers.
    */
   readonly nextWakeAtMs: number | null
   /**

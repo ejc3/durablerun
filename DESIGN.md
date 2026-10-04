@@ -6078,8 +6078,21 @@ no leg lists the task under the default grace, a grace of zero shows it at the s
 instants, and its age finds it. One batch, `aged-tasks`, reads the live tasks of each live
 state through the index of live tasks (schema version 11, below), in the order they were
 enqueued and one row past the limit, and then the clock. Core merges the legs and applies
-the age with the comparison it applies a grace with. A task whose enqueue instant is
-outside its bounds is listed however old was asked, with no age, and named in `corrupt`.
+the age with the comparison it applies a grace with.
+
+A task whose enqueue instant is outside its bounds is reported when its leg reads it, and
+only then. It is named in `corrupt`, and it is listed whatever age was asked, with no age,
+after every task whose age is readable. A leg reads its state's tasks in the order of the
+stored instant and stops one row past the limit, so such a task is read where its stored
+value sorts: first when the value is below its bounds, and last, after every other live
+task of its state, when it is above them. A limit that stops the leg before that row leaves
+the task out of the list and out of `corrupt`, so for such a row what `stuck --older-than`
+exits with can depend on `--limit`. With three pending tasks and one of them enqueued past
+the bound, a limit of one exits 0, a limit of two exits 10 and names the task without
+listing it, and a limit of five exits 10 and lists it. The gauge of live tasks reads the
+same order up to its cap, so beyond 1,001 live tasks of a state `stats` does not name such
+a task either. BUILD.md records the option of a bounded read of the rows whose instant is
+not readable.
 
 `stuck` prints `stuckRuns`, and with `--older-than` it prints `agedTasks` under `agedLive`,
 read after the legs in a snapshot of its own, with the database time it was read at. The

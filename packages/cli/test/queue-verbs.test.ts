@@ -783,6 +783,41 @@ describe('stuck --older-than on libSQL', () => {
       }
     }))
 
+  it('reports a live task enqueued past its bound only when its leg reads it, so the exit depends on the limit', () =>
+    onDb('stuck-older-than-behind-a-limit', async (db) => {
+      const tasks = [
+        await db.store.spawn(QUEUE, 'first', '{}'),
+        await db.store.spawn(QUEUE, 'second', '{}'),
+        await db.store.spawn(QUEUE, 'third', '{}'),
+      ]
+      const beyond = tasks[0]?.taskId ?? ''
+      // Fixture-built: no engine path writes an enqueue instant past its bound. The index
+      // of live tasks orders by the stored instant, so this task is the last of its state.
+      await db.raw.batch('fixture:out-of-bounds', [
+        {
+          sql: 'UPDATE tasks SET enqueue_at_ms = ? WHERE task_id = ?',
+          args: [MAX_EPOCH_MS + 1, beyond],
+        },
+      ])
+      await db.admin.setFakeNowEpochMs(NOW_MS + 60_000)
+      const under = async (limit: number) => {
+        const run = await stuck(db, ['--older-than', '1s', '--limit', String(limit)])
+        return {
+          limit,
+          exit: run.exit,
+          named: run.answer.agedLive?.corrupt.map((entry) => entry.taskId),
+          listsIt: run.answer.agedLive?.rows.some((task) => task.taskId === beyond),
+        }
+      }
+      expect([await under(1), await under(2), await under(5)]).toEqual([
+        // The leg stops at two rows, before the task: it is neither listed nor named.
+        { limit: 1, exit: 0, named: [], listsIt: false },
+        // The leg reads three rows, the task last: it is named, and the list has no room for it.
+        { limit: 2, exit: exitCode('unreadable'), named: [beyond], listsIt: false },
+        { limit: 5, exit: exitCode('unreadable'), named: [beyond], listsIt: true },
+      ])
+    }))
+
   it('exits 10 for a live task whose enqueue instant is not readable, lists it, and puts that before exit 9', () =>
     onDb('stuck-older-than-corrupt', async (db) => {
       const task = await db.store.spawn(QUEUE, 'job', '{}')
