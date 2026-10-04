@@ -23,7 +23,11 @@ import {
   taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { type RecordedBatch, RecordingExecutor } from '@durablerun/core/testing'
-import { MATRIX_WRITE_LABELS, TERMINAL_BATCH_LABELS } from './fault-matrix.js'
+import {
+  MATRIX_WRITE_LABELS,
+  type MatrixWriteLabel,
+  TERMINAL_BATCH_LABELS,
+} from './fault-matrix.js'
 import {
   type StorageCorruption,
   type StorageCorruptionDisposition,
@@ -38,6 +42,7 @@ import {
   type EngineInvariantFinding,
   engineInvariantFindings,
 } from './invariants.js'
+import { withFixture } from './scenario.js'
 
 /**
  * Generated corrupt-pre-state surface.
@@ -3936,37 +3941,41 @@ export interface EndedTaskStamp {
   readonly stampedAtMs: number | null
 }
 
+/** One task that had ended, as a terminal pre-state cell read it before the label ran and after. */
+export interface EndedTaskStamps {
+  readonly before: EndedTaskStamp
+  readonly after: EndedTaskStamp
+}
+
 export interface TerminalPreStateObservation {
   /** The label's batch crossed the executor and changed durable state. */
   readonly fired: boolean
   /** How the label's call on the healthy trigger settled. */
   readonly healthy: 'fulfilled' | 'rejected'
-  /** The instant the engine ended the cell's task at. */
-  readonly endedAtMs: number
-  /** The later instant both invocations ran at. */
-  readonly invokedAtMs: number
   /** Every task that was terminal before the invocations, before them and after. */
-  readonly tasks: Readonly<Record<string, { before: EndedTaskStamp; after: EndedTaskStamp }>>
+  readonly tasks: Readonly<Record<string, EndedTaskStamps>>
 }
 
-/** The port call that ends the base population's running task in each terminal state. */
-const END_SEEDED_TASK: Readonly<
-  Record<TerminalState, (store: SchedulerStore) => Promise<unknown>>
-> = {
-  completed: (store) => store.complete(Q, RUN, TOKEN, '{"ended":true}'),
-  failed: (store) => store.fail(Q, RUN, TOKEN, '{"name":"PoisonEnded"}', null),
-  cancelled: (store) => store.cancelTask(Q, TASK),
+/** The write label whose batch ends the base population's running task in each terminal state. */
+const ENDING_LABEL: Readonly<Record<TerminalState, MatrixWriteLabel>> = {
+  completed: 'complete',
+  failed: 'fail',
+  cancelled: 'cancel-task',
 }
 
-/** How long after the ending the label runs, so a write that stamped the ended row would show. */
-const AFTER_THE_ENDING_MS = 5_000
+/** The instant the engine ends a terminal pre-state cell's task at. */
+export const TERMINAL_PRE_STATE_ENDED_AT_MS = NOW
+
+/** The later instant a cell's label runs at, so a write that stamped the ended row would show. */
+export const TERMINAL_PRE_STATE_INVOKED_AT_MS = NOW + 5_000
+
+/** A stored instant as a number, whatever the driver hands back for an integer column. */
+export function storedInstant(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value)
+}
 
 function endedTaskStamp(row: SqlRow): EndedTaskStamp {
-  const stamp = row.fence_at_ms
-  return {
-    state: String(row.state),
-    stampedAtMs: stamp === null || stamp === undefined ? null : Number(stamp),
-  }
+  return { state: String(row.state), stampedAtMs: storedInstant(row.fence_at_ms) }
 }
 
 /**
@@ -3975,18 +3984,16 @@ function endedTaskStamp(row: SqlRow): EndedTaskStamp {
  * healthy trigger. The cell answers what each task that had ended reads before and after,
  * and judges nothing: the retention surface says what must hold.
  */
-export async function observeTerminalPreState(
+export function observeTerminalPreState(
   makeFixture: StoreFixtureFactory,
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   state: TerminalState,
 ): Promise<TerminalPreStateObservation> {
-  const f = await makeFixture(`terminal-pre-state-${label}-${state}`)
-  try {
+  return withFixture(makeFixture, `terminal-pre-state-${label}-${state}`, async (f) => {
     await seedBase(f)
-    await END_SEEDED_TASK[state](f.store)
+    await invoke(ENDING_LABEL[state], f.store, POISON_INVOCATION)
     await seedHealthyTrigger(f.raw, label)
-    const invokedAtMs = NOW + AFTER_THE_ENDING_MS
-    await f.admin.setFakeNowEpochMs(invokedAtMs)
+    await f.admin.setFakeNowEpochMs(TERMINAL_PRE_STATE_INVOKED_AT_MS)
     const before = await snapshot(f.raw)
     const recorder = new StateWatchingExecutor(f.raw)
     const store = f.storeOver(recorder)
@@ -3999,21 +4006,14 @@ export async function observeTerminalPreState(
       () => 'rejected' as const,
     )
     const after = rowsByKey('tasks', (await snapshot(f.raw)).tasks)
-    const tasks: Record<string, { before: EndedTaskStamp; after: EndedTaskStamp }> = {}
+    const tasks: Record<string, EndedTaskStamps> = {}
     for (const task of before.tasks) {
       if (!isTerminalState(task.state)) continue
-      const still = after.get(key('tasks', task))
-      if (still === undefined) throw new Error(`${label}: task ${String(task.task_id)} is gone`)
-      tasks[String(task.task_id)] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
+      const taskId = key('tasks', task)
+      const still = after.get(taskId)
+      if (still === undefined) throw new Error(`${label}: task ${taskId} is gone`)
+      tasks[taskId] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
     }
-    return {
-      fired: recorder.labels.includes(label) && recorder.changedDurableState(label),
-      healthy,
-      endedAtMs: NOW,
-      invokedAtMs,
-      tasks,
-    }
-  } finally {
-    await f.close()
-  }
+    return { fired: recorder.changedDurableState(label), healthy, tasks }
+  })
 }

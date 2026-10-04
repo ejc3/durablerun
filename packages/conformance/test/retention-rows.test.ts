@@ -23,17 +23,12 @@ function task(taskId: string, state: string, queue = 'q'): SqlStatement {
   }
 }
 
-function run(runId: string, taskId: string, state: string, queue = 'q', attempt = 1): SqlStatement {
+function run(runId: string, taskId: string, state: string, queue = 'q'): SqlStatement {
   return {
     sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, created_at_ms)
-          VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [runId, queue, taskId, attempt, state, NOW],
+          VALUES (?, ?, ?, 1, ?, ?)`,
+    args: [runId, queue, taskId, state, NOW],
   }
-}
-
-/** One more run of the one waiting task: a task's runs differ in their attempt. */
-function waiterRun(runId: string, attempt: number): SqlStatement {
-  return run(runId, 'waiter', 'sleeping', 'q', attempt)
 }
 
 function checkpoint(taskId: string, name: string, state: string): SqlStatement {
@@ -45,12 +40,13 @@ function checkpoint(taskId: string, name: string, state: string): SqlStatement {
   }
 }
 
-function wait(runId: string, eventName: string, status = 'waiting', queue = 'q'): SqlStatement {
+/** A wait of the one waiting run, under a step of its own. */
+function wait(stepName: string, eventName: string, status = 'waiting'): SqlStatement {
   return {
     sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
             timeout_at_ms, created_at_ms)
-          VALUES (?, 'step', ?, 'waiter', ?, ?, NULL, ?)`,
-    args: [runId, queue, eventName, status, NOW],
+          VALUES ('waiter-run', ?, 'q', 'waiter', ?, ?, NULL, ?)`,
+    args: [stepName, eventName, status, NOW],
   }
 }
 
@@ -184,34 +180,29 @@ describe('the retention row checker', () => {
     expect(
       await violationsOf([
         task('waiter', 'sleeping'),
-        waiterRun('stranded', 1),
+        run('waiter-run', 'waiter', 'sleeping'),
         wait('stranded', '$task-done:gone'),
-        waiterRun('stranded-delivered', 2),
         wait('stranded-delivered', '$task-done:gone', 'delivered'),
         // The task is there, in the wait's queue.
         task('there', 'pending'),
         run('there-run', 'there', 'pending'),
-        waiterRun('has-its-task', 3),
         wait('has-its-task', '$task-done:there'),
         // The task is gone and its event is there.
         event('$task-done:recorded'),
-        waiterRun('has-its-event', 4),
         wait('has-its-event', '$task-done:recorded'),
         // The task and the event are both in another queue, where this wait is not.
         task('elsewhere', 'completed', 'other-q'),
         run('elsewhere-run', 'elsewhere', 'completed', 'other-q'),
         event('$task-done:elsewhere', 'other-q'),
-        waiterRun('other-queue-only', 5),
         wait('other-queue-only', '$task-done:elsewhere'),
         // A caller's event is no completion event.
-        waiterRun('callers-event', 6),
         wait('callers-event', 'task-done:gone'),
       ]),
       'mutation-verdict:behavior:retention-rows-read-a-wait-by-its-own-queue',
     ).toEqual([
-      'completion-wait-without-its-task-or-event: other-queue-only/step awaits elsewhere',
-      'completion-wait-without-its-task-or-event: stranded-delivered/step awaits gone',
-      'completion-wait-without-its-task-or-event: stranded/step awaits gone',
+      'completion-wait-without-its-task-or-event: waiter-run/other-queue-only awaits elsewhere',
+      'completion-wait-without-its-task-or-event: waiter-run/stranded awaits gone',
+      'completion-wait-without-its-task-or-event: waiter-run/stranded-delivered awaits gone',
     ])
   })
 })

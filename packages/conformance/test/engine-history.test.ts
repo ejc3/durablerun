@@ -8,9 +8,9 @@ const NOW = 1_000_000
 /**
  * `engineHistoryViolations` is what every walk, matrix cell, and scenario judges its rows
  * by, so a checker it left out would be left out of all of them at once. The rows here
- * are written by hand. The first case holds one defect for each of the three checkers the
- * helper began with, and the helper must name all three. The second holds one defect for
- * the checker of what a purge may leave, which is the helper's fourth.
+ * are written by hand. The first case holds one defect each for the invariant library, the
+ * child-task checker, and the saga checker, and the helper must name all three. The second
+ * holds one defect that only the retention checker reads.
  */
 describe('the one helper that judges the rows of a history', () => {
   it('names a defect of each of its three checkers', async () => {

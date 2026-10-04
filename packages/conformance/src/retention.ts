@@ -8,13 +8,21 @@ import { RecordingExecutor } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { TERMINAL_BATCHES, type TerminalBatch } from './child-tasks.js'
 import { engineHistoryViolations } from './engine-history.js'
-import { MATRIX_WRITE_LABELS, TERMINAL_BATCH_LABELS } from './fault-matrix.js'
+import {
+  MATRIX_WRITE_LABELS,
+  type MatrixWriteLabel,
+  TERMINAL_BATCH_LABELS,
+} from './fault-matrix.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import {
   type EndedTaskStamp,
+  type EndedTaskStamps,
   POISON_INVOCATION,
+  TERMINAL_PRE_STATE_ENDED_AT_MS,
+  TERMINAL_PRE_STATE_INVOKED_AT_MS,
   type TerminalPreStateObservation,
   observeTerminalPreState,
+  storedInstant,
 } from './poison-matrix.js'
 import { readOne, withFixture } from './scenario.js'
 
@@ -27,13 +35,6 @@ const START_MS = 1_000_000
  * it NULL, reads differently from one that stamped it.
  */
 const ENDING_GAP_MS = 2_500
-
-type WriteLabel = (typeof MATRIX_WRITE_LABELS)[number]
-
-/** An instant as a number, whatever the driver hands back for an integer column. */
-function instant(value: unknown): number | null {
-  return value === null || value === undefined ? null : Number(value)
-}
 
 /** What a stamp case reads once a terminal batch has ended a task. */
 export interface EndingStamp {
@@ -76,10 +77,10 @@ export async function endingStampCase(
     return {
       observed: {
         ran: recorded.labels.includes(batch.label),
-        stampedBeforeAtMs: instant(before?.fence_at_ms),
+        stampedBeforeAtMs: storedInstant(before?.fence_at_ms),
         state: after?.state,
-        stampedAtMs: instant(after?.fence_at_ms),
-        eventAtMs: instant(event?.emitted_at_ms),
+        stampedAtMs: storedInstant(after?.fence_at_ms),
+        eventAtMs: storedInstant(event?.emitted_at_ms),
         violations: await engineHistoryViolations(f.raw),
       },
       expected: {
@@ -94,11 +95,10 @@ export async function endingStampCase(
   })
 }
 
-/** What a terminal pre-state cell compares: whether the label ran, and each ended task's stamp. */
-export type TerminalPreStateVerdict = Pick<
-  TerminalPreStateObservation,
-  'fired' | 'healthy' | 'tasks'
->
+/** The one exit from a terminal state: `retry-task` revives a failed task. */
+function revives(label: MatrixWriteLabel, state: string): boolean {
+  return label === 'retry-task' && state === 'failed'
+}
 
 /**
  * Run one write label over a task the engine had already ended, and say what its stamp
@@ -107,48 +107,36 @@ export type TerminalPreStateVerdict = Pick<
  */
 export async function terminalPreStateCase(
   makeFixture: StoreFixtureFactory,
-  label: WriteLabel,
+  label: MatrixWriteLabel,
   state: TerminalState,
-): Promise<{ observed: TerminalPreStateVerdict; expected: TerminalPreStateVerdict }> {
-  const { fired, healthy, tasks, endedAtMs, invokedAtMs } = await observeTerminalPreState(
-    makeFixture,
-    label,
-    state,
-  )
-  const stays = (before: EndedTaskStamp): EndedTaskStamp =>
-    label === 'retry-task' && before.state === 'failed'
-      ? { state: 'pending', stampedAtMs: invokedAtMs }
+): Promise<{ observed: TerminalPreStateObservation; expected: TerminalPreStateObservation }> {
+  const observed = await observeTerminalPreState(makeFixture, label, state)
+  const after = (before: EndedTaskStamp): EndedTaskStamp =>
+    revives(label, before.state)
+      ? { state: 'pending', stampedAtMs: TERMINAL_PRE_STATE_INVOKED_AT_MS }
       : before
-  const expected: Record<string, { before: EndedTaskStamp; after: EndedTaskStamp }> = {}
-  for (const [taskId, seen] of Object.entries(tasks)) {
-    // The task the cell is about was ended by the engine, at the instant the cell set.
-    const before =
-      taskId === POISON_INVOCATION.taskId ? { state, stampedAtMs: endedAtMs } : seen.before
-    expected[taskId] = { before, after: stays(before) }
+  const tasks: Record<string, EndedTaskStamps> = {}
+  for (const [taskId, seen] of Object.entries(observed.tasks)) {
+    tasks[taskId] = { before: seen.before, after: after(seen.before) }
   }
-  if (!Object.hasOwn(tasks, POISON_INVOCATION.taskId)) {
-    throw new Error(`${label} from ${state}: the cell's task had not ended before the label ran`)
-  }
-  return {
-    observed: { fired, healthy, tasks },
-    expected: { fired: true, healthy: 'fulfilled', tasks: expected },
-  }
+  // The task the cell is about was ended by the engine, at the instant the cell set. It is
+  // expected whether or not it was read, so a cell whose task had not ended fails.
+  const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
+  tasks[POISON_INVOCATION.taskId] = { before: ended, after: after(ended) }
+  return { observed, expected: { fired: true, healthy: 'fulfilled', tasks } }
 }
 
-/** The title of one terminal pre-state cell. */
-export function terminalPreStateTitle(label: WriteLabel, state: TerminalState): string {
-  return label === 'retry-task' && state === 'failed'
+function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): string {
+  return revives(label, state)
     ? 'retry-task moves the stamp of the failed task it revives to the instant of the revival'
     : `${label} leaves the stamp of a ${state} task where its ending put it`
 }
 
-const TASK_COLUMNS = `task_id, queue, task_name, params, retry_strategy, max_attempts,
-  state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms`
-
 /** A task row written by hand, with nothing else of its unit. */
 function taskRow(taskId: string, state: string, completedPayload: string | null = null) {
   return {
-    sql: `INSERT INTO tasks (${TASK_COLUMNS})
+    sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+            state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
           VALUES (?, ?, 'hand-written', '{}', '{"kind":"none"}', 3, ?, 0, 0, ?, ?, ?)`,
     args: [taskId, Q, state, completedPayload, START_MS, START_MS],
   }

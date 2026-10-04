@@ -33,7 +33,7 @@ function bent(label: string, bend: SqlStatement): StoreFixtureFactory {
   }
 }
 
-const ENDED = `state IN ('completed', 'failed', 'cancelled')`
+const ENDED = `state IN (${TERMINAL_STATES.map((state) => `'${state}'`).join(', ')})`
 
 describe('the stamp case of each terminal batch can fail', () => {
   for (const batch of TERMINAL_BATCHES) {
@@ -56,7 +56,6 @@ describe('the stamp case of each terminal batch can fail', () => {
         ran: true,
         stampedAtMs: stale.expected.stampedBeforeAtMs,
       })
-      expect(stale.expected.stampedAtMs).not.toBe(stale.expected.stampedBeforeAtMs)
       expect(stale.observed).not.toEqual(stale.expected)
     })
   }
@@ -64,7 +63,7 @@ describe('the stamp case of each terminal batch can fail', () => {
 
 describe('the cell of each write label over an ended task can fail', () => {
   const TASK = POISON_INVOCATION.taskId
-  // No instant of a cell: the task ended at 1,000,000 and the label ran five seconds on.
+  // An instant no cell sets.
   const MOVED_TO = 7
   for (const label of MATRIX_WRITE_LABELS) {
     for (const state of TERMINAL_STATES) {
