@@ -266,8 +266,9 @@ export const liveTasksRead = defineStatement(
 
 /**
  * `event-waiters`: the waits of a queue registered on one event that are still waiting,
- * in the order of their key, up to a limit. A wait holds its task, so the task of each is
- * read from the wait's own row.
+ * in the order of their key, which is the run and then the step, up to a limit. The list
+ * an operator is answered keeps this order, so the limit cuts where the list does. A wait
+ * holds its task, so the task of each is read from the wait's own row.
  */
 export const eventWaitersRead = defineStatement(
   'event-waiters',

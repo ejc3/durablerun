@@ -558,7 +558,10 @@ export interface EventWaiter {
   readonly timeoutAtMs: number | null
 }
 
-/** The waits of one queue that are registered on an event and still waiting, stopped at `OPERATOR_GAUGE_CAP`. */
+/**
+ * The waits of one queue that are registered on an event and still waiting, in the order
+ * of run and then step, stopped at `OPERATOR_GAUGE_CAP`: the first of them in that order.
+ */
 export interface EventWaiters {
   readonly waiters: Capped<EventWaiter>
   readonly corrupt: readonly CorruptInteger[]

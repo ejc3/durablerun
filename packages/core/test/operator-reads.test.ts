@@ -1083,14 +1083,15 @@ describe("how an operator's read of an event's waiters is read", () => {
     timeout_at_ms,
   })
 
-  it('lists the waiters by task, then run, then step, and a timeout outside its bounds as corrupt', async () => {
+  it('lists the waiters in the order the statement answered them, and a timeout outside its bounds as corrupt', async () => {
+    // By run and then step, as the statement orders them. The tasks are in no order.
     const { reads, sent, args } = readsAnswering({
       'event-waiters': [
         [
-          waiter('t2', 'r2', 'b', 5_000),
-          waiter('t1', 'r9', 'a'),
-          waiter('t2', 'r2', 'a', -1),
-          waiter('t1', 'r1', 'z', 7n),
+          waiter('t2', 'r1', 'a', 5_000),
+          waiter('t1', 'r2', 'a'),
+          waiter('t1', 'r2', 'b', -1),
+          waiter('t0', 'r9', 'z', 7n),
         ],
       ],
     })
@@ -1098,10 +1099,10 @@ describe("how an operator's read of an event's waiters is read", () => {
     expect(answer, 'mutation-verdict:behavior:operator-reads-order-the-waiters').toEqual({
       waiters: {
         rows: [
-          { taskId: 't1', runId: 'r1', stepName: 'z', timeoutAtMs: 7 },
-          { taskId: 't1', runId: 'r9', stepName: 'a', timeoutAtMs: null },
-          { taskId: 't2', runId: 'r2', stepName: 'a', timeoutAtMs: null },
-          { taskId: 't2', runId: 'r2', stepName: 'b', timeoutAtMs: 5_000 },
+          { taskId: 't2', runId: 'r1', stepName: 'a', timeoutAtMs: 5_000 },
+          { taskId: 't1', runId: 'r2', stepName: 'a', timeoutAtMs: null },
+          { taskId: 't1', runId: 'r2', stepName: 'b', timeoutAtMs: null },
+          { taskId: 't0', runId: 'r9', stepName: 'z', timeoutAtMs: 7 },
         ],
         atLeast: false,
       },
@@ -1109,7 +1110,7 @@ describe("how an operator's read of an event's waiters is read", () => {
         {
           field: 'waits.timeout_at_ms',
           runId: 'r2',
-          stepName: 'a',
+          stepName: 'b',
           reason: 'out-of-range',
           stored: 'number',
           value: '-1',
@@ -1120,14 +1121,21 @@ describe("how an operator's read of an event's waiters is read", () => {
     expect(sent).toEqual(['event-waiters'])
   })
 
-  it('stops the list at the cap and says when more waits exist', async () => {
+  it('stops the list at the cap, keeps the first of what was answered, and says when more waits exist', async () => {
+    // Answered with the tasks in descending order, so a list sorted by task before it is
+    // cut keeps another thousand than the first.
     const many = (count: number) =>
       Array.from({ length: count }, (_, row) =>
-        waiter(`t${String(row).padStart(4, '0')}`, 'r', 's'),
+        waiter(`t${String(count - row).padStart(4, '0')}`, `r${String(row).padStart(4, '0')}`, 's'),
       )
     const past = await readsAnswering({
       'event-waiters': [many(OPERATOR_GAUGE_CAP + 1)],
     }).reads.eventWaiters('q', 'e')
+    expect(past.waiters.rows.map((row) => row.taskId)).toEqual(
+      many(OPERATOR_GAUGE_CAP + 1)
+        .slice(0, OPERATOR_GAUGE_CAP)
+        .map((row) => row.task_id),
+    )
     const at = await readsAnswering({
       'event-waiters': [many(OPERATOR_GAUGE_CAP)],
     }).reads.eventWaiters('q', 'e')

@@ -5940,8 +5940,11 @@ passed is `sleeping-past-its-wake`, and its child is not followed.
 For an await, the facts name the run, the event and the step, and they list every wait
 still waiting on that event under `waiters`: the task, the run and the step of each, and
 when its wait times out. The task asked about is one of them. `eventWaiters(queue,
-eventName)` answers the list, up to 1,000 waits in the order of task, run and step, and
-`moreWaiters` says when the event holds more. An await of a child lists the waits on the
+eventName)` answers the list: the first 1,000 waits in the order of run and then step, and
+`moreWaiters` says when the event holds more. That is the order of the key of `waits`, the
+order the statement reads them in, and the order they print in. Core does not sort them
+again, so the cap cuts where the list does and no wait it leaves out comes before one it
+lists. An await of a child lists the waits on the
 child's completion the same way. A list that held only the task `explain` was asked about
 would say that one task waits when many may, so a seed of three tasks parked on one event
 requires `explain` of any of them to name all three, on every dialect, and no task parked on

@@ -865,19 +865,15 @@ async function eventWaiters(
   const b = dialect.open.eventWaiters()
   b.readTree('waiters', eventWaitersRead({ queue, eventName, limit: OPERATOR_GAUGE_CAP + 1 }))
   const corrupt: CorruptInteger[] = []
-  const read = readRows(b, await dialect.run(b), 'waiters')
-    .map((row): EventWaiter => {
-      const runId = stringFrom(row.run_id)
-      const stepName = stringFrom(row.step_name)
-      const timesOutAt = integersOf(row, corrupt, { runId, stepName })(WAIT.timeout_at_ms)
-      return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }
-    })
-    .sort(
-      (left, right) =>
-        byCodePoints(left.taskId, right.taskId) ||
-        byCodePoints(left.runId, right.runId) ||
-        byCodePoints(left.stepName, right.stepName),
-    )
+  // The statement answers the waits in the order of run and then step, one row past the
+  // cap, and the list keeps that order. Nothing here sorts them: a list cut in one order
+  // and printed in another leaves out a wait that comes before one it lists.
+  const read = readRows(b, await dialect.run(b), 'waiters').map((row): EventWaiter => {
+    const runId = stringFrom(row.run_id)
+    const stepName = stringFrom(row.step_name)
+    const timesOutAt = integersOf(row, corrupt, { runId, stepName })(WAIT.timeout_at_ms)
+    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }
+  })
   return {
     waiters: {
       rows: read.slice(0, OPERATOR_GAUGE_CAP),
