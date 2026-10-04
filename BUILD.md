@@ -89,8 +89,8 @@ accepts it.
     own getTaskResult does. Red: a planted migration that adds a NOT NULL column
     with no default fails the alpha.1 cycle by name. This is met.
     `packages/cli/test/cli-dialects.test.ts`, on each dialect: "doctor, result,
-    checkpoints and inspect print the JSON libSQL prints, apart from the fields
-    under dialect", through `main` with a seeded IdSource; "a read command sends only
+    checkpoints, inspect and explain print the JSON libSQL prints, apart from the
+    fields under dialect", through `main` with a seeded IdSource; "a read command sends only
     read batches, each with a label the command table declares"; "every store
     command exits 5 on a database a newer build migrated, and changes no table";
     "migrate without --yes changes nothing, and with --yes prints each version
@@ -110,7 +110,10 @@ accepts it.
     batch. Its planted control takes the form version 10 gives NOT NULL on
     libSQL, a trigger that refuses the write, because SQLite refuses to add a
     NOT NULL column with no default, and it must fail at alpha.1's spawn naming
-    `tasks.planted`.
+    `tasks.planted`. PR5.3b2's `explain` is in each of those cases but the alpha.1
+    cycle: its answers are among the lines compared on every dialect and at
+    version 5, it is one of the store commands held to read batches and to exit 5
+    outside the window, and the bin runs it.
 33. PR5.3a (extended by every later PR that adds a command): nothing
     user-authored and no store credential prints without `--reveal`. A sentinel
     planted in a task's params and headers, a checkpoint's state, an event
@@ -141,7 +144,9 @@ accepts it.
     event payload or a key. PR5.3b1's `inspect` prints an idempotency key, as
     its length and sha256, and "inspect prints no value a user wrote without
     --reveal" holds it with the key among its command lines, a key no task has
-    and a refused line that carries one included. Redaction removed from the result renderer fails
+    and a refused line that carries one included. PR5.3b2's `explain` prints an ended task's outcome as `result`
+    prints it, and "explain prints no value a user wrote without --reveal" holds
+    it over the same kinds of command line. Redaction removed from the result renderer fails
     "result prints no value a user wrote without --reveal". "result prints a
     failed rollback's error as its length and sha256" redacts errors named
     `$SagaStateCorrupt`, `$RollbackNotRegistered` and a name that is neither,
@@ -200,7 +205,11 @@ accepts it.
     and PR5.3d holds its red. PR5.3b1 adds `inspect` to the same surface, from
     the current version by an idempotency key, which sends the read by key and
     then every batch a read by a task id sends, so each batch it declares
-    (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault.
+    (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault. PR5.3b2
+    adds `explain` from two starting states: by the key of a run asleep on a
+    timer, which sends each batch it declares (`task-id-by-key`, `task-facts`,
+    `fake-clock` and `get-checkpoints`), and of a parent parked on its child,
+    where a fault also meets the child's reads.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -275,35 +284,100 @@ accepts it.
     the states no engine path reaches (unreadable, unexplained, and the corrupt
     forms) are built with raw fixture SQL, each named fixture-built. There is
     one seed for every cause in DESIGN.md's cause table: completed; failed with
-    attempts exhausted; failed by an engine reason; cancelled; pending and
-    delayed; pending, due and unclaimed; never-started in the current form
-    (claimed, then deferred through `deferLaunch` before activation);
-    never-started in the alpha.1 form (activated, then rescheduled 15 to 24
-    seconds by alpha.1's worker), fixture-built here and checked on real alpha.1
-    rows by line 44; woken and unclaimed; running under a live lease; lease
-    lapsed and unswept; sleeping on a timer; sleeping past its wake; awaiting a
-    timed event; awaiting an untimed event; awaiting a child, followed to the
-    child's own cause to depth 8; cancellation deadline passed; unreadable; and
-    unexplained. `explain --json` returns the seeded cause and verdict for each.
-    Never-started and an untimed await get the verdict `waiting`, never `stuck`.
-    Six healthy controls never come back `stuck`: a start delay, a sleep, a
-    timed await inside its timeout, a live lease, an untimed await, and a task
-    enqueued ahead of the build that registers it. The default verdict is
-    `unexplained`, never healthy. For each waiting seed that has a clock
+    attempts exhausted; failed with attempts left and no retry asked for; failed
+    by an engine reason; cancelled; pending and delayed; pending, due and
+    unclaimed; asleep in the backoff of a retry; never-started in the current
+    form (claimed, then deferred through `deferLaunch` before activation, by a
+    real worker with no handler for the name); never-started in the alpha.1 form
+    (activated, then rescheduled 15 to 24 seconds on by alpha.1's worker), built
+    here by those two port calls, which the current store still has, and checked
+    on real alpha.1 rows by line 44; woken and unclaimed; running under a live
+    lease; running past the hung-run bound; lease lapsed and unswept; sleeping
+    on a timer; sleeping past its wake; awaiting a timed event; awaiting an
+    untimed event; awaiting a child, followed to the child's own cause to depth
+    8; cancellation deadline passed; unreadable; unexplained; and four corrupt
+    forms, a wait that outlives its event, a terminal task with a live run, a
+    live task without exactly one live run, and a task and a run whose states
+    differ. `explain --json` returns the seeded cause and verdict for each.
+    Never-started and an untimed await get the verdict `waiting`, never `stuck`,
+    and `stuck` means that a move the driver owes is late, or that no move can
+    come, as for a ring of awaits that no clock ends: a run under a live lease
+    is `ok` however long it has run. Six healthy controls never come
+    back `stuck`: a start delay, a sleep, a timed await inside its timeout, a
+    live lease, an untimed await, and a task enqueued ahead of the build that
+    registers it. The default verdict is `unexplained`, never healthy, and every
+    task that a walk of the engine leaves gets a verdict that is neither
+    `unexplained` nor `inconsistent`. For each waiting seed that has a clock
     transition, moving fake now to `nextTransitionAtMs` lets the engine progress
     the run, and one millisecond earlier does not. Suggestions are generated
     from the command table and parse, never contain `--yes`, and never name
-    `emit`: for an untimed await, `explain` prints the event name and the tasks
-    waiting on it as facts. Red: deleting any arm of `diagnose` fails the case
-    seeded for it by name, a `diagnose` that answers `stuck` for every live
-    state fails the six controls, and a suggestion that contains `--yes` fails.
-    NOT MET.
+    `emit` or `cancel`: for an untimed await, `explain` prints as facts the event
+    name and the step. It lists no waiting tasks: the list needs a read no port
+    has, and line 37 adds the read and the field. A cause whose command is not
+    in the command table yet (`sweep` and `tick`, which PR5.3d adds) prints no
+    suggestion, and a test lists those causes. Red: deleting any arm of
+    `diagnose` fails the case seeded for it by name, a `diagnose` that answers
+    `stuck` for every live state fails the six controls, and a suggestion that
+    contains `--yes` fails. This is met.
+    `packages/cli/test/explain-seeds.ts` holds the twenty-six seeds, twenty
+    built through the store's ports alone and six fixture-built, and
+    `packages/cli/test/cli-dialects.test.ts` runs each on every dialect, in
+    `--json` and in text, as "<cause>: <seed>" under "explain names the seeded
+    cause". The never-started seed runs the SDK's `runClaimedRun` with an empty
+    registry. `packages/cli/test/explain-walk.test.ts` holds the walk: "names a
+    cause for every task a walk leaves, and none is unexplained or inconsistent"
+    runs the conformance package's fuzz walk on libSQL over 24 fixed seeds of
+    100 steps, diagnoses every task each walk leaves, and requires at least 14
+    distinct causes, the backoff among them. `packages/cli/test/explain.test.ts`
+    holds the rest on libSQL: "has one seed for every cause of the table, and a
+    seed no engine path reaches says it is fixture-built"; "DESIGN.md's cause
+    table is the one in the code, with its three constants", which also holds
+    the order the causes are asked in; "the six healthy controls never come back
+    stuck", with the untimed await and the task ahead of its build still
+    `waiting` a year on, and the live lease read again past the hung-run bound;
+    "a move the driver owes is waiting until it is DUE_GRACE_MS late, and stuck
+    one millisecond later", over the five causes of that rule; "a run claimed
+    once is hung one millisecond past HUNG_RUN_MS, and a run claimed again never
+    is"; "a healthy first pass past the hung-run bound is not stuck, and no
+    cancel is suggested for it"; "names a run asleep until its retry delay or
+    its rollback delay has run, and reads a parent through to such a child"; "at
+    nextTransitionAtMs the engine moves the task, and one millisecond earlier it
+    does not", over the six waiting seeds a claim takes and three tasks whose
+    cancellation deadline comes first, which the sweep cancels; "names the
+    cancellation deadline as the next instant when it comes before the wake, and
+    prints it among the facts"; "follows an await of a child one hop at a time
+    to depth 8, and reports the deepest cause", over a chain of ten tasks and a
+    chain of nine; "reads a ring of awaits once: a task that waits on itself,
+    and two that wait on each other"; "a ring of awaits that no clock ends is
+    stuck, and one that a timeout or a deadline ends is waiting"; "a parent
+    parked on a child that is past the hung-run bound is waiting, as it was
+    before the bound"; "says of a due run that carries the wake fields of an
+    await whether its event exists"; "every suggestion emitted parses, holds no
+    --yes and never names emit"; "builds a next command the parser of the CLI
+    reads, for a queue whose name begins with a dash"; "withholds a next command
+    it cannot fill, and says what it has no value for"; "names the causes whose
+    suggestion no command of the table carries yet"; and "prints its answer on
+    stdout whatever it exits with, and exits 10 for a row inspect exits 10 for".
+    Under `diagnose`, "answers unexplained for facts no arm takes, and never a
+    healthy verdict" hands it ten shapes of rows that disagree, and "says of a
+    row that is not readable which row it is and which field, and quotes no
+    stored value" holds what `unreadable` names. The reds are registered
+    mutations: each of the twenty-five `cli-explain-arm-<cause>` mutations
+    deletes one arm and fails the case seeded for that cause,
+    `cli-explain-answers-unexplained-by-default` fails the unexplained seed,
+    `cli-explain-answers-stuck-for-no-healthy-state` fails the six controls, and
+    `cli-explain-suggests-no-yes` fails the suggestion case.
 37. PR5.3c: the finder agrees with the engine, and the gauges equal an
     independent count. On seeded queues with grace 0, the runs `stuck` lists as
     due-unclaimed are exactly the runs a `claim` takes when its limit is at
     least their number, and the lease-lapsed and cancel-overdue runs are exactly
     what a following `sweep` reclaims or cancels. `stuck --older-than` lists
-    exactly the live tasks whose enqueue instant is that old, oldest first. A
+    exactly the live tasks whose enqueue instant is that old, oldest first.
+    PR5.3c also adds the read line 36 left out: `OperatorReads` lists the tasks
+    waiting on an event, as one core implementation reached through the store
+    factories, and for an await `explain` prints that list as a new field, where
+    PR5.3b2 prints the event and the step and lists no task. On a seed with three tasks parked on one
+    event, `explain` of any of them names all three, on the three dialects. A
     task looping through launch deferral appears there in both the current and
     the alpha.1 form, and its seed shows that under the default grace, at any
     instant between ticks of the seed's cadence, it appears in no clock leg.
@@ -317,8 +391,9 @@ accepts it.
     named exception, a count over one queue, registered as a text statement if
     the tree grammar refuses it. Line 32's alpha.1 harness runs at schema
     version 11. Red: `<` for `<=` on `claim_expires_at_ms` in one leg fails the
-    claim-and-sweep differential by name, and a dropped LIMIT fails the
-    `DRIVEN_BY_A_DUE_RANGE` check. NOT MET.
+    claim-and-sweep differential by name, a dropped LIMIT fails the
+    `DRIVEN_BY_A_DUE_RANGE` check, and a waiters read that answers only the task
+    asked about fails the three-waiter seed by name. NOT MET.
 38. PR5.3d: drive verbs are the ports and nothing else. After each of `enqueue`,
     `emit`, `cancel`, `retry` and `sweep`, a dump of every table equals the dump
     the same port call leaves on a twin database with the same seeded IdSource,
@@ -6040,6 +6115,117 @@ these three things; nothing else in the system does I/O, time, or randomness.
     schemas' checks and the CLI's view are held to. Today each schema writes the two
     statuses in its check, and the CLI keeps a fourth copy to tell a status of the engine's
     own. Trigger: a schema version that adds a wait status.
+- **PR5.3b2 explain**: IN REVIEW. Exit test line 36 of the operable alpha milestone. The
+  CLI gains `explain (<taskId> | --key <idempotencyKey>) --queue Q` over a pure `diagnose`
+  in `packages/cli/src/explain.ts`, and DESIGN.md section 3.11 holds its cause table, the
+  verdict rule and its named bounds. No statement, no batch and no schema version is added,
+  and core and the stores are unchanged. `packages/cli` gains the SDK as a development
+  dependency, for the seed that runs a real worker with no handler, and the conformance
+  package's fuzz runner gains an optional function it calls with the walk's fixture when
+  the walk ends, for the case that diagnoses what a walk leaves. The registry holds 1245
+  mutations where main holds 1187: one for each of the twenty-five arms of `diagnose`, and
+  thirty-three for its default verdict, its two bounds at their edges, the hung-run bound's limit
+  to a run claimed once and its verdict and verb, the instant a waiting run next moves at
+  and the deadline that can come before it, the depth an await of a child is followed to,
+  what a parent takes from a child that is running, a ring of awaits and what ends one,
+  whether the event of a carried wake exists, what a suggestion may carry, how it is spelled and when it is
+  withheld, the exit and the stream of a row that is not readable and what names it, the
+  redaction of an ended task's outcome, the rows it reads no healthy cause from, and the
+  walk. The base gate's arm is keyed on main's digest and exempts their fifty-one
+  markers. It re-aims three entries of main's registry, the three that hold `inspect`'s
+  exit for a row that is not readable, whose lines now read, or are in, the one function
+  that lists what is not readable. The pinned file pair of the pull request
+  before, which is dead now that it is the base, is removed.
+  - Where the build differs from the plan, and why. (1) The tasks waiting on an event: no
+    read lists them and this pull request adds no SQL, so `explain` prints the event and the
+    step and lists no task. Line 37 gives PR5.3c the read and the field. (2) A cause that
+    names `sweep` or `tick` prints no suggestion until PR5.3d adds the verb to the command
+    table. The suggestion is keyed by cause and built from the command table, and a case
+    lists the five causes that wait for a verb. A command that requires something `explain`
+    has no value for, as `--target` is for a command that writes, is withheld with the
+    reason, and what those causes then print is PR5.3d's to say. (3) A task's facts cannot
+    tell the alpha.1 never-started form from a sleep: both leave a started run parked on a
+    timer. A sleep parks with its checkpoint and alpha.1's deferral commits none, in alpha.1
+    as now, so for that one shape of run `explain` reads the task's checkpoints through
+    `getCheckpoints`, a port call that existed. The plan had `explain` read `taskFacts`
+    alone. (4) That seed is built by the two port calls alpha.1's worker makes, `activate`
+    and `reschedule`, which the current store still has, where the plan built it with raw
+    SQL. (5) The cause table holds seven causes line 36 did not list, and line 36 now lists
+    them: a failure with attempts left and no retry asked for, a run asleep in the backoff
+    of a retry or of a delayed rollback pass, a run past the hung-run bound, and four forms
+    of rows that disagree. (6) The plan named a hung-run constant and no rule for it. The
+    cause it gives keeps the verdict `ok` and suggests `inspect`: nothing is owed to a run
+    under a live lease. `stuck` means that a move the driver owes is late, or that no
+    move can come, as for a ring of awaits that no timeout and no cancellation deadline
+    ends. The bound is held only to a run claimed once, because no fact says when a later pass of a
+    run began. (7) A cause whose move is the driver's is `waiting` inside a grace of 120
+    seconds and `stuck` after it, where the plan named those causes with no rule for a run
+    that came due a moment ago. (8) A never-started cause stays `waiting` however long ago
+    its timer ran out, which is the plan's decision that it is never `stuck`, kept where
+    the driver is late as well. (9) `nextTransitionAtMs` is the earliest instant a clock
+    moves the task, so a cancellation deadline that comes before the run's wake is the
+    instant, and the sweep is what moves the task there.
+  - The one review of this pull request found twelve things, one of them HIGH, and
+    `postmortems/pr5.3b2-explain-review.md` holds the round. Ten count. Fixed here: a run
+    asleep in the backoff of a retry or of a delayed rollback pass has a cause, a run past
+    the hung-run bound is `ok` and is never told to cancel, `nextTransitionAtMs` takes a
+    cancellation deadline that comes first, a suggestion's flag and its value are one
+    argument, a suggestion that cannot be filled is withheld with its reason, `unreadable`
+    names the row and the field, and `waitingTasks` is gone. Built for the class: a case
+    that diagnoses every task a fuzz walk of the engine leaves, which found on its first
+    run that a ring of awaits read as `unexplained` too. What was not built is in the
+    options below, each with its trigger.
+  - A narrow re-review of that fold found nine more things, one of them MEDIUM, and the
+    same postmortem holds both rounds. Six count, and five of the six were made by the
+    fold. Fixed here: a parent waits for any child that is `ok` and has not ended, where a
+    child past the hung-run bound left its parent `unexplained`; a ring of awaits that no
+    timeout and no cancellation deadline ends is `stuck`; `woken-unclaimed` says what its
+    rows hold and whether the event exists; one function says what is not readable, for
+    `inspect`'s exit and `explain`'s cause alike; and three statements say what the code
+    does. No review follows this fold: each fix was checked by running what it changes.
+  - Measured while building, and left as they are. The store's port lets `reschedule`,
+    `suspendRun` and `awaitEvent` park a claim that was never activated, which no worker of
+    this repository does. `explain` reads such a run with no wait as `never-started`, and
+    one with a wait as `unexplained`. The store's read of checkpoints leaves out a row
+    whose owner ordinal is outside its bounds, so a sleeper whose every checkpoint row is
+    corrupt that way reads as `never-started-alpha1-form`, and a case pins it. The store
+    lets a run await any task of its queue, its own among them, so the fuzz walk leaves
+    tasks that wait on themselves: `explain` reads such a ring once, and answers `waiting`
+    when a timeout or a cancellation deadline of some task of the ring ends it and `stuck`
+    when none does.
+  - Option for the checkpoint count, not built, with its trigger: a read that counts a
+    task's checkpoints, corrupt rows included, in place of `getCheckpoints`, which returns
+    every checkpoint's state to be counted and leaves out a row it cannot order. Trigger:
+    PR5.3c, which adds reads to `OperatorReads`, or a task whose `explain` is slow because
+    it holds thousands of checkpoints.
+  - Option for the hung-run bound, not built, with its trigger: an instant for the start of
+    each claim, so a later pass of a run has a start. A `claimed_at_ms` column is a
+    non-goal of this milestone. Trigger: an operator who has to find a hung pass of a run
+    that slept before it.
+  - Option for the two bounds, not built, with its trigger: flags that set the grace and
+    the hung-run bound for one invocation. Trigger: a deployment whose driver ticks less
+    often than once in two minutes, or whose first passes are meant to run longer than an
+    hour.
+  - Option for a parent and its child, not built, with its trigger: read both in one
+    snapshot. `explain` reads them in two, so a child that ends between the two reads
+    leaves a parent that was just woken printing `unexplained`, until it is asked again.
+    Trigger: the first report of that answer for a healthy parent, or a read that takes a
+    task and the task it awaits in one batch.
+  - Option for one instant along a chain of awaits, not built, with its trigger: name the
+    earliest instant at which a clock moves any task of a followed chain.
+    `nextTransitionAtMs` is the explained task's own, from its run and its cancellation
+    deadline, and a child's instants print under `awaits`. Trigger: the first operator who
+    needs one instant for a chain.
+  - Option for the fuzz surface, not built, with its trigger: add `suspendRun`,
+    `deferLaunch` and `retryTask` to the calls the fuzz walk makes, so the walk case
+    reaches a sleep with its checkpoint, a deferred launch and a revived task. The seeds
+    hold those states today and the walk does not. Trigger: a state `explain` has no
+    cause for that only one of those three calls writes, or the next pull request that
+    changes the fuzz walk.
+  - Option for the walk, not built, with its trigger: run it on PostgreSQL and MySQL as
+    well. `diagnose` reads facts that the operator-reads surface already holds equal on the
+    three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
+    names differently on two dialects.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

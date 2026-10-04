@@ -458,10 +458,10 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
 }
 
 /** Claim the one run of the queue that is due, which must be the task's, and activate it. */
-export async function claimActivated(db: CliDb, worker: string, taskId: string) {
-  const [run] = await db.store.claim(QUEUE, worker, { leaseSeconds: 60, limit: 1 })
+export async function claimActivated(db: CliDb, worker: string, taskId: string, queue = QUEUE) {
+  const [run] = await db.store.claim(queue, worker, { leaseSeconds: 60, limit: 1 })
   if (run?.taskId !== taskId) throw new Error(`${worker} did not claim task ${taskId}`)
-  if ((await db.store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)) === null) {
+  if ((await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)) === null) {
     throw new Error(`${worker} could not activate the run of task ${taskId}`)
   }
   return run
@@ -559,22 +559,29 @@ export async function plantNullPayload(db: CliDb): Promise<void> {
   ])
 }
 
-/** The command lines whose answers must match on every dialect, for one seeded database. */
+/**
+ * The command lines whose answers must match on every dialect, for one seeded database. The
+ * command table says which reads there are: each read that names a task runs for every
+ * seeded task and for one the queue does not hold, and each that takes an idempotency key
+ * in place of the id runs by the key as well. So a read joins the comparison by joining
+ * the table.
+ */
 export function comparedLines(
   seeded: SeededTasks & Partial<SeededSagas> & { readonly refused?: string },
 ): string[][] {
+  const reads = STORE_COMMANDS.filter((spec) => !spec.writes)
   const lines: string[][] = [['doctor', '--queue', QUEUE, '--json']]
   for (const taskId of [...Object.values(seeded), 'no-such-task']) {
-    lines.push(['result', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['result', taskId, '--queue', QUEUE, '--json', '--reveal'])
-    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['checkpoints', taskId, '--queue', QUEUE, '--json', '--reveal'])
-    lines.push(['inspect', taskId, '--queue', QUEUE, '--json'])
-    lines.push(['inspect', taskId, '--queue', QUEUE, '--json', '--reveal'])
+    for (const { verb } of reads.filter((spec) => spec.positionals.includes('taskId'))) {
+      lines.push([verb, taskId, '--queue', QUEUE, '--json'])
+      lines.push([verb, taskId, '--queue', QUEUE, '--json', '--reveal'])
+    }
   }
   lines.push(['checkpoints', seeded.completed, '--queue', QUEUE, '--json', '--attempt', '1'])
-  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
-  lines.push(['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
-  lines.push(['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])
+  for (const { verb } of reads.filter((spec) => spec.alternative?.flag === 'key')) {
+    lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'])
+    lines.push([verb, '--key', COMPLETED_KEY, '--queue', QUEUE, '--json', '--reveal'])
+    lines.push([verb, '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'])
+  }
   return lines
 }

@@ -12,6 +12,7 @@ import {
   faultExit,
 } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
+import { asleep, chainOfAwaits } from './explain-seeds.js'
 import {
   COMPLETED_KEY,
   type CliDb,
@@ -63,7 +64,9 @@ interface Scenario {
    * claim names an index version 5 lacks. The release alpha.1 wrote version 5 on libSQL alone.
    */
   readonly seeded: readonly (typeof SELECTED)[number][]
-  line(db: CliDb, seeded: SeededTasks | undefined): string[]
+  /** One more task written after those, through the current store, whose id the line takes. */
+  prepare?(db: CliDb): Promise<string>
+  line(db: CliDb, seeded: SeededTasks | undefined, prepared: string | undefined): string[]
 }
 
 const ALL: readonly (typeof SELECTED)[number][] = ['libsql', 'postgres', 'mysql']
@@ -109,13 +112,35 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       line: () => ['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json'],
     },
   ],
+  // By the key of a started run parked on a timer, `explain` sends the read by key, the
+  // facts and the checkpoints, which is each batch it declares. Of a parent parked on its
+  // child it reads the facts of both, so a fault also meets the second task's reads.
+  explain: [
+    {
+      name: 'the current version, by the key of a run asleep on a timer',
+      schema: 'current',
+      seeded: ALL,
+      prepare: (db) => asleep(db, 120, { idempotencyKey: ASLEEP_KEY }),
+      line: () => ['explain', '--key', ASLEEP_KEY, '--queue', QUEUE, '--json'],
+    },
+    {
+      name: 'the current version, of a parent parked on its child',
+      schema: 'current',
+      seeded: ALL,
+      prepare: async (db) => (await chainOfAwaits(db, 2))[0] ?? '',
+      line: (_db, _seeded, parent) => ['explain', parent ?? '', '--queue', QUEUE, '--json'],
+    },
+  ],
 }
+
+/** The idempotency key of the sleeping task the first `explain` scenario writes. */
+const ASLEEP_KEY = 'asleep-under-a-key'
 
 /** A database in a scenario's starting state, and the command line that runs against it. */
 async function prepared(dialect: (typeof SELECTED)[number], verb: StoreVerb, scenario: Scenario) {
   const db = await openCliDb(dialect, `faults-${verb}`, scenario.schema)
   const seeded = scenario.seeded.includes(dialect) ? await seedTasks(db) : undefined
-  return { db, line: scenario.line(db, seeded) }
+  return { db, line: scenario.line(db, seeded, await scenario.prepare?.(db)) }
 }
 
 /** The labels of every batch one run without a fault sends, from one starting state. */

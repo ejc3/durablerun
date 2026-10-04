@@ -6,7 +6,9 @@ import {
   SchemaMismatchError,
   SchemaNotInitializedError,
   StoreUnavailableError,
+  type TaskFacts,
   isPortRefusal,
+  isTerminalState,
 } from '@durablerun/core'
 import {
   COMMANDS,
@@ -19,7 +21,18 @@ import {
   usage,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
-import { factsAreReadable, factsView } from './inspect.js'
+import {
+  CHILD_HOPS,
+  type Diagnosis,
+  type Evidence,
+  type TaskOnTheWay,
+  answerView,
+  diagnose,
+  endsByAClock,
+  readUnreadableRow,
+  ringClosedBy,
+} from './explain.js'
+import { factsView, whatIsNotReadable } from './inspect.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
@@ -381,19 +394,15 @@ const checkpoints: Handler = async (context) => {
   if ('exit' in found) return found
   const { queue, taskId } = found
   const attempt = shown === undefined ? MAX_RUN_ORDINAL : Number(shown)
-  const view: Record<string, unknown> = {
-    queue,
-    taskId,
-    attempt: shown === undefined ? null : attempt,
+  const view = { queue, taskId, attempt: shown === undefined ? null : attempt }
+  const rows = await decoded(() => store.scheduler.getCheckpoints(queue, taskId, attempt))
+  if ('refused' in rows) {
+    return unreadable({ ...view, checkpoints: 'unreadable' }, rows.refused, reveal)
   }
-  try {
-    const rows = await store.scheduler.getCheckpoints(queue, taskId, attempt)
-    view.checkpoints = rows.map((row) => checkpointView(row, reveal))
-  } catch (error) {
-    if (!isUnreadableRow(error)) throw error
-    return unreadable({ ...view, checkpoints: 'unreadable' }, error.message, reveal)
+  return {
+    exit: 'done',
+    view: { ...view, checkpoints: rows.value.map((row) => checkpointView(row, reveal)) },
   }
-  return { exit: 'done', view }
 }
 
 /**
@@ -412,6 +421,21 @@ function isUnreadableRow(error: unknown): error is RangeError {
   return error instanceof RangeError && !isPortRefusal(error)
 }
 
+/**
+ * What a read through the store's decoders answered, or the words they refused a stored row
+ * with. Every other error is thrown.
+ */
+async function decoded<T>(
+  read: () => Promise<T>,
+): Promise<{ readonly value: T } | { readonly refused: string }> {
+  try {
+    return { value: await read() }
+  } catch (error) {
+    if (!isUnreadableRow(error)) throw error
+    return { refused: error.message }
+  }
+}
+
 type TaskResult = NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>>
 type ReadTask = { readonly queue: string; readonly taskId: string } & (
   | { readonly result: TaskResult }
@@ -428,14 +452,9 @@ async function readTask({ invocation, store }: Context): Promise<ReadTask | Answ
   const taskId = invocation.args.taskId ?? ''
   const version = await readableVersion(store)
   if (typeof version !== 'number') return { ...version, view: { queue, taskId, ...version.view } }
-  try {
-    const found = await store.scheduler.getTaskResult(queue, taskId)
-    if (found !== null) return { queue, taskId, result: found }
-  } catch (error) {
-    if (!isUnreadableRow(error)) throw error
-    return { queue, taskId, unreadable: error.message }
-  }
-  return noSuchTask(queue, taskId)
+  const found = await decoded(() => store.scheduler.getTaskResult(queue, taskId))
+  if ('refused' in found) return { queue, taskId, unreadable: found.refused }
+  return found.value === null ? noSuchTask(queue, taskId) : { queue, taskId, result: found.value }
 }
 
 /** The answer for a task the queue does not hold. `message` quotes no value a user wrote. */
@@ -449,13 +468,13 @@ function noSuchTask(queue: string, taskId: string): Answer {
 }
 
 /**
- * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
- * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
- * integer outside its bounds, or a state or status that is not the engine's own is printed
- * where it stands and the command exits `unreadable`, so a script does not read a corrupt
- * row as a clean answer.
+ * The task a command names by its id or by the idempotency key it was spawned under, read
+ * after the schema window is checked, or the answer that refuses.
  */
-const inspect: Handler = async ({ invocation, store, reveal }) => {
+async function namedTask({
+  invocation,
+  store,
+}: Context): Promise<{ readonly queue: string; readonly taskId: string } | Answer> {
   const queue = invocation.strings.queue ?? ''
   const key = invocation.strings.key
   const version = await readableVersion(store)
@@ -468,6 +487,21 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
     // The key is a value a user wrote, so the answer does not quote it.
     return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
   }
+  return { queue, taskId }
+}
+
+/**
+ * One snapshot of a task, named by its id or by the idempotency key it was spawned under.
+ * The facts print whole whatever they hold, on stdout. A row the decoders refuse, an
+ * integer outside its bounds, or a state or status that is not the engine's own is printed
+ * where it stands and the command exits `unreadable`, so a script does not read a corrupt
+ * row as a clean answer.
+ */
+const inspect: Handler = async (context) => {
+  const named = await namedTask(context)
+  if ('exit' in named) return named
+  const { queue, taskId } = named
+  const { store, reveal } = context
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return noSuchTask(queue, taskId)
   // The outcome is rendered as `result` renders it, a refused row included.
@@ -476,9 +510,86 @@ const inspect: Handler = async ({ invocation, store, reveal }) => {
       ? resultView(facts.outcome.result, reveal)
       : unreadable({ state: 'unreadable' }, facts.outcome.refused, reveal).view
   return {
-    exit: factsAreReadable(facts) ? 'done' : 'unreadable',
+    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'unreadable',
     holdsFacts: true,
     view: { queue, taskId, ...factsView(facts, outcome, reveal) },
+  }
+}
+
+/** How many checkpoints a task has committed, or that a row of them is one the decoders refuse. */
+async function checkpointCount(
+  store: Pick<OpenedStore, 'scheduler'>,
+  queue: string,
+  taskId: string,
+): Promise<number | 'unreadable'> {
+  const rows = await decoded(() => store.scheduler.getCheckpoints(queue, taskId, MAX_RUN_ORDINAL))
+  return 'refused' in rows ? 'unreadable' : rows.value.length
+}
+
+/**
+ * One task's facts and what `diagnose` says of them, or null for a task the queue does not
+ * hold. `diagnose` names the evidence a cause turns on, and it is read here and handed
+ * back: the task's checkpoints, or the child the task awaits, which is diagnosed the same
+ * way. A child that is already on the way, the task itself among them, closes a ring and is
+ * not read again, and the evidence says whether a clock of any task of the ring ends its
+ * wait. A task that is CHILD_HOPS awaits from the one named has its own child
+ * left unread, so a chain of awaits costs a bounded number of reads.
+ */
+export async function explained(
+  store: Pick<OpenedStore, 'operator' | 'scheduler'>,
+  queue: string,
+  taskId: string,
+  onTheWay: readonly TaskOnTheWay[] = [],
+): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
+  const facts = await store.operator.taskFacts(queue, taskId)
+  if (facts === null) return null
+  const hop = onTheWay.length
+  const path = [...onTheWay, { taskId, endsByAClock: endsByAClock(facts) }]
+  let evidence: Evidence = {}
+  for (;;) {
+    const asked = diagnose(facts, evidence)
+    if (!('needs' in asked)) return { facts, diagnosis: asked }
+    if (asked.needs in evidence) throw new Error(`diagnose asked for ${asked.needs} twice`)
+    const ring = asked.needs === 'child' ? ringClosedBy(path, asked.taskId) : null
+    if (asked.needs === 'checkpoints') {
+      evidence = { ...evidence, checkpoints: await checkpointCount(store, queue, taskId) }
+    } else if (ring !== null) {
+      evidence = { ...evidence, child: ring }
+    } else if (hop === CHILD_HOPS) {
+      evidence = { ...evidence, child: 'not-followed' }
+    } else {
+      const child = await explained(store, queue, asked.taskId, path)
+      evidence = { ...evidence, child: child?.diagnosis ?? 'absent' }
+    }
+  }
+}
+
+/**
+ * Why a task is where it is: one cause from the closed table, a verdict, and the facts
+ * behind it, on stdout whatever the command exits with. A verdict is not an exit code. The
+ * command exits `done` for every task it could read, and `unreadable` when a row it read,
+ * the task's or that of a child it followed, is one `inspect` exits `unreadable` for.
+ */
+const explain: Handler = async (context) => {
+  const named = await namedTask(context)
+  if ('exit' in named) return named
+  const { queue, taskId } = named
+  const found = await explained(context.store, queue, taskId)
+  if (found === null) return noSuchTask(queue, taskId)
+  const { facts, diagnosis } = found
+  return {
+    exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',
+    holdsFacts: true,
+    view: {
+      queue,
+      ...answerView(diagnosis, queue),
+      databaseNowEpochMs: facts.nowMs,
+      fakeClock: facts.fakeClock,
+      // An ended task's outcome, rendered as `result` renders it.
+      ...(isTerminalState(facts.task.state) && 'result' in facts.outcome
+        ? { outcome: resultView(facts.outcome.result, context.reveal) }
+        : {}),
+    },
   }
 }
 
@@ -488,4 +599,5 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze
   result,
   checkpoints,
   inspect,
+  explain,
 })

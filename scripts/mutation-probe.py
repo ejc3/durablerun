@@ -17812,8 +17812,8 @@ MUTATION_SPECS.extend(
         (
             "cli-inspect-exits-10-for-a-corrupt-row",
             "packages/cli/src/main.ts",
-            "    exit: factsAreReadable(facts) ? 'done' : 'unreadable',\n",
-            "    exit: factsAreReadable(facts) ? 'done' : 'done', // MUTATION: a corrupt row exits 0\n",
+            "    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'unreadable',\n",
+            "    exit: whatIsNotReadable(facts).length === 0 ? 'done' : 'done', // MUTATION: a corrupt row exits 0\n",
             "inspect answers a task whose row holds a corrupt integer, or an outcome the decoders refuse, with exit 0, so a script reads it as a clean answer",
         ),
     )
@@ -18136,15 +18136,15 @@ MUTATION_SPECS.extend(
         (
             "cli-inspect-exits-10-for-an-unknown-run-state",
             "packages/cli/src/inspect.ts",
-            "    facts.runs.every((run) => isState(run.state)) &&\n",
-            "    true && // MUTATION: a run's state is not held to the engine's own\n",
+            "      .filter((run) => !isState(run.state))\n",
+            "      .filter(() => false) // MUTATION: a run's state is not held to the engine's own\n",
             "inspect exits 0 for a task one of whose runs holds a state that is not the engine's own, so a script reads a row no engine path writes as a clean one",
         ),
         (
             "cli-inspect-exits-10-for-an-unknown-wait-status",
             "packages/cli/src/inspect.ts",
-            "    facts.waits.every((wait) => isStatus(wait.status))\n",
-            "    true // MUTATION: a wait's status is not held to the engine's own\n",
+            "      .filter((wait) => !isStatus(wait.status))\n",
+            "      .filter(() => false) // MUTATION: a wait's status is not held to the engine's own\n",
             "inspect exits 0 for a task one of whose waits holds a status that is not the engine's own, so a script reads a row no engine path writes as a clean one",
         ),
         (
@@ -18175,6 +18175,792 @@ VERDICTS.update(
             "packages/conformance/test/invariant-checkers.test.ts",
             "invariant checkers fire on constructed corruption flags an event that exists with no instant, which no engine path writes",
             "mutation-verdict:behavior:invariants-refuse-an-event-with-no-instant",
+        ),
+    }
+)
+
+# What `explain` holds (exit test line 36). One mutation deletes each arm of `diagnose`, and
+# the case seeded for that cause owns it. The others hold the default verdict, the two
+# named bounds at their edges, the instant a waiting run next moves at, the depth an await
+# of a child is followed to, what a suggestion may carry, the exit and the stream of a row
+# that is not readable, the redaction of an ended task's outcome, and the rows `diagnose`
+# reads no healthy cause from.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-explain-arm-completed",
+            "packages/cli/src/explain.ts",
+            "  completed: completedArm,\n",
+            "  completed: () => null, // MUTATION: the arm of completed is deleted\n",
+            "explain names a task whose cause is completed by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-cancelled",
+            "packages/cli/src/explain.ts",
+            "  cancelled: cancelledArm,\n",
+            "  cancelled: () => null, // MUTATION: the arm of cancelled is deleted\n",
+            "explain names a task whose cause is cancelled by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-failed-by-an-engine-reason",
+            "packages/cli/src/explain.ts",
+            "  'failed-by-an-engine-reason': failedByTheEngineArm,\n",
+            "  'failed-by-an-engine-reason': () => null, // MUTATION: the arm of failed-by-an-engine-reason is deleted\n",
+            "explain names a task whose cause is failed-by-an-engine-reason by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-failed-attempts-exhausted",
+            "packages/cli/src/explain.ts",
+            "  'failed-attempts-exhausted': attemptsExhaustedArm,\n",
+            "  'failed-attempts-exhausted': () => null, // MUTATION: the arm of failed-attempts-exhausted is deleted\n",
+            "explain names a task whose cause is failed-attempts-exhausted by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-failed-with-no-retry",
+            "packages/cli/src/explain.ts",
+            "  'failed-with-no-retry': failedWithNoRetryArm,\n",
+            "  'failed-with-no-retry': () => null, // MUTATION: the arm of failed-with-no-retry is deleted\n",
+            "explain names a task whose cause is failed-with-no-retry by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-cancellation-deadline-passed",
+            "packages/cli/src/explain.ts",
+            "  'cancellation-deadline-passed': ofTheLiveRun(cancellationDeadlinePassedArm),\n",
+            "  'cancellation-deadline-passed': () => null, // MUTATION: the arm of cancellation-deadline-passed is deleted\n",
+            "explain names a task whose cause is cancellation-deadline-passed by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-lease-lapsed-unswept",
+            "packages/cli/src/explain.ts",
+            "  'lease-lapsed-unswept': ofTheLiveRun(leaseLapsedArm),\n",
+            "  'lease-lapsed-unswept': () => null, // MUTATION: the arm of lease-lapsed-unswept is deleted\n",
+            "explain names a task whose cause is lease-lapsed-unswept by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-running-past-the-hung-bound",
+            "packages/cli/src/explain.ts",
+            "  'running-past-the-hung-bound': ofTheLiveRun(hungArm),\n",
+            "  'running-past-the-hung-bound': () => null, // MUTATION: the arm of running-past-the-hung-bound is deleted\n",
+            "explain names a task whose cause is running-past-the-hung-bound by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-running-under-a-live-lease",
+            "packages/cli/src/explain.ts",
+            "  'running-under-a-live-lease': ofTheLiveRun(liveLeaseArm),\n",
+            "  'running-under-a-live-lease': () => null, // MUTATION: the arm of running-under-a-live-lease is deleted\n",
+            "explain names a task whose cause is running-under-a-live-lease by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-pending-delayed",
+            "packages/cli/src/explain.ts",
+            "  'pending-delayed': ofTheLiveRun(pendingDelayedArm),\n",
+            "  'pending-delayed': () => null, // MUTATION: the arm of pending-delayed is deleted\n",
+            "explain names a task whose cause is pending-delayed by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-woken-unclaimed",
+            "packages/cli/src/explain.ts",
+            "  'woken-unclaimed': ofTheLiveRun(wokenUnclaimedArm),\n",
+            "  'woken-unclaimed': () => null, // MUTATION: the arm of woken-unclaimed is deleted\n",
+            "explain names a task whose cause is woken-unclaimed by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-pending-due-unclaimed",
+            "packages/cli/src/explain.ts",
+            "  'pending-due-unclaimed': ofTheLiveRun(dueUnclaimedArm),\n",
+            "  'pending-due-unclaimed': () => null, // MUTATION: the arm of pending-due-unclaimed is deleted\n",
+            "explain names a task whose cause is pending-due-unclaimed by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-never-started",
+            "packages/cli/src/explain.ts",
+            "  'never-started': ofTheLiveRun(neverStartedArm),\n",
+            "  'never-started': () => null, // MUTATION: the arm of never-started is deleted\n",
+            "explain names a task whose cause is never-started by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-wait-outlives-its-event",
+            "packages/cli/src/explain.ts",
+            "  'wait-outlives-its-event': ofTheLiveRun(waitOutlivesItsEventArm),\n",
+            "  'wait-outlives-its-event': () => null, // MUTATION: the arm of wait-outlives-its-event is deleted\n",
+            "explain names a task whose cause is wait-outlives-its-event by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-never-started-alpha1-form",
+            "packages/cli/src/explain.ts",
+            "  'never-started-alpha1-form': ofTheLiveRun(neverStartedAlpha1Arm),\n",
+            "  'never-started-alpha1-form': () => null, // MUTATION: the arm of never-started-alpha1-form is deleted\n",
+            "explain names a task whose cause is never-started-alpha1-form by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-sleeping-past-its-wake",
+            "packages/cli/src/explain.ts",
+            "  'sleeping-past-its-wake': ofTheLiveRun(pastItsWakeArm),\n",
+            "  'sleeping-past-its-wake': () => null, // MUTATION: the arm of sleeping-past-its-wake is deleted\n",
+            "explain names a task whose cause is sleeping-past-its-wake by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-awaiting-a-child",
+            "packages/cli/src/explain.ts",
+            "  'awaiting-a-child': ofTheLiveRun(awaitingAChildArm),\n",
+            "  'awaiting-a-child': () => null, // MUTATION: the arm of awaiting-a-child is deleted\n",
+            "explain names a task whose cause is awaiting-a-child by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-awaiting-a-timed-event",
+            "packages/cli/src/explain.ts",
+            "  'awaiting-a-timed-event': ofTheLiveRun(awaitingATimedEventArm),\n",
+            "  'awaiting-a-timed-event': () => null, // MUTATION: the arm of awaiting-a-timed-event is deleted\n",
+            "explain names a task whose cause is awaiting-a-timed-event by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-awaiting-an-untimed-event",
+            "packages/cli/src/explain.ts",
+            "  'awaiting-an-untimed-event': ofTheLiveRun(awaitingAnUntimedEventArm),\n",
+            "  'awaiting-an-untimed-event': () => null, // MUTATION: the arm of awaiting-an-untimed-event is deleted\n",
+            "explain names a task whose cause is awaiting-an-untimed-event by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-sleeping-on-a-timer",
+            "packages/cli/src/explain.ts",
+            "  'sleeping-on-a-timer': ofTheLiveRun(sleepingOnATimerArm),\n",
+            "  'sleeping-on-a-timer': () => null, // MUTATION: the arm of sleeping-on-a-timer is deleted\n",
+            "explain names a task whose cause is sleeping-on-a-timer by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-unreadable",
+            "packages/cli/src/explain.ts",
+            "  unreadable: unreadableArm,\n",
+            "  unreadable: () => null, // MUTATION: the arm of unreadable is deleted\n",
+            "explain names a task whose cause is unreadable by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-terminal-task-with-a-live-run",
+            "packages/cli/src/explain.ts",
+            "  'terminal-task-with-a-live-run': liveRunUnderATerminalTaskArm,\n",
+            "  'terminal-task-with-a-live-run': () => null, // MUTATION: the arm of terminal-task-with-a-live-run is deleted\n",
+            "explain names a task whose cause is terminal-task-with-a-live-run by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-live-task-without-one-live-run",
+            "packages/cli/src/explain.ts",
+            "  'live-task-without-one-live-run': notOneLiveRunArm,\n",
+            "  'live-task-without-one-live-run': () => null, // MUTATION: the arm of live-task-without-one-live-run is deleted\n",
+            "explain names a task whose cause is live-task-without-one-live-run by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-arm-task-and-run-states-differ",
+            "packages/cli/src/explain.ts",
+            "  'task-and-run-states-differ': ofTheLiveRun(statesDifferArm),\n",
+            "  'task-and-run-states-differ': () => null, // MUTATION: the arm of task-and-run-states-differ is deleted\n",
+            "explain names a task whose cause is task-and-run-states-differ by another cause of the table, or as unexplained",
+        ),
+        (
+            "cli-explain-answers-unexplained-by-default",
+            "packages/cli/src/explain.ts",
+            "    cause: 'unexplained',\n",
+            "    cause: 'sleeping-on-a-timer', // MUTATION: facts no arm takes read as a healthy sleep\n",
+            "explain answers a task whose rows no cause of the table takes as a task asleep on a timer, a healthy verdict for a state nobody listed",
+        ),
+        (
+            "cli-explain-answers-stuck-for-no-healthy-state",
+            "packages/cli/src/explain.ts",
+            "  const verdict = verdictOf(rule, lateMs, evidence.child)\n",
+            "  const verdict = (isLiveState(facts.task.state) && 'stuck') || verdictOf(rule, lateMs, evidence.child) // MUTATION: every live task is stuck\n",
+            "explain answers stuck for a task that is delayed, asleep, awaiting, deferred or running under a live lease, so an operator clears healthy work",
+        ),
+        (
+            "cli-explain-grace-ends-after-its-last-millisecond",
+            "packages/cli/src/explain.ts",
+            "  return lateMs !== null && lateMs > DUE_GRACE_MS ? 'stuck' : 'waiting'\n",
+            "  return lateMs !== null && lateMs >= DUE_GRACE_MS ? 'stuck' : 'waiting' // MUTATION: stuck at the grace's last millisecond\n",
+            "a move the driver owes reads as stuck one millisecond before the grace DESIGN.md states has passed",
+        ),
+        (
+            "cli-explain-hung-bound-ends-after-its-last-millisecond",
+            "packages/cli/src/explain.ts",
+            "    runningForMs > HUNG_RUN_MS\n",
+            "    runningForMs >= HUNG_RUN_MS // MUTATION: hung at the bound's last millisecond\n",
+            "a run reads as hung one millisecond before the hung-run bound DESIGN.md states has passed",
+        ),
+        (
+            "cli-explain-hung-bound-holds-only-a-run-claimed-once",
+            "packages/cli/src/explain.ts",
+            "  if (run.claimGen !== 1 || !activated(run)) return null\n",
+            "  if (!activated(run)) return null // MUTATION: a run claimed again is measured from its first start\n",
+            "a run that slept for days and was claimed again reads as hung the moment it runs, because its first start is taken for the start of its pass",
+        ),
+        (
+            "cli-explain-next-transition-is-the-instant-the-engine-moves-at",
+            "packages/cli/src/explain.ts",
+            "    nextTransitionAtMs: verdict === 'waiting' ? next : null,\n",
+            "    nextTransitionAtMs: verdict === 'waiting' && next !== null ? next - 1 : null, // MUTATION: one millisecond early\n",
+            "explain names an instant at which the engine still cannot move the run as the instant it next may",
+        ),
+        (
+            "cli-explain-follows-a-child-to-depth-8",
+            "packages/cli/src/main.ts",
+            "    } else if (hop === CHILD_HOPS) {\n",
+            "    } else if (hop === CHILD_HOPS + 1) { // MUTATION: one more await is followed\n",
+            "explain follows a chain of awaits past the depth DESIGN.md states, so the reads one command sends are not bounded as documented",
+        ),
+        (
+            "cli-explain-suggests-no-yes",
+            "packages/cli/src/explain.ts",
+            "  return argv\n",
+            "  return [...argv, '--yes'] // MUTATION: every suggestion confirms a write\n",
+            "explain prints a next command that carries --yes, so a script that runs what it is handed confirms a write nobody read",
+        ),
+        (
+            "cli-explain-a-waiting-verdict-owes-no-command",
+            "packages/cli/src/explain.ts",
+            "  if (spec === undefined || verdict === 'waiting') return null\n",
+            "  if (spec === undefined) return null // MUTATION: a waiting verdict gets a next command too\n",
+            "explain prints a next command for a task that is waiting, which nothing is owed to",
+        ),
+        (
+            "cli-explain-exits-10-for-an-unreadable-row",
+            "packages/cli/src/main.ts",
+            "    exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',\n",
+            "    exit: readUnreadableRow(diagnosis) ? 'done' : 'done', // MUTATION: a row that is not readable exits 0\n",
+            "explain exits 0 for a task whose row inspect exits 10 for, so a script reads a corrupt row as a clean answer",
+        ),
+        (
+            "cli-explain-prints-its-answer-on-stdout",
+            "packages/cli/src/main.ts",
+            "    exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',\n    holdsFacts: true,\n",
+            "    exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',\n    // MUTATION: the answer is not marked as the report the command exists to print\n",
+            "explain of a task with a row that is not readable prints nothing on stdout in text mode, so an operator who pipes it reads an empty answer",
+        ),
+        (
+            "cli-explain-redacts-the-outcome",
+            "packages/cli/src/main.ts",
+            "        ? { outcome: resultView(facts.outcome.result, context.reveal) }\n",
+            "        ? { outcome: resultView(facts.outcome.result, true) } // MUTATION: an ended task's outcome prints revealed\n",
+            "explain prints a completed result and a failure reason the task's code wrote without --reveal",
+        ),
+        (
+            "cli-explain-quotes-a-pasted-line",
+            "packages/cli/src/explain.ts",
+            "const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/\n",
+            "const PLAIN_WORD = /^/ // MUTATION: every word is pasted bare\n",
+            "explain prints a next command whose queue or task id a shell splits or runs, so the line an operator pastes is not the command that was built",
+        ),
+        (
+            "cli-explain-reads-no-cause-from-rows-that-disagree",
+            "packages/cli/src/explain.ts",
+            "  if (run.state !== 'sleeping' || run.wakeEvent === null || !activated(run)) return undefined\n",
+            "  if (run.state !== 'sleeping' || run.wakeEvent === null) return undefined // MUTATION: an await needs no started run\n",
+            "explain reads a run that no worker started and a wait some caller registered for it as a healthy await",
+        ),
+        (
+            "cli-explain-await-needs-its-own-step",
+            "packages/cli/src/explain.ts",
+            "      (run.wakeStep === null || wait.stepName === run.wakeStep) &&\n",
+            "      true && // MUTATION: a wait of another step counts\n",
+            "explain reads a run and a wait that name different steps as a healthy await",
+        ),
+        (
+            "cli-explain-await-needs-a-waiting-wait",
+            "packages/cli/src/explain.ts",
+            "      wait.status === 'waiting' &&\n",
+            "      true && // MUTATION: a delivered wait counts\n",
+            "explain reads a run parked beside a wait that was already delivered as a healthy await",
+        ),
+        (
+            "cli-explain-await-needs-the-runs-own-timeout",
+            "packages/cli/src/explain.ts",
+            "      wait.timeoutAtMs === run.availableAtMs,\n",
+            "      true, // MUTATION: a wait that times out at another instant counts\n",
+            "explain reads a run that is due at one instant and a wait that times out at another as a healthy await",
+        ),
+        (
+            "cli-explain-await-needs-one-wait",
+            "packages/cli/src/explain.ts",
+            "  return matching.length === 1 ? matching[0] : undefined\n",
+            "  return matching.length >= 1 ? matching[0] : undefined // MUTATION: the first of several waits is taken\n",
+            "explain picks one of several waits a run could be parked on and reads it as a healthy await",
+        ),
+        (
+            "cli-explain-never-started-declines-a-registered-wait",
+            "packages/cli/src/explain.ts",
+            "  !facts.waits.some((wait) => wait.runId === run.runId && wait.status === 'waiting')\n",
+            "  true // MUTATION: a run with a registered wait is read as deferred\n",
+            "explain reads a run that some caller parked on an event without starting it as the launch deferral",
+        ),
+        (
+            "cli-explain-vouches-for-no-child-it-cannot-read-as-live",
+            "packages/cli/src/explain.ts",
+            "  return child.ended ? 'unexplained' : 'waiting'\n",
+            "  return child.ended ? 'waiting' : 'waiting' // MUTATION: a child that has ended reads as one still on its way\n",
+            "explain answers waiting for a run still parked on a child that has ended, which nothing will wake",
+        ),
+        (
+            "cli-explain-an-unread-child-is-unexplained",
+            "packages/cli/src/explain.ts",
+            "  if (child === undefined || typeof child === 'string') return 'unexplained'\n",
+            "  if (child === undefined || typeof child === 'string') return 'waiting' // MUTATION: a child nobody read is vouched for\n",
+            "explain answers waiting for a run parked on a child the queue does not hold, or on one it did not follow",
+        ),
+        (
+            "cli-explain-alpha1-form-needs-no-checkpoint",
+            "packages/cli/src/explain.ts",
+            "  return evidence.checkpoints === 0\n",
+            "  return evidence.checkpoints >= 0 // MUTATION: a task with checkpoints reads as never started\n",
+            "explain names a task that ran and went to sleep as one no build has a handler for",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-explain-arm-completed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause completed: a task its worker completed",
+            "mutation-verdict:behavior:cli-explain-arm-completed",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-cancelled": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause cancelled: a task cancelled before it started",
+            "mutation-verdict:behavior:cli-explain-arm-cancelled",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-failed-by-an-engine-reason": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause failed-by-an-engine-reason: a task the sweep failed at the relaunch cap, after every launch of it was lost",
+            "mutation-verdict:behavior:cli-explain-arm-failed-by-an-engine-reason",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-failed-attempts-exhausted": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause failed-attempts-exhausted: a task whose code failed on the one attempt it had",
+            "mutation-verdict:behavior:cli-explain-arm-failed-attempts-exhausted",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-failed-with-no-retry": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause failed-with-no-retry: a task whose worker failed it for good on the first of three attempts",
+            "mutation-verdict:behavior:cli-explain-arm-failed-with-no-retry",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-cancellation-deadline-passed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause cancellation-deadline-passed: a task at its start deadline, which no sweep has cancelled",
+            "mutation-verdict:behavior:cli-explain-arm-cancellation-deadline-passed",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-lease-lapsed-unswept": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause lease-lapsed-unswept: a started run at the end of its lease, which no sweep has taken back",
+            "mutation-verdict:behavior:cli-explain-arm-lease-lapsed-unswept",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-running-past-the-hung-bound": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause running-past-the-hung-bound: a run its worker has kept alive for a millisecond more than the hung-run bound",
+            "mutation-verdict:behavior:cli-explain-arm-running-past-the-hung-bound",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-running-under-a-live-lease": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause running-under-a-live-lease: a run under a lease its worker extended",
+            "mutation-verdict:behavior:cli-explain-arm-running-under-a-live-lease",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-pending-delayed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause pending-delayed: a task enqueued with a start an hour off",
+            "mutation-verdict:behavior:cli-explain-arm-pending-delayed",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-woken-unclaimed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause woken-unclaimed: a run an emitted event woke, which no claim has taken",
+            "mutation-verdict:behavior:cli-explain-arm-woken-unclaimed",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-pending-due-unclaimed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause pending-due-unclaimed: a task enqueued a moment ago, which no claim has taken",
+            "mutation-verdict:behavior:cli-explain-arm-pending-due-unclaimed",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-never-started": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause never-started: a task enqueued ahead of the build that registers it, which a real worker with no handler for it deferred",
+            "mutation-verdict:behavior:cli-explain-arm-never-started",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-wait-outlives-its-event": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause wait-outlives-its-event: a run parked on an event whose row is then planted, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-wait-outlives-its-event",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-never-started-alpha1-form": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause never-started-alpha1-form: a run started and then rescheduled 15 seconds on with no checkpoint, the two port calls the alpha.1 worker makes for a task name it has no handler for",
+            "mutation-verdict:behavior:cli-explain-arm-never-started-alpha1-form",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-sleeping-past-its-wake": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause sleeping-past-its-wake: a sleeping run at its wake, which no claim has taken",
+            "mutation-verdict:behavior:cli-explain-arm-sleeping-past-its-wake",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-awaiting-a-child": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause awaiting-a-child: a parent parked on a child that is due and unclaimed",
+            "mutation-verdict:behavior:cli-explain-arm-awaiting-a-child",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-awaiting-a-timed-event": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause awaiting-a-timed-event: a run parked on an event inside its timeout",
+            "mutation-verdict:behavior:cli-explain-arm-awaiting-a-timed-event",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-awaiting-an-untimed-event": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause awaiting-an-untimed-event: a run parked on an event with no timeout",
+            "mutation-verdict:behavior:cli-explain-arm-awaiting-an-untimed-event",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-sleeping-on-a-timer": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause sleeping-on-a-timer: a run its code put to sleep for two minutes",
+            "mutation-verdict:behavior:cli-explain-arm-sleeping-on-a-timer",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-unreadable": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause unreadable: a completed task whose payload is then set to NULL, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-unreadable",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-terminal-task-with-a-live-run": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause terminal-task-with-a-live-run: a completed task whose run is then set back to pending, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-terminal-task-with-a-live-run",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-live-task-without-one-live-run": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause live-task-without-one-live-run: a pending task whose one run is then set to cancelled, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-live-task-without-one-live-run",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-task-and-run-states-differ": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause task-and-run-states-differ: a pending run whose task is then set to sleeping, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-task-and-run-states-differ",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-answers-unexplained-by-default": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause unexplained: a sleeping run whose wake instant is then set to NULL with no event to wait on, fixture-built",
+            "mutation-verdict:behavior:cli-explain-answers-unexplained-by-default",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-answers-stuck-for-no-healthy-state": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL the six healthy controls never come back stuck",
+            "mutation-verdict:behavior:cli-explain-answers-stuck-for-no-healthy-state",
+        ),
+        "cli-explain-grace-ends-after-its-last-millisecond": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a move the driver owes is waiting until it is DUE_GRACE_MS late, and stuck one millisecond later",
+            "mutation-verdict:behavior:cli-explain-grace-ends-after-its-last-millisecond",
+        ),
+        "cli-explain-hung-bound-ends-after-its-last-millisecond": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a run claimed once is hung one millisecond past HUNG_RUN_MS, and a run claimed again never is",
+            "mutation-verdict:behavior:cli-explain-hung-bound-ends-after-its-last-millisecond",
+        ),
+        "cli-explain-hung-bound-holds-only-a-run-claimed-once": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a run claimed once is hung one millisecond past HUNG_RUN_MS, and a run claimed again never is",
+            "mutation-verdict:behavior:cli-explain-hung-bound-holds-only-a-run-claimed-once",
+        ),
+        "cli-explain-next-transition-is-the-instant-the-engine-moves-at": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL at nextTransitionAtMs the engine moves the task, and one millisecond earlier it does not",
+            "mutation-verdict:behavior:cli-explain-next-transition-is-the-instant-the-engine-moves-at",
+        ),
+        "cli-explain-follows-a-child-to-depth-8": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL follows an await of a child one hop at a time to depth 8, and reports the deepest cause",
+            "mutation-verdict:behavior:cli-explain-follows-a-child-to-depth-8",
+        ),
+        "cli-explain-suggests-no-yes": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL every suggestion emitted parses, holds no --yes and never names emit",
+            "mutation-verdict:behavior:cli-explain-suggests-no-yes",
+        ),
+        "cli-explain-a-waiting-verdict-owes-no-command": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL every suggestion emitted parses, holds no --yes and never names emit",
+            "mutation-verdict:behavior:cli-explain-a-waiting-verdict-owes-no-command",
+        ),
+        "cli-explain-exits-10-for-an-unreadable-row": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL prints its answer on stdout whatever it exits with, and exits 10 for a row inspect exits 10 for",
+            "mutation-verdict:behavior:cli-explain-exits-10-for-an-unreadable-row",
+        ),
+        "cli-explain-prints-its-answer-on-stdout": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL prints its answer on stdout whatever it exits with, and exits 10 for a row inspect exits 10 for",
+            "mutation-verdict:behavior:cli-explain-prints-its-answer-on-stdout",
+        ),
+        "cli-explain-redacts-the-outcome": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/redaction.test.ts",
+            "redaction explain prints no value a user wrote without --reveal",
+            "mutation-verdict:behavior:cli-explain-redacts-the-outcome",
+        ),
+        "cli-explain-quotes-a-pasted-line": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL prints a suggestion as one line a shell reads back as the same arguments",
+            "mutation-verdict:behavior:cli-explain-quotes-a-pasted-line",
+        ),
+        "cli-explain-reads-no-cause-from-rows-that-disagree": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose answers unexplained for facts no arm takes, and never a healthy verdict",
+            "mutation-verdict:behavior:cli-explain-reads-no-cause-from-rows-that-disagree",
+        ),
+        "cli-explain-vouches-for-no-child-it-cannot-read-as-live": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose asks for the evidence a cause turns on, once, and answers from it",
+            "mutation-verdict:behavior:cli-explain-vouches-for-no-child-it-cannot-read-as-live",
+        ),
+    }
+)
+VERDICTS["cli-explain-await-needs-its-own-step"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
+VERDICTS["cli-explain-await-needs-a-waiting-wait"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
+VERDICTS["cli-explain-await-needs-the-runs-own-timeout"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
+VERDICTS["cli-explain-await-needs-one-wait"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
+VERDICTS["cli-explain-never-started-declines-a-registered-wait"] = VERDICTS["cli-explain-reads-no-cause-from-rows-that-disagree"]
+VERDICTS["cli-explain-an-unread-child-is-unexplained"] = VERDICTS["cli-explain-vouches-for-no-child-it-cannot-read-as-live"]
+VERDICTS["cli-explain-alpha1-form-needs-no-checkpoint"] = VERDICTS["cli-explain-arm-sleeping-on-a-timer"]
+
+# What the fold of `explain`'s one review holds: a run in retry or rollback backoff has a
+# cause, and is a due run once the delay has run; a run past the hung-run bound is not
+# stuck and is never told to cancel; the next instant takes an earlier cancellation
+# deadline; a suggestion's flag and value are one argument, and one that cannot be filled
+# is withheld; what is unreadable is named; and a ring of awaits is read once.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-explain-arm-backing-off",
+            "packages/cli/src/explain.ts",
+            "  'backing-off': ofTheLiveRun(backingOffArm),\n",
+            "  'backing-off': () => null, // MUTATION: the arm of backing-off is deleted\n",
+            "explain answers unexplained for a task in retry backoff, which every default retry writes",
+        ),
+        (
+            "cli-explain-names-every-state-a-walk-leaves",
+            "packages/cli/src/explain.ts",
+            "  const asleep = wait !== undefined || onABareTimer(run) || asleepSinceItWasInserted(run)\n",
+            "  const asleep = wait !== undefined || onABareTimer(run) // MUTATION: a backoff that has run is no due run\n",
+            "explain answers unexplained for a run whose retry delay has run and which no claim has taken yet, a state the engine leaves a task in whenever the driver is a moment behind",
+        ),
+        (
+            "cli-explain-a-run-past-the-hung-bound-is-not-stuck",
+            "packages/cli/src/explain.ts",
+            "  'running-past-the-hung-bound': {\n    verdict: 'ok',\n",
+            "  'running-past-the-hung-bound': {\n    verdict: 'stuck', // MUTATION: a long first pass is stuck\n",
+            "explain answers stuck for a healthy run under a live lease, to which nothing is owed, so stuck no longer means that a move the driver owes is late",
+        ),
+        (
+            "cli-explain-never-suggests-cancel",
+            "packages/cli/src/explain.ts",
+            "    next: 'inspect',\n    meaning:\n      'the run was claimed once",
+            "    next: 'cancel', // MUTATION: a long first pass is told to cancel\n    meaning:\n      'the run was claimed once",
+            "explain names cancel, the one command that destroys work, as the next command for a run that may be healthy",
+        ),
+        (
+            "cli-explain-next-transition-takes-an-earlier-deadline",
+            "packages/cli/src/explain.ts",
+            "  const next = earlier(at, isAhead(view, cancelAtMs) ? cancelAtMs : null)\n",
+            "  const next = earlier(at, isAhead(view, cancelAtMs) ? null : null) // MUTATION: the deadline is no clock\n",
+            "explain names a later instant than the one at which the sweep cancels the task, or no instant at all for an await with no timeout",
+        ),
+        (
+            "cli-explain-a-required-flag-and-its-value-are-one-argument",
+            "packages/cli/src/explain.ts",
+            "    argv.push(`--${name}=${value}`)\n",
+            "    argv.push(`--${name}`, value) // MUTATION: the value is an argument of its own\n",
+            "explain prints a next command that the CLI's own parser refuses when the queue's name begins with a dash",
+        ),
+        (
+            "cli-explain-withholds-a-command-it-cannot-fill",
+            "packages/cli/src/explain.ts",
+            "    if (value === undefined) return noValueFor(`--${name}`, spec)\n",
+            "    if (value === undefined) throw new Error(`explain knows no value for ${name}`) // MUTATION: a hole in the command is thrown\n",
+            "explain exits 1 with no cause printed for a task whose next command requires a flag it has no value for, as every command that writes does",
+        ),
+        (
+            "cli-explain-unreadable-names-the-row-and-the-field",
+            "packages/cli/src/explain.ts",
+            "  return notReadable.length === 0 ? null : { cause: 'unreadable', facts: { notReadable } }\n",
+            "  return notReadable.length === 0 ? null : { cause: 'unreadable', facts: { notReadable: [] } } // MUTATION: what is not readable is not named\n",
+            "explain answers unreadable for a run or a wait whose state is not the engine's own and names nothing that is unreadable",
+        ),
+        (
+            "cli-explain-reads-a-ring-of-awaits-once",
+            "packages/cli/src/main.ts",
+            "    } else if (ring !== null) {\n",
+            "    } else if (ring !== null && asked.needs === 'checkpoints') { // MUTATION: a ring of awaits is followed round to the hop limit\n",
+            "explain reads a task that waits on itself nine times over and answers unexplained",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-explain-arm-backing-off": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause backing-off: a run its worker failed with attempts left, whose next attempt sleeps until the retry delay has run",
+            "mutation-verdict:behavior:cli-explain-arm-backing-off",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-names-every-state-a-walk-leaves": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain-walk.test.ts",
+            "explain over a walk of the engine names a cause for every task a walk leaves, and none is unexplained or inconsistent",
+            "mutation-verdict:behavior:cli-explain-names-every-state-a-walk-leaves",
+        ),
+        "cli-explain-a-run-past-the-hung-bound-is-not-stuck": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a healthy first pass past the hung-run bound is not stuck, and no cancel is suggested for it",
+            "mutation-verdict:behavior:cli-explain-a-run-past-the-hung-bound-is-not-stuck",
+        ),
+        "cli-explain-never-suggests-cancel": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a healthy first pass past the hung-run bound is not stuck, and no cancel is suggested for it",
+            "mutation-verdict:behavior:cli-explain-never-suggests-cancel",
+        ),
+        "cli-explain-next-transition-takes-an-earlier-deadline": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL names the cancellation deadline as the next instant when it comes before the wake, and prints it among the facts",
+            "mutation-verdict:behavior:cli-explain-next-transition-takes-an-earlier-deadline",
+        ),
+        "cli-explain-a-required-flag-and-its-value-are-one-argument": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL builds a next command the parser of the CLI reads, for a queue whose name begins with a dash",
+            "mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument",
+        ),
+        "cli-explain-withholds-a-command-it-cannot-fill": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL withholds a next command it cannot fill, and says what it has no value for",
+            "mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill",
+        ),
+        "cli-explain-unreadable-names-the-row-and-the-field": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose says of a row that is not readable which row it is and which field, and quotes no stored value",
+            "mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field",
+        ),
+        "cli-explain-reads-a-ring-of-awaits-once": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL reads a ring of awaits once: a task that waits on itself, and two that wait on each other",
+            "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
+        ),
+    }
+)
+
+# What the last fold of `explain` holds: a parent waits for any child that is ok and has
+# not ended, a ring of awaits that no clock ends is stuck, and a due run that carries the
+# wake fields of an await says whether its event exists.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-explain-a-parent-waits-for-a-child-a-worker-runs",
+            "packages/cli/src/explain.ts",
+            "  return child.ended ? 'unexplained' : 'waiting'\n",
+            "  return child.ended || child.cause !== 'running-under-a-live-lease' ? 'unexplained' : 'waiting' // MUTATION: one cause's name is what makes a parent wait\n",
+            "explain answers unexplained for every ancestor of a healthy child whose first pass has run for longer than the hung-run bound",
+        ),
+        (
+            "cli-explain-a-ring-no-clock-ends-is-stuck",
+            "packages/cli/src/explain.ts",
+            "  if ('ringEndedBy' in child) return child.ringEndedBy === 'nothing' ? 'stuck' : 'waiting'\n",
+            "  if ('ringEndedBy' in child) return child.ringEndedBy === 'nothing' ? 'waiting' : 'waiting' // MUTATION: a ring nothing ends is waiting\n",
+            "explain answers waiting, which promises a move, for a ring of awaits that no timeout and no cancellation deadline ends",
+        ),
+        (
+            "cli-explain-says-whether-a-wake-event-exists",
+            "packages/cli/src/explain.ts",
+            "          eventExists: wakeEventExists(view, run),\n",
+            "          eventExists: true, // MUTATION: carried wake fields read as an emitted event\n",
+            "explain says the event exists for a run that carries the wake fields of an await that timed out, so an operator reads a wake that nobody sent",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-explain-a-parent-waits-for-a-child-a-worker-runs": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a parent parked on a child that is past the hung-run bound is waiting, as it was before the bound",
+            "mutation-verdict:behavior:cli-explain-a-parent-waits-for-a-child-a-worker-runs",
+        ),
+        "cli-explain-a-ring-no-clock-ends-is-stuck": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL a ring of awaits that no clock ends is stuck, and one that a timeout or a deadline ends is waiting",
+            "mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck",
+        ),
+        "cli-explain-says-whether-a-wake-event-exists": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL says of a due run that carries the wake fields of an await whether its event exists",
+            "mutation-verdict:behavior:cli-explain-says-whether-a-wake-event-exists",
         ),
     }
 )
@@ -22087,7 +22873,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1187:
+        if len(MUTATIONS) != 1245:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
