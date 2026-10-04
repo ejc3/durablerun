@@ -1134,11 +1134,6 @@ describe("how an operator's read of an event's waiters is read", () => {
     const past = await readsAnswering({
       'event-waiters': [many(OPERATOR_GAUGE_CAP + 1)],
     }).reads.eventWaiters('q', 'e')
-    expect(past.waiters.rows.map((row) => row.taskId)).toEqual(
-      many(OPERATOR_GAUGE_CAP + 1)
-        .slice(0, OPERATOR_GAUGE_CAP)
-        .map((row) => row.task_id),
-    )
     const at = await readsAnswering({
       'event-waiters': [many(OPERATOR_GAUGE_CAP)],
     }).reads.eventWaiters('q', 'e')
@@ -1146,6 +1141,12 @@ describe("how an operator's read of an event's waiters is read", () => {
       [past.waiters.rows.length, past.waiters.atLeast, at.waiters.rows.length, at.waiters.atLeast],
       'mutation-verdict:behavior:operator-reads-stop-the-waiters-at-the-cap',
     ).toEqual([OPERATOR_GAUGE_CAP, true, OPERATOR_GAUGE_CAP, false])
+    // The thousand it keeps are the first of what was answered, in the order answered.
+    expect(past.waiters.rows.map((row) => row.taskId)).toEqual(
+      many(OPERATOR_GAUGE_CAP + 1)
+        .slice(0, OPERATOR_GAUGE_CAP)
+        .map((row) => row.task_id),
+    )
   })
 })
 
