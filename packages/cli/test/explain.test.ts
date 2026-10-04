@@ -1286,8 +1286,14 @@ describe('diagnose', () => {
         { waits: [waitOf('e', NOW_MS + 5_000)] },
       ),
     }
+    // Every piece of evidence a cause could ask for is handed over, so an arm that takes one
+    // of these shapes answers its cause, and the comparison below is what fails.
+    const evidence = {
+      checkpoints: 1,
+      waiters: { waiters: { rows: [], atLeast: false }, corrupt: [] },
+    }
     for (const [shape, facts] of Object.entries(shapes)) {
-      const answer = answered(diagnose(facts, { checkpoints: 1 }))
+      const answer = answered(diagnose(facts, evidence))
       expect(
         { shape, cause: answer.cause, verdict: answer.verdict, next: answer.nextTransitionAtMs },
         'mutation-verdict:behavior:cli-explain-reads-no-cause-from-rows-that-disagree',
