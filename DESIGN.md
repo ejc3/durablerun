@@ -4015,27 +4015,50 @@ not depend on careful reading:
   a corrupt value in a row of `checkpoints` reaches the facts only through a store's saga
   fragments, and no case plants one.
 - *The retention surface* (`conformance/src/retention.ts`): what the purge of §3.12 will
-  rely on, held on each dialect before any store can delete. For each terminal batch
-  label, with the cases generated from `TERMINAL_BATCH_LABELS`, a task is made ready at
-  one instant and ended by that batch at a later one. `tasks.fence_at_ms` must then read
-  the ending instant, and so must the instant of the completion event the batch wrote,
-  and the rows must pass `engineHistoryViolations`. For each write label and each terminal
-  state, with the cells generated from `MATRIX_WRITE_LABELS` and `TERMINAL_STATES`, the
-  engine ends the poison matrix's seeded task, the clock moves on five seconds, and the
-  label is invoked on the ended task and then on a healthy trigger. The label's batch must
-  run and change something, the call on the healthy trigger must not throw, and every
-  task that had ended must read the state and the stamp it read before. The one exception
-  is a failed task that `retry-task` revives, whose stamp must read the instant of the
-  revival. Three more cases write by hand the rows a wrong purge would leave, with nothing
-  else wrong: a task row with no run, the spawn memo of a live task whose child is gone,
-  and a wait on the completion event of a task that is gone with its event.
-  `engineHistoryViolations` must answer each with its one finding. A case nobody has seen
-  fail holds nothing, so `conformance/test/retention-reds.test.ts` runs every stamp case
-  and every cell on libSQL over a store bent to do what the case forbids. With core's
-  generated update writing NULL for the instant, the seven stamp cases fail by their own
-  assertion, and a registered mutation holds that for the `fail` case. A statement that
-  writes a task row and leaves the instant out is refused earlier, when its batch is built
-  (§3.4 rule 8).
+  rely on, held on each dialect before any store can delete. The stamp cases are generated
+  from the shapes the SQL corpus declares for the terminal batch labels.
+  `corpus/labels.json` gives each label the distinct statement lists it compiles to, and the
+  corpus test holds that file to what every store compiles. A label is not a path: `fail`
+  ends a task through one statement when no retry is asked, and through another when a retry
+  is asked and the budget refuses it, and each is a shape of its own. For each shape the
+  surface lists the ways a task is ended through it. They are written by hand, because
+  reaching a batch takes a scenario, and a case fails by name when a shape the corpus
+  declares has none. In each stamp case a task is made ready at one instant and ended at a
+  later one. The batch sent must be of the shape the case is listed under, the ended row
+  must name the statement the case names as the one that wrote it, `tasks.fence_at_ms` must
+  read the ending instant, and so must the instant of the completion event, and the rows
+  must pass `engineHistoryViolations`. This does not hold everything: core marks each
+  statement that can end a task and does not export the mark, so a shape that held two such
+  statements would pass with one of them never run, and a second path through one statement
+  is held only where it is listed. For each write label and each terminal state, with the
+  cells generated from `MATRIX_WRITE_LABELS` and `TERMINAL_STATES`, the engine ends the
+  poison matrix's seeded task, and a second task whose completion event is then deleted, as
+  a build older than the event leaves one. The clock moves on five seconds, and the label is
+  invoked on the seeded task and then on a healthy trigger, whose `record-task-done` call
+  records the second task's outcome. The label's batch must cross the executor on the call
+  that names the ended task, and that call may be refused only with one of the store's two
+  refusals of a claim that is gone. The label's batch must change durable state in one of
+  the two calls, the call on the healthy trigger must not throw, and every task that had
+  ended must read the state and the stamp it read before. The one exception is a failed task
+  that `retry-task` revives, whose stamp must read the instant of the revival. The call
+  shape "of a child" runs over an ended task too: a parent's replayed spawn finds a child
+  that has ended by its reserved key, and must answer with that child, create nothing, and
+  leave the child's stamp where its ending put it. Three more cases write by hand the rows a
+  wrong purge would leave, with nothing else wrong: a task row with no run, the spawn memo
+  of a live task whose child is gone, and a wait on the completion event of a task that is
+  gone with its event. `engineHistoryViolations` must answer each with its one finding. A
+  case nobody has seen fail holds nothing, so `conformance/test/retention-reds.test.ts` runs
+  every stamp case and every cell on libSQL over a store bent to do what the case forbids.
+  With core's generated update writing NULL for the instant, all eleven stamp cases fail by
+  their own assertion, and seven of them read a NULL ending stamp. The other four still read
+  the ending instant, because `complete`'s task mirror and the cancel compare-and-set take
+  the instant another way: `complete`'s case fails on the stamp its task carried before the
+  ending, and the three cancellation cases on a run row whose provenance pair the plant
+  broke. For those four the bent-store cases are what hold the ending stamp. Two registered
+  mutations own the plant, one over every generated update and one over the `task-terminal`
+  statement alone, and the case of `fail` with a retry asked at the attempt cap owns both. A
+  statement that writes a task row and leaves the instant out is refused earlier, when its
+  batch is built (§3.4 rule 8).
 - *The counts of this document* (`conformance/test/design-counts.test.ts`): a
   count stated here for a property the code pins carries a marker straight
   after the number, an HTML comment that names the property, and the test
@@ -6051,8 +6074,10 @@ depend on them can be built.
   database now minus the window, so a client passes only a duration (§3.4 rule
   3). A NULL stamp is never selected. Every batch that ends a task writes the
   stamp, and once a task has ended only `retry-task` moves it, when it revives
-  a failed task, so the revived task's age starts again. The retention surface
-  (`conformance/src/retention.ts`) holds both on each dialect. The stamp is the
+  a failed task, so the revived task's age starts again. On each dialect the
+  retention surface (`conformance/src/retention.ts`) holds the first for each
+  path it lists through every shape a terminal batch compiles to, and the
+  second for every write label. The stamp is the
   last write of the task row, not only of its ending: the stamp of a task that
   has slept for days is days old. So the age alone never selects a task, and
   the barrier reads the state beside it (`RetentionProbeLiveTask`).
