@@ -367,59 +367,56 @@ describe('stuck on libSQL', () => {
    * grace: under the default grace it is in no leg at any instant between ticks. At grace
    * 0 the same instants show it, so the check can say yes.
    */
-  for (const form of DEFERRAL_FORMS) {
-    it(
-      `a task looping through launch deferral in the ${form} form is in no leg under the default grace, at any instant between ticks`,
-      () =>
-        onDb(`stuck-deferral-${form}`, async (db) => {
-          /** The once-a-minute tick that backs a serverless deployment. */
-          const CADENCE_MS = 60_000
-          const BETWEEN_TICKS_MS = [1, 5_000, 14_999, 15_000, 24_000, 24_001, 40_000, 59_999]
-          const task = await db.store.spawn(QUEUE, 'registered-by-no-build', '{}')
-          const seenAtGraceZero: string[][] = []
-          for (let tick = 0; tick < 4; tick++) {
-            const tickAt = NOW_MS + tick * CADENCE_MS
-            await db.admin.setFakeNowEpochMs(tickAt)
-            const runId = await deferralTick(db, form, task.taskId, tick)
-            const shown: string[] = []
-            for (const offset of BETWEEN_TICKS_MS) {
-              await db.admin.setFakeNowEpochMs(tickAt + offset)
-              const byDefault = await stuck(db, ['--fail-if-any'])
-              expect(
-                { form, tick, offset, exit: byDefault.exit, ids: byDefault.ids },
-                'mutation-verdict:behavior:cli-stuck-default-grace-outlasts-a-tick',
-              ).toEqual({ form, tick, offset, exit: 0, ids: NO_ROW })
-              const now = await stuck(db, ['--grace', '0s'])
-              expect({ ...now.ids, sleepingPastWake: [] }).toEqual(NO_ROW)
-              if (now.ids.sleepingPastWake?.length === 1) {
-                expect(now.ids.sleepingPastWake).toEqual([runId])
-                shown.push(`+${offset}`)
-              }
+  it("a task looping through launch deferral, in the current worker's form and in alpha.1's, is in no leg under the default grace at any instant between ticks, and its age finds it", async () => {
+    for (const form of DEFERRAL_FORMS) {
+      await onDb(`stuck-deferral-${form}`, async (db) => {
+        /** The once-a-minute tick that backs a serverless deployment. */
+        const CADENCE_MS = 60_000
+        const BETWEEN_TICKS_MS = [1, 5_000, 14_999, 15_000, 24_000, 24_001, 40_000, 59_999]
+        const task = await db.store.spawn(QUEUE, 'registered-by-no-build', '{}')
+        const seenAtGraceZero: string[][] = []
+        for (let tick = 0; tick < 4; tick++) {
+          const tickAt = NOW_MS + tick * CADENCE_MS
+          await db.admin.setFakeNowEpochMs(tickAt)
+          const runId = await deferralTick(db, form, task.taskId, tick)
+          const shown: string[] = []
+          for (const offset of BETWEEN_TICKS_MS) {
+            await db.admin.setFakeNowEpochMs(tickAt + offset)
+            const byDefault = await stuck(db, ['--fail-if-any'])
+            expect(
+              { form, tick, offset, exit: byDefault.exit, ids: byDefault.ids },
+              'mutation-verdict:behavior:cli-stuck-default-grace-outlasts-a-tick',
+            ).toEqual({ form, tick, offset, exit: 0, ids: NO_ROW })
+            const now = await stuck(db, ['--grace', '0s'])
+            expect({ ...now.ids, sleepingPastWake: [] }).toEqual(NO_ROW)
+            if (now.ids.sleepingPastWake?.length === 1) {
+              expect(now.ids.sleepingPastWake).toEqual([runId])
+              shown.push(`+${offset}`)
             }
-            seenAtGraceZero.push(shown)
           }
-          // Its age is what finds it: the task has been live since the first tick, four
-          // minutes less a millisecond ago.
-          const aged = await stuck(db, ['--older-than', '3m'])
-          expect(
-            {
-              form,
-              ids: aged.ids,
-              aged: aged.answer.agedLive?.rows.map((row) => [row.taskId, row.ageMs]),
-            },
-            'mutation-verdict:behavior:cli-stuck-older-than-finds-a-deferral-loop',
-          ).toEqual({ form, ids: NO_ROW, aged: [[task.taskId, 4 * CADENCE_MS - 1]] })
-          expect((await stuck(db, ['--older-than', '4m'])).answer.agedLive?.rows).toEqual([])
-          // Parked for 15 to 24 seconds, the run is asleep one millisecond after each tick
-          // and past its wake from 24 seconds on at the latest.
-          for (const shown of seenAtGraceZero) {
-            expect(shown).not.toContain('+1')
-            expect(shown.slice(-3)).toEqual(['+24001', '+40000', '+59999'])
-          }
-        }),
-      120_000,
-    )
-  }
+          seenAtGraceZero.push(shown)
+        }
+        // Its age is what finds it: the task has been live since the first tick, four
+        // minutes less a millisecond ago.
+        const aged = await stuck(db, ['--older-than', '3m'])
+        expect(
+          {
+            form,
+            ids: aged.ids,
+            aged: aged.answer.agedLive?.rows.map((row) => [row.taskId, row.ageMs]),
+          },
+          'mutation-verdict:behavior:cli-stuck-older-than-finds-a-deferral-loop',
+        ).toEqual({ form, ids: NO_ROW, aged: [[task.taskId, 4 * CADENCE_MS - 1]] })
+        expect((await stuck(db, ['--older-than', '4m'])).answer.agedLive?.rows).toEqual([])
+        // Parked for 15 to 24 seconds, the run is asleep one millisecond after each tick
+        // and past its wake from 24 seconds on at the latest.
+        for (const shown of seenAtGraceZero) {
+          expect(shown).not.toContain('+1')
+          expect(shown.slice(-3)).toEqual(['+24001', '+40000', '+59999'])
+        }
+      })
+    }
+  }, 240_000)
 })
 
 interface StatsAnswer {
@@ -458,7 +455,10 @@ describe('stats on libSQL', () => {
         expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
         // No stream of either form says the queue is ok, as a word of its own.
         for (const printed of [text.stdout, JSON.stringify(json.answer)]) {
-          expect(/\bok\b/i.test(printed), printed).toBe(false)
+          expect(
+            /\bok\b/i.test(printed),
+            'mutation-verdict:behavior:cli-stats-says-quiet-never-ok',
+          ).toBe(false)
         }
         return {
           exit: json.exit,
@@ -476,7 +476,7 @@ describe('stats on libSQL', () => {
       // A run parked on an event nobody emits holds no instant, so it is in no gauge of
       // runs. Its task is live, and the gauge of live tasks counts it.
       await parkedOnAnEvent(db, null)
-      expect(await says()).toEqual({
+      expect(await says(), 'mutation-verdict:behavior:cli-stats-says-active').toEqual({
         exit: 0,
         summary: 'active',
         line: ['summary: active'],

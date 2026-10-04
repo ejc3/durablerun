@@ -984,6 +984,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
             : !/^BUILD\.md PR\d/.test(boundedBy),
         )
         .map(([name]) => name),
+      'mutation-verdict:behavior:plan-a-driving-due-range-is-bounded-as-its-entry-says',
     ).toEqual([])
     // A due range that stands alone, named line for line in both directions as well.
     expect(aDueRangeAlone).toEqual(
@@ -998,6 +999,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
             !(boundedBy === 'LIMIT' ? / limit \?$/i : /\bmin\(/i).test(textOf.get(name) ?? ''),
         )
         .map(([name]) => name),
+      'mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says',
     ).toEqual([])
   })
 

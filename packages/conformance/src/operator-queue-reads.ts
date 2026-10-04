@@ -261,7 +261,6 @@ async function finderAgainstTheEngine(
     inBothLegs
       .filter((run) => !reclaimedRuns.has(run.runId) && !cancelled.has(run.taskId))
       .map((run) => `${where}: no arm of the sweep took ${run.runId}`),
-    'mutation-verdict:behavior:operator-finder-lists-a-row-of-both-legs-that-a-sweep-takes',
   ).toEqual([])
   // What the finder said of each lapsed run is what the sweep then did with it: it fails a
   // run that was started, and reopens a launch that was lost.
@@ -473,7 +472,10 @@ export function operatorQueueReadsConformance(
         const recorder = new RecordingExecutor(f.raw)
         const reads = f.operatorReadsOver(recorder)
         // At the instant everything was spawned, only the two runs that are due and unclaimed.
-        expect(await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })).toEqual(
+        expect(
+          await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 }),
+          'mutation-verdict:behavior:operator-finder-answers-a-seeded-queue',
+        ).toEqual(
           report(START, {
             dueUnclaimed: all(
               owedRun(seeded.due, 'due', START, START),
@@ -543,7 +545,10 @@ export function operatorQueueReadsConformance(
           // Every task of the seed is live.
           liveTasks: exactly(8),
         }
-        expect(await reads.queueStatus(Q)).toEqual({
+        expect(
+          await reads.queueStatus(Q),
+          'mutation-verdict:behavior:operator-gauges-answer-a-seeded-queue',
+        ).toEqual({
           nowMs: START,
           fakeClock: true,
           gauges: {
