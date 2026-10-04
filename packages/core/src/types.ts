@@ -396,23 +396,32 @@ export interface LapsedRun extends OverdueRun {
 
 /**
  * A list of rows a move is owed to that the engine does not take. It is found through a
- * window: the oldest rows by the leg's instant alone, as many as the limit and one more,
- * of which the leg lists those the engine's own statement does not answer.
+ * window: the oldest rows by the leg's instant alone, as many as the limit and two more,
+ * of which the leg lists those the engine's own statement does not answer. The window is
+ * all the leg reads, so `atLeast` says less here than for a leg read to its end. True says
+ * the window showed more such rows than `rows` lists. False says only that the window
+ * showed no more: how many lie past it the leg cannot know, and `unexamined` is what says
+ * that more may exist.
  */
 export interface Windowed<Row> extends Capped<Row> {
   /**
-   * True when rows the window did not settle exist: rows past it, or rows of it that sort
-   * after the last row the engine's statement answered. One of them that the engine does
-   * not take is not listed until the rows ahead of it are taken.
+   * True when a row the window did not settle could be one the leg lists under the grace
+   * it was asked with: a row it read that sorts after the last row the engine's statement
+   * answered and is old enough for the grace, or rows past a window that came back full
+   * whose last row is old enough. Such a row that the engine does not take is not listed
+   * until the rows ahead of it are taken. False says the window settled every row that is
+   * old enough for the grace.
    */
   readonly unexamined: boolean
 }
 
 /**
  * A run that is due and that no claim admits: a claim's own statement does not answer it,
- * so no claim takes it however long it has been due. The sweep takes it only when its task
- * is also past its cancellation deadline, and `cancelOverdue` then lists that task. It is
- * read from the run's own row, with no task joined, so it has no task name.
+ * so no claim takes it however long it has been due. The sweep takes it only by cancelling
+ * its task, when the task is past its cancellation deadline and the sweep's scan takes
+ * that task: `cancelOverdue` then lists the task. When the scan refuses the task,
+ * `deadlineNotCancelled` lists it, and no sweep takes the run. It is read from the run's
+ * own row, with no task joined, so it has no task name.
  */
 export interface UnadmittedRun {
   readonly runId: string

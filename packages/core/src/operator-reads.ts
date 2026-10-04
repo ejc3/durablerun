@@ -566,6 +566,14 @@ function reportTime(b: FencedBatch, ran: FencedResult, corrupt: CorruptInteger[]
  * is listed whatever `agedMs` is, and so is every row when database time is not: nothing
  * says such a row is newer than that.
  */
+/**
+ * Whether an instant is at least `agedMs` behind database time. One that is not readable
+ * is taken to be, and so is every instant when database time is not: nothing says such a
+ * row is newer than that.
+ */
+const agedAt = (at: number | null, nowMs: number | null, agedMs: number): boolean =>
+  at === null || nowMs === null || at <= nowMs - agedMs
+
 function agedBy<Row>(
   read: readonly Row[],
   instantOf: (row: Row) => number | null,
@@ -576,7 +584,7 @@ function agedBy<Row>(
 ): Capped<{ readonly row: Row; readonly byMs: number | null }> {
   const aged = read
     .map((row) => ({ row, at: instantOf(row) }))
-    .filter((one) => one.at === null || nowMs === null || one.at <= nowMs - agedMs)
+    .filter((one) => agedAt(one.at, nowMs, agedMs))
     .sort(
       (left, right) =>
         absentLast(left.at, right.at) || byCodePoints(idOf(left.row), idOf(right.row)),
@@ -686,33 +694,65 @@ const sortsBefore = (row: Placed, other: Placed): boolean =>
   (absentLast(row.at, other.at) || byCodePoints(row.id, other.id)) < 0
 
 /**
- * The rows of a window that the engine does not take. `read` is the oldest rows by a leg's
- * instant alone, as many as the limit and two more, of which the first `limit + 1` are the
- * window and the last says whether rows lie past it. `taken` is what the engine's own
- * statement answered for the same instant, oldest first and one row past the limit. A row
- * of the window that `taken` does not hold is one the engine refuses when `taken` holds
- * every row the engine would take, or when the row sorts before the last row of `taken`:
- * had the engine admitted it, its statement would have answered it ahead of that one. A row
- * that sorts after the last of a full `taken` is not settled, and neither is a row past
- * the window, and `unexamined` says that such rows exist.
+ * One kind of row a leg lists, a run or a task: the column of a row read that holds its id,
+ * the id of a row decoded, and the decoder, held together, so that a leg cannot be wired to
+ * read the ids of one column and compare the places of another.
  */
-function notTaken<Row>(
+interface OwedKind<Id, Row extends Id & { readonly dueAtMs: number | null }> {
+  readonly idColumn: 'run_id' | 'task_id'
+  idOf(row: Id): string
+  decode(row: SqlRow, corrupt: CorruptInteger[]): Row
+}
+
+/**
+ * The rows of a window that the engine does not take. `read` is the oldest rows by a leg's
+ * instant alone, as many as the limit and two more. `taken` is what the engine's own
+ * statement answered for the same instant, oldest first and one row past the limit. A row
+ * read that `taken` does not hold is one the engine refuses when `taken` holds every row
+ * the engine would take, or when the row sorts before the last row of `taken`: had the
+ * engine admitted it, its statement would have answered it ahead of that one. A row that
+ * sorts after the last of a full `taken` is not settled, and neither are rows past a read
+ * that came back full. `unexamined` says that such a row could be one the leg lists:
+ * `aged` is the leg's own test of the grace, and rows past a full read sort after its last
+ * row, so they are old enough only when that row is. A row that is not settled is not
+ * decoded into `corrupt`: the leg does not list it.
+ */
+function notTaken<Id, Row extends Id & { readonly dueAtMs: number | null }>(
   read: readonly SqlRow[],
-  idColumn: 'run_id' | 'task_id',
-  decode: (row: SqlRow) => Row,
-  placeOf: (row: Row) => Placed,
-  taken: readonly Placed[],
+  kind: OwedKind<Id, Row>,
+  taken: readonly (Id & { readonly dueAtMs: number | null })[],
+  corrupt: CorruptInteger[],
   limit: number,
+  aged: (at: number | null) => boolean,
 ): { readonly rows: Row[]; readonly unexamined: boolean } {
-  const held = new Set(taken.map((row) => row.id))
-  const last = taken.length > limit ? taken[taken.length - 1] : undefined
-  const candidates = read
-    .slice(0, limit + 1)
-    .filter((row) => !held.has(stringFrom(row[idColumn])))
-    .map(decode)
-  const rows =
-    last === undefined ? candidates : candidates.filter((row) => sortsBefore(placeOf(row), last))
-  return { rows, unexamined: read.length > limit + 1 || rows.length < candidates.length }
+  const placeOf = (row: Id & { readonly dueAtMs: number | null }): Placed => ({
+    id: kind.idOf(row),
+    at: row.dueAtMs,
+  })
+  const held = new Map(taken.map((row) => [kind.idOf(row), row.dueAtMs]))
+  const lastTaken = taken[taken.length - 1]
+  const last = taken.length > limit && lastTaken !== undefined ? placeOf(lastTaken) : undefined
+  const rows: Row[] = []
+  let unsettled = false
+  let endsAt: number | null = null
+  for (const raw of read) {
+    const id = stringFrom(raw[kind.idColumn])
+    if (held.has(id)) {
+      endsAt = held.get(id) ?? null
+      continue
+    }
+    const its: CorruptInteger[] = []
+    const row = kind.decode(raw, its)
+    endsAt = row.dueAtMs
+    if (last === undefined || sortsBefore(placeOf(row), last)) {
+      rows.push(row)
+      corrupt.push(...its)
+    } else if (aged(row.dueAtMs)) {
+      unsettled = true
+    }
+  }
+  const past = read.length > limit + 1 && aged(endsAt)
+  return { rows, unexamined: unsettled || past }
 }
 
 async function stuckRuns(
@@ -804,56 +844,63 @@ async function stuckRuns(
       dueAtMs: integersOf(row, corrupt, { taskId })(TASK.cancel_at_ms),
     }
   })
-  const placeOfRun = (run: { runId: string; dueAtMs: number | null }): Placed => ({
-    id: run.runId,
-    at: run.dueAtMs,
-  })
-  const placeOfTask = (task: { taskId: string; dueAtMs: number | null }): Placed => ({
-    id: task.taskId,
-    at: task.dueAtMs,
-  })
-  /** The runs of a window that the engine's leg beside it did not answer, from the run's own row. */
-  const runsNotTaken = (
-    leg: string,
-    dueAt: PersistedIntegerBounds,
-    taken: readonly { runId: string; dueAtMs: number | null }[],
-  ) =>
-    notTaken(
-      readRows(b, ran, leg),
-      'run_id',
-      (row) => {
-        const runId = stringFrom(row.run_id)
-        const int = integersOf(row, corrupt, { runId })
-        const ordinal = int(RUN.attempt)
-        return { runId, taskId: stringFrom(row.task_id), attempt: ordinal, dueAtMs: int(dueAt) }
-      },
-      placeOfRun,
-      taken.map(placeOfRun),
-      limit,
-    )
-  const pendingNotAdmitted = runsNotTaken('window-pending', RUN.available_at_ms, pending)
-  const sleepingNotAdmitted = runsNotTaken('window-sleeping', RUN.available_at_ms, sleeping)
-  const notReclaimed = runsNotTaken('window-lapsed', RUN.claim_expires_at_ms, lapsed)
-  const notCancelled = deadlineWindows.map((leg) =>
-    notTaken(
-      readRows(b, ran, leg),
-      'task_id',
-      (row) => {
-        const taskId = stringFrom(row.task_id)
-        return {
-          taskId,
-          taskName: stringFrom(row.task_name),
-          state: stringFrom(row.state),
-          dueAtMs: integersOf(row, corrupt, { taskId })(TASK.cancel_at_ms),
-        }
-      },
-      placeOfTask,
-      cancels.map(placeOfTask),
-      limit,
-    ),
-  )
   const byRun = (run: { readonly runId: string }): string => run.runId
   const byTask = (task: { readonly taskId: string }): string => task.taskId
+  /** A run of a window, from the run's own row: the instant is the one its leg is read by. */
+  const runsOwed = (dueAt: PersistedIntegerBounds) => ({
+    idColumn: 'run_id' as const,
+    idOf: byRun,
+    decode: (row: SqlRow, into: CorruptInteger[]) => {
+      const runId = stringFrom(row.run_id)
+      const int = integersOf(row, into, { runId })
+      const ordinal = int(RUN.attempt)
+      return { runId, taskId: stringFrom(row.task_id), attempt: ordinal, dueAtMs: int(dueAt) }
+    },
+  })
+  /** A task of a window of deadlines. */
+  const tasksOwed = {
+    idColumn: 'task_id' as const,
+    idOf: byTask,
+    decode: (row: SqlRow, into: CorruptInteger[]) => {
+      const taskId = stringFrom(row.task_id)
+      return {
+        taskId,
+        taskName: stringFrom(row.task_name),
+        state: stringFrom(row.state),
+        dueAtMs: integersOf(row, into, { taskId })(TASK.cancel_at_ms),
+      }
+    },
+  }
+  const dueRuns = runsOwed(RUN.available_at_ms)
+  /** The leg's own test of the grace, which a row a window left unsettled is held to as well. */
+  const aged = (at: number | null): boolean => agedAt(at, nowMs, graceMs)
+  const pendingNotAdmitted = notTaken(
+    readRows(b, ran, 'window-pending'),
+    dueRuns,
+    pending,
+    corrupt,
+    limit,
+    aged,
+  )
+  const sleepingNotAdmitted = notTaken(
+    readRows(b, ran, 'window-sleeping'),
+    dueRuns,
+    sleeping,
+    corrupt,
+    limit,
+    aged,
+  )
+  const notReclaimed = notTaken(
+    readRows(b, ran, 'window-lapsed'),
+    runsOwed(RUN.claim_expires_at_ms),
+    lapsed,
+    corrupt,
+    limit,
+    aged,
+  )
+  const notCancelled = deadlineWindows.map((leg) =>
+    notTaken(readRows(b, ran, leg), tasksOwed, cancels, corrupt, limit, aged),
+  )
   /** One leg of what the engine does not take, from the windows that hold it, under the grace and the limit. */
   const windowed = <Row extends { readonly dueAtMs: number | null }>(
     windows: readonly { readonly rows: readonly Row[]; readonly unexamined: boolean }[],
