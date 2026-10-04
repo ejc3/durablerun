@@ -334,10 +334,19 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     // that predates it runs against this schema unchanged, and no statement the engine
     // sends reads it. Like versions 6 and 9, it is built under a lock that blocks writes
     // to its table, `tasks`, while it reads the whole table.
+    //
+    // The second term of its predicate is what keeps the engine's statements off it. Every
+    // task has an enqueue instant, so the term leaves no task out. PostgreSQL uses a
+    // partial index only for a statement whose own conditions imply the index's predicate,
+    // and no statement the engine sends compares the enqueue instant. Without the term a
+    // statement that names a queue and the live states could be planned through this index
+    // and read every live task of the queue. A read that means to use the index compares
+    // the enqueue instant with a range: the server drops a test for NULL of a column that
+    // cannot hold one before it looks at the index, so that test alone implies nothing.
     version: 11,
     statements: [
       `CREATE INDEX tasks_live ON tasks (queue, state, enqueue_at_ms)
-       WHERE state IN ('pending','running','sleeping')`,
+       WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms IS NOT NULL`,
     ],
   },
 ]
