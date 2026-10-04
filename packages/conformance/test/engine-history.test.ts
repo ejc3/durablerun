@@ -1,5 +1,7 @@
+import { encodeTaskOutcome } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from '../src/index.js'
+import { handWrittenTask } from '../src/scenario.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 const NOW = 1_000_000
@@ -7,8 +9,9 @@ const NOW = 1_000_000
 /**
  * `engineHistoryViolations` is what every walk, matrix cell, and scenario judges its rows
  * by, so a checker it left out would be left out of all of them at once. The rows here
- * are written by hand with one defect for each checker, and the helper must name all
- * three.
+ * are written by hand. The first case holds one defect each for the invariant library, the
+ * child-task checker, and the saga checker, and the helper must name all three. The second
+ * holds one defect that only the retention checker reads.
  */
 describe('the one helper that judges the rows of a history', () => {
   it('names a defect of each of its three checkers', async () => {
@@ -46,6 +49,27 @@ describe('the one helper that judges the rows of a history', () => {
           'saga/rollback-of-a-step-that-never-started: ended/a',
         ]),
       )
+    } finally {
+      await f.close()
+    }
+  })
+
+  it('names a defect that only the checker of what a purge may leave reads', async () => {
+    const f = await makeLibsqlFixture('engine-history-retention')
+    try {
+      await f.raw.batch('hand-written-history', [
+        // A completed task with its completion event and no run: the other three pass it.
+        handWrittenTask({ taskId: 'kept', state: 'completed', atMs: NOW, completedPayload: '1' }),
+        {
+          sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                VALUES ('q', '$task-done:kept', ?, ?)`,
+          args: [encodeTaskOutcome({ state: 'completed', completedPayloadJson: '1' }), NOW],
+        },
+      ])
+      expect(
+        await engineHistoryViolations(f.raw),
+        'mutation-verdict:behavior:history-helper-runs-the-retention-checker',
+      ).toEqual(['task-without-a-run: kept'])
     } finally {
       await f.close()
     }

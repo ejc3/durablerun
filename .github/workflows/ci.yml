@@ -329,102 +329,24 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_entry(repaired, candidate, name):
-              # Replace one entry of the base registry with this tree's entry of the same name, for a
-              # mutation whose target line this tree rewrote. Its name must stand, and so must
-              # whatever comment the entry opens with, so only the file, the find, the replacement and
-              # the description move. The file moves when the text a mutant rewrites moved to another
-              # file, as a store's line does when core takes it over. An entry stands at the top of
-              # the list or inside an extension of it, and its name may also stand in the verdict
-              # group that lists it, so the entry is the one whose next line is its file.
-              def span(text):
-                  found = list(re.finditer(
-                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
-                      text,
-                      re.M,
-                  ))
-                  if len(found) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  entry = found[0]
-                  named = entry.end() - len(entry.group('indent') + '    "packages/')
-                  close = '\n' + entry.group('indent') + '),\n'
-                  return entry.start(), named, text.index(close, named) + len(close)
-              start, named, end = span(repaired)
-              new_start, new_named, new_end = span(candidate)
-              if repaired[start:named] != candidate[new_start:new_named]:
-                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '4da6f24e9b7535e573d76507a78ae033754ad498099e0e119dba30d7184e8788':
-              # `explain` registers fifty-eight mutations: one for each arm of `diagnose`, and
-              # the others for its default verdict, its two bounds, the instant a waiting run
-              # next moves at, the depth an await of a child is followed to, what a parent
-              # takes from a child and a ring of awaits, what a suggestion may carry, the
-              # exit and the stream of a row that is not readable and what names it, whether
-              # a wake's event exists, the outcome's redaction, the rows it reads no healthy
-              # cause from, and the walk that diagnoses what the engine leaves. Every verdict
-              # marker of their cases is newer than the base registry, so each is exempted
-              # there. Three base entries are re-aimed, the three that hold `inspect`'s exit for
-              # a row that is not readable: their lines now read, or are in, the one function
-              # that lists what is not readable.
+          if digest == '446df371c7d28e1b313b29890b426bfab45e84a321a4bb2440acfd5249a4a57d':
+              # Retention registers fourteen mutations: two for the stamp a terminal batch
+              # writes, one for a shape of such a batch that no stamp case ends a task by, one
+              # for the helper that runs the row checker behind every surface, and ten for
+              # the checker's three conditions and their edges. Each verdict marker of their
+              # cases is newer than the base registry, so each is exempted there. No base
+              # entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cli-explain-arm-completed",
-                  "mutation-verdict:behavior:cli-explain-arm-cancelled",
-                  "mutation-verdict:behavior:cli-explain-arm-failed-by-an-engine-reason",
-                  "mutation-verdict:behavior:cli-explain-arm-failed-attempts-exhausted",
-                  "mutation-verdict:behavior:cli-explain-arm-failed-with-no-retry",
-                  "mutation-verdict:behavior:cli-explain-arm-cancellation-deadline-passed",
-                  "mutation-verdict:behavior:cli-explain-arm-lease-lapsed-unswept",
-                  "mutation-verdict:behavior:cli-explain-arm-running-past-the-hung-bound",
-                  "mutation-verdict:behavior:cli-explain-arm-running-under-a-live-lease",
-                  "mutation-verdict:behavior:cli-explain-arm-pending-delayed",
-                  "mutation-verdict:behavior:cli-explain-arm-woken-unclaimed",
-                  "mutation-verdict:behavior:cli-explain-arm-pending-due-unclaimed",
-                  "mutation-verdict:behavior:cli-explain-arm-never-started",
-                  "mutation-verdict:behavior:cli-explain-arm-wait-outlives-its-event",
-                  "mutation-verdict:behavior:cli-explain-arm-never-started-alpha1-form",
-                  "mutation-verdict:behavior:cli-explain-arm-sleeping-past-its-wake",
-                  "mutation-verdict:behavior:cli-explain-arm-awaiting-a-child",
-                  "mutation-verdict:behavior:cli-explain-arm-awaiting-a-timed-event",
-                  "mutation-verdict:behavior:cli-explain-arm-awaiting-an-untimed-event",
-                  "mutation-verdict:behavior:cli-explain-arm-sleeping-on-a-timer",
-                  "mutation-verdict:behavior:cli-explain-arm-unreadable",
-                  "mutation-verdict:behavior:cli-explain-arm-terminal-task-with-a-live-run",
-                  "mutation-verdict:behavior:cli-explain-arm-live-task-without-one-live-run",
-                  "mutation-verdict:behavior:cli-explain-arm-task-and-run-states-differ",
-                  "mutation-verdict:behavior:cli-explain-answers-unexplained-by-default",
-                  "mutation-verdict:behavior:cli-explain-answers-stuck-for-no-healthy-state",
-                  "mutation-verdict:behavior:cli-explain-grace-ends-after-its-last-millisecond",
-                  "mutation-verdict:behavior:cli-explain-hung-bound-ends-after-its-last-millisecond",
-                  "mutation-verdict:behavior:cli-explain-hung-bound-holds-only-a-run-claimed-once",
-                  "mutation-verdict:behavior:cli-explain-next-transition-is-the-instant-the-engine-moves-at",
-                  "mutation-verdict:behavior:cli-explain-follows-a-child-to-depth-8",
-                  "mutation-verdict:behavior:cli-explain-suggests-no-yes",
-                  "mutation-verdict:behavior:cli-explain-a-waiting-verdict-owes-no-command",
-                  "mutation-verdict:behavior:cli-explain-exits-10-for-an-unreadable-row",
-                  "mutation-verdict:behavior:cli-explain-prints-its-answer-on-stdout",
-                  "mutation-verdict:behavior:cli-explain-redacts-the-outcome",
-                  "mutation-verdict:behavior:cli-explain-quotes-a-pasted-line",
-                  "mutation-verdict:behavior:cli-explain-reads-no-cause-from-rows-that-disagree",
-                  "mutation-verdict:behavior:cli-explain-vouches-for-no-child-it-cannot-read-as-live",
-                  "mutation-verdict:behavior:cli-explain-arm-backing-off",
-                  "mutation-verdict:behavior:cli-explain-names-every-state-a-walk-leaves",
-                  "mutation-verdict:behavior:cli-explain-a-run-past-the-hung-bound-is-not-stuck",
-                  "mutation-verdict:behavior:cli-explain-never-suggests-cancel",
-                  "mutation-verdict:behavior:cli-explain-next-transition-takes-an-earlier-deadline",
-                  "mutation-verdict:behavior:cli-explain-a-required-flag-and-its-value-are-one-argument",
-                  "mutation-verdict:behavior:cli-explain-withholds-a-command-it-cannot-fill",
-                  "mutation-verdict:behavior:cli-explain-unreadable-names-the-row-and-the-field",
-                  "mutation-verdict:behavior:cli-explain-reads-a-ring-of-awaits-once",
-                  "mutation-verdict:behavior:cli-explain-a-parent-waits-for-a-child-a-worker-runs",
-                  "mutation-verdict:behavior:cli-explain-a-ring-no-clock-ends-is-stuck",
-                  "mutation-verdict:behavior:cli-explain-says-whether-a-wake-event-exists",
+                  "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
+                  "mutation-verdict:behavior:retention-every-terminal-batch-shape-has-a-stamp-case",
+                  "mutation-verdict:behavior:history-helper-runs-the-retention-checker",
+                  "mutation-verdict:behavior:retention-rows-name-a-task-without-a-run",
+                  "mutation-verdict:behavior:retention-rows-name-a-spawn-memo-without-its-task",
+                  "mutation-verdict:behavior:retention-rows-name-a-stranded-completion-wait",
+                  "mutation-verdict:behavior:retention-rows-read-a-parent-that-can-still-run-its-code",
+                  "mutation-verdict:behavior:retention-rows-name-a-memo-that-holds-no-child-handle",
+                  "mutation-verdict:behavior:retention-rows-read-a-wait-by-its-own-queue",
               ))
-              for name in (
-                  "cli-inspect-exits-10-for-a-corrupt-row",
-                  "cli-inspect-exits-10-for-an-unknown-run-state",
-                  "cli-inspect-exits-10-for-an-unknown-wait-status",
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

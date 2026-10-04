@@ -62,6 +62,9 @@ export const MATRIX_WRITE_LABELS = [
   'sweep:claim-timeout',
 ] as const
 
+/** One write label of the matrix. */
+export type MatrixWriteLabel = (typeof MATRIX_WRITE_LABELS)[number]
+
 /**
  * The write labels whose batch can end a task (specs/ChildTasks.tla's ledger block).
  * Each owes the task's parent its completion event and the wake of every waiter. The
@@ -76,7 +79,7 @@ export const TERMINAL_BATCH_LABELS = [
   'sweep:cancel',
   'sweep:lost-launch',
   'sweep:claim-timeout',
-] as const satisfies readonly (typeof MATRIX_WRITE_LABELS)[number][]
+] as const satisfies readonly MatrixWriteLabel[]
 
 export const MATRIX_READ_LABELS = [
   'claimed-task-name',

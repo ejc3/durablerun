@@ -18965,6 +18965,220 @@ VERDICTS.update(
     }
 )
 
+# What retention will rely on. A batch that ends a task stamps its row with the ending
+# instant. The retention row checker, and the helper that runs it behind every surface
+# that judges a history, name a task row with no run, a spawn memo of a task that can
+# still run its code whose child is gone, and a wait on a completion event whose queue
+# holds neither the task nor the event.
+MUTATION_SPECS.extend(
+    (
+        (
+            "terminal-batch-stamps-the-ending-instant",
+            "packages/core/src/fenced-batch.ts",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })\n",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: null })\n",
+            "a batch that ends a task leaves its row with no instant, which the purge never selects, so the unit is kept forever",
+        ),
+        (
+            "history-helper-runs-the-retention-checker",
+            "packages/conformance/src/engine-history.ts",
+            "    ...(await retentionViolations(raw)),\n",
+            "",
+            "every surface that judges its rows through the one helper stops seeing a task row with no run, a spawn memo whose child is gone, and a stranded wait on a completion event",
+        ),
+        (
+            "retention-rows-name-a-task-without-a-run",
+            "packages/conformance/src/retention-rows.ts",
+            "    if (!hasARun.has(taskId)) noRun.push(`task-without-a-run: ${taskId}`)\n",
+            "",
+            "a purge that kept a task row and deleted its runs passes every row check",
+        ),
+        (
+            "retention-rows-name-a-spawn-memo-without-its-task",
+            "packages/conformance/src/retention-rows.ts",
+            "    } else if (!exists.has(child)) {\n",
+            "    } else if (!exists.has(child) && exists.size === 0) { // MUTATION: a memo whose child is gone is not named\n",
+            "a purge that took the child of a parent that can still run passes every row check, and the parent's replay then spawns a second child",
+        ),
+        (
+            "retention-rows-name-a-stranded-completion-wait",
+            "packages/conformance/src/retention-rows.ts",
+            "    if (eventOfATask.has(event) || stored.has(event)) continue\n",
+            "    if (eventOfATask.has(event) || stored.has(event) || awaited !== null) continue // MUTATION: no wait on a completion event is named\n",
+            "a purge that took a task from under a wait on its completion event passes every row check, and the waiter sleeps for good",
+        ),
+        (
+            "retention-rows-hold-a-failed-parent-that-can-be-revived",
+            "packages/conformance/src/retention-rows.ts",
+            "          (task.state === 'failed' && !sagaBegan.has(String(task.task_id))),\n",
+            "          (task.state === 'failed' && sagaBegan.size < 0),\n",
+            "the child of a failed parent that retry-task can revive may be purged with every row check green",
+        ),
+        (
+            "retention-rows-excuse-a-parent-whose-saga-began",
+            "packages/conformance/src/retention-rows.ts",
+            "          (task.state === 'failed' && !sagaBegan.has(String(task.task_id))),\n",
+            "          (task.state === 'failed' && sagaBegan.size >= 0),\n",
+            "the row check refuses a purge the model allows: the child of a parent that failed with a saga, which retry-task refuses and which never reads its child again",
+        ),
+        (
+            "retention-rows-excuse-a-parent-that-has-ended-for-good",
+            "packages/conformance/src/retention-rows.ts",
+            "          isLiveState(task.state) ||\n",
+            "          task.state !== 'failed' ||\n",
+            "the row check refuses a purge the barrier allows: the child of a completed or a cancelled parent",
+        ),
+        (
+            "retention-rows-name-a-memo-that-holds-no-child-handle",
+            "packages/conformance/src/retention-rows.ts",
+            "      memos.push(`spawn-memo-without-its-task: ${parent}/${name} holds no child handle`)\n",
+            "",
+            "a spawn memo that no replay can read as a child passes for one that names an existing task",
+        ),
+        (
+            "retention-rows-read-only-a-spawn-memo-as-one",
+            "packages/conformance/src/retention-rows.ts",
+            "    if (!name.startsWith(SPAWN_MEMO_PREFIX) || !canStillRunItsCode.has(parent)) continue\n",
+            "    if (!canStillRunItsCode.has(parent)) continue\n",
+            "every checkpoint of a task that can still run is read as a spawn memo, so a step's result is named as a memo with no child",
+        ),
+        (
+            "retention-rows-a-wait-with-its-event-is-not-stranded",
+            "packages/conformance/src/retention-rows.ts",
+            "    if (eventOfATask.has(event) || stored.has(event)) continue\n",
+            "    if (eventOfATask.has(event)) continue\n",
+            "a wait whose completion event is stored is named as stranded, though the emit that stored it woke the waiter",
+        ),
+        (
+            "retention-rows-a-wait-with-its-task-is-not-stranded",
+            "packages/conformance/src/retention-rows.ts",
+            "    if (eventOfATask.has(event) || stored.has(event)) continue\n",
+            "    if (stored.has(event)) continue\n",
+            "every wait on a child that has not ended is named as stranded",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "terminal-batch-stamps-the-ending-instant": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the stamp of an ending fail/retrying, a retry asked at the attempt cap: the batch stamps the task it ends with the ending instant",
+            "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
+            "packages/conformance/src/retention.ts",
+        ),
+        "history-helper-runs-the-retention-checker": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/engine-history.test.ts",
+            "the one helper that judges the rows of a history names a defect that only the checker of what a purge may leave reads",
+            "mutation-verdict:behavior:history-helper-runs-the-retention-checker",
+        ),
+        "retention-rows-name-a-task-without-a-run": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the rows a wrong purge would leave names a task row whose runs are gone",
+            "mutation-verdict:behavior:retention-rows-name-a-task-without-a-run",
+            "packages/conformance/src/retention.ts",
+        ),
+        "retention-rows-name-a-spawn-memo-without-its-task": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the rows a wrong purge would leave names the spawn memo of a live task whose child is gone",
+            "mutation-verdict:behavior:retention-rows-name-a-spawn-memo-without-its-task",
+            "packages/conformance/src/retention.ts",
+        ),
+        "retention-rows-name-a-stranded-completion-wait": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the rows a wrong purge would leave names a wait on the completion event of a task that is gone with its event",
+            "mutation-verdict:behavior:retention-rows-name-a-stranded-completion-wait",
+            "packages/conformance/src/retention.ts",
+        ),
+        "retention-rows-hold-a-failed-parent-that-can-be-revived": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a memo whose child is gone only for a parent that can still run its code",
+            "mutation-verdict:behavior:retention-rows-read-a-parent-that-can-still-run-its-code",
+        ),
+        "retention-rows-excuse-a-parent-whose-saga-began": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a memo whose child is gone only for a parent that can still run its code",
+            "mutation-verdict:behavior:retention-rows-read-a-parent-that-can-still-run-its-code",
+        ),
+        "retention-rows-excuse-a-parent-that-has-ended-for-good": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a memo whose child is gone only for a parent that can still run its code",
+            "mutation-verdict:behavior:retention-rows-read-a-parent-that-can-still-run-its-code",
+        ),
+        "retention-rows-name-a-memo-that-holds-no-child-handle": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a spawn memo that holds no child handle, and reads no other checkpoint as one",
+            "mutation-verdict:behavior:retention-rows-name-a-memo-that-holds-no-child-handle",
+        ),
+        "retention-rows-read-only-a-spawn-memo-as-one": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a spawn memo that holds no child handle, and reads no other checkpoint as one",
+            "mutation-verdict:behavior:retention-rows-name-a-memo-that-holds-no-child-handle",
+        ),
+        "retention-rows-a-wait-with-its-event-is-not-stranded": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a wait on a completion event only when its queue holds neither the task nor the event",
+            "mutation-verdict:behavior:retention-rows-read-a-wait-by-its-own-queue",
+        ),
+        "retention-rows-a-wait-with-its-task-is-not-stranded": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/retention-rows.test.ts",
+            "the retention row checker names a wait on a completion event only when its queue holds neither the task nor the event",
+            "mutation-verdict:behavior:retention-rows-read-a-wait-by-its-own-queue",
+        ),
+    }
+)
+
+# What the stamp cases hold beyond one path for each label: the statement that ends a task
+# when a retry is refused or a cap is reached stamps it, and every shape a terminal
+# label's batch compiles to has a case.
+MUTATION_SPECS.extend(
+    (
+        (
+            "the-task-terminal-statement-stamps-the-ending-instant",
+            "packages/core/src/fenced-batch.ts",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })\n",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: (name !== 'task-terminal' || null) && sourceInstant })\n",
+            "a failure whose retry the budget refuses, and a claim that times out at the infrastructure cap, end a task with no instant, while a failure no retry follows still stamps it",
+        ),
+        (
+            "retention-a-terminal-batch-shape-has-no-stamp-case",
+            "packages/conformance/src/retention.ts",
+            "  'fail/retrying': [\n",
+            "  'fail/retrying-unlisted': [\n",
+            "a shape of a terminal label's batch is ended by no stamp case, so a wrong stamp from its statement fails nothing",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "the-task-terminal-statement-stamps-the-ending-instant": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the stamp of an ending fail/retrying, a retry asked at the attempt cap: the batch stamps the task it ends with the ending instant",
+            "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
+            "packages/conformance/src/retention.ts",
+        ),
+        "retention-a-terminal-batch-shape-has-no-stamp-case": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the stamp of an ending ends a task through every shape a terminal label compiles to",
+            "mutation-verdict:behavior:retention-every-terminal-batch-shape-has-a-stamp-case",
+            "packages/conformance/src/retention.ts",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -22873,7 +23087,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1245:
+        if len(MUTATIONS) != 1259:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

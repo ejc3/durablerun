@@ -221,3 +221,54 @@ export function infraRetrySeed(taskId: string, runId: string, retries: number) {
     { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
   ]
 }
+
+/**
+ * A task row written by hand, for a case that needs rows no engine path leaves. It holds
+ * what every dialect's schema requires and nothing else of the task's unit.
+ */
+export function handWrittenTask(row: {
+  taskId: string
+  state: string
+  atMs: number
+  queue?: string
+  completedPayload?: string | null
+}): SqlStatement {
+  return {
+    sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+            state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
+          VALUES (?, ?, 'hand-written', '{}', '{"kind":"none"}', 3, ?, 0, 0, ?, ?, ?)`,
+    args: [
+      row.taskId,
+      row.queue ?? 'q',
+      row.state,
+      row.completedPayload ?? null,
+      row.atMs,
+      row.atMs,
+    ],
+  }
+}
+
+/** A first run written by hand, parked on `wake` when it names one. */
+export function handWrittenRun(row: {
+  runId: string
+  taskId: string
+  state: string
+  atMs: number
+  queue?: string
+  wake?: { event: string; step: string }
+}): SqlStatement {
+  return {
+    sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms,
+            wake_event, wake_step, created_at_ms)
+          VALUES (?, ?, ?, 1, ?, NULL, ?, ?, ?)`,
+    args: [
+      row.runId,
+      row.queue ?? 'q',
+      row.taskId,
+      row.state,
+      row.wake?.event ?? null,
+      row.wake?.step ?? null,
+      row.atMs,
+    ],
+  }
+}

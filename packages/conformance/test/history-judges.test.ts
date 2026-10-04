@@ -6,14 +6,14 @@ const SRC = new URL('../src/', import.meta.url)
 /**
  * The files of this package that call the invariant library directly, and why each may.
  * Every other judge of rows goes through `engineHistoryViolations`, which runs the
- * child-task checker and the saga checker beside the library. A generated surface or a
- * seeded race that calls the library alone leaves two checkers out without a word, and
- * it did: three did when the helper arrived. A file that starts to call the library has
+ * other row checkers beside the library. A generated surface or a seeded race that calls
+ * the library alone leaves those checkers out without a word, and it did: three did when
+ * the helper arrived. A file that starts to call the library has
  * to be written down here with its reason, which is where that choice gets made.
  */
 const CALLS_THE_LIBRARY_DIRECTLY: Readonly<Record<string, string>> = {
   'invariants.ts': 'defines the library',
-  'engine-history.ts': 'is the one helper, and runs the library beside the other two checkers',
+  'engine-history.ts': 'is the one helper, and runs the library beside the other row checkers',
   'suite.ts': 'holds scenario cases that name the library, some over a task ended by hand',
   'child-tasks.ts':
     'asserts the library inside a case and runs the child-task checker after each, so that a failure names one checker',

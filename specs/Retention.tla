@@ -133,8 +133,9 @@
 \*    covers it.  The failed attempt's run keeps the columns until its unit goes,
 \*    which HolderAttemptFails makes a stuck carry.
 \*  - A stamp left NULL by a build older than the column.  The purge never
-\*    selects one, and PR5.2c1 proves that every terminal path of this build
-\*    stamps it.
+\*    selects one, and the retention conformance surface ends a task through
+\*    every shape a terminal batch of this build compiles to and reads the
+\*    stamp back.
 \*  - A key that starts with $spawn: and does not parse.  The barrier keeps its
 \*    unit, and a generated round-trip case owns the parse.
 \*
@@ -544,9 +545,10 @@ TypeOK ==
 \* and no run, checkpoint, or completion event outlives the task row.  Twin, for
 \* the rows that outlive their task: the invariant library's run-owner-missing,
 \* checkpoint-owner-run-missing, and wait-run-missing conditions, and the
-\* contest's rule that every completion event names an existing task.  The other
-\* half, a task row whose runs were deleted, has no twin yet: the library flags
-\* a task with no run only while it is live.  PR5.2c1 adds that condition.
+\* contest's rule that every completion event names an existing task.  Twin, for
+\* the other half, a task row whose runs were deleted: the retention row
+\* checker's task-without-a-run condition, which engineHistoryViolations runs.
+\* The library flags a task with no run only while it is live.
 WholeUnit ==
   IF Present("C") THEN cRuns /\ cCkpts ELSE ~cRuns /\ ~cCkpts /\ ~cEvent
 
@@ -561,15 +563,17 @@ PurgeOnlyDeadAndOld == [][PurgeStepIsDeadAndOld]_vars
 \* A parent that can still run its code, live or failed with no saga for
 \* retry-task to revive, finds the child it spawned: its replay of the spawn
 \* finds the child's key taken, and its await finds the child's task.  Twin: the
-\* condition PR5.2c1 adds to engineHistoryViolations, that a live or revivable
-\* task's $spawn memo names an existing task, and the consequence oracle.
+\* retention row checker's spawn-memo-without-its-task condition, that a live
+\* task, or a failed one whose saga never began, holds no spawn memo whose child
+\* is gone, and the consequence oracle (PR5.2c2).
 ReplayableParentKeepsChild ==
   (spawned /\ (st["P"] = "live" \/ (st["P"] = "failed" /\ ~saga["P"]))) => Present("C")
 
 \* A registered wait on C's completion event has C's task row, so a terminal
 \* batch of this build, or a revival that ends C again, can still wake it.
-\* Twin: the condition PR5.2c1 adds, that a wait on a completion event has its
-\* task or its event.
+\* Twin: the retention row checker's completion-wait-without-its-task-or-event
+\* condition, that a wait on a completion event has that task in its queue, or
+\* the event.
 NoStrandedWaiter == \A x \in Holders : aw[x] = "waiting" => Present("C")
 
 \* A run that carries C's outcome still has the event it was parked from.  Twin:

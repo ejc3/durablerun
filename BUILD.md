@@ -490,7 +490,54 @@ accepts it.
     raw-fixture-SQL red, and every existing surface stays violation-free. Red: a
     terminal path that leaves `fence_at_ms` NULL fails its case by name. If such
     a path exists today, its fix lands in this PR as its own red-then-green
-    pair. NOT MET.
+    pair. This is met. The stamp cases and the cells passed on their first run
+    on the three dialects, so no terminal path they run left the stamp NULL or
+    wrong, and the engine is unchanged. `packages/conformance/src/retention.ts`
+    is the `retention` surface, the fourteenth behind the one enrollment door,
+    which line 42 extends. A label is not a path, so the stamp cases are
+    generated from the shapes `corpus/labels.json` declares for the labels of
+    `TERMINAL_BATCH_LABELS`, nine shapes today, and "ends a task through every
+    shape a terminal label compiles to" fails by name when a shape has no case.
+    On each dialect, "<label>/<shape>, <path>: the batch stamps the task it ends
+    with the ending instant" runs eleven paths: a completion; a failure no retry
+    follows, outside the rolling-back phase and inside it; a failure whose retry
+    the attempt cap refuses; a failed rollback no retry follows, and one whose
+    retry cannot be placed; a cancellation of a task no worker has claimed and
+    of one a worker is running; and the three sweeps. The task is made ready at
+    one instant and ended at least 2.5 seconds later. The batch sent must be of
+    the shape, the ended row must name the statement the path names, and the
+    row's stamp and the completion event's instant must both read the ending
+    instant. What the inventory does not hold is in the entry of this pull
+    request under Phase 5. "<label> leaves the stamp of a <state> task where its
+    ending put it" is generated for each of the 21 write labels and the three
+    terminal states, 63 cells a dialect, and the cell of `retry-task` over a
+    failed task expects the stamp at the instant of the revival. Each cell holds
+    that the label's batch reached the ended task, and three more cells replay a
+    parent's spawn of a child that has ended.
+    `packages/conformance/src/retention-rows.ts` holds the three conditions as
+    `retentionViolations`, the fourth checker `engineHistoryViolations` runs:
+    `task-without-a-run`, `spawn-memo-without-its-task` and
+    `completion-wait-without-its-task-or-event`. "names a task row whose runs
+    are gone", "names the spawn memo of a live task whose child is gone" and
+    "names a wait on the completion event of a task that is gone with its event"
+    write those rows with raw fixture SQL on each dialect. Each failed by name
+    on libSQL, PostgreSQL and MySQL before its condition existed, answering an
+    empty list where its one finding was expected.
+    `packages/conformance/test/retention-rows.test.ts` holds the edges of each
+    condition, `packages/sdk/test/child-tasks.test.ts` holds that the memo and
+    the wait the SDK writes are the ones the checker reads, and
+    `packages/conformance/test/retention-reds.test.ts` runs each stamp case and
+    each cell over a store that does what the case forbids. The red: with core's
+    generated update writing NULL for the instant, all eleven stamp cases failed
+    by name, seven of them reading a NULL ending stamp, and with the
+    `task-terminal` statement alone writing NULL, the two cases that end a task
+    through it failed and the other nine passed. The registered mutations
+    `terminal-batch-stamps-the-ending-instant` and
+    `the-task-terminal-statement-stamps-the-ending-instant` hold those two
+    plants to the case of `fail` with a retry at the attempt cap. A statement
+    that writes a task row and leaves the instant out is refused when its batch
+    is built. Twelve more registered mutations hold a shape with no stamp case,
+    the helper's fourth checker, and the three conditions with their edges.
 42. PR5.2c2: purge removes exactly what the model allows, whole units only, on
     the three dialects. The barrier grid crosses terminal state (completed,
     failed with a saga, failed without, cancelled) with spawning-parent state
@@ -512,8 +559,9 @@ accepts it.
     the purge label leave a whole unit or none. A contest of four purgers beside
     a claimer, a sweeper and a spawner reusing purged keys shows `deadlocks() ==
     0` on PostgreSQL and MySQL, whole units after every round
-    (run-owner-missing, checkpoint-owner-run-missing, wait-run-missing, and
-    every completion event names an existing task), and no spawn throwing the
+    (run-owner-missing, checkpoint-owner-run-missing, wait-run-missing,
+    task-without-a-run, and every completion event names an existing task), and
+    no spawn throwing the
     error for a lost task insert. No purge statement uses SKIP LOCKED. The
     native purge-versus-await race runs in the shared `retention` surface on
     every dialect. Core refuses a window under 3,600 seconds. Each barrier
@@ -5958,7 +6006,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   PR5.3b1 (`inspect` over new operator reads), PR5.3b2 (`explain`), PR5.3c
   (`stuck`, `stats`, `sizes` and schema version 11) and PR5.3d (the drive verbs
   and the operator drill), exit test lines 32 to 39.
-- **PR5.3a operator CLI, read-only**: IN REVIEW. Exit test lines 32, 33 and 34 of the
+- **PR5.3a operator CLI, read-only**: DONE (#112). Exit test lines 32, 33 and 34 of the
   operable alpha milestone, which PR5.0 records. `packages/cli` is private with no `bin`
   field, run as `pnpm cli <verb>` with no `.env` file loaded, and DESIGN.md section 3.11
   holds its command table, transport, safety defaults, redaction rule and exit codes. Its
@@ -5992,7 +6040,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     specifier. The resolver reads the specifiers TypeScript's scanner finds, so an
     `import(name)` whose `name` is a variable yields none, and biome's rule does not see it
     either. Trigger: a computed dynamic import in packages/cli.
-- **PR5.3b1 operator reads and inspect**: IN REVIEW. Exit test line 35 of the operable
+- **PR5.3b1 operator reads and inspect**: DONE (#114). Exit test line 35 of the operable
   alpha milestone. Core gains `OperatorReads` (`taskFacts`, `taskIdByKey`, `eventState`), a
   read port apart from `SchedulerStore`, with one implementation (`createOperatorReads`)
   over shared statement trees, and each store package exports a factory,
@@ -6115,7 +6163,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     schemas' checks and the CLI's view are held to. Today each schema writes the two
     statuses in its check, and the CLI keeps a fourth copy to tell a status of the engine's
     own. Trigger: a schema version that adds a wait status.
-- **PR5.3b2 explain**: IN REVIEW. Exit test line 36 of the operable alpha milestone. The
+- **PR5.3b2 explain**: DONE (#115). Exit test line 36 of the operable alpha milestone. The
   CLI gains `explain (<taskId> | --key <idempotencyKey>) --queue Q` over a pure `diagnose`
   in `packages/cli/src/explain.ts`, and DESIGN.md section 3.11 holds its cause table, the
   verdict rule and its named bounds. No statement, no batch and no schema version is added,
@@ -6226,6 +6274,112 @@ these three things; nothing else in the system does I/O, time, or randomness.
     well. `diagnose` reads facts that the operator-reads surface already holds equal on the
     three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
     names differently on two dialects.
+- **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
+  41 of the operable alpha milestone. No statement, no batch and no schema version is added,
+  no released declaration changes, and core, the stores, the SDK and the CLI are unchanged
+  outside one SDK test. The conformance package gains the `retention` surface, the
+  fourteenth behind the one door, and `retentionViolations`, the fourth checker
+  `engineHistoryViolations` runs. No terminal path the stamp cases run left
+  `tasks.fence_at_ms` NULL or wrong, and no existing surface tripped a new condition. The
+  registry holds 1259 mutations where main held 1245: two for the stamp a terminal batch
+  writes, one for a batch shape with no stamp case, one for the helper's fourth checker, and
+  ten for the three conditions and their edges. The base gate's arm was keyed on main's
+  digest and exempted their nine markers. It re-aimed no entry of main's registry.
+  - Where the build differs from the plan, and why. (1) The stamp cases, the cells and the
+    three fixture cases are a surface of their own, `retention`, where the plan put them
+    beside the lists they are generated from. Line 42 already names the shared `retention`
+    surface, so the cases the purge will add to have one home. The cell's observer is in the
+    poison matrix's file, beside the seeds and the invocations it reuses. (2) The second condition
+    also names a spawn memo that holds no child handle, for a task that can still run its
+    code. No replay can read such a memo as a child, so it names no existing task. (3)
+    "Revivable" is read as the model reads it: a failed task whose saga never began. A task
+    that is rolling back is live, and is held. (4) A wait has its task only when the task is
+    in the wait's own queue, and its event likewise, because a completion event lives in its
+    task's queue. (5) The findings of each condition are ordered by code unit, so the
+    checker's answer does not depend on the order a database returns rows in. (6) The two
+    tasks a cell is about are ended by the engine and not written by hand: the seeded task
+    through `complete`, `fail` or `cancelTask`, and a second task through `cancelTask`,
+    whose completion event is then deleted so that `record-task-done` has an outcome to
+    record. The stamp the cell holds still on each of those two is one a terminal batch
+    wrote. The base population's other ended rows are written by hand with no stamp, and
+    the cell holds that they still carry none. (7) The stamp cases are generated from the
+    shapes the SQL corpus declares for the terminal batch labels, where line 41 says from
+    the labels. A label is not a path: `fail` and `fail-rollback` each compile to two
+    shapes, and in `fail` a different statement ends the task in each. Core marks each statement that
+    can end a task, and does not export the mark, so the list of statements is not read
+    here. What the inventory holds is that every shape `corpus/labels.json` declares for a
+    terminal label has a stamp case, that the case's batch is of that shape, and that the
+    ended row names the statement the case names: `task`, `task-terminal`, `task-fail` or
+    `cancel`. It does not hold a second statement in one shape that could end a task, and
+    it holds a second path through one statement only where one is listed, as the
+    rolling-back phase and a running task's cancellation are.
+  - Seen failing. Before the checker existed the three fixture cases failed by name on each
+    dialect. With `fence_at_ms: null` planted in core's generated update, all eleven stamp
+    cases failed by their own assertion. Seven read a NULL ending stamp: the four of `fail`
+    and `fail-rollback` that follow no retry or are refused one, the failed rollback whose
+    retry cannot be placed, and the two sweep caps. The other four still read the ending
+    instant: `complete`'s case failed on the stamp its task carried before the ending, and
+    the three cancellation cases on a run row whose provenance pair the plant broke. The
+    bent-store cases are what hold the ending stamp for those four. With the same plant on
+    the `task-terminal` statement alone, the case of `fail` with a retry at the attempt cap
+    and the case of the claim that timed out at the infrastructure cap failed, and the other
+    nine passed. With the shape `fail/retrying` given no case, the inventory case failed by
+    name. With the instant left out of the generated update, every stamp case written at
+    the time failed by name as well. With it left out of `complete`'s task mirror, or of
+    the cancel compare-and-set, core's build rules refused the batch, and the stamp cases
+    written at the time that send it failed by name with the rule's message. The cells have no plant in the engine: every cell is run over a
+    bent store instead, which moves the ended task's stamp after the label's batch, or sends
+    nothing for the ended task, or clears the stamp of the task whose outcome
+    `record-task-done` records, or moves the stamp of a child a replayed spawn found.
+  - The one review of this pull request found no product defect and ten things about tests,
+    tooling and wording, one of them MEDIUM, and `postmortems/pr5.2c1-fence-stamp-review.md`
+    holds the round. Six count. Fixed here: the stamp cases, which ran one path for each
+    label, are generated from the shapes the corpus declares, with an inventory case and
+    four more paths; the `record-task-done` cells record the outcome of a task the engine
+    ended; a cell swallows only the two refusals of a claim that is gone and holds that the
+    label reached the ended task; the call shape "of a child" runs over an ended child; the
+    sentence about the NULL plant says what each case read; and the comments of
+    specs/Retention.tla name the twins as built. Built though they count 0: one builder each
+    for a hand-written task row and run row, and the label type used where it was spelled
+    out. What was not built is in the options below, each with its trigger. No review
+    follows the fold, which changes no product code: each change was checked by running it
+    and by a planted defect.
+  - Option for the helper's first case, not built, with its trigger: rename "names a defect
+    of each of its three checkers", which the helper outgrew when it gained a fourth. A
+    registered verdict names its case by title, and the base gate grades this pull request
+    with main's registry, whose arm may add or re-aim entries and never change a verdict.
+    The case's comment says which three it means. Trigger: the next pull request that edits
+    `engine-history.test.ts`, whose base registry is this one.
+  - Option for the spawn memo, not built, with its trigger: one definition in core of the
+    name a spawn memo is stored under and of the child handle it holds, read by the SDK and
+    by the checker. Today the SDK spells the prefix `$spawn:` where it builds the key, and
+    reads a handle as an object whose `taskId` and `queue` are strings, and the checker
+    spells each a second time. If the SDK changed either, the checker would read no memo and
+    pass every history. One SDK case ties the two today, a parent parked on the one child it
+    spawned, whose rows are then deleted: it fails if the prefix or the handle's two members
+    change. It does not hold a memo stored under a counter, as a second spawn of one task
+    name is, nor a member added to the handle that a replay would come to need. Trigger: a
+    second reader of a spawn memo outside the SDK, or a change to what `ctx.spawn` memoizes.
+  - Option for the stamp cases, not built, with its trigger: read the statements that can
+    end a task from core, and carry the mark in the corpus. Core computes it for every
+    statement of a batch (`writesTerminalTaskState`) and keeps it private. Exported as the
+    mark of a tree-built statement is, and recorded beside each statement of
+    `corpus/<dialect>.json`, it would let the surface ask a case of every such statement and
+    not only of every shape. It changes core and the corpus's format. Trigger: PR5.2c2,
+    which adds a batch to core and to the corpus, or a batch shape that holds two statements
+    that can end a task.
+  - Option for the cells, not built, with its trigger: a fourth pre-state, a task that
+    failed with a saga, which `retry-task` refuses. The three cells of `retry-task` hold a
+    completed and a cancelled task still and a failed one revived. Trigger: PR5.2c2, whose
+    barrier grid builds a saga-failed task.
+  - Option for the helper's reads, not built, with its trigger: one read for the four
+    checkers. Today each checker reads its own rows, so a call of `engineHistoryViolations`
+    sends five read batches where it sent four, and the retention checker's five statements
+    read tables the others already read. One snapshot handed to four pure functions would
+    send fewer batches than before this pull request. It rewrites the saga checker, which
+    nine entries of main's registry name, so the base gate's arm would have to re-aim them.
+    Trigger: a fifth checker, or an ownership test of the fault matrix that nears its 300
+    second limit.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

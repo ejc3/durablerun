@@ -123,3 +123,18 @@ export function enrolCorpus(
     }),
   )
 }
+
+/**
+ * The variant of its label a batch is, named as the corpus names it: from the statements
+ * the batch holds. Undefined for a label the descriptor does not enrol.
+ */
+export function corpusVariantOf(
+  descriptor: CorpusDescriptor,
+  label: string,
+  statements: readonly SqlStatement[],
+): string | undefined {
+  const variants = descriptor[label] ?? []
+  return variants.length === 1
+    ? variants[0]
+    : CORPUS_VARIANT_NAMERS[label]?.(signatureOf(statements))
+}
