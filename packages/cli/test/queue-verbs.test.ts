@@ -1,0 +1,582 @@
+import {
+  type CorruptInteger,
+  MAX_EPOCH_MS,
+  OPERATOR_GAUGE_CAP,
+  OPERATOR_LIST_CAP,
+  OPERATOR_TABLE_ROWS_CAP,
+  QUEUE_TABLES,
+} from '@durablerun/core'
+import { describe, expect, it } from 'vitest'
+import { STUCK_DEFAULT_LIMIT, durationSeconds } from '../src/commands.js'
+import { exitCode } from '../src/exit.js'
+import { DUE_GRACE_MS, HUNG_RUN_MS } from '../src/explain.js'
+import { type StoreOpener, openStore } from '../src/open-store.js'
+import { fixture, parkedOnAnEvent } from './explain-seeds.js'
+import { DEFERRAL_FORMS, OWED_AT_MS, deferralTick, owedQueue } from './queue-seeds.js'
+import {
+  type CliDb,
+  NOW_MS,
+  QUEUE,
+  claimActivated,
+  openCliDb,
+  recordingOpener,
+  runCli,
+  seedTasks,
+} from './support.js'
+
+/**
+ * `stuck`, `stats` and `sizes` through `main` on libSQL (exit test line 37): what each
+ * prints, the stream it prints on, and the exit it ends in, in human text and in `--json`.
+ * What the reads behind them answer is held on every dialect by the conformance package's
+ * `operator-reads` surface, against the engine and against a dump of every table.
+ */
+
+const LEGS = ['dueUnclaimed', 'sleepingPastWake', 'leaseLapsed', 'cancelOverdue'] as const
+type Leg = (typeof LEGS)[number]
+
+interface Row {
+  readonly runId: string | null
+  readonly taskId: string
+  readonly lateByMs: number | null
+  readonly activated?: boolean | null
+}
+type StuckAnswer = Readonly<Record<Leg, { rows: Row[]; atLeast: boolean }>> & {
+  readonly exit: string
+  readonly graceSeconds: number
+  readonly limit: number
+  readonly listed: number
+  readonly corrupt: unknown[]
+}
+
+/** Run `stuck --json` with the flags given, and read each leg by the ids it lists. */
+async function stuck(db: CliDb, flags: readonly string[] = [], opener?: StoreOpener) {
+  const run = await runCli(['stuck', '--queue', QUEUE, '--json', ...flags], db.env, opener)
+  const answer = JSON.parse(run.stdout) as StuckAnswer
+  // A run leg lists runs, and the last leg lists tasks.
+  const ids = Object.fromEntries(
+    LEGS.map((leg) => [
+      leg,
+      answer[leg].rows.map((row) => (leg === 'cancelOverdue' ? row.taskId : row.runId)),
+    ]),
+  )
+  return { exit: run.exit, stderr: run.stderr, answer, ids, listed: answer.listed }
+}
+
+const NO_ROW: Readonly<Record<Leg, string[]>> = {
+  dueUnclaimed: [],
+  sleepingPastWake: [],
+  leaseLapsed: [],
+  cancelOverdue: [],
+}
+
+/** One database of these tests, closed whatever the body does. */
+async function onDb<T>(name: string, body: (db: CliDb) => Promise<T>): Promise<T> {
+  const db = await openCliDb('libsql', name)
+  try {
+    return await body(db)
+  } finally {
+    await db.close()
+  }
+}
+
+describe('stuck on libSQL', () => {
+  it('lists a row in each leg once its move has been owed for the grace, and exits 0 for it', () =>
+    onDb('stuck-legs', async (db) => {
+      const seeded = await owedQueue(db)
+      const everyLeg = {
+        dueUnclaimed: [seeded.due],
+        sleepingPastWake: [seeded.sleeper],
+        leaseLapsed: [seeded.abandoned],
+        cancelOverdue: [seeded.doomed],
+      }
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      // Every move is owed, and none for as long as the grace `explain` uses, so by default
+      // nothing is listed.
+      const byDefault = await stuck(db)
+      expect({
+        exit: byDefault.exit,
+        graceSeconds: byDefault.answer.graceSeconds,
+        limit: byDefault.answer.limit,
+        listed: byDefault.listed,
+        ids: byDefault.ids,
+      }).toEqual({
+        exit: 0,
+        graceSeconds: DUE_GRACE_MS / 1000,
+        limit: STUCK_DEFAULT_LIMIT,
+        listed: 0,
+        ids: NO_ROW,
+      })
+      // At grace 0 it lists what a claim and a sweep would take this instant. The lease
+      // expires at this very millisecond, and its run is listed.
+      const now = await stuck(db, ['--grace', '0s'])
+      expect({ exit: now.exit, listed: now.listed, ids: now.ids }).toEqual({
+        exit: 0,
+        listed: 4,
+        ids: everyLeg,
+      })
+      expect(
+        LEGS.map((leg) => now.answer[leg].rows.map((row) => row.lateByMs)),
+        'how late each move is: the due run a minute, the sleeper half of one, the lease not at all, the deadline a quarter',
+      ).toEqual([[60_000], [30_000], [0], [15_000]])
+      expect(now.answer.leaseLapsed.rows[0]?.activated).toBe(true)
+      // A grace between the two lists the one move owed that long.
+      expect((await stuck(db, ['--grace', '1m'])).ids).toEqual({
+        ...NO_ROW,
+        dueUnclaimed: [seeded.due],
+      })
+      expect((await stuck(db, ['--grace', '61s'])).ids).toEqual(NO_ROW)
+      // Once the grace has run for the last of them, the default lists all four.
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS + DUE_GRACE_MS)
+      const later = await stuck(db)
+      expect({ exit: later.exit, ids: later.ids }).toEqual({ exit: 0, ids: everyLeg })
+    }))
+
+  it('prints its report on stdout in text, one line to a field, and nothing on stderr', () =>
+    onDb('stuck-text', async (db) => {
+      const seeded = await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      const run = await runCli(['stuck', '--queue', QUEUE, '--grace', '0s'], db.env)
+      expect({ exit: run.exit, stderr: run.stderr }).toEqual({ exit: 0, stderr: '' })
+      const lines = run.stdout.split('\n')
+      for (const line of [
+        'command: stuck',
+        'exit: done',
+        `queue: ${QUEUE}`,
+        'graceSeconds: 0',
+        'listed: 4',
+        'leaseLapsed:',
+        `      runId: ${seeded.abandoned}`,
+        '      activated: true',
+        `      taskId: ${seeded.doomed}`,
+        '      taskName: doomed',
+        'corrupt: (none)',
+      ]) {
+        expect(lines, line).toContain(line)
+      }
+    }))
+
+  it('exits 9 with --fail-if-any when a row is listed and 0 when none is, with the report on stdout either way', () =>
+    onDb('stuck-fail-if-any', async (db) => {
+      const seeded = await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      for (const output of [[], ['--json']]) {
+        const line = ['stuck', '--queue', QUEUE, ...output]
+        const found = await runCli([...line, '--grace', '0s', '--fail-if-any'], db.env)
+        expect(
+          {
+            output,
+            exit: found.exit,
+            stderr: found.stderr,
+            namesTheRun: found.stdout.includes(seeded.abandoned),
+          },
+          'mutation-verdict:behavior:cli-stuck-fail-if-any-exits-9',
+        ).toEqual({ output, exit: exitCode('found'), stderr: '', namesTheRun: true })
+        // The same rows without the flag are a report, not a failure.
+        const listed = await runCli([...line, '--grace', '0s'], db.env)
+        expect({ output, exit: listed.exit, same: listed.stdout.length > 0 }).toEqual({
+          output,
+          exit: 0,
+          same: true,
+        })
+        // With the flag and no row listed, it exits 0.
+        const none = await runCli([...line, '--fail-if-any'], db.env)
+        expect(
+          { output, exit: none.exit, stderr: none.stderr },
+          'mutation-verdict:behavior:cli-stuck-exits-0-when-it-lists-nothing',
+        ).toEqual({ output, exit: 0, stderr: '' })
+      }
+    }))
+
+  it('lists no healthy run: one under a live lease past the hung-run bound, and one parked on an event nobody emits', () =>
+    onDb('stuck-healthy', async (db) => {
+      const long = await db.store.spawn(QUEUE, 'long', '{}')
+      const run = await claimActivated(db, 'w-long', long.taskId)
+      await parkedOnAnEvent(db, null)
+      await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS - 1_000)
+      if (!(await db.store.heartbeat(QUEUE, run.runId, run.claimToken, 60)).held) {
+        throw new Error('the seed lost its lease')
+      }
+      await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS + 1)
+      const found = await stuck(db, ['--grace', '0s', '--fail-if-any'])
+      expect({ exit: found.exit, listed: found.listed, ids: found.ids }).toEqual({
+        exit: 0,
+        listed: 0,
+        ids: NO_ROW,
+      })
+    }))
+
+  it('exits 10 for a report that names a corrupt row, before it exits 9, and still prints the report on stdout', () =>
+    onDb('stuck-corrupt', async (db) => {
+      await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      // The store's own predicates hold every instant a leg reads to its bounds, so a real
+      // row reaches the report's corrupt list only through an integer they do not hold.
+      // The port's answer is given one here, over the real rows.
+      const planted: CorruptInteger = {
+        field: 'runs.attempt',
+        runId: 'a-run',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-1',
+      }
+      const withACorruptRow: StoreOpener = async (...args) => {
+        const real = await openStore(...args)
+        return {
+          ...real,
+          operator: {
+            ...real.operator,
+            stuckRuns: async (queue, options) => ({
+              ...(await real.operator.stuckRuns(queue, options)),
+              corrupt: [planted],
+            }),
+          },
+        }
+      }
+      for (const output of [[], ['--json']]) {
+        const run = await runCli(
+          ['stuck', '--queue', QUEUE, '--grace', '0s', '--fail-if-any', ...output],
+          db.env,
+          withACorruptRow,
+        )
+        expect(
+          {
+            output,
+            exit: run.exit,
+            stderr: run.stderr,
+            namesTheField: run.stdout.includes('runs.attempt'),
+            listsTheRows: run.stdout.includes('doomed'),
+          },
+          'mutation-verdict:behavior:cli-stuck-exits-10-for-a-corrupt-row',
+        ).toEqual({
+          output,
+          exit: exitCode('unreadable'),
+          stderr: '',
+          namesTheField: true,
+          listsTheRows: true,
+        })
+      }
+    }))
+
+  it('refuses a grace or a limit it cannot read with exit 2, and sends nothing', () =>
+    onDb('stuck-flags', async (db) => {
+      for (const flags of [
+        ['--grace', 'soon'],
+        ['--grace', '2'],
+        ['--grace', '1.5m'],
+        ['--grace', '2M'],
+        ['--grace', '1w'],
+        ['--grace', ''],
+        ['--grace=-1s'],
+        // More than the hundred years a duration may be.
+        ['--grace', '36526d'],
+        ['--limit', '0'],
+        ['--limit', String(OPERATOR_LIST_CAP + 1)],
+        ['--limit', '1.5'],
+        ['--limit', 'all'],
+        ['--limit=-1'],
+      ]) {
+        const { opener, sent } = recordingOpener()
+        const run = await runCli(['stuck', '--queue', QUEUE, '--json', ...flags], db.env, opener)
+        expect(
+          {
+            flags,
+            exit: run.exit,
+            kind: (JSON.parse(run.stdout) as { error?: { kind?: string } }).error?.kind,
+            sent: sent().length,
+          },
+          'mutation-verdict:behavior:cli-stuck-refuses-a-flag-it-cannot-read',
+        ).toEqual({ flags, exit: 2, kind: 'usage', sent: 0 })
+        // In text the refusal prints on stderr.
+        const text = await runCli(['stuck', '--queue', QUEUE, ...flags], db.env)
+        expect({ flags, exit: text.exit, stdout: text.stdout }).toEqual({
+          flags,
+          exit: 2,
+          stdout: '',
+        })
+      }
+      // The widest of each that is taken.
+      for (const flags of [
+        ['--grace', '36525d'],
+        ['--grace', '0d'],
+        ['--limit', String(OPERATOR_LIST_CAP)],
+        ['--limit', '1'],
+      ]) {
+        expect({ flags, exit: (await stuck(db, flags)).exit }).toEqual({ flags, exit: 0 })
+      }
+    }))
+
+  it('reads a duration as a whole number and a unit', () => {
+    expect(
+      ['0s', '90s', '2m', '1h', '1d', '999999999s'].map(durationSeconds),
+      'mutation-verdict:behavior:cli-duration-units',
+    ).toEqual([0, 90, 120, 3_600, 86_400, 999_999_999])
+    for (const text of [
+      '',
+      '2',
+      'm',
+      '01m',
+      '1.5m',
+      '-1s',
+      '2 m',
+      '2M',
+      '1w',
+      '1000000000s',
+      '2ms',
+    ]) {
+      expect({ text, seconds: durationSeconds(text) }).toEqual({ text, seconds: null })
+    }
+  })
+
+  /**
+   * Exit test line 37: a task looping through launch deferral, in the current worker's form
+   * and in alpha.1's. Each tick claims its run and the worker parks it 15 to 24 seconds on,
+   * so it is due and unclaimed for part of every minute, and never for as long as the
+   * grace: under the default grace it is in no leg at any instant between ticks. At grace
+   * 0 the same instants show it, so the check can say yes.
+   */
+  for (const form of DEFERRAL_FORMS) {
+    it(
+      `a task looping through launch deferral in the ${form} form is in no leg under the default grace, at any instant between ticks`,
+      () =>
+        onDb(`stuck-deferral-${form}`, async (db) => {
+          /** The once-a-minute tick that backs a serverless deployment. */
+          const CADENCE_MS = 60_000
+          const BETWEEN_TICKS_MS = [1, 5_000, 14_999, 15_000, 24_000, 24_001, 40_000, 59_999]
+          const task = await db.store.spawn(QUEUE, 'registered-by-no-build', '{}')
+          const seenAtGraceZero: string[][] = []
+          for (let tick = 0; tick < 4; tick++) {
+            const tickAt = NOW_MS + tick * CADENCE_MS
+            await db.admin.setFakeNowEpochMs(tickAt)
+            const runId = await deferralTick(db, form, task.taskId, tick)
+            const shown: string[] = []
+            for (const offset of BETWEEN_TICKS_MS) {
+              await db.admin.setFakeNowEpochMs(tickAt + offset)
+              const byDefault = await stuck(db, ['--fail-if-any'])
+              expect(
+                { form, tick, offset, exit: byDefault.exit, ids: byDefault.ids },
+                'mutation-verdict:behavior:cli-stuck-default-grace-outlasts-a-tick',
+              ).toEqual({ form, tick, offset, exit: 0, ids: NO_ROW })
+              const now = await stuck(db, ['--grace', '0s'])
+              expect({ ...now.ids, sleepingPastWake: [] }).toEqual(NO_ROW)
+              if (now.ids.sleepingPastWake?.length === 1) {
+                expect(now.ids.sleepingPastWake).toEqual([runId])
+                shown.push(`+${offset}`)
+              }
+            }
+            seenAtGraceZero.push(shown)
+          }
+          // Parked for 15 to 24 seconds, the run is asleep one millisecond after each tick
+          // and past its wake from 24 seconds on at the latest.
+          for (const shown of seenAtGraceZero) {
+            expect(shown).not.toContain('+1')
+            expect(shown.slice(-3)).toEqual(['+24001', '+40000', '+59999'])
+          }
+        }),
+      120_000,
+    )
+  }
+})
+
+interface StatsAnswer {
+  readonly exit: string
+  readonly summary: string
+  readonly gaugeCap: number
+  readonly gauges: Readonly<Record<string, { count: number; atLeast: boolean }>>
+  readonly claimLagMs: number | null
+  readonly leaseHeadroomMs: number | null
+  readonly nextWakeAtMs: number | null
+  readonly databaseNowEpochMs: number
+  readonly fakeClock: boolean
+  readonly corrupt: { field: string; runId?: string }[]
+}
+
+async function stats(db: CliDb) {
+  const run = await runCli(['stats', '--queue', QUEUE, '--json'], db.env)
+  return { exit: run.exit, stderr: run.stderr, answer: JSON.parse(run.stdout) as StatsAnswer }
+}
+
+/** The gauges that are not zero, each with its count. */
+const counted = (answer: StatsAnswer): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(answer.gauges)
+      .filter(([, gauge]) => gauge.count !== 0)
+      .map(([name, gauge]) => [name, gauge.count]),
+  )
+
+describe('stats on libSQL', () => {
+  it('prints quiet, never ok, when every gauge is zero, and active when one is not', () =>
+    onDb('stats-quiet', async (db) => {
+      const says = async () => {
+        const json = await stats(db)
+        const text = await runCli(['stats', '--queue', QUEUE], db.env)
+        expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
+        // No stream of either form says the queue is ok, as a word of its own.
+        for (const printed of [text.stdout, JSON.stringify(json.answer)]) {
+          expect(/\bok\b/i.test(printed), printed).toBe(false)
+        }
+        return {
+          exit: json.exit,
+          summary: json.answer.summary,
+          line: text.stdout.split('\n').filter((line) => line.startsWith('summary: ')),
+          counted: counted(json.answer),
+        }
+      }
+      expect(await says(), 'mutation-verdict:behavior:cli-stats-says-quiet-never-ok').toEqual({
+        exit: 0,
+        summary: 'quiet',
+        line: ['summary: quiet'],
+        counted: {},
+      })
+      // A run parked on an event nobody emits holds no instant, so it is in no gauge, and
+      // the queue is still quiet: which is why the word is not ok.
+      await parkedOnAnEvent(db, null)
+      expect(await says()).toEqual({
+        exit: 0,
+        summary: 'quiet',
+        line: ['summary: quiet'],
+        counted: {},
+      })
+      await db.store.spawn(QUEUE, 'job', '{}')
+      expect(await says(), 'mutation-verdict:behavior:cli-stats-says-active').toEqual({
+        exit: 0,
+        summary: 'active',
+        line: ['summary: active'],
+        counted: { pendingRuns: 1, pendingRunsDue: 1 },
+      })
+    }))
+
+  it('prints every gauge with its cap, and the instants at the head of the queue', () =>
+    onDb('stats-gauges', async (db) => {
+      await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      const { exit, answer } = await stats(db)
+      expect({
+        exit,
+        gaugeCap: answer.gaugeCap,
+        names: Object.keys(answer.gauges),
+        counted: counted(answer),
+        capped: Object.values(answer.gauges).some((gauge) => gauge.atLeast),
+        claimLagMs: answer.claimLagMs,
+        leaseHeadroomMs: answer.leaseHeadroomMs,
+        nextWakeAtMs: answer.nextWakeAtMs,
+        databaseNowEpochMs: answer.databaseNowEpochMs,
+        fakeClock: answer.fakeClock,
+      }).toEqual({
+        exit: 0,
+        gaugeCap: OPERATOR_GAUGE_CAP,
+        names: [
+          'pendingRuns',
+          'pendingRunsDue',
+          'runningRuns',
+          'runningRunsLapsed',
+          'sleepingRuns',
+          'sleepingRunsDue',
+          'tasksPastTheirDeadline',
+          'tasksWithADeadline',
+        ],
+        // Two pending runs, the due one and the doomed task's, one sleeper past its wake,
+        // one run whose lease expires this millisecond, and one task past its deadline.
+        counted: {
+          pendingRuns: 2,
+          pendingRunsDue: 2,
+          sleepingRuns: 1,
+          sleepingRunsDue: 1,
+          runningRuns: 1,
+          runningRunsLapsed: 1,
+          tasksWithADeadline: 1,
+          tasksPastTheirDeadline: 1,
+        },
+        capped: false,
+        // The head of the queue has waited since the seed's start, a minute ago.
+        claimLagMs: 60_000,
+        leaseHeadroomMs: 0,
+        nextWakeAtMs: NOW_MS,
+        databaseNowEpochMs: OWED_AT_MS,
+        fakeClock: true,
+      })
+    }))
+
+  it('exits 10 for a counted row whose instant is not readable, and prints its report on stdout', () =>
+    onDb('stats-corrupt', async (db) => {
+      const task = await db.store.spawn(QUEUE, 'job', '{}')
+      // Fixture-built: no engine path writes an instant outside its bounds.
+      await fixture(db, 'UPDATE runs SET available_at_ms = ? WHERE task_id = ?', [
+        MAX_EPOCH_MS + 1,
+        task.taskId,
+      ])
+      const json = await stats(db)
+      expect(
+        {
+          exit: json.exit,
+          counted: counted(json.answer),
+          corrupt: json.answer.corrupt.map((entry) => entry.field),
+        },
+        'mutation-verdict:behavior:cli-stats-exits-10-for-a-corrupt-row',
+      ).toEqual({
+        exit: exitCode('unreadable'),
+        // The row is counted in its state's gauge, and in neither gauge of an instant.
+        counted: { pendingRuns: 1 },
+        corrupt: ['runs.available_at_ms'],
+      })
+      const text = await runCli(['stats', '--queue', QUEUE], db.env)
+      expect(
+        {
+          exit: text.exit,
+          stderr: text.stderr,
+          printsTheReport: text.stdout.includes('field: runs.available_at_ms'),
+        },
+        'mutation-verdict:behavior:cli-stats-prints-its-report-on-stdout',
+      ).toEqual({ exit: exitCode('unreadable'), stderr: '', printsTheReport: true })
+    }))
+})
+
+describe('sizes on libSQL', () => {
+  it("prints the count of one queue's rows of each table, and of no other queue's", () =>
+    onDb('sizes', async (db) => {
+      await seedTasks(db)
+      await parkedOnAnEvent(db, null)
+      await db.store.spawn('another-queue', 'job', '{}')
+      const countOf = async (queue: string): Promise<Record<string, number>> => {
+        const read = await db.raw.batch(
+          'fixture:count-a-queue',
+          QUEUE_TABLES.map((table) => ({
+            sql: `SELECT COUNT(*) AS n FROM ${table} WHERE queue = ?`,
+            args: [queue],
+          })),
+          'read',
+        )
+        return Object.fromEntries(
+          QUEUE_TABLES.map((table, index) => [table, Number(read[index]?.rows[0]?.n)]),
+        )
+      }
+      const printed = async (queue: string) => {
+        const run = await runCli(['sizes', '--queue', queue, '--json'], db.env)
+        const answer = JSON.parse(run.stdout) as {
+          cap: number
+          tables: Record<string, { count: number; atLeast: boolean }>
+        }
+        expect({ exit: run.exit, cap: answer.cap }).toEqual({
+          exit: 0,
+          cap: OPERATOR_TABLE_ROWS_CAP,
+        })
+        expect(Object.values(answer.tables).some((table) => table.atLeast)).toBe(false)
+        return Object.fromEntries(
+          Object.entries(answer.tables).map(([table, { count }]) => [table, count]),
+        )
+      }
+      const own = await countOf(QUEUE)
+      // The seed leaves a row of the queue in every table, so no count is held to zero alone.
+      expect(Object.entries(own).filter(([, rows]) => rows === 0)).toEqual([])
+      expect(await printed(QUEUE), 'mutation-verdict:behavior:cli-sizes-counts-one-queue').toEqual(
+        own,
+      )
+      expect(await printed('another-queue')).toEqual({
+        ...Object.fromEntries(QUEUE_TABLES.map((table) => [table, 0])),
+        tasks: 1,
+        runs: 1,
+      })
+      const text = await runCli(['sizes', '--queue', QUEUE], db.env)
+      expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
+      expect(text.stdout.split('\n')).toContain(`cap: ${OPERATOR_TABLE_ROWS_CAP}`)
+    }))
+})

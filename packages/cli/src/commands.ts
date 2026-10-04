@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util'
+import { OPERATOR_LIST_CAP } from '@durablerun/core'
 import type { ExitName } from './exit.js'
 
 /**
@@ -16,6 +17,9 @@ export const VERBS = [
   'checkpoints',
   'inspect',
   'explain',
+  'stuck',
+  'stats',
+  'sizes',
 ] as const
 export type Verb = (typeof VERBS)[number]
 
@@ -37,6 +41,10 @@ export interface PortUse {
     | 'scheduler.getCheckpoints'
     | 'operator.taskFacts'
     | 'operator.taskIdByKey'
+    | 'operator.stuckRuns'
+    | 'operator.queueStatus'
+    | 'operator.tableRows'
+    | 'operator.eventWaiters'
   /** A label ending in `<N>` stands for what comes before it followed by a whole number. */
   readonly labels: readonly string[]
 }
@@ -113,6 +121,13 @@ const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-r
 const CHECKPOINTS: PortUse = { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] }
 const TASK_ID_BY_KEY: PortUse = { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] }
 const TASK_FACTS: PortUse = { call: 'operator.taskFacts', labels: ['task-facts', 'fake-clock'] }
+const STUCK_RUNS: PortUse = { call: 'operator.stuckRuns', labels: ['stuck-runs', 'fake-clock'] }
+const QUEUE_STATUS: PortUse = {
+  call: 'operator.queueStatus',
+  labels: ['queue-status', 'fake-clock'],
+}
+const TABLE_ROWS: PortUse = { call: 'operator.tableRows', labels: ['table-rows'] }
+const EVENT_WAITERS: PortUse = { call: 'operator.eventWaiters', labels: ['event-waiters'] }
 
 /** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
@@ -125,6 +140,24 @@ const STORE_EXITS = ['done', 'usage', 'schema', 'unavailable', 'permanent'] as c
 
 /** The exits of a read that names one task. */
 const TASK_READ_EXITS = [...STORE_EXITS, 'refused', 'not-found', 'unreadable'] as const
+
+/** The exits of a read of a queue. A port refuses a queue name it cannot take. */
+const QUEUE_READ_EXITS = [...STORE_EXITS, 'refused'] as const
+
+/** How many rows each leg of `stuck` lists when `--limit` is not given. */
+export const STUCK_DEFAULT_LIMIT = 20
+
+const DURATION_UNITS = { s: 1, m: 60, h: 3_600, d: 86_400 } as const
+
+/**
+ * The seconds of a duration as an operator writes one: a whole number and a unit, `s`, `m`,
+ * `h` or `d`, as in `90s` or `2m`. Null for any other text.
+ */
+export function durationSeconds(text: string): number | null {
+  const match = /^(0|[1-9][0-9]{0,8})([smhd])$/.exec(text)
+  if (match === null) return null
+  return Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS]
+}
 
 export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
   help: {
@@ -232,9 +265,62 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: false,
     repeat: 'read',
-    // The checkpoints are read only for a started run parked on a timer and no event.
-    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS],
+    // The checkpoints are read only for a started run parked on a timer and no event, and
+    // the waiters of an event only for a run parked on an await of it.
+    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS, EVENT_WAITERS],
     exits: TASK_READ_EXITS,
+    faults: READ_FAULTS,
+  },
+  stuck: {
+    verb: 'stuck',
+    summary:
+      'the runs and tasks of a queue that a move of the driver is owed to, and has been for at least the grace',
+    positionals: [],
+    flags: {
+      ...READ_FLAGS,
+      grace: {
+        type: 'string',
+        value: 'D',
+        description:
+          'how long a move must have been owed before its row is listed: a whole number and s, m, h or d, as in 90s; when not given, the grace after which explain calls a move late',
+      },
+      limit: {
+        type: 'string',
+        value: 'N',
+        description: `the most rows each leg lists, from 1 to ${OPERATOR_LIST_CAP}; ${STUCK_DEFAULT_LIMIT} when not given`,
+      },
+      'fail-if-any': { type: 'boolean', description: 'exit 9 when any row is listed' },
+    },
+    opensStore: true,
+    writes: false,
+    repeat: 'read',
+    ports: [SCHEMA_VERSION, STUCK_RUNS],
+    exits: [...QUEUE_READ_EXITS, 'found', 'unreadable'],
+    faults: READ_FAULTS,
+  },
+  stats: {
+    verb: 'stats',
+    summary:
+      "a queue's gauges, each a count that stops at a cap, and how long the head of the queue has waited",
+    positionals: [],
+    flags: READ_FLAGS,
+    opensStore: true,
+    writes: false,
+    repeat: 'read',
+    ports: [SCHEMA_VERSION, QUEUE_STATUS],
+    exits: [...QUEUE_READ_EXITS, 'unreadable'],
+    faults: READ_FAULTS,
+  },
+  sizes: {
+    verb: 'sizes',
+    summary: 'how many rows of each table a queue holds, each count stopped at a cap',
+    positionals: [],
+    flags: READ_FLAGS,
+    opensStore: true,
+    writes: false,
+    repeat: 'read',
+    ports: [SCHEMA_VERSION, TABLE_ROWS],
+    exits: QUEUE_READ_EXITS,
     faults: READ_FAULTS,
   },
 } satisfies Record<Verb, CommandSpec>)

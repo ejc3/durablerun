@@ -40,7 +40,7 @@ export const EXITS = Object.freeze([
   {
     code: 9,
     name: 'found',
-    meaning: 'reserved for a later stuck --fail-if-any that finds rows; no command gives it yet',
+    meaning: 'stuck --fail-if-any listed at least one row',
   },
   {
     code: 10,

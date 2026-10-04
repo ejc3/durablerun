@@ -11,8 +11,10 @@ import { describe, expect, it } from 'vitest'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import type { SchemaVersionNotes } from '../src/open-store.js'
-import { EXPLAIN_SEEDS, onSeed } from './explain-seeds.js'
+import { EXPLAIN_SEEDS, onSeed, parkedOnAnEvent } from './explain-seeds.js'
+import { OWED_AT_MS, owedQueue } from './queue-seeds.js'
 import {
+  NOW_MS,
   QUEUE,
   SELECTED,
   STORE_COMMANDS,
@@ -71,13 +73,46 @@ function answersOn(dialect: (typeof SELECTED)[number]): Promise<Answers> {
   return answers
 }
 
+/** The reads of a queue, as they are compared across dialects on a queue with a move owed in every leg. */
+const OWED_LINES: readonly (readonly string[])[] = [
+  ['stuck', '--queue', QUEUE, '--json'],
+  ['stuck', '--queue', QUEUE, '--json', '--grace', '0s'],
+  ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
+  ['stuck', '--queue', QUEUE, '--json', '--grace', '30s', '--limit', '1'],
+  ['stats', '--queue', QUEUE, '--json'],
+  ['sizes', '--queue', QUEUE, '--json'],
+]
+
+/** What each of those lines exits with and prints on one dialect, asked once. */
+const owedAsked = new Map<string, Promise<ReadonlyMap<string, { exit: number; stdout: string }>>>()
+function owedAnswersOn(dialect: (typeof SELECTED)[number]) {
+  const ask = async () => {
+    const db = await openCliDb(dialect, 'owed-queue')
+    try {
+      await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      const printed = new Map<string, { exit: number; stdout: string }>()
+      for (const line of OWED_LINES) {
+        const run = await runCli(line, db.env)
+        printed.set(line.join(' '), { exit: run.exit, stdout: run.stdout })
+      }
+      return printed
+    } finally {
+      await db.close()
+    }
+  }
+  const answers = owedAsked.get(dialect) ?? ask()
+  owedAsked.set(dialect, answers)
+  return answers
+}
+
 /**
  * Exit test line 32 on every selected dialect. libSQL needs no server, so it is the
  * reference on every run, and a run narrowed to one server dialect still compares it with
  * something.
  */
 describe('the CLI on every selected dialect', () => {
-  it('doctor, result, checkpoints, inspect and explain print the JSON libSQL prints, apart from the fields under dialect', async () => {
+  it('every read prints the JSON libSQL prints, apart from the fields under dialect', async () => {
     const { printed: reference } = await answersOn('libsql')
     for (const dialect of SELECTED) {
       const { printed: answers } = await answersOn(dialect)
@@ -122,6 +157,92 @@ describe('the CLI on every selected dialect', () => {
           await db.close()
         }
       })
+
+      it('stuck, stats and sizes print the JSON libSQL prints, and exit as it exits, for a queue with a move owed in every leg', async () => {
+        const reference = await owedAnswersOn('libsql')
+        const answers = await owedAnswersOn(dialect)
+        expect([...answers.keys()]).toEqual(OWED_LINES.map((line) => line.join(' ')))
+        for (const [line, { exit, stdout }] of answers) {
+          const expected = reference.get(line)
+          expect({ line, exit, answer: withoutDialect(stdout) }).toEqual({
+            line,
+            exit: expected?.exit,
+            answer: withoutDialect(expected?.stdout ?? '{}'),
+          })
+        }
+        // The comparison is of answers that hold rows: four are listed, and that exits 9
+        // when it was asked to.
+        const listed = (line: readonly string[]) => {
+          const { exit, stdout } = answers.get(line.join(' ')) ?? { exit: -1, stdout: '{}' }
+          return { exit, listed: (JSON.parse(stdout) as { listed?: number }).listed }
+        }
+        expect(OWED_LINES.slice(0, 4).map(listed)).toEqual([
+          { exit: 0, listed: 0 },
+          { exit: 0, listed: 4 },
+          { exit: exitCode('found'), listed: 4 },
+          { exit: 0, listed: 2 },
+        ])
+      }, 120_000)
+
+      // Exit test line 37: the tasks waiting on an event, as `explain` lists them.
+      it('explain of any of three tasks parked on one event names all three, and no task parked on another', async () => {
+        const db = await openCliDb(dialect, 'three-waiters')
+        try {
+          const parked = [
+            await parkedOnAnEvent(db, null),
+            await parkedOnAnEvent(db, 300),
+            await parkedOnAnEvent(db, null),
+          ]
+          await parkedOnAnEvent(db, null, {}, 'another-approval')
+          const byTask = (ids: readonly string[]) => [...ids].sort()
+          for (const taskId of parked) {
+            const run = await runCli(['explain', taskId, '--queue', QUEUE, '--json'], db.env)
+            const answer = JSON.parse(run.stdout) as {
+              cause: string
+              facts: {
+                event: string
+                waiters: { taskId: string; step: string; timeoutAtMs: number | null }[]
+                moreWaiters: boolean
+              }
+            }
+            expect(
+              {
+                asked: taskId,
+                exit: run.exit,
+                event: answer.facts.event,
+                waiters: byTask(answer.facts.waiters.map((waiter) => waiter.taskId)),
+                more: answer.facts.moreWaiters,
+              },
+              'mutation-verdict:behavior:cli-explain-lists-every-waiter-of-the-event',
+            ).toEqual({
+              asked: taskId,
+              exit: 0,
+              event: 'approval',
+              waiters: byTask(parked),
+              more: false,
+            })
+            // Each waiter prints with the step that awaits and when its wait times out.
+            expect(
+              answer.facts.waiters
+                .map((waiter) => [waiter.step, waiter.timeoutAtMs])
+                .sort((left, right) => Number(left[1]) - Number(right[1])),
+            ).toEqual([
+              ['approve', null],
+              ['approve', null],
+              ['approve', NOW_MS + 300_000],
+            ])
+            // In text the list prints on stdout with the rest of the answer.
+            const text = await runCli(['explain', taskId, '--queue', QUEUE], db.env)
+            expect({
+              exit: text.exit,
+              stderr: text.stderr,
+              named: parked.every((id) => text.stdout.includes(`taskId: ${id}`)),
+            }).toEqual({ exit: 0, stderr: '', named: true })
+          }
+        } finally {
+          await db.close()
+        }
+      }, 120_000)
 
       it("inspect prints the outcome result prints for every seeded outcome, a saga's rollback and a row the decoders refuse among them", async () => {
         const { seeded, printed } = await answersOn(dialect)
@@ -308,6 +429,8 @@ describe('the CLI on every selected dialect', () => {
         const older = await openCliDb(dialect, 'bin-null-payload', 9)
         try {
           const seeded = await seedTasks(db)
+          // A task that is due from this instant, for `stuck` to find.
+          await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)
           const unreachable: Record<string, string> = {
             libsql: 'libsql://127.0.0.1:1',
@@ -319,6 +442,10 @@ describe('the CLI on every selected dialect', () => {
             ['done', db.env, ['result', seeded.completed, '--queue', QUEUE]],
             ['done', db.env, ['inspect', seeded.completed, '--queue', QUEUE]],
             ['done', db.env, ['explain', seeded.completed, '--queue', QUEUE]],
+            ['done', db.env, ['stuck', '--queue', QUEUE]],
+            ['found', db.env, ['stuck', '--queue', QUEUE, '--grace', '0s', '--fail-if-any']],
+            ['done', db.env, ['stats', '--queue', QUEUE]],
+            ['done', db.env, ['sizes', '--queue', QUEUE]],
             ['not-found', db.env, ['inspect', '--key', 'a-key-no-task-has', '--queue', QUEUE]],
             ['usage', older.env, ['migrate', '--target', older.target]],
             ['usage', db.env, ['result', '--queue', QUEUE]],
@@ -355,7 +482,7 @@ describe('the CLI on every selected dialect', () => {
             },
           )
           expect(newer.status).toBe(exitCode('schema'))
-          expect(new Set([...seen, 'schema']).size).toBe(7)
+          expect(new Set([...seen, 'schema']).size).toBe(8)
         } finally {
           await older.close()
           await db.close()

@@ -131,6 +131,9 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       line: (_db, _seeded, parent) => ['explain', parent ?? '', '--queue', QUEUE, '--json'],
     },
   ],
+  stuck: readAt(() => ['stuck', '--queue', QUEUE, '--json']),
+  stats: readAt(() => ['stats', '--queue', QUEUE, '--json']),
+  sizes: readAt(() => ['sizes', '--queue', QUEUE, '--json']),
 }
 
 /** The idempotency key of the sleeping task the first `explain` scenario writes. */

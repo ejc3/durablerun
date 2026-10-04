@@ -1,7 +1,9 @@
 import {
   type Clock,
   type IdSource,
+  MAX_DURATION_MS,
   MAX_RUN_ORDINAL,
+  OPERATOR_LIST_CAP,
   PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
@@ -14,15 +16,18 @@ import {
   COMMANDS,
   type CommandSpec,
   type Invocation,
+  STUCK_DEFAULT_LIMIT,
   UsageError,
   VERBS,
   type Verb,
+  durationSeconds,
   parseInvocation,
   usage,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
 import {
   CHILD_HOPS,
+  DUE_GRACE_MS,
   type Diagnosis,
   type Evidence,
   type TaskOnTheWay,
@@ -42,6 +47,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
+import { rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 
 /** Where the CLI writes. The bin hands it the process's streams, and a test its own. */
@@ -529,8 +535,8 @@ async function checkpointCount(
 /**
  * One task's facts and what `diagnose` says of them, or null for a task the queue does not
  * hold. `diagnose` names the evidence a cause turns on, and it is read here and handed
- * back: the task's checkpoints, or the child the task awaits, which is diagnosed the same
- * way. A child that is already on the way, the task itself among them, closes a ring and is
+ * back: the task's checkpoints, the waits on the event it awaits, or the child the task
+ * awaits, which is diagnosed the same way. A child that is already on the way, the task itself among them, closes a ring and is
  * not read again, and the evidence says whether a clock of any task of the ring ends its
  * wait. A task that is CHILD_HOPS awaits from the one named has its own child
  * left unread, so a chain of awaits costs a bounded number of reads.
@@ -553,6 +559,9 @@ export async function explained(
     const ring = asked.needs === 'child' ? ringClosedBy(path, asked.taskId) : null
     if (asked.needs === 'checkpoints') {
       evidence = { ...evidence, checkpoints: await checkpointCount(store, queue, taskId) }
+    } else if (asked.needs === 'waiters') {
+      const waiters = await store.operator.eventWaiters(queue, asked.eventName)
+      evidence = { ...evidence, waiters }
     } else if (ring !== null) {
       evidence = { ...evidence, child: ring }
     } else if (hop === CHILD_HOPS) {
@@ -593,6 +602,81 @@ const explain: Handler = async (context) => {
   }
 }
 
+/** The refusal of a flag's value, which the parser took as text. Nothing was read. */
+const flagRefused = (message: string): Answer => ({
+  exit: 'usage',
+  view: { error: { kind: 'usage', message } },
+})
+
+/** The queue a read of a queue names, once the schema window admits the database, or the answer that refuses. */
+async function readableQueue({ invocation, store }: Context): Promise<string | Answer> {
+  const queue = invocation.strings.queue ?? ''
+  const version = await readableVersion(store)
+  return typeof version === 'number' ? queue : { ...version, view: { queue, ...version.view } }
+}
+
+/**
+ * What a move of the driver is owed to in one queue, and has been for at least the grace,
+ * on stdout whatever the command exits with. Listing a row is not a failure: the command
+ * exits `done` unless it was asked to fail on one. It exits `unreadable` when a row it
+ * read holds an instant that is not readable, which it lists all the same, and that exit
+ * comes before `found`, so a script never takes a report with a corrupt row for a count.
+ */
+const stuck: Handler = async (context) => {
+  const { strings, booleans } = context.invocation
+  const graceSeconds =
+    strings.grace === undefined ? DUE_GRACE_MS / 1000 : durationSeconds(strings.grace)
+  if (graceSeconds === null || graceSeconds * 1000 > MAX_DURATION_MS) {
+    return flagRefused(
+      '--grace takes a whole number and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years',
+    )
+  }
+  const limit =
+    strings.limit === undefined
+      ? STUCK_DEFAULT_LIMIT
+      : /^[1-9][0-9]*$/.test(strings.limit)
+        ? Number(strings.limit)
+        : 0
+  if (limit < 1 || limit > OPERATOR_LIST_CAP) {
+    return flagRefused(`--limit takes a whole number from 1 to ${OPERATOR_LIST_CAP}`)
+  }
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  const owed = await context.store.operator.stuckRuns(queue, { graceSeconds, limit })
+  const listed = rowsListed(owed)
+  const found = booleans['fail-if-any'] === true && listed > 0
+  return {
+    exit: owed.corrupt.length > 0 ? 'unreadable' : found ? 'found' : 'done',
+    holdsFacts: true,
+    view: { queue, graceSeconds, limit, listed, ...stuckView(owed) },
+  }
+}
+
+/**
+ * A queue's gauges and the instants at its head, on stdout whatever the command exits
+ * with. It exits `unreadable` when a row it counted holds an instant that is not readable.
+ */
+const stats: Handler = async (context) => {
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  const status = await context.store.operator.queueStatus(queue)
+  return {
+    exit: status.corrupt.length > 0 ? 'unreadable' : 'done',
+    holdsFacts: true,
+    view: { queue, ...statsView(status) },
+  }
+}
+
+/** How many rows of each table a queue holds. */
+const sizes: Handler = async (context) => {
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  return {
+    exit: 'done',
+    view: { queue, ...sizesView(await context.store.operator.tableRows(queue)) },
+  }
+}
+
 const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze({
   doctor,
   migrate,
@@ -600,4 +684,7 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze
   checkpoints,
   inspect,
   explain,
+  stuck,
+  stats,
+  sizes,
 })

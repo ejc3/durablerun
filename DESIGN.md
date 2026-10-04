@@ -6008,7 +6008,7 @@ same table, which a test holds equal to this one.
 | 6 | unavailable | the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too |
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
-| 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
+| 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
