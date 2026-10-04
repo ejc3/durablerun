@@ -4109,10 +4109,10 @@ MUTATION_SPECS = [
     (
         "claim-payload-validation-atomic",
         "packages/store-libsql/src/store.ts",
-        "      return `${eligibleTask(task, NOW)}\n"
+        "  return `${eligibleTask(task, NOW)}\n"
         "               AND ${durableTaskRetryAdmissible(task)}\n"
         "               AND ${durableTaskHeadersAdmissible(task)}\n",
-        "      return `${eligibleTask(task, NOW)}\n"
+        "  return `${eligibleTask(task, NOW)}\n"
         "               AND 1 = 1\n"
         "               AND ${durableTaskHeadersAdmissible(task)}\n",
         "claim changes candidate state before discovering an undecodable retry strategy",

@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  NOW as CLOCK_TOKEN,
   InvalidDurableStringError,
+  OPERATOR_GAUGE_CAP,
+  OPERATOR_LIST_CAP,
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
   type OperatorReadsDialect,
+  OPERATOR_TABLE_ROWS_CAP,
   PORT_STRING_RULES,
+  QUEUE_TABLES,
   type SqlExecutor,
   type SqlRow,
   createOperatorReads,
@@ -20,11 +25,20 @@ import { batch } from './tree-fixtures.js'
  * cases hold what no store decides: the check in front of every method, how a row is
  * decoded, and the order of every list.
  */
+/** A dialect's predicate over one alias, with the queue bound, as a store hands one out. */
+const byQueue = (alias: string) => (queue: string) => sqlFragment(`${alias}.queue = ?`, [queue])
+/** One that also compares with the clock, as every predicate of what the engine would take now does. */
+const dueByQueue = (alias: string) => (queue: string) =>
+  sqlFragment(`${alias}.queue = ? AND ${alias}.created_at_ms <= ${CLOCK_TOKEN}`, [queue])
+
 function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock: unknown = 0) {
   const sent: string[] = []
+  /** The arguments each statement of a batch was sent with, by the batch's label. */
+  const args: Record<string, unknown[][]> = {}
   const executor: SqlExecutor = {
     batch: async (label, statements) => {
       sent.push(label)
+      args[label] = statements.map((statement) => [...statement.args])
       return statements.map((_statement, index) => ({
         rows: answers[label]?.[index] ?? [],
         rowsAffected: 0,
@@ -37,6 +51,10 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
       taskFacts: () => batch('task-facts'),
       taskIdByKey: () => batch('task-id-by-key'),
       eventState: () => batch('event-state'),
+      stuckRuns: () => batch('stuck-runs'),
+      queueStatus: () => batch('queue-status'),
+      tableRows: () => batch('table-rows'),
+      eventWaiters: () => batch('event-waiters'),
     },
     fakeClock: async () => {
       sent.push('fake-clock')
@@ -45,8 +63,22 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
     sagaBegan: sqlFragment('1 = 0'),
     rollbackOutcome: sqlFragment('NULL'),
     rollbackError: sqlFragment('NULL'),
+    taskOwnsRun: sqlFragment('t.task_id = r.task_id'),
+    liveRunOfTask: sqlFragment('r.task_id = t.task_id'),
+    owed: {
+      pendingRuns: dueByQueue('r'),
+      sleepingRuns: dueByQueue('r'),
+      expiredClaims: dueByQueue('r'),
+      dueCancels: dueByQueue('t'),
+    },
+    counted: {
+      pendingRuns: byQueue('r'),
+      sleepingRuns: byQueue('r'),
+      runningRuns: byQueue('r'),
+      tasksWithADeadline: (queue: string) => [byQueue('t')(queue)],
+    },
   }
-  return { reads: createOperatorReads(dialect), sent }
+  return { reads: createOperatorReads(dialect), sent, args }
 }
 
 const TASK: SqlRow = {
@@ -108,6 +140,10 @@ const CALLS = {
   taskFacts: ['q', 't'],
   taskIdByKey: ['q', 'k'],
   eventState: ['q', 'e'],
+  stuckRuns: ['q', { graceSeconds: 0, limit: 20 }],
+  queueStatus: ['q'],
+  tableRows: ['q'],
+  eventWaiters: ['q', 'e'],
 } as const
 
 describe("the strings an operator's read carries", () => {
@@ -117,7 +153,8 @@ describe("the strings an operator's read carries", () => {
     for (const method of OPERATOR_READ_METHODS) {
       expect(OPERATOR_READ_STRINGS[method].length).toBe(CALLS[method].length)
       for (const name of OPERATOR_READ_STRINGS[method]) {
-        expect(PORT_STRING_RULES[name], `${method}: ${name}`).toBe('identifier')
+        // An argument that carries no string, as the options of `stuckRuns` are, is named null.
+        if (name !== null) expect(PORT_STRING_RULES[name], `${method}: ${name}`).toBe('identifier')
       }
       expect(Object.isFrozen(OPERATOR_READ_STRINGS[method])).toBe(true)
     }
@@ -129,6 +166,7 @@ describe("the strings an operator's read carries", () => {
     const refused: unknown[] = []
     for (const method of OPERATOR_READ_METHODS) {
       for (const [index, name] of OPERATOR_READ_STRINGS[method].entries()) {
+        if (name === null) continue
         for (const bad of [NUL, 'x'.repeat(256), undefined, 7]) {
           const { reads, sent } = readsAnswering(facts(TASK))
           const args: unknown[] = [...CALLS[method]]
@@ -148,7 +186,7 @@ describe("the strings an operator's read carries", () => {
     expect(refused, 'mutation-verdict:behavior:operator-read-check-runs-before-the-entry').toEqual(
       OPERATOR_READ_METHODS.flatMap((method) =>
         OPERATOR_READ_STRINGS[method].flatMap((name) =>
-          ['string', 'string', 'undefined', 'number'].map((bad) => ({
+          (name === null ? [] : ['string', 'string', 'undefined', 'number']).map((bad) => ({
             method,
             name,
             bad,
@@ -431,5 +469,610 @@ describe("the order of an operator's lists", () => {
       })),
       { eventName: 'woken', exists: true, emittedAtMs: 5 },
     ])
+  })
+})
+
+type Stored = SqlRow[string]
+
+/** Database time in every case below, unless the case says otherwise. */
+const NOW = 10_000
+
+/** `stuck-runs` answers its five statements in order: pending, sleeping, lapsed, cancels, database time. */
+const stuck = (
+  legs: {
+    pending?: SqlRow[]
+    sleeping?: SqlRow[]
+    lapsed?: SqlRow[]
+    cancels?: SqlRow[]
+  },
+  now: SqlRow[] = [{ now_ms: NOW }],
+) => ({
+  'stuck-runs': [
+    legs.pending ?? [],
+    legs.sleeping ?? [],
+    legs.lapsed ?? [],
+    legs.cancels ?? [],
+    now,
+  ],
+})
+
+/** A run a claim would take, as its leg selects it. */
+const dueRun = (run_id: string, available_at_ms: Stored, more: SqlRow = {}): SqlRow => ({
+  run_id,
+  task_id: `task-of-${run_id}`,
+  task_name: 'job',
+  attempt: 1,
+  available_at_ms,
+  ...more,
+})
+
+/** A run whose lease lapsed, as its leg selects it: started under its newest claim unless told otherwise. */
+const lapsedRun = (run_id: string, claim_expires_at_ms: Stored, more: SqlRow = {}): SqlRow => ({
+  run_id,
+  task_id: `task-of-${run_id}`,
+  task_name: 'job',
+  attempt: 1,
+  claim_expires_at_ms,
+  claim_gen: 1,
+  activated_gen: 1,
+  ...more,
+})
+
+/** A task past its cancellation deadline, as its leg selects it. */
+const overdueTask = (task_id: string, cancel_at_ms: Stored, more: SqlRow = {}): SqlRow => ({
+  task_id,
+  task_name: 'job',
+  state: 'pending',
+  run_id: `run-of-${task_id}`,
+  cancel_at_ms,
+  ...more,
+})
+
+/** What a leg lists, as each row's id and how late it is. */
+const listed = (leg: {
+  rows: readonly { runId?: string; taskId: string; lateByMs: number | null }[]
+}) => leg.rows.map((row) => [row.runId ?? row.taskId, row.lateByMs])
+
+describe("how an operator's read of what a move is owed to decodes its legs", () => {
+  it('lists a row from the instant its move has been owed for the grace, in every leg, and not a millisecond before', async () => {
+    // Database time is 10,000 and the grace is two seconds, so a move owed since 8,000 is
+    // listed and one owed since 8,001 is not.
+    const { reads } = readsAnswering(
+      stuck({
+        pending: [dueRun('p-at', 8_000), dueRun('p-inside', 8_001)],
+        sleeping: [dueRun('s-at', 8_000), dueRun('s-inside', 8_001)],
+        lapsed: [lapsedRun('l-at', 8_000), lapsedRun('l-inside', 8_001)],
+        cancels: [overdueTask('c-at', 8_000), overdueTask('c-inside', 8_001)],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 2, limit: 10 })
+    expect(
+      {
+        dueUnclaimed: listed(answer.dueUnclaimed),
+        sleepingPastWake: listed(answer.sleepingPastWake),
+        leaseLapsed: answer.leaseLapsed.rows.map((row) => [row.runId, row.lateByMs]),
+        cancelOverdue: answer.cancelOverdue.rows.map((row) => [row.taskId, row.lateByMs]),
+      },
+      'mutation-verdict:behavior:operator-reads-list-a-row-once-its-grace-has-run',
+    ).toEqual({
+      dueUnclaimed: [['p-at', 2_000]],
+      sleepingPastWake: [['s-at', 2_000]],
+      leaseLapsed: [['l-at', 2_000]],
+      cancelOverdue: [['c-at', 2_000]],
+    })
+    expect(answer.nowMs).toBe(NOW)
+    // With no grace, a move that came due at database time itself is listed: the engine
+    // takes that row now.
+    const atNow = readsAnswering(
+      stuck({
+        pending: [dueRun('p-now', NOW)],
+        sleeping: [dueRun('s-now', NOW)],
+        lapsed: [lapsedRun('l-now', NOW)],
+        cancels: [overdueTask('c-now', NOW)],
+      }),
+    )
+    const now = await atNow.reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(
+      [
+        listed(now.dueUnclaimed),
+        listed(now.sleepingPastWake),
+        now.leaseLapsed.rows.map((row) => [row.runId, row.lateByMs]),
+        now.cancelOverdue.rows.map((row) => [row.taskId, row.lateByMs]),
+      ],
+      'mutation-verdict:behavior:operator-reads-list-a-row-once-its-grace-has-run',
+    ).toEqual([[['p-now', 0]], [['s-now', 0]], [['l-now', 0]], [['c-now', 0]]])
+  })
+
+  it('reads each leg one row past the limit, lists the limit, and says when a leg holds more', async () => {
+    const three = [dueRun('a', 1_000), dueRun('b', 2_000), dueRun('c', 3_000)]
+    const { reads, args, sent } = readsAnswering(
+      stuck({ pending: three, sleeping: three.slice(0, 2), cancels: [overdueTask('t', 1_000)] }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 0, limit: 2 })
+    // The limit is each leg's last bind, and it is one more than was asked for.
+    expect(
+      (args['stuck-runs'] ?? []).map((bound) => bound.at(-1)),
+      'mutation-verdict:behavior:operator-reads-read-a-leg-one-row-past-its-limit',
+    ).toEqual([3, 3, 3, 3, undefined])
+    expect(
+      {
+        dueUnclaimed: [listed(answer.dueUnclaimed), answer.dueUnclaimed.atLeast],
+        sleepingPastWake: [listed(answer.sleepingPastWake), answer.sleepingPastWake.atLeast],
+        leaseLapsed: answer.leaseLapsed,
+        cancelOverdue: [answer.cancelOverdue.rows.length, answer.cancelOverdue.atLeast],
+      },
+      'mutation-verdict:behavior:operator-reads-say-when-a-leg-holds-more',
+    ).toEqual({
+      dueUnclaimed: [
+        [
+          ['a', 9_000],
+          ['b', 8_000],
+        ],
+        true,
+      ],
+      sleepingPastWake: [
+        [
+          ['a', 9_000],
+          ['b', 8_000],
+        ],
+        false,
+      ],
+      leaseLapsed: { rows: [], atLeast: false },
+      cancelOverdue: [1, false],
+    })
+    // One batch is the snapshot, and the flag of the test clock follows it.
+    expect(sent).toEqual(['stuck-runs', 'fake-clock'])
+    expect(answer.fakeClock).toBe(false)
+  })
+
+  it('orders a leg oldest first, and rows of one instant by id in code point order', async () => {
+    // Answered in the reverse of their order. U+E000 sorts below a character past the
+    // basic plane by code point, and above it by UTF-16 unit.
+    const { reads } = readsAnswering(
+      stuck({
+        pending: [
+          dueRun('young', 5_000),
+          dueRun('\u{10000}', 3_000),
+          dueRun('\uE000', 3_000),
+          dueRun('old', 1_000),
+        ],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(
+      answer.dueUnclaimed.rows.map((row) => row.runId),
+      'mutation-verdict:behavior:operator-reads-order-a-leg-oldest-first',
+    ).toEqual(['old', '\uE000', '\u{10000}', 'young'])
+  })
+
+  it('says whether a run whose lease lapsed was started under its newest claim', async () => {
+    const { reads } = readsAnswering(
+      stuck({
+        lapsed: [
+          lapsedRun('started', 1_000, { claim_gen: 2, activated_gen: 2 }),
+          lapsedRun('launch-lost', 2_000, { claim_gen: 2, activated_gen: 1 }),
+          lapsedRun('unreadable', 3_000, { claim_gen: -1, activated_gen: 0 }),
+        ],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(
+      answer.leaseLapsed.rows.map((row) => [row.runId, row.activated]),
+      'mutation-verdict:behavior:operator-reads-say-whether-a-lapsed-run-was-started',
+    ).toEqual([
+      ['started', true],
+      ['launch-lost', false],
+      ['unreadable', null],
+    ])
+    expect(answer.corrupt).toEqual([
+      {
+        field: 'runs.claim_gen',
+        runId: 'unreadable',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-1',
+      },
+    ])
+  })
+
+  it('lists a row whose instant is not readable whatever the grace, with the task or the run that holds it', async () => {
+    const { reads } = readsAnswering(
+      stuck({
+        pending: [dueRun('inside-the-grace', 9_999), dueRun('no-instant', 1.5, { attempt: 0 })],
+        cancels: [overdueTask('no-deadline', 'soon'), overdueTask('inside-the-grace', 9_999)],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 5, limit: 10 })
+    expect(
+      {
+        dueUnclaimed: answer.dueUnclaimed.rows,
+        cancelOverdue: answer.cancelOverdue.rows,
+        corrupt: answer.corrupt,
+      },
+      'mutation-verdict:behavior:operator-reads-list-a-row-whose-instant-is-not-readable',
+    ).toEqual({
+      dueUnclaimed: [
+        {
+          runId: 'no-instant',
+          taskId: 'task-of-no-instant',
+          taskName: 'job',
+          attempt: null,
+          dueAtMs: null,
+          lateByMs: null,
+        },
+      ],
+      cancelOverdue: [
+        {
+          taskId: 'no-deadline',
+          taskName: 'job',
+          state: 'pending',
+          runId: 'run-of-no-deadline',
+          dueAtMs: null,
+          lateByMs: null,
+        },
+      ],
+      corrupt: [
+        {
+          field: 'runs.attempt',
+          runId: 'no-instant',
+          reason: 'out-of-range',
+          stored: 'number',
+          value: '0',
+        },
+        {
+          field: 'runs.available_at_ms',
+          runId: 'no-instant',
+          reason: 'not-an-exact-integer',
+          stored: 'number',
+          value: '1.5',
+        },
+        {
+          field: 'tasks.cancel_at_ms',
+          taskId: 'no-deadline',
+          reason: 'not-an-exact-integer',
+          stored: 'string',
+        },
+      ],
+    })
+  })
+
+  it('lists every row when database time is not readable, and says so', async () => {
+    const { reads } = readsAnswering(stuck({ pending: [dueRun('a', 9_999)] }, [{ now_ms: 1.5 }]), 1)
+    const answer = await reads.stuckRuns('q', { graceSeconds: 5, limit: 10 })
+    expect({
+      nowMs: answer.nowMs,
+      fakeClock: answer.fakeClock,
+      dueUnclaimed: listed(answer.dueUnclaimed),
+      corrupt: answer.corrupt.map((entry) => entry.field),
+    }).toEqual({
+      nowMs: null,
+      fakeClock: true,
+      dueUnclaimed: [['a', null]],
+      corrupt: ['derived.epoch_ms'],
+    })
+    // A batch that answers no row for database time is a defect of the dialect, and is thrown.
+    await expect(
+      readsAnswering(stuck({}, [])).reads.stuckRuns('q', { graceSeconds: 0, limit: 1 }),
+    ).rejects.toThrow(/answered no row for database time/)
+  })
+
+  it('refuses a grace or a limit it cannot take, before anything is sent', async () => {
+    const refused: [unknown, string, string[]][] = []
+    for (const options of [
+      { graceSeconds: -1, limit: 10 },
+      { graceSeconds: Number.NaN, limit: 10 },
+      { graceSeconds: Number.POSITIVE_INFINITY, limit: 10 },
+      { graceSeconds: 0, limit: 0 },
+      { graceSeconds: 0, limit: 1.5 },
+      { graceSeconds: 0, limit: OPERATOR_LIST_CAP + 1 },
+    ]) {
+      const { reads, sent } = readsAnswering(stuck({}))
+      const answer = await reads.stuckRuns('q', options).then(
+        () => 'accepted',
+        (error: unknown) => (error instanceof RangeError ? 'refused' : `another error: ${error}`),
+      )
+      refused.push([options, answer, sent])
+    }
+    expect(
+      refused.map(([, answer, sent]) => [answer, sent]),
+      'mutation-verdict:behavior:operator-reads-refuse-a-limit-past-the-cap',
+    ).toEqual(refused.map(() => ['refused', []]))
+    // The cap itself is a limit a caller may ask for.
+    const atTheCap = readsAnswering(stuck({}))
+    await expect(
+      atTheCap.reads.stuckRuns('q', { graceSeconds: 0, limit: OPERATOR_LIST_CAP }),
+    ).resolves.toMatchObject({ corrupt: [] })
+  })
+})
+
+/** `queue-status` answers its five statements in order: pending, sleeping, running, deadlines, database time. */
+const status = (legs: {
+  pending?: Stored[]
+  sleeping?: Stored[]
+  running?: Stored[]
+  deadlines?: Stored[]
+}) => ({
+  'queue-status': [
+    (legs.pending ?? []).map((at, row) => ({ run_id: `p${row}`, available_at_ms: at })),
+    (legs.sleeping ?? []).map((at, row) => ({ run_id: `s${row}`, available_at_ms: at })),
+    (legs.running ?? []).map((at, row) => ({ run_id: `r${row}`, claim_expires_at_ms: at })),
+    (legs.deadlines ?? []).map((at, row) => ({ task_id: `t${row}`, cancel_at_ms: at })),
+    [{ now_ms: NOW }],
+  ],
+})
+
+const exactly = (count: number) => ({ count, atLeast: false })
+
+describe("how an operator's read of a queue's gauges counts", () => {
+  it('counts each leg, and of each the rows whose instant is at or before database time', async () => {
+    const { reads, sent } = readsAnswering(
+      status({
+        pending: [4_000, NOW, NOW + 1],
+        sleeping: [7_000, 20_000],
+        running: [9_000, NOW, 30_000, 40_000],
+        deadlines: [NOW + 1],
+      }),
+    )
+    const answer = await reads.queueStatus('q')
+    expect(
+      answer.gauges,
+      'mutation-verdict:behavior:operator-reads-count-a-row-due-at-its-instant',
+    ).toEqual({
+      pendingRuns: exactly(3),
+      pendingRunsDue: exactly(2),
+      sleepingRuns: exactly(2),
+      sleepingRunsDue: exactly(1),
+      runningRuns: exactly(4),
+      runningRunsLapsed: exactly(2),
+      tasksWithADeadline: exactly(1),
+      tasksPastTheirDeadline: exactly(0),
+    })
+    expect(
+      {
+        claimLagMs: answer.claimLagMs,
+        leaseHeadroomMs: answer.leaseHeadroomMs,
+        nextWakeAtMs: answer.nextWakeAtMs,
+      },
+      'mutation-verdict:behavior:operator-reads-name-the-head-of-the-queue',
+    ).toEqual({ claimLagMs: 6_000, leaseHeadroomMs: -1_000, nextWakeAtMs: 4_000 })
+    expect({ nowMs: answer.nowMs, fakeClock: answer.fakeClock, corrupt: answer.corrupt }).toEqual({
+      nowMs: NOW,
+      fakeClock: false,
+      corrupt: [],
+    })
+    expect(sent).toEqual(['queue-status', 'fake-clock'])
+  })
+
+  it('answers no lag and no headroom for a queue that holds nothing due and nothing running', async () => {
+    const empty = await readsAnswering(status({})).reads.queueStatus('q')
+    expect({
+      gauges: Object.values(empty.gauges),
+      claimLagMs: empty.claimLagMs,
+      leaseHeadroomMs: empty.leaseHeadroomMs,
+      nextWakeAtMs: empty.nextWakeAtMs,
+    }).toEqual({
+      gauges: Array.from({ length: 8 }, () => exactly(0)),
+      claimLagMs: null,
+      leaseHeadroomMs: null,
+      nextWakeAtMs: null,
+    })
+    // A queue whose every run is still to come has a next wake and no lag.
+    const ahead = await readsAnswering(
+      status({ pending: [NOW + 5], sleeping: [NOW + 9], running: [NOW + 7] }),
+    ).reads.queueStatus('q')
+    expect({
+      claimLagMs: ahead.claimLagMs,
+      leaseHeadroomMs: ahead.leaseHeadroomMs,
+      nextWakeAtMs: ahead.nextWakeAtMs,
+    }).toEqual({ claimLagMs: null, leaseHeadroomMs: 7, nextWakeAtMs: NOW + 5 })
+  })
+
+  it('reads each leg one row past the cap, stops each gauge at the cap, and says when more rows exist', async () => {
+    const past = OPERATOR_GAUGE_CAP + 1
+    // A leg of one row past the cap, all due, and a leg of the same size with the cap due.
+    const { reads, args } = readsAnswering(
+      status({
+        pending: Array.from({ length: past }, () => 1_000),
+        sleeping: Array.from({ length: past }, (_, row) =>
+          row < OPERATOR_GAUGE_CAP ? 1_000 : NOW + 1,
+        ),
+        running: Array.from({ length: OPERATOR_GAUGE_CAP }, () => 1_000),
+      }),
+    )
+    const answer = await reads.queueStatus('q')
+    expect(
+      (args['queue-status'] ?? []).map((bound) => bound.at(-1)),
+      'mutation-verdict:behavior:operator-reads-read-a-gauge-one-row-past-its-cap',
+    ).toEqual([past, past, past, past, undefined])
+    const capped = { count: OPERATOR_GAUGE_CAP, atLeast: true }
+    expect(
+      {
+        pendingRuns: answer.gauges.pendingRuns,
+        pendingRunsDue: answer.gauges.pendingRunsDue,
+        sleepingRuns: answer.gauges.sleepingRuns,
+        sleepingRunsDue: answer.gauges.sleepingRunsDue,
+        runningRuns: answer.gauges.runningRuns,
+        runningRunsLapsed: answer.gauges.runningRunsLapsed,
+      },
+      'mutation-verdict:behavior:operator-reads-stop-a-gauge-at-its-cap',
+    ).toEqual({
+      pendingRuns: capped,
+      pendingRunsDue: capped,
+      sleepingRuns: capped,
+      sleepingRunsDue: exactly(OPERATOR_GAUGE_CAP),
+      runningRuns: exactly(OPERATOR_GAUGE_CAP),
+      runningRunsLapsed: exactly(OPERATOR_GAUGE_CAP),
+    })
+  })
+
+  it('counts a row whose instant is not readable in its leg, in no gauge of an instant, and lists it', async () => {
+    const { reads } = readsAnswering(
+      status({ pending: [-1, 2_000], running: ['never'], deadlines: [1.5, 3_000] }),
+    )
+    const answer = await reads.queueStatus('q')
+    expect(
+      {
+        gauges: answer.gauges,
+        claimLagMs: answer.claimLagMs,
+        leaseHeadroomMs: answer.leaseHeadroomMs,
+        nextWakeAtMs: answer.nextWakeAtMs,
+        corrupt: answer.corrupt,
+      },
+      'mutation-verdict:behavior:operator-reads-count-a-row-whose-instant-is-not-readable',
+    ).toEqual({
+      gauges: {
+        pendingRuns: exactly(2),
+        pendingRunsDue: exactly(1),
+        sleepingRuns: exactly(0),
+        sleepingRunsDue: exactly(0),
+        runningRuns: exactly(1),
+        runningRunsLapsed: exactly(0),
+        tasksWithADeadline: exactly(2),
+        tasksPastTheirDeadline: exactly(1),
+      },
+      claimLagMs: 8_000,
+      leaseHeadroomMs: null,
+      nextWakeAtMs: 2_000,
+      corrupt: [
+        {
+          field: 'runs.available_at_ms',
+          runId: 'p0',
+          reason: 'out-of-range',
+          stored: 'number',
+          value: '-1',
+        },
+        {
+          field: 'runs.claim_expires_at_ms',
+          runId: 'r0',
+          reason: 'not-an-exact-integer',
+          stored: 'string',
+        },
+        {
+          field: 'tasks.cancel_at_ms',
+          taskId: 't0',
+          reason: 'not-an-exact-integer',
+          stored: 'number',
+          value: '1.5',
+        },
+      ],
+    })
+  })
+})
+
+describe("how an operator's count of a queue's rows is read", () => {
+  /** `table-rows` answers one count for each table, in the order core names the tables. */
+  const counts = (counted: Stored[]) => ({
+    'table-rows': counted.map((row_count) => [{ row_count }]),
+  })
+
+  it('answers each count as a number, a bigint among them, and stops it at the cap', async () => {
+    const cap = OPERATOR_TABLE_ROWS_CAP
+    const { reads, sent, args } = readsAnswering(counts([0, 7n, cap, cap + 1, 3]))
+    const answer = await reads.tableRows('q')
+    expect(QUEUE_TABLES).toEqual(['runs', 'tasks', 'waits', 'events', 'checkpoints'])
+    expect(answer, 'mutation-verdict:behavior:operator-reads-stop-a-count-at-its-cap').toEqual({
+      cap,
+      tables: {
+        runs: exactly(0),
+        tasks: exactly(7),
+        waits: exactly(cap),
+        events: { count: cap, atLeast: true },
+        checkpoints: exactly(3),
+      },
+    })
+    // Each statement binds the queue and one row past the cap, and no clock is asked for.
+    expect(args['table-rows']).toEqual(QUEUE_TABLES.map(() => ['q', cap + 1]))
+    expect(sent).toEqual(['table-rows'])
+  })
+
+  it('refuses a count that is no integer in the range of its statement', async () => {
+    const refused: string[] = []
+    for (const bad of ['5', 1.5, -1, OPERATOR_TABLE_ROWS_CAP + 2, null]) {
+      const answer = await readsAnswering(counts([0, bad, 0, 0, 0]))
+        .reads.tableRows('q')
+        .then(
+          () => 'accepted',
+          (error: unknown) => (error instanceof RangeError ? error.message : `another: ${error}`),
+        )
+      refused.push(answer)
+    }
+    expect(
+      refused,
+      'mutation-verdict:behavior:operator-reads-refuse-a-count-that-is-no-integer',
+    ).toEqual(
+      refused.map(
+        () => `table-rows tasks must count an integer from 0 to ${OPERATOR_TABLE_ROWS_CAP + 1}`,
+      ),
+    )
+    // A statement that answers no row at all is refused the same way.
+    await expect(readsAnswering({}).reads.tableRows('q')).rejects.toThrow(/table-rows runs/)
+  })
+})
+
+describe("how an operator's read of an event's waiters is read", () => {
+  const waiter = (
+    task_id: string,
+    run_id: string,
+    step_name: string,
+    timeout_at_ms: Stored = null,
+  ) => ({
+    task_id,
+    run_id,
+    step_name,
+    timeout_at_ms,
+  })
+
+  it('lists the waiters by task, then run, then step, and a timeout outside its bounds as corrupt', async () => {
+    const { reads, sent, args } = readsAnswering({
+      'event-waiters': [
+        [
+          waiter('t2', 'r2', 'b', 5_000),
+          waiter('t1', 'r9', 'a'),
+          waiter('t2', 'r2', 'a', -1),
+          waiter('t1', 'r1', 'z', 7n),
+        ],
+      ],
+    })
+    const answer = await reads.eventWaiters('q', 'approval')
+    expect(answer, 'mutation-verdict:behavior:operator-reads-order-the-waiters').toEqual({
+      waiters: {
+        rows: [
+          { taskId: 't1', runId: 'r1', stepName: 'z', timeoutAtMs: 7 },
+          { taskId: 't1', runId: 'r9', stepName: 'a', timeoutAtMs: null },
+          { taskId: 't2', runId: 'r2', stepName: 'a', timeoutAtMs: null },
+          { taskId: 't2', runId: 'r2', stepName: 'b', timeoutAtMs: 5_000 },
+        ],
+        atLeast: false,
+      },
+      corrupt: [
+        {
+          field: 'waits.timeout_at_ms',
+          runId: 'r2',
+          stepName: 'a',
+          reason: 'out-of-range',
+          stored: 'number',
+          value: '-1',
+        },
+      ],
+    })
+    expect(args['event-waiters']).toEqual([['q', 'approval', OPERATOR_GAUGE_CAP + 1]])
+    expect(sent).toEqual(['event-waiters'])
+  })
+
+  it('stops the list at the cap and says when more waits exist', async () => {
+    const many = (count: number) =>
+      Array.from({ length: count }, (_, row) =>
+        waiter(`t${String(row).padStart(4, '0')}`, 'r', 's'),
+      )
+    const past = await readsAnswering({
+      'event-waiters': [many(OPERATOR_GAUGE_CAP + 1)],
+    }).reads.eventWaiters('q', 'e')
+    const at = await readsAnswering({
+      'event-waiters': [many(OPERATOR_GAUGE_CAP)],
+    }).reads.eventWaiters('q', 'e')
+    expect(
+      [past.waiters.rows.length, past.waiters.atLeast, at.waiters.rows.length, at.waiters.atLeast],
+      'mutation-verdict:behavior:operator-reads-stop-the-waiters-at-the-cap',
+    ).toEqual([OPERATOR_GAUGE_CAP, true, OPERATOR_GAUGE_CAP, false])
   })
 })

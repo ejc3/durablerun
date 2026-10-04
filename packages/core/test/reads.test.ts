@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  COUNTED_TABLES,
+  QUEUE_TABLES,
   checkpointsRead,
   claimedTaskNameRead,
   sqlFragment,
@@ -83,7 +83,7 @@ describe('the states a read compares', () => {
  */
 describe('a count over a derived table that carries a LIMIT', () => {
   it('is inside the statement grammar, for every table it counts, and binds the queue and one row past the cap', async () => {
-    for (const table of COUNTED_TABLES) {
+    for (const table of QUEUE_TABLES) {
       const { captured, executor } = capturingExecutor(0)
       await batch()
         .readTree('read', tableRowsRead({ table, queue: 'q', cap: 1_000_000 }))

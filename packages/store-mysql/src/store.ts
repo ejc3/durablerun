@@ -146,6 +146,7 @@ import {
   storedIncrementableClaimGeneration,
   storedIncrementableInteger,
   storedInteger,
+  storedAtAll,
   storedIntegerWithin,
   storedPositiveClaimGeneration,
   successorOwned,
@@ -362,14 +363,37 @@ function finishSuspension(b: FencedBatch, queue: string, runId: string): void {
 }
 
 /**
+ * What a claim requires of a run and its task before it takes the run, over their two
+ * aliases. The claim holds each candidate to it before the candidates' limit. The
+ * operator's read of the runs a claim is owed to holds its rows to the same predicate, so
+ * the two cannot disagree about which runs a claim would take.
+ */
+export const claimEligibility = (run: string, task: string): string => {
+  const wait = registeredWait(run)
+  return `${eligibleTask(task, NOW)}
+               AND ${durableTaskRetryAdmissible(task)}
+               AND ${durableTaskHeadersAdmissible(task)}
+               AND ${soleLiveRun(run)}
+               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
+               AND ${wait.temporallySafe}
+               AND ${storedIncrementableClaimGeneration(run)}
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
+               AND ${run}.activated_gen <= ${run}.claim_gen
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
+               AND ${storedCurrentRunAccounting(run, task)}
+               AND ${storedHighestOwnedOrdinal(run)}`
+}
+
+/**
  * Sweep discovery's predicates, as the fragments its two reads take (`sweepDueCancelsRead`
  * and `sweepExpiredClaimsRead`). Each binds the queue once. The query-plan suite pins the
- * statements a real sweep sends, which it records from the store.
+ * statements a real sweep sends, which it records from the store. The operator's read of
+ * what a sweep is owed to takes the same three, so it lists what the scan would find.
  */
-const SWEEP_CANCELS_DUE = `t.queue = ? AND ${cancelDue('t', NOW)}
+export const SWEEP_CANCELS_DUE = `t.queue = ? AND ${cancelDue('t', NOW)}
   AND t.state IN ${LIVE}
   AND ${taskOwnsEveryRun('t')}`
-const SWEEP_LIVE_RUN_OF_TASK = `${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}`
+export const SWEEP_LIVE_RUN_OF_TASK = `${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}`
 
 /**
  * One wake source: the earliest stored instant of one state of one queue. MySQL does not
@@ -438,9 +462,41 @@ const sweepScanAdmissible = (run: string, task: string): string =>
   `((${task}.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(run, task)})
     OR (${task}.state NOT IN ${LIVE} AND ${sweepTerminalOwnerAdmissible(run)}))`
 
-const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
+export const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
   AND ${runClaimExpired('r', NOW)}
   AND ${sweepScanAdmissible('r', 't')}`
+
+/**
+ * The runs of one state a claim would take now, over a run `r` and its task `t`: due, as
+ * the claim's candidates are, and eligible as the claim requires of each (`claimEligibility`).
+ * The operator's read of the runs a claim is owed to takes these. The claim's own candidate
+ * subquery is not a read's to take: it is shaped for the claim's update. Each binds the
+ * queue once.
+ */
+const claimOwed = (state: 'pending' | 'sleeping'): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${runAvailableDue('r', NOW)}
+  AND ${claimEligibility('r', 't')}`
+export const CLAIM_OWED_PENDING = claimOwed('pending')
+export const CLAIM_OWED_SLEEPING = claimOwed('sleeping')
+
+/**
+ * The rows each gauge of the operator's `queue-status` counts: the runs of one state whose
+ * instant is stored at all, and the live tasks whose cancellation deadline is. None holds
+ * its instant to bounds, because a gauge counts a row whose instant its bounds refuse, and
+ * each is handed out by an index in the order of its instant. Each binds the queue once.
+ */
+const countedRuns = (state: 'pending' | 'sleeping' | 'running', instant: string): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${storedAtAll(instant)}`
+export const COUNTED_PENDING_RUNS = countedRuns('pending', 'r.available_at_ms')
+export const COUNTED_SLEEPING_RUNS = countedRuns('sleeping', 'r.available_at_ms')
+export const COUNTED_RUNNING_RUNS = countedRuns('running', 'r.claim_expires_at_ms')
+/** `tasks_cancel` leads with the state on MySQL, so each live state is a leg of its own. */
+export const COUNTED_DEADLINES: readonly string[] = LIVE_STATES.map(
+  (state) => `t.queue = ? AND t.state = '${state}'
+  AND ${storedAtAll('t.cancel_at_ms')}`,
+)
 
 /**
  * The task still admits this run's completion: it is already terminal, or this is its
@@ -694,21 +750,6 @@ export class MysqlSchedulerStore extends HeldPort implements SchedulerStore {
     // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering
     // the merged shortlist lets an earlier corrupt/ineligible run consume the
     // whole budget and permanently starve later healthy work.
-    const claimEligibility = (run: string, task: string): string => {
-      const wait = registeredWait(run)
-      return `${eligibleTask(task, NOW)}
-               AND ${durableTaskRetryAdmissible(task)}
-               AND ${durableTaskHeadersAdmissible(task)}
-               AND ${soleLiveRun(run)}
-               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
-               AND ${wait.temporallySafe}
-               AND ${storedIncrementableClaimGeneration(run)}
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
-               AND ${run}.activated_gen <= ${run}.claim_gen
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
-               AND ${storedCurrentRunAccounting(run, task)}
-               AND ${storedHighestOwnedOrdinal(run)}`
-    }
     const candidateEligibility = claimEligibility('r', 't')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.lockClaim({ queue, claimToken })

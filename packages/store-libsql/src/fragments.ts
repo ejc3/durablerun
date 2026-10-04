@@ -174,6 +174,15 @@ export const cancelNotDue = (task: string, at: string): string => {
  */
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
+/**
+ * A column holds a value at all: a stored value of any storage class, and no NULL. An
+ * operator's gauge counts a row whose instant its bounds refuse, so its predicate may not
+ * be `storedIntegerWithin`. It is written as a comparison, because SQLite reaches a column's
+ * index only through one, and with the least value there is: the literal overflows to
+ * negative infinity, and every number, text and blob compares at or above it.
+ */
+export const storedAtAll = (column: string): string => `${column} >= -1e999`
+
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
 const storedBoundedInteger = (col: string, min: number, max: number, compared = col): string =>
   `(${storedInteger(col)} AND ${compared} BETWEEN ${min} AND ${max})`

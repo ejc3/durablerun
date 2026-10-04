@@ -6,7 +6,18 @@ import {
   createOperatorReads,
   sqlFragment,
 } from '@durablerun/core'
-import { rollbackError, rollbackOutcome, sagaBegan } from './fragments.js'
+import { rollbackError, rollbackOutcome, runOwnedByTask, sagaBegan } from './fragments.js'
+import {
+  CLAIM_OWED_PENDING,
+  CLAIM_OWED_SLEEPING,
+  COUNTED_DEADLINES,
+  COUNTED_PENDING_RUNS,
+  COUNTED_RUNNING_RUNS,
+  COUNTED_SLEEPING_RUNS,
+  SWEEP_CANCELS_DUE,
+  SWEEP_CLAIMS_EXPIRED,
+  SWEEP_LIVE_RUN_OF_TASK,
+} from './store.js'
 import { FAKE_CLOCK_READ_SQL, NOW_MS } from './time.js'
 import { TREE_DIALECT } from './tree.js'
 
@@ -30,6 +41,14 @@ class PostgresOperatorReads {
           new FencedBatch('task-id-by-key', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
         eventState: () =>
           new FencedBatch('event-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        stuckRuns: () =>
+          new FencedBatch('stuck-runs', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        queueStatus: () =>
+          new FencedBatch('queue-status', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        tableRows: () =>
+          new FencedBatch('table-rows', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        eventWaiters: () =>
+          new FencedBatch('event-waiters', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
       },
       fakeClock: async () => {
         const [flag] = await this.db.batch(
@@ -42,6 +61,21 @@ class PostgresOperatorReads {
       sagaBegan: sqlFragment(sagaBegan('tasks')),
       rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
       rollbackError: sqlFragment(rollbackError('tasks')),
+      taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
+      // What the claim and the sweep of this store would take now, by their own predicates.
+      owed: {
+        pendingRuns: (queue) => sqlFragment(CLAIM_OWED_PENDING, [queue]),
+        sleepingRuns: (queue) => sqlFragment(CLAIM_OWED_SLEEPING, [queue]),
+        expiredClaims: (queue) => sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
+        dueCancels: (queue) => sqlFragment(SWEEP_CANCELS_DUE, [queue]),
+      },
+      counted: {
+        pendingRuns: (queue) => sqlFragment(COUNTED_PENDING_RUNS, [queue]),
+        sleepingRuns: (queue) => sqlFragment(COUNTED_SLEEPING_RUNS, [queue]),
+        runningRuns: (queue) => sqlFragment(COUNTED_RUNNING_RUNS, [queue]),
+        tasksWithADeadline: (queue) => COUNTED_DEADLINES.map((leg) => sqlFragment(leg, [queue])),
+      },
     })
   }
 }

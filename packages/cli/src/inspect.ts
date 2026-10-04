@@ -92,6 +92,7 @@ const eventView = (event: AwaitedEventFacts): Printed<AwaitedEventFacts> => ({
 /** A corrupt integer. Its value is a number's text and never a value of another kind. */
 const corruptView = (entry: CorruptInteger): Printed<Required<CorruptInteger>> => ({
   field: entry.field,
+  taskId: entry.taskId,
   runId: entry.runId,
   stepName: entry.stepName,
   eventName: entry.eventName,

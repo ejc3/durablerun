@@ -150,35 +150,64 @@ export const checkpointsRead = defineStatement(
 )
 
 /**
- * `sweep:scan`'s first read: tasks whose cancellation deadline is due, oldest deadline
- * first, each with its newest live run. `due` is the store's whole admission of the task
- * `t`: its queue, the due deadline, its live state, and that it owns every run.
+ * Tasks whose cancellation deadline is due, oldest deadline first, each with its newest
+ * live run, up to a limit. `due` is the store's whole admission of the task `t`: its queue,
+ * the due deadline, its live state, and that it owns every run. The sweep's scan is this
+ * and nothing more, and the operator's read of the tasks a cancel is owed to selects more
+ * of the same rows, so the second lists what the first takes, in the same order.
  */
+export const dueCancelRows = (binds: {
+  limit: number
+  due: SqlFragment
+  /** The run `r` is a live run of the task `t`. */
+  liveRunOfTask: SqlFragment
+}) =>
+  treeBuilder
+    .selectFrom('tasks as t')
+    .select((eb) => [
+      eb.ref('t.task_id').as('task_id'),
+      eb
+        .selectFrom('runs as r')
+        .select('r.run_id')
+        .where(rawSql<boolean>(binds.liveRunOfTask, 'predicate'))
+        .orderBy('r.attempt', 'desc')
+        .limit(eb.lit(1))
+        .as('run_id'),
+    ])
+    .where(rawSql<boolean>(binds.due, 'predicate'))
+    .orderBy('t.cancel_at_ms')
+    .orderBy('t.task_id')
+    .limit(binds.limit)
+
+/** `sweep:scan`'s first read: the tasks whose cancellation deadline is due (`dueCancelRows`). */
 export const sweepDueCancelsRead = defineStatement(
   'sweep:scan cancels',
-  (binds: {
-    limit: number
-    due: SqlFragment
-    /** The run `r` is a live run of the task `t`. */
-    liveRunOfTask: SqlFragment
-  }) =>
-    treeBuilder
-      .selectFrom('tasks as t')
-      .select((eb) => [
-        eb.ref('t.task_id').as('task_id'),
-        eb
-          .selectFrom('runs as r')
-          .select('r.run_id')
-          .where(rawSql<boolean>(binds.liveRunOfTask, 'predicate'))
-          .orderBy('r.attempt', 'desc')
-          .limit(eb.lit(1))
-          .as('run_id'),
-      ])
-      .where(rawSql<boolean>(binds.due, 'predicate'))
-      .orderBy('t.cancel_at_ms')
-      .orderBy('t.task_id')
-      .limit(binds.limit),
+  (binds: Parameters<typeof dueCancelRows>[0]) => dueCancelRows(binds),
 )
+
+/**
+ * Runs `r`, each with the task `t` that owns it, that a store's predicate admits, in the
+ * order of one of a run's instants and then of its id, up to a limit. `admitted` is the
+ * store's whole admission of the run and its task. The sweep's scan of expired claims is
+ * this, and so is each leg of runs the operator's read of what a move is owed to holds, so
+ * a leg lists what the engine's own statement takes, in the same order.
+ */
+export const admittedRuns = (
+  binds: {
+    limit: number
+    /** The task `t` owns the run `r`. */
+    taskOwnsRun: SqlFragment
+    admitted: SqlFragment
+  },
+  instant: 'r.available_at_ms' | 'r.claim_expires_at_ms',
+) =>
+  treeBuilder
+    .selectFrom('runs as r')
+    .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')))
+    .where(rawSql<boolean>(binds.admitted, 'predicate'))
+    .orderBy(instant)
+    .orderBy('r.run_id')
+    .limit(binds.limit)
 
 /**
  * `sweep:scan`'s second read: running runs whose claim expired, oldest expiry first.
@@ -192,14 +221,10 @@ export const sweepExpiredClaimsRead = defineStatement(
     taskOwnsRun: SqlFragment
     expired: SqlFragment
   }) =>
-    treeBuilder
-      .selectFrom('runs as r')
-      .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')))
-      .select(['r.run_id', 'r.task_id', 'r.claim_gen', 'r.activated_gen', 'r.relaunch_count'])
-      .where(rawSql<boolean>(binds.expired, 'predicate'))
-      .orderBy('r.claim_expires_at_ms')
-      .orderBy('r.run_id')
-      .limit(binds.limit),
+    admittedRuns(
+      { limit: binds.limit, taskOwnsRun: binds.taskOwnsRun, admitted: binds.expired },
+      'r.claim_expires_at_ms',
+    ).select(['r.run_id', 'r.task_id', 'r.claim_gen', 'r.activated_gen', 'r.relaunch_count']),
 )
 
 /**

@@ -4,13 +4,18 @@ import type {
   CheckpointWrite,
   ClaimedRun,
   EventState,
+  EventWaiters,
   FailOutcome,
   FailedRollback,
   LaunchIdentity,
   LeaseState,
+  QueueStatus,
   SpawnOptions,
   SpawnResult,
+  StuckRuns,
+  StuckRunsOptions,
   SweptRun,
+  TableRows,
   TaskFacts,
   TaskResult,
   WakeSpec,
@@ -263,10 +268,10 @@ export interface SchedulerStore {
 
 /**
  * What an operator reads of a deployment, apart from `SchedulerStore`: no engine actor calls
- * it, and nothing here writes. Each method is one batch of reads over one snapshot, and
- * `taskFacts` then asks in a second batch whether the test clock is set. Core holds the one
- * implementation (`createOperatorReads`), and each store package exports a factory that
- * reaches it with that store's batches and fragments.
+ * it, and nothing here writes. Each method is one batch of reads over one snapshot, and a
+ * method that answers database time then asks in a second batch whether the test clock is
+ * set. Core holds the one implementation (`createOperatorReads`), and each store package
+ * exports a factory that reaches it with that store's batches and fragments.
  */
 export interface OperatorReads {
   /** One snapshot of a task, its runs, its waits and the events they name, or null when the queue holds no such task. */
@@ -277,6 +282,21 @@ export interface OperatorReads {
 
   /** Whether an event exists and when it was emitted, a completion event included. */
   eventState(queue: string, eventName: string): Promise<EventState>
+
+  /**
+   * The runs and tasks of a queue that a move of the driver is owed to and has been for at
+   * least the grace: what a claim would take, and what a sweep would reclaim or cancel.
+   */
+  stuckRuns(queue: string, options: StuckRunsOptions): Promise<StuckRuns>
+
+  /** A queue's gauges, each stopped at a cap, and the instants at the head of the queue. */
+  queueStatus(queue: string): Promise<QueueStatus>
+
+  /** How many rows of each table a queue holds, each count stopped at a cap. */
+  tableRows(queue: string): Promise<TableRows>
+
+  /** The waits registered on an event that are still waiting, with the task of each. */
+  eventWaiters(queue: string, eventName: string): Promise<EventWaiters>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */
