@@ -649,3 +649,75 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     await db.close()
   }
 })
+
+/**
+ * No statement the engine sends is planned through `tasks_live`, the index of a queue's
+ * live tasks by state and enqueue instant, which schema version 11 adds for an operator's
+ * reads. Every statement that names a task's queue and its live states could be, because
+ * the index leads with both. The index's predicate is what keeps them off it: it requires
+ * an enqueue instant, and no statement the engine sends compares one. The statements are
+ * recorded from real operations and planned as the cases above plan theirs, with
+ * sequential and bitmap scans disabled, which is when a planner with nothing else to go on
+ * takes any index it may. This needs a server.
+ */
+it('plans no statement the engine sends through the index of live tasks, and a read that compares the enqueue instant through it', async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-tasks-live' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const seen = new Map<string, string>()
+    const { store, claimed, started } = driving(db, (label, statement) => {
+      const planned = /^\s*(?:select|insert|update|delete|with)\b/i.test(statement.sql)
+      if (planned && !seen.has(statement.sql)) seen.set(statement.sql, label)
+    })
+    const deferred = await claimed('deferred')
+    await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
+    const waiting = await started('waiting')
+    await store.awaitEvent('q', waiting.taskId, waiting.runId, waiting.claimToken, 's', 'e', null)
+    const completed = await started('completes')
+    await store.heartbeat('q', completed.runId, completed.claimToken, 60)
+    await store.getCheckpoints('q', completed.taskId, 1)
+    await store.complete('q', completed.runId, completed.claimToken, '{}')
+    await store.getTaskResult('q', completed.taskId)
+    const retried = await started('retries', 2)
+    await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
+    const failed = await started('fails')
+    await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    await store.cancelTask('q', waiting.taskId)
+    await store.nextWakeAtEpochMs('q')
+    // Last, because it moves the clock: a launch that is lost, and a task that is never
+    // started by its deadline, for the sweep to find.
+    await claimed('launch-is-lost')
+    await store.spawn('q', 'never-starts', '{}', { cancellation: { maxDelaySeconds: 30 } })
+    await db.admin.setFakeNowEpochMs(1_000_000 + 120_000)
+    expect((await store.sweep('q', 10)).map((swept) => swept.kind).sort()).toEqual([
+      'cancelled',
+      'lost-launch',
+    ])
+    await store.emitEvent('q', 'e', '{}')
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const throughIt = async (sql: string) =>
+      (await planLines(client, sql)).filter((line) => line.includes('tasks_live'))
+    // The check can say yes: the oldest live tasks of one state, which is what the index
+    // is for, are read through it.
+    expect(
+      await throughIt(
+        `SELECT t.task_id FROM tasks t
+         WHERE t.queue = ? AND t.state IN ('pending','running','sleeping') AND t.state = 'pending'
+           AND t.enqueue_at_ms >= -9223372036854775808
+         ORDER BY t.enqueue_at_ms LIMIT ?`,
+      ),
+    ).not.toEqual([])
+    const planned: string[] = []
+    for (const [sql, label] of seen) {
+      planned.push(...(await throughIt(sql)).map((line) => `[${label}] ${line.trim()}`))
+    }
+    expect(planned).toEqual([])
+    expect(seen.size).toBeGreaterThan(40)
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
