@@ -6307,6 +6307,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     failed with a saga, which `retry-task` refuses. The three cells of `retry-task` hold a
     completed and a cancelled task still and a failed one revived. Trigger: PR5.2c2, whose
     barrier grid builds a saga-failed task.
+  - Option for the helper's reads, not built, with its trigger: one read for the four
+    checkers. Today each checker reads its own rows, so a call of `engineHistoryViolations`
+    sends five read batches where it sent four, and the retention checker's five statements
+    read tables the others already read. One snapshot handed to four pure functions would
+    send fewer batches than before this pull request. It rewrites the saga checker, which
+    nine entries of main's registry name, so the base gate's arm would have to re-aim them.
+    Trigger: a fifth checker, or an ownership test of the fault matrix that nears its 300
+    second limit.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
