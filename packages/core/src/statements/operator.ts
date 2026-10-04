@@ -149,3 +149,27 @@ export const eventStateRead = defineStatement(
       .where('queue', '=', binds.queue)
       .where('event_name', '=', binds.eventName),
 )
+
+/** The tables `table-rows` counts one queue's rows of. Each holds its queue in a column of that name. */
+export const COUNTED_TABLES = ['tasks', 'runs', 'checkpoints', 'events', 'waits'] as const
+export type CountedTable = (typeof COUNTED_TABLES)[number]
+
+/**
+ * `table-rows`: how many rows of one table one queue holds, counted up to a cap. The inner
+ * SELECT stops one row past the cap, so the count is exact up to the cap, and one more than
+ * the cap when the queue holds more than that. The database reads no row past that one.
+ */
+export const tableRowsRead = defineStatement(
+  'table-rows',
+  (binds: { table: CountedTable; queue: string; cap: number }) =>
+    treeBuilder
+      .selectFrom(
+        treeBuilder
+          .selectFrom(binds.table)
+          .select('queue')
+          .where('queue', '=', binds.queue)
+          .limit(binds.cap + 1)
+          .as('counted'),
+      )
+      .select((eb) => eb.fn.countAll<number>().as('row_count')),
+)
