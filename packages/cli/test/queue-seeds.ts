@@ -22,7 +22,7 @@ export interface OwedQueue {
 export const OWED_AT_MS = NOW_MS + 60_000
 
 /** The one run of a task, read from its row: no port answers a run by its task. */
-async function runOf(db: CliDb, taskId: string): Promise<string> {
+export async function runOf(db: CliDb, taskId: string): Promise<string> {
   const [read] = await db.raw.batch(
     'fixture:run-of-a-task',
     [{ sql: 'SELECT run_id FROM runs WHERE task_id = ?', args: [taskId] }],

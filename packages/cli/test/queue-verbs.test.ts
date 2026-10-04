@@ -12,7 +12,7 @@ import { exitCode } from '../src/exit.js'
 import { DUE_GRACE_MS, HUNG_RUN_MS } from '../src/explain.js'
 import { type StoreOpener, openStore } from '../src/open-store.js'
 import { fixture, parkedOnAnEvent } from './explain-seeds.js'
-import { DEFERRAL_FORMS, OWED_AT_MS, deferralTick, owedQueue } from './queue-seeds.js'
+import { DEFERRAL_FORMS, OWED_AT_MS, deferralTick, owedQueue, runOf } from './queue-seeds.js'
 import {
   type CliDb,
   NOW_MS,
@@ -192,6 +192,67 @@ describe('stuck on libSQL', () => {
           'mutation-verdict:behavior:cli-stuck-exits-0-when-it-lists-nothing',
         ).toEqual({ output, exit: 0, stderr: '' })
       }
+    }))
+
+  it('lists a due run that no claim admits, names it as one, and exits 9 for it with --fail-if-any', () =>
+    onDb('stuck-no-claim-admits', async (db) => {
+      // Fixture-built: no engine path writes a retry strategy that is not JSON. A claim
+      // refuses the run of such a task, and nothing of it is the sweep's to take.
+      const task = await db.store.spawn(QUEUE, 'poisoned', '{}')
+      const run = await runOf(db, task.taskId)
+      await db.raw.batch('fixture:retry-strategy', [
+        {
+          sql: "UPDATE tasks SET retry_strategy = 'not json' WHERE task_id = ?",
+          args: [task.taskId],
+        },
+      ])
+      const hour = 3_600_000
+      await db.admin.setFakeNowEpochMs(NOW_MS + hour)
+      expect({
+        claimed: (await db.store.claim(QUEUE, 'w', { leaseSeconds: 60, limit: 10 })).length,
+        swept: (await db.store.sweep(QUEUE, 10)).length,
+      }).toEqual({ claimed: 0, swept: 0 })
+      // The gauges count the run as due, and its claim lag is the hour.
+      const stats = JSON.parse(
+        (await runCli(['stats', '--queue', QUEUE, '--json'], db.env)).stdout,
+      ) as { gauges: { pendingRunsDue: { count: number } }; claimLagMs: number }
+      expect({ due: stats.gauges.pendingRunsDue.count, claimLagMs: stats.claimLagMs }).toEqual({
+        due: 1,
+        claimLagMs: hour,
+      })
+      const found = await runCli(
+        ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
+        db.env,
+      )
+      const answer = JSON.parse(found.stdout) as {
+        listed: number
+        dueUnclaimed: { rows: unknown[] }
+        dueNotAdmitted?: { rows: unknown[]; atLeast: boolean }
+      }
+      expect({
+        exit: found.exit,
+        listed: answer.listed,
+        dueUnclaimed: answer.dueUnclaimed.rows,
+        dueNotAdmitted: answer.dueNotAdmitted ?? 'the report has no such leg',
+      }).toEqual({
+        exit: exitCode('found'),
+        listed: 1,
+        dueUnclaimed: [],
+        dueNotAdmitted: {
+          rows: [
+            {
+              runId: run,
+              taskId: task.taskId,
+              taskName: 'poisoned',
+              state: 'pending',
+              attempt: 1,
+              dueAtMs: NOW_MS,
+              lateByMs: hour,
+            },
+          ],
+          atLeast: false,
+        },
+      })
     }))
 
   it('lists no healthy run: one under a live lease past the hung-run bound, and one parked on an event nobody emits', () =>
