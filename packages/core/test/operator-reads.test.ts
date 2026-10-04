@@ -825,13 +825,26 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
         await leg(fourYoung, taken(fourYoung), 5),
         // The same four, old enough for the grace: the fourth is not settled.
         await leg(fourOld, taken(fourOld), 5),
+        // One old run a claim refuses ahead of three young ones it takes. The read came
+        // back full and ends at a run the claim takes, which is too young for the grace,
+        // so no row past it could be listed.
+        await leg([windowRun('refused', 1_000), ...fourYoung.slice(0, 3)], taken(fourYoung), 5),
       ],
       'mutation-verdict:behavior:operator-reads-say-what-a-window-showed',
     ).toEqual([
       { rows: ['r1', 'r2'], atLeast: true, unexamined: true },
       { rows: [], atLeast: false, unexamined: false },
       { rows: [], atLeast: false, unexamined: true },
+      { rows: ['refused'], atLeast: false, unexamined: false },
     ])
+    // The leg of due runs reads two windows, and says so for either: here the window of
+    // sleeping runs alone left a row unsettled.
+    const { reads } = readsAnswering(stuck({ windowSleeping: fourOld, sleeping: taken(fourOld) }))
+    const asleep = await reads.stuckRuns('q', { graceSeconds: 5, limit: 2 })
+    expect(
+      asleep.dueNotAdmitted.unexamined,
+      'a leg says unexamined when any of its windows left a row unsettled',
+    ).toBe(true)
   })
 
   it('lists the tasks no sweep cancels from every window of deadlines, oldest first', async () => {
