@@ -249,17 +249,6 @@ async function finderAgainstTheEngine(
       return at !== null && at >= 0 && at <= MAX_EPOCH_MS && at <= nowMs
     })
     .map((run) => `${String(run.state)} ${String(run.run_id)}`)
-  expect(
-    {
-      where,
-      due: sorted([
-        ...owed.dueUnclaimed.rows.map((run) => `pending ${run.runId}`),
-        ...owed.sleepingPastWake.rows.map((run) => `sleeping ${run.runId}`),
-        ...owed.dueNotAdmitted.rows.map((run) => `${run.state} ${run.runId}`),
-      ]),
-    },
-    'mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg',
-  ).toEqual({ where, due: sorted(dueInTheDump) })
 
   const claimed = await f.store.claim(Q, claimToken, {
     leaseSeconds: 60,
@@ -274,6 +263,20 @@ async function finderAgainstTheEngine(
       [...owed.dueUnclaimed.rows, ...owed.sleepingPastWake.rows].map((run) => run.runId),
     ),
   })
+  // Asked after the claim's own check, and of the legs as they were read before the claim:
+  // a claim leg that lists a run the claim refuses fails the check above by its name, and a
+  // run that is in two legs of due runs, or in none, fails this one.
+  expect(
+    {
+      where,
+      due: sorted([
+        ...owed.dueUnclaimed.rows.map((run) => `pending ${run.runId}`),
+        ...owed.sleepingPastWake.rows.map((run) => `sleeping ${run.runId}`),
+        ...owed.dueNotAdmitted.rows.map((run) => `${run.state} ${run.runId}`),
+      ]),
+    },
+    'mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg',
+  ).toEqual({ where, due: sorted(dueInTheDump) })
 
   const swept = await f.store.sweep(Q, 10 * OPERATOR_LIST_CAP)
   type Reclaimed = Exclude<SweptRun, { kind: 'cancelled' }>
