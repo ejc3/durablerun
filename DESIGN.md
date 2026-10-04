@@ -6018,9 +6018,11 @@ exactly whether more rows are owed than the leg lists. The limit is from 1 to 1,
 (`OPERATOR_LIST_CAP`). Rows of one instant are listed in the order of their ids.
 
 A run under a lapsed lease whose task is also past its deadline is in two legs,
-`leaseLapsed` and `cancelOverdue`. The sweep finds it twice. On libSQL its cancellation
-lands first. On PostgreSQL and MySQL the sweep sends its batches side by side, and either
-the cancellation or the reclaim lands first. The row is owed a sweep either way.
+`leaseLapsed` and `cancelOverdue`. The sweep finds it twice, and sends a batch for each
+finding, side by side, the cancellations first. Over a libSQL file, which runs one batch at
+a time, the cancellation took such a run in every walk of the conformance cases. On
+PostgreSQL and MySQL either the cancellation or the reclaim lands first. The row is owed a
+sweep either way.
 
 Every integer a leg selects is decoded under the bounds core gives its field, and one that
 fails is listed in `corrupt` with the run or the task that holds it. Such a row is listed
