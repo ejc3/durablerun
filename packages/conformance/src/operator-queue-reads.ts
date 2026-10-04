@@ -404,6 +404,12 @@ async function countsAgainstTheDump(
     { where, status: await reads.queueStatus(Q) },
     'mutation-verdict:behavior:operator-gauges-equal-a-count-of-the-dump',
   ).toEqual({ where, status: statusFromTheDump(dump, nowMs) })
+  // Where every stored instant is readable, the earliest instant a gauge counts is the
+  // instant the store's own read of the queue's next wake answers.
+  expect({ where, nextWake: await f.store.nextWakeAtEpochMs(Q) }).toEqual({
+    where,
+    nextWake: statusFromTheDump(dump, nowMs).nextWakeAtMs,
+  })
   expect(
     { where, rows: await reads.tableRows(Q) },
     'mutation-verdict:behavior:operator-row-counts-equal-a-count-of-the-dump',

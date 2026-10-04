@@ -966,8 +966,13 @@ describe('every statement a store ships, by the nests of its plan', () => {
     // An excuse that nothing needs any more is removed, not kept.
     expect(Object.keys(EXCUSED_NESTS).filter((name) => !excused.has(name))).toEqual([])
     // Named line for line, in both directions: a due range that drives in a statement nobody
-    // named, another line in one that is named, and a name no due range needs any more.
-    expect(drivenByADueRange).toEqual(
+    // named, another line in one that is named, and a name no due range needs any more. A
+    // statement that loses its LIMIT fails here before its text is read below: with no
+    // LIMIT SQLite plans it another way, and its lines are no longer the lines named.
+    expect(
+      drivenByADueRange,
+      'mutation-verdict:behavior:plan-a-driving-due-range-is-bounded-as-its-entry-says',
+    ).toEqual(
       Object.fromEntries(
         Object.entries(DRIVEN_BY_A_DUE_RANGE).map(([name, { drivers }]) => [
           name,
@@ -987,7 +992,10 @@ describe('every statement a store ships, by the nests of its plan', () => {
       'mutation-verdict:behavior:plan-a-driving-due-range-is-bounded-as-its-entry-says',
     ).toEqual([])
     // A due range that stands alone, named line for line in both directions as well.
-    expect(aDueRangeAlone).toEqual(
+    expect(
+      aDueRangeAlone,
+      'mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says',
+    ).toEqual(
       Object.fromEntries(
         Object.entries(A_DUE_RANGE_ALONE).map(([name, { ranges }]) => [name, [...ranges].sort()]),
       ),
