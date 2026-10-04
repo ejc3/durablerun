@@ -834,6 +834,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'SEARCH r USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>?)'
   /** Every live task of one state, in the order they were enqueued: a range with no upper end. */
   const LIVE_TASKS = 'SEARCH t USING INDEX tasks_live (queue=? AND state=? AND enqueue_at_ms>?)'
+  /** The same range for a gauge, which selects only what the index holds. */
+  const LIVE_TASKS_COUNTED =
+    'SEARCH t USING COVERING INDEX tasks_live (queue=? AND state=? AND enqueue_at_ms>?)'
   /** Where the cost of the legs of due runs a claim refuses is recorded, with its option. */
   const THE_REFUSED_ARE_FEW =
     'BUILD.md PR5.3c: a leg of the due runs a claim refuses reads every due run of its state until it has its limit of refused ones'
@@ -891,10 +894,11 @@ describe('every statement a store ships, by the nests of its plan', () => {
       boundedBy: 'LIMIT',
     },
     // The gauge of live tasks: the live tasks of each state, oldest first, up to one row
-    // past the cap. The fifth statement of the batch reads the clock and no table.
-    'queue-status/read#5': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
-    'queue-status/read#6': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
-    'queue-status/read#7': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+    // past the cap, answered by the index alone. The fifth statement of the batch reads
+    // the clock and no table.
+    'queue-status/read#5': { ranges: [LIVE_TASKS_COUNTED], boundedBy: 'LIMIT' },
+    'queue-status/read#6': { ranges: [LIVE_TASKS_COUNTED], boundedBy: 'LIMIT' },
+    'queue-status/read#7': { ranges: [LIVE_TASKS_COUNTED], boundedBy: 'LIMIT' },
     // An operator's read of a queue's oldest live tasks: each state's, oldest first, up to
     // one row past the limit it was asked for. It grows with the queue's live tasks by
     // design, up to that limit.

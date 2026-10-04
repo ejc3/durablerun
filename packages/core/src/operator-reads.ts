@@ -17,6 +17,7 @@ import {
   databaseNowRead,
   eventStateRead,
   eventWaitersRead,
+  liveTaskInstantsRead,
   liveTasksRead,
   overdueCancelsRead,
   overdueRunsRead,
@@ -588,15 +589,24 @@ function owedFor<Row extends { readonly dueAtMs: number | null }>(
   }
 }
 
-/** The legs of a queue's live tasks, one read to a live state, each oldest first, under the names answered. */
-function liveTaskLegs(b: FencedBatch, legs: readonly SqlFragment[], limit: number): string[] {
+/**
+ * The legs of a queue's live tasks, one read to a live state, each oldest first, under the
+ * names answered. `read` is the statement of a leg: the one that lists a task, or the one
+ * that selects only what a gauge counts.
+ */
+function liveTaskLegs(
+  b: FencedBatch,
+  legs: readonly SqlFragment[],
+  limit: number,
+  read: typeof liveTasksRead | typeof liveTaskInstantsRead,
+): string[] {
   return legs.map((rows, leg) => {
-    b.readTree(`live-${leg}`, liveTasksRead({ limit, rows }))
+    b.readTree(`live-${leg}`, read({ limit, rows }))
     return `live-${leg}`
   })
 }
 
-/** The live tasks those legs read, each with its enqueue instant, null where the stored one is not readable. */
+/** The live tasks the legs of `aged-tasks` read, each with its enqueue instant, null where the stored one is not readable. */
 function liveTasksOf(
   b: FencedBatch,
   ran: FencedResult,
@@ -626,7 +636,7 @@ async function agedTasks(
   const b = dialect.open.agedTasks()
   // Each leg is read one row past the limit, so the oldest of them all are among the rows
   // read, and the list says whether it holds more than it lists.
-  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit + 1)
+  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit + 1, liveTasksRead)
   b.readTree('now', databaseNowRead({}))
   const ran = await dialect.run(b)
   const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
@@ -781,7 +791,7 @@ async function queueStatus(dialect: OperatorReadsDialect, queue: string): Promis
   })
   // No leg reads the clock, so this is the batch's one read of it.
   b.readTree('now', databaseNowRead({}))
-  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit)
+  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit, liveTaskInstantsRead)
   const ran = await dialect.run(b)
   const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
 
@@ -797,7 +807,7 @@ async function queueStatus(dialect: OperatorReadsDialect, queue: string): Promis
   const sleeping = instantsOf('sleeping', 'run_id', RUN.available_at_ms)
   const running = instantsOf('running', 'run_id', RUN.claim_expires_at_ms)
   const deadlines = deadlineLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.cancel_at_ms))
-  const enqueued = liveTasksOf(b, ran, liveLegs, corrupt).map((task) => task.enqueueAtMs)
+  const enqueued = liveLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms))
 
   const readable = (instants: readonly (number | null)[]): number[] =>
     instants.filter((at): at is number => at !== null)

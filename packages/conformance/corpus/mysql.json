@@ -814,15 +814,15 @@
         "bindArity": 0
       },
       {
-        "sql": "select `t`.`task_id`, `t`.`task_name`, `t`.`state`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'pending'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
+        "sql": "select `t`.`task_id`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'pending'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
         "bindArity": 2
       },
       {
-        "sql": "select `t`.`task_id`, `t`.`task_name`, `t`.`state`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'running'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
+        "sql": "select `t`.`task_id`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'running'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
         "bindArity": 2
       },
       {
-        "sql": "select `t`.`task_id`, `t`.`task_name`, `t`.`state`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'sleeping'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
+        "sql": "select `t`.`task_id`, `t`.`enqueue_at_ms` from `tasks` as `t` where (t.queue = ? AND t.state = 'sleeping'\n  AND (t.enqueue_at_ms) IS NOT NULL) order by `t`.`enqueue_at_ms`, `t`.`task_id` limit ?",
         "bindArity": 2
       }
     ]

@@ -247,21 +247,35 @@ export const taskDeadlinesRead = defineStatement(
 )
 
 /**
- * The live tasks a store's predicate takes, in the order they were enqueued, up to a limit:
- * a leg of `aged-tasks`, and of the gauge of live tasks in `queue-status`. `rows` names
- * the queue and one live state and compares the enqueue instant, so the index of live
- * tasks hands the rows out oldest first, and it holds the instant to no bounds.
+ * The live tasks a store's predicate takes, in the order they were enqueued, up to a limit.
+ * `rows` names the queue and one live state and compares the enqueue instant, so the index
+ * of live tasks hands the rows out oldest first, and it holds the instant to no bounds.
  */
+const liveTaskRows = (binds: { limit: number; rows: SqlFragment }) =>
+  treeBuilder
+    .selectFrom('tasks as t')
+    .where(rawSql<boolean>(binds.rows, 'predicate'))
+    .orderBy('t.enqueue_at_ms')
+    .orderBy('t.task_id')
+    .limit(binds.limit)
+
+/** A leg of `aged-tasks`: those live tasks (`liveTaskRows`), each with its name and its state. */
 export const liveTasksRead = defineStatement(
   'live-tasks',
-  (binds: { limit: number; rows: SqlFragment }) =>
-    treeBuilder
-      .selectFrom('tasks as t')
-      .select(['t.task_id', 't.task_name', 't.state', 't.enqueue_at_ms'])
-      .where(rawSql<boolean>(binds.rows, 'predicate'))
-      .orderBy('t.enqueue_at_ms')
-      .orderBy('t.task_id')
-      .limit(binds.limit),
+  (binds: Parameters<typeof liveTaskRows>[0]) =>
+    liveTaskRows(binds).select(['t.task_id', 't.task_name', 't.state', 't.enqueue_at_ms']),
+)
+
+/**
+ * A leg of the gauge of live tasks in `queue-status`: the same rows, each with its id and
+ * its enqueue instant and nothing else. A gauge counts rows and dates the oldest, so it
+ * selects no column the index of live tasks does not hold where that index holds the
+ * table's key, and the index then answers the leg with no read of the table.
+ */
+export const liveTaskInstantsRead = defineStatement(
+  'queue-status live-tasks',
+  (binds: Parameters<typeof liveTaskRows>[0]) =>
+    liveTaskRows(binds).select(['t.task_id', 't.enqueue_at_ms']),
 )
 
 /**
