@@ -272,6 +272,91 @@ describe('stuck on libSQL', () => {
       })
     }))
 
+  it('lists a run under a lapsed lease that no sweep reclaims, names it as one, and exits 9 for it with --fail-if-any', () =>
+    onDb('stuck-no-sweep-reclaims', async (db) => {
+      const task = await db.store.spawn(QUEUE, 'held', '{}')
+      const run = await claimActivated(db, 'w-held', task.taskId)
+      // Fixture-built: no engine path writes more activations than claims. The sweep's scan
+      // refuses a run whose generations it cannot act on.
+      await db.raw.batch('fixture:generations', [
+        {
+          sql: 'UPDATE runs SET activated_gen = claim_gen + 5 WHERE run_id = ?',
+          args: [run.runId],
+        },
+      ])
+      const hour = 3_600_000
+      await db.admin.setFakeNowEpochMs(NOW_MS + hour)
+      expect((await db.store.sweep(QUEUE, 10)).length).toBe(0)
+      const stats = JSON.parse(
+        (await runCli(['stats', '--queue', QUEUE, '--json'], db.env)).stdout,
+      ) as { gauges: { runningRunsLapsed: { count: number } } }
+      expect(stats.gauges.runningRunsLapsed.count).toBe(1)
+      const found = await runCli(
+        ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
+        db.env,
+      )
+      const answer = JSON.parse(found.stdout) as {
+        listed: number
+        leaseLapsed: { rows: unknown[] }
+        lapsedNotReclaimed?: { rows: { runId: string; taskId: string; lateByMs: number }[] }
+      }
+      expect({
+        exit: found.exit,
+        listed: answer.listed,
+        leaseLapsed: answer.leaseLapsed.rows,
+        lapsedNotReclaimed:
+          answer.lapsedNotReclaimed?.rows.map((row) => [row.runId, row.taskId, row.lateByMs]) ??
+          'the report has no such leg',
+      }).toEqual({
+        exit: exitCode('found'),
+        listed: 1,
+        leaseLapsed: [],
+        // The lease was for a minute.
+        lapsedNotReclaimed: [[run.runId, task.taskId, hour - 60_000]],
+      })
+    }))
+
+  it('lists a task past its cancellation deadline that no sweep cancels, names it as one, and exits 9 for it with --fail-if-any', () =>
+    onDb('stuck-no-sweep-cancels', async (db) => {
+      const task = await db.store.spawn(QUEUE, 'doomed', '{}', {
+        cancellation: { maxDelaySeconds: 30 },
+      })
+      // Fixture-built: no engine path leaves a run of a task in another queue than the
+      // task's. The sweep cancels no task that does not own every run of its id.
+      await db.raw.batch('fixture:ownership', [
+        { sql: "UPDATE runs SET queue = 'elsewhere' WHERE task_id = ?", args: [task.taskId] },
+      ])
+      const hour = 3_600_000
+      await db.admin.setFakeNowEpochMs(NOW_MS + hour)
+      expect((await db.store.sweep(QUEUE, 10)).length).toBe(0)
+      const stats = JSON.parse(
+        (await runCli(['stats', '--queue', QUEUE, '--json'], db.env)).stdout,
+      ) as { gauges: { tasksPastTheirDeadline: { count: number } } }
+      expect(stats.gauges.tasksPastTheirDeadline.count).toBe(1)
+      const found = await runCli(
+        ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
+        db.env,
+      )
+      const answer = JSON.parse(found.stdout) as {
+        listed: number
+        cancelOverdue: { rows: unknown[] }
+        deadlineNotCancelled?: { rows: { taskId: string; state: string; lateByMs: number }[] }
+      }
+      expect({
+        exit: found.exit,
+        listed: answer.listed,
+        cancelOverdue: answer.cancelOverdue.rows,
+        deadlineNotCancelled:
+          answer.deadlineNotCancelled?.rows.map((row) => [row.taskId, row.state, row.lateByMs]) ??
+          'the report has no such leg',
+      }).toEqual({
+        exit: exitCode('found'),
+        listed: 1,
+        cancelOverdue: [],
+        deadlineNotCancelled: [[task.taskId, 'pending', hour - 30_000]],
+      })
+    }))
+
   it('lists no healthy run: one under a live lease past the hung-run bound, and one parked on an event nobody emits', () =>
     onDb('stuck-healthy', async (db) => {
       const long = await db.store.spawn(QUEUE, 'long', '{}')
