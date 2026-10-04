@@ -325,22 +325,6 @@ async function finderAgainstTheEngine(
     },
     'mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg',
   ).toEqual({ where, due: sorted(dueInTheDump) })
-  // The same of what a sweep is owed to: every lapsed lease of the dump is in the leg the
-  // sweep reclaims or in the leg it does not, and every passed deadline likewise, once.
-  expect(
-    {
-      where,
-      lapsed: sorted([
-        ...owed.leaseLapsed.rows.map((run) => run.runId),
-        ...owed.lapsedNotReclaimed.rows.map((run) => run.runId),
-      ]),
-      deadlines: sorted([
-        ...owed.cancelOverdue.rows.map((task) => task.taskId),
-        ...owed.deadlineNotCancelled.rows.map((task) => task.taskId),
-      ]),
-    },
-    'mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes',
-  ).toEqual({ where, lapsed: sorted(lapsedInTheDump), deadlines: sorted(deadlinesInTheDump) })
 
   const swept = await f.store.sweep(Q, 10 * OPERATOR_LIST_CAP)
   type Reclaimed = Exclude<SweptRun, { kind: 'cancelled' }>
@@ -377,6 +361,23 @@ async function finderAgainstTheEngine(
       .filter((run) => !reclaimedRuns.has(run.runId) && !cancelled.has(run.taskId))
       .map((run) => `${where}: no arm of the sweep took ${run.runId}`),
   ).toEqual([])
+  // Asked after the sweep's own checks, and of the legs as they were read before it. The
+  // same of what a sweep is owed to: every lapsed lease of the dump is in the leg the
+  // sweep reclaims or in the leg it does not, and every passed deadline likewise, once.
+  expect(
+    {
+      where,
+      lapsed: sorted([
+        ...owed.leaseLapsed.rows.map((run) => run.runId),
+        ...owed.lapsedNotReclaimed.rows.map((run) => run.runId),
+      ]),
+      deadlines: sorted([
+        ...owed.cancelOverdue.rows.map((task) => task.taskId),
+        ...owed.deadlineNotCancelled.rows.map((task) => task.taskId),
+      ]),
+    },
+    'mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes',
+  ).toEqual({ where, lapsed: sorted(lapsedInTheDump), deadlines: sorted(deadlinesInTheDump) })
   // A due run no claim admits is where it was: the claim did not take it, and the sweep
   // takes such a run only by cancelling a task that is past its deadline.
   const leftToNoMove = owed.dueNotAdmitted.rows.filter((run) => !pastTheirDeadline.has(run.taskId))
@@ -1144,6 +1145,12 @@ export function operatorQueueReadsConformance(
             deadlineNotCancelled,
           }),
         )
+        // The run that stands in another queue than its task's is due there. A claim of
+        // that queue takes no run whose task the queue does not hold, and the window reads
+        // the run from its own row, so it is listed there as one no claim admits.
+        expect(
+          (await reads.stuckRuns('another-queue', { graceSeconds: 0, limit: 10 })).dueNotAdmitted,
+        ).toEqual(found(unadmitted(doomed, 'pending', START, LATER)))
         // The gauges count both leases and the deadline: a gauge applies none of the
         // sweep's admission.
         const status = await reads.queueStatus(Q)

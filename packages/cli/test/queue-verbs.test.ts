@@ -306,14 +306,17 @@ describe('stuck on libSQL', () => {
         leaseLapsed: { rows: unknown[] }
         lapsedNotReclaimed?: { rows: { runId: string; taskId: string; lateByMs: number }[] }
       }
-      expect({
-        exit: found.exit,
-        listed: answer.listed,
-        leaseLapsed: answer.leaseLapsed.rows,
-        lapsedNotReclaimed:
-          answer.lapsedNotReclaimed?.rows.map((row) => [row.runId, row.taskId, row.lateByMs]) ??
-          'the report has no such leg',
-      }).toEqual({
+      expect(
+        {
+          exit: found.exit,
+          listed: answer.listed,
+          leaseLapsed: answer.leaseLapsed.rows,
+          lapsedNotReclaimed:
+            answer.lapsedNotReclaimed?.rows.map((row) => [row.runId, row.taskId, row.lateByMs]) ??
+            'the report has no such leg',
+        },
+        'mutation-verdict:behavior:cli-stuck-counts-a-lapsed-lease-no-sweep-reclaims',
+      ).toEqual({
         exit: exitCode('found'),
         listed: 1,
         leaseLapsed: [],
@@ -348,14 +351,17 @@ describe('stuck on libSQL', () => {
         cancelOverdue: { rows: unknown[] }
         deadlineNotCancelled?: { rows: { taskId: string; state: string; lateByMs: number }[] }
       }
-      expect({
-        exit: found.exit,
-        listed: answer.listed,
-        cancelOverdue: answer.cancelOverdue.rows,
-        deadlineNotCancelled:
-          answer.deadlineNotCancelled?.rows.map((row) => [row.taskId, row.state, row.lateByMs]) ??
-          'the report has no such leg',
-      }).toEqual({
+      expect(
+        {
+          exit: found.exit,
+          listed: answer.listed,
+          cancelOverdue: answer.cancelOverdue.rows,
+          deadlineNotCancelled:
+            answer.deadlineNotCancelled?.rows.map((row) => [row.taskId, row.state, row.lateByMs]) ??
+            'the report has no such leg',
+        },
+        'mutation-verdict:behavior:cli-stuck-counts-a-deadline-no-sweep-cancels',
+      ).toEqual({
         exit: exitCode('found'),
         listed: 1,
         cancelOverdue: [],

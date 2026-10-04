@@ -19389,16 +19389,16 @@ MUTATION_SPECS.extend(
         (
             "operator-finder-lists-the-runs-a-claim-takes",
             "packages/store-libsql/src/store.ts",
-            "  AND ${runAvailableDue('r', NOW)}\n  AND ${claimEligibility('r', 't')}`\n",
-            "  AND ${runAvailableDue('r', NOW)}` // MUTATION: the finder lists a due run whatever the claim requires of it\n",
-            "the finder lists a due run the claim's admission refuses, such as one whose task is past its deadline, so stuck names runs no claim will take",
+            "  `${dueRuns(state)}\n  AND ${claimEligibility('r', 't')}`\n",
+            "  `${dueRuns(state)}` // MUTATION: the finder lists a due run whatever the claim requires of it\n",
+            "the finder lists a due run the claim's admission refuses, such as one whose task is past its deadline, as one a claim will take",
         ),
         (
             "operator-finder-lists-the-tasks-a-sweep-cancels",
             "packages/core/src/operator-reads.ts",
-            "  const cancelOverdue: Capped<OverdueTask> = owedFor(\n    cancels,\n",
-            "  const cancelOverdue: Capped<OverdueTask> = owedFor(\n    [] as typeof cancels, // MUTATION: no task past its deadline is listed\n",
-            "the finder lists no task past its cancellation deadline, though the sweep cancels each",
+            "  const cancelOverdue: Capped<OverdueTask> = owedFor(cancels, byTask, nowMs, graceMs, limit)\n",
+            "  const cancelOverdue: Capped<OverdueTask> = owedFor([] as typeof cancels, byTask, nowMs, graceMs, limit) // MUTATION: no task past its deadline is listed\n",
+            "a task the sweep is about to cancel is in no leg, so stuck reads as nothing owed while a deadline has passed",
         ),
         (
             "operator-finder-lists-the-runs-a-sweep-reclaims",
@@ -19508,8 +19508,8 @@ MUTATION_SPECS.extend(
         (
             "operator-finder-stops-a-leg-at-its-limit",
             "packages/core/src/operator-reads.ts",
-            "      graceMs,\n      limit,\n    )\n",
-            "      graceMs,\n      limit + 1, // MUTATION: a leg of runs a claim is owed to lists one row more than was asked for\n    )\n",
+            "  const dueUnclaimed: Capped<OverdueRun> = owedFor(pending, byRun, nowMs, graceMs, limit)\n",
+            "  const dueUnclaimed: Capped<OverdueRun> = owedFor(pending, byRun, nowMs, graceMs, limit + 1) // MUTATION: a leg of runs a claim is owed to lists one row more than was asked for\n",
             "a leg lists one run more than its limit, and never says it holds more",
         ),
         (
@@ -19661,31 +19661,31 @@ MUTATION_SPECS.extend(
         ),
         (
             "operator-finder-lists-every-due-run-in-one-leg",
-            "packages/store-libsql/src/store.ts",
-            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE`\n",
-            "  AND (${claimEligibility('r', 't')}) IS TRUE` // MUTATION: the leg of refused runs holds what a claim requires and not its negation\n",
+            "packages/core/src/operator-reads.ts",
+            "    .filter((row) => !held.has(stringFrom(row[idColumn])))\n",
+            "    .filter((row) => held.has(stringFrom(row[idColumn]))) // MUTATION: the rows the engine's leg answered are listed as the ones it does not take\n",
             "a due run a claim takes is listed a second time as one no claim admits, and a due run a claim refuses is in no leg",
         ),
         (
             "operator-finder-lists-the-due-runs-a-claim-refuses",
-            "packages/store-libsql/src/store.ts",
-            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE`\n",
-            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE AND 1 = 0` // MUTATION: no due run a claim refuses is listed\n",
-            "a due run no claim will ever take is in no leg of stuck at any grace, so --fail-if-any exits 0 for it",
+            "packages/core/src/operator-reads.ts",
+            "    .slice(0, limit + 1)\n",
+            "    .slice(0, 0) // MUTATION: no row of a window is examined\n",
+            "a row a move is owed to that the engine will never take is in no leg of stuck at any grace, so --fail-if-any exits 0 for it",
         ),
         (
             "operator-reads-merge-the-runs-a-claim-refuses",
             "packages/core/src/operator-reads.ts",
-            "    [...refused('refused-pending', 'pending'), ...refused('refused-sleeping', 'sleeping')],\n",
-            "    refused('refused-pending', 'pending'), // MUTATION: the sleeping runs a claim refuses are not listed\n",
-            "a sleeping run past its wake that a claim refuses is in no leg of stuck",
+            "    [inState(pendingNotAdmitted, 'pending'), inState(sleepingNotAdmitted, 'sleeping')],\n",
+            "    [inState(pendingNotAdmitted, 'pending')], // MUTATION: the sleeping runs no claim admits are not listed\n",
+            "a sleeping run past its wake that no claim admits is in no leg of stuck",
         ),
         (
             "operator-reads-name-the-state-of-a-run-a-claim-refuses",
             "packages/core/src/operator-reads.ts",
-            "    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state }))\n",
-            "    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state: 'pending' as typeof state })) // MUTATION: every run a claim refuses is named pending\n",
-            "a sleeping run a claim refuses is listed as pending, so the report names a state the run is not in",
+            "    rows: found.rows.map((run) => ({ ...run, state })),\n",
+            "    rows: found.rows.map((run) => ({ ...run, state: 'pending' as typeof state })), // MUTATION: every run no claim admits is named pending\n",
+            "a sleeping run no claim admits is listed as pending, so the report names a state the run is not in",
         ),
         (
             "cli-stuck-counts-a-due-run-no-claim-admits",
@@ -19728,6 +19728,48 @@ MUTATION_SPECS.extend(
             "    entry !== undefined &&\n    lone.length > 0 &&\n",
             "    entry !== undefined && // MUTATION: a named statement is excused with no lone due range in its plan\n",
             "a variation of a named statement whose plan reads no due range at all, and grows, passes the growth oracle",
+        ),
+        (
+            "operator-reads-settle-a-window-row-only-ahead-of-the-last-taken",
+            "packages/core/src/operator-reads.ts",
+            "    last === undefined ? candidates : candidates.filter((row) => sortsBefore(placeOf(row), last))\n",
+            "    last === undefined ? candidates : candidates // MUTATION: a row behind the last the engine's leg answered is listed as one it does not take\n",
+            "a run a claim would take further down its order is listed as one no claim admits",
+        ),
+        (
+            "operator-reads-say-when-a-window-left-rows-unsettled",
+            "packages/core/src/operator-reads.ts",
+            "  return { rows, unexamined: read.length > limit + 1 || rows.length < candidates.length }\n",
+            "  return { rows, unexamined: false } // MUTATION: a window never says it left rows unsettled\n",
+            "a leg of what the engine does not take reads as complete when rows lie past its window",
+        ),
+        (
+            "operator-finder-lists-the-leases-no-sweep-reclaims",
+            "packages/core/src/operator-reads.ts",
+            "  const lapsedNotReclaimed: Windowed<UnreclaimedRun> = windowed([notReclaimed], byRun)\n",
+            "  const lapsedNotReclaimed: Windowed<UnreclaimedRun> = windowed([], byRun) // MUTATION: no lapsed lease the sweep refuses is listed\n",
+            "a run under a lapsed lease that no sweep will take back is in no leg of stuck",
+        ),
+        (
+            "operator-finder-lists-the-deadlines-no-sweep-cancels",
+            "packages/core/src/operator-reads.ts",
+            "  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed(notCancelled, byTask)\n",
+            "  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed([], byTask) // MUTATION: no passed deadline the sweep refuses is listed\n",
+            "a task past its cancellation deadline that no sweep will cancel is in no leg of stuck",
+        ),
+        (
+            "cli-stuck-counts-a-lapsed-lease-no-sweep-reclaims",
+            "packages/cli/src/queue.ts",
+            "  owed.lapsedNotReclaimed.rows.length +\n",
+            "  0 + // MUTATION: a lapsed lease no sweep reclaims is listed and not counted\n",
+            "stuck --fail-if-any exits 0 for a queue whose only listed row is a lapsed lease no sweep will take back",
+        ),
+        (
+            "cli-stuck-counts-a-deadline-no-sweep-cancels",
+            "packages/cli/src/queue.ts",
+            "  owed.deadlineNotCancelled.rows.length\n",
+            "  0 // MUTATION: a passed deadline no sweep cancels is listed and not counted\n",
+            "stuck --fail-if-any exits 0 for a queue whose only listed row is a deadline no sweep will act on",
         ),
     )
 )
@@ -20161,13 +20203,13 @@ VERDICTS.update(
         "operator-reads-merge-the-runs-a-claim-refuses": ExpectedVerdict(
             "behavior",
             "packages/core/test/operator-reads.test.ts",
-            "how an operator's read of what a move is owed to decodes its legs lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more",
+            "how an operator's read of what a move is owed to decodes its legs lists the rows of a window that the engine's leg does not answer, in each of the three legs, with the state of a due run",
             "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
         ),
         "operator-reads-name-the-state-of-a-run-a-claim-refuses": ExpectedVerdict(
             "behavior",
             "packages/core/test/operator-reads.test.ts",
-            "how an operator's read of what a move is owed to decodes its legs lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more",
+            "how an operator's read of what a move is owed to decodes its legs lists the rows of a window that the engine's leg does not answer, in each of the three legs, with the state of a due run",
             "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
         ),
         "cli-stuck-counts-a-due-run-no-claim-admits": ExpectedVerdict(
@@ -20206,6 +20248,44 @@ VERDICTS.update(
             "packages/store-libsql/test/query-plans.test.ts",
             "every statement a store ships, by the nests of its plan takes a lone due range as named only in the statement the table names it in, line for line, with its bound in the text",
             "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
+        ),
+        "operator-reads-settle-a-window-row-only-ahead-of-the-last-taken": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs settles a row of a window only ahead of the last row the engine's leg answered, and says when the window left rows unsettled",
+            "mutation-verdict:behavior:operator-reads-settle-a-window-row-only-ahead-of-the-last-taken",
+        ),
+        "operator-reads-say-when-a-window-left-rows-unsettled": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs settles a row of a window only ahead of the last row the engine's leg answered, and says when the window left rows unsettled",
+            "mutation-verdict:behavior:operator-reads-settle-a-window-row-only-ahead-of-the-last-taken",
+        ),
+        "operator-finder-lists-the-leases-no-sweep-reclaims": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of a queue [libsql] lists a lapsed lease that no sweep reclaims and a passed deadline that no sweep cancels, and the sweep takes neither",
+            "mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes",
+            "packages/conformance/src/operator-queue-reads.ts",
+        ),
+        "operator-finder-lists-the-deadlines-no-sweep-cancels": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of a queue [libsql] lists a lapsed lease that no sweep reclaims and a passed deadline that no sweep cancels, and the sweep takes neither",
+            "mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes",
+            "packages/conformance/src/operator-queue-reads.ts",
+        ),
+        "cli-stuck-counts-a-lapsed-lease-no-sweep-reclaims": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/queue-verbs.test.ts",
+            "stuck on libSQL lists a run under a lapsed lease that no sweep reclaims, names it as one, and exits 9 for it with --fail-if-any",
+            "mutation-verdict:behavior:cli-stuck-counts-a-lapsed-lease-no-sweep-reclaims",
+        ),
+        "cli-stuck-counts-a-deadline-no-sweep-cancels": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/queue-verbs.test.ts",
+            "stuck on libSQL lists a task past its cancellation deadline that no sweep cancels, names it as one, and exits 9 for it with --fail-if-any",
+            "mutation-verdict:behavior:cli-stuck-counts-a-deadline-no-sweep-cancels",
         ),
     }
 )
@@ -24121,7 +24201,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1334:
+        if len(MUTATIONS) != 1340:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
