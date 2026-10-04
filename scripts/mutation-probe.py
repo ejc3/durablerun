@@ -19063,7 +19063,7 @@ VERDICTS.update(
         "terminal-batch-stamps-the-ending-instant": ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "retention conformance [libsql] the stamp of an ending fail stamps the task it ends with the ending instant",
+            "retention conformance [libsql] the stamp of an ending fail/retrying, a retry asked at the attempt cap: the batch stamps the task it ends with the ending instant",
             "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
             "packages/conformance/src/retention.ts",
         ),
@@ -19135,6 +19135,46 @@ VERDICTS.update(
             "packages/conformance/test/retention-rows.test.ts",
             "the retention row checker names a wait on a completion event only when its queue holds neither the task nor the event",
             "mutation-verdict:behavior:retention-rows-read-a-wait-by-its-own-queue",
+        ),
+    }
+)
+
+# What the stamp cases hold beyond one path for each label: the statement that ends a task
+# when a retry is refused or a cap is reached stamps it, and every shape a terminal
+# label's batch compiles to has a case.
+MUTATION_SPECS.extend(
+    (
+        (
+            "the-task-terminal-statement-stamps-the-ending-instant",
+            "packages/core/src/fenced-batch.ts",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })\n",
+            "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: (name !== 'task-terminal' || null) && sourceInstant })\n",
+            "a failure whose retry the budget refuses, and a claim that times out at the infrastructure cap, end a task with no instant, while a failure no retry follows still stamps it",
+        ),
+        (
+            "retention-a-terminal-batch-shape-has-no-stamp-case",
+            "packages/conformance/src/retention.ts",
+            "  'fail/retrying': [\n",
+            "  'fail/retrying-unlisted': [\n",
+            "a shape of a terminal label's batch is ended by no stamp case, so a wrong stamp from its statement fails nothing",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "the-task-terminal-statement-stamps-the-ending-instant": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the stamp of an ending fail/retrying, a retry asked at the attempt cap: the batch stamps the task it ends with the ending instant",
+            "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
+            "packages/conformance/src/retention.ts",
+        ),
+        "retention-a-terminal-batch-shape-has-no-stamp-case": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "retention conformance [libsql] the stamp of an ending ends a task through every shape a terminal label compiles to",
+            "mutation-verdict:behavior:retention-every-terminal-batch-shape-has-a-stamp-case",
+            "packages/conformance/src/retention.ts",
         ),
     }
 )
@@ -23047,7 +23087,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1257:
+        if len(MUTATIONS) != 1259:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

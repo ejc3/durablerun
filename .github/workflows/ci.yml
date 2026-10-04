@@ -330,13 +330,15 @@ jobs:
               )
               return repaired.replace(table, table + entries)
           if digest == '446df371c7d28e1b313b29890b426bfab45e84a321a4bb2440acfd5249a4a57d':
-              # Retention registers twelve mutations: one for the stamp a terminal batch
-              # writes, one for the helper that runs the row checker behind every surface, and
-              # ten for the checker's three conditions and their edges. Each verdict marker of
-              # their cases is newer than the base registry, so each is exempted there. No
-              # base entry is re-aimed.
+              # Retention registers fourteen mutations: two for the stamp a terminal batch
+              # writes, one for a shape of such a batch that no stamp case ends a task by, one
+              # for the helper that runs the row checker behind every surface, and ten for
+              # the checker's three conditions and their edges. Each verdict marker of their
+              # cases is newer than the base registry, so each is exempted there. No base
+              # entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant",
+                  "mutation-verdict:behavior:retention-every-terminal-batch-shape-has-a-stamp-case",
                   "mutation-verdict:behavior:history-helper-runs-the-retention-checker",
                   "mutation-verdict:behavior:retention-rows-name-a-task-without-a-run",
                   "mutation-verdict:behavior:retention-rows-name-a-spawn-memo-without-its-task",
