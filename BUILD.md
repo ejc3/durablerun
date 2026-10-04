@@ -6331,6 +6331,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     bent store instead, which moves the ended task's stamp after the label's batch, or sends
     nothing for the ended task, or clears the stamp of the task whose outcome
     `record-task-done` records, or moves the stamp of a child a replayed spawn found.
+  - The one review of this pull request found no product defect and ten things about tests,
+    tooling and wording, one of them MEDIUM, and `postmortems/pr5.2c1-fence-stamp-review.md`
+    holds the round. Six count. Fixed here: the stamp cases, which ran one path for each
+    label, are generated from the shapes the corpus declares, with an inventory case and
+    four more paths; the `record-task-done` cells record the outcome of a task the engine
+    ended; a cell swallows only the two refusals of a claim that is gone and holds that the
+    label reached the ended task; the call shape "of a child" runs over an ended child; the
+    sentence about the NULL plant says what each case read; and the comments of
+    specs/Retention.tla name the twins as built. Built though they count 0: one builder each
+    for a hand-written task row and run row, and the label type used where it was spelled
+    out. What was not built is in the options below, each with its trigger. No review
+    follows the fold, which changes no product code: each change was checked by running it
+    and by a planted defect.
   - Option for the helper's first case, not built, with its trigger: rename "names a defect
     of each of its three checkers", which the helper outgrew when it gained a fourth. A
     registered verdict names its case by title, and the base gate grades this pull request
