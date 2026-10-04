@@ -560,6 +560,34 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
 })
 
 /**
+ * How each statement a recorder saw reaches its rows, planned with sequential and bitmap
+ * scans disabled: every index scan with its condition, and every scan of a table that
+ * remains, which is a table no index of the statement reaches. `meta` is left out of both.
+ */
+async function indexesAndScans(client: Client, recorder: RecordingExecutor) {
+  const reached: Record<string, string[]> = {}
+  const scans: string[] = []
+  const seen = recorder.batches.flatMap(({ label, statements }) =>
+    statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
+  )
+  for (const { name, sql } of seen) {
+    const lines = await planLines(client, sql)
+    reached[name] = lines.flatMap((line, at) => {
+      const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
+      if (found === null || /^meta\b/.test(found[2] ?? '')) return []
+      const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
+      return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
+    })
+    scans.push(
+      ...lines
+        .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta\b/.test(line))
+        .map((line) => `[${name}] ${line.trim()}`),
+    )
+  }
+  return { reached, scans }
+}
+
+/**
  * An operator's reads reach every row by a key. Each statement is recorded from a real
  * read of a parked task, and planned with sequential and bitmap scans disabled, so a scan
  * that remains is a table no index of the statement reaches. Every index scan is pinned
@@ -596,25 +624,7 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     expect((await reads.eventState('q', 'approval')).exists).toBe(false)
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
-    const reached: Record<string, string[]> = {}
-    const scans: string[] = []
-    const seen = recorder.batches.flatMap(({ label, statements }) =>
-      statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
-    )
-    for (const { name, sql } of seen) {
-      const lines = await planLines(client, sql)
-      reached[name] = lines.flatMap((line, at) => {
-        const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
-        if (found === null || found[2] === 'meta') return []
-        const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
-        return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
-      })
-      scans.push(
-        ...lines
-          .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta$/.test(line.trim()))
-          .map((line) => `[${name}] ${line.trim()}`),
-      )
-    }
+    const { reached, scans } = await indexesAndScans(client, recorder)
     expect(scans).toEqual([])
     const sagaPhase = "((task_id = tasks.task_id) AND (checkpoint_name = '$rolling-back'::text))"
     expect(reached).toEqual({
@@ -644,6 +654,108 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
       'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
       'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
     })
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * An operator's reads of a queue. Each leg of `stuck-runs` and of `queue-status` reaches
+ * its rows through the index that hands them out in the order of their instant, and the
+ * waiters of an event through the index on a queue's events. A count of `table-rows`
+ * reads the rows it counts: through an index that leads with the queue where the table has
+ * one, and by a scan of the table where it has none, which is `tasks` and `checkpoints`.
+ * Planned as the case above plans, and with `meta` left out for its reason. This needs a
+ * server.
+ */
+it("reads a queue for an operator through the index of each leg's instant, and scans a table only to count its rows", async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-operator-queue-reads' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const recorder = new RecordingExecutor(db.raw)
+    const store = new PostgresSchedulerStore(db.raw, db.ids)
+    await store.spawn('q', 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
+    const reads = operatorReads(recorder)
+    const owed = await reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(owed.dueUnclaimed.rows).toHaveLength(1)
+    expect((await reads.queueStatus('q')).gauges.pendingRuns.count).toBe(1)
+    expect((await reads.tableRows('q')).tables.tasks.count).toBe(1)
+    expect((await reads.eventWaiters('q', 'approval')).waiters.rows).toEqual([])
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const { reached, scans } = await indexesAndScans(client, recorder)
+    const counts = Object.keys(reached).filter((name) => name.startsWith('table-rows#'))
+    // The legs and the gauges, by the index each table is reached through. The first index
+    // of a statement is the one that hands its rows out. A leg's conditions are left out:
+    // they are the engine's own bounds on an instant, and the cases above pin those where
+    // the engine sends them.
+    const indexOf = (reach: string): string => reach.slice(0, reach.indexOf(':'))
+    const aClaimIsOwed = [
+      'runs_poll on runs r',
+      'waits_event on waits w_1',
+      'tasks_pkey on tasks t',
+      'runs_task_attempt on runs sibling',
+      'waits_pkey on waits w',
+      'runs_task_attempt on runs higher',
+    ]
+    expect(
+      Object.fromEntries(
+        Object.entries(reached)
+          .filter(([name]) => !counts.includes(name))
+          .map(([name, reaches]) => [
+            name,
+            name.startsWith('stuck-runs#') ? reaches.map(indexOf) : reaches,
+          ]),
+      ),
+    ).toEqual({
+      // Pending runs a claim is owed to, then sleeping ones, by their due instant.
+      'stuck-runs#0': aClaimIsOwed,
+      'stuck-runs#1': aClaimIsOwed,
+      // Runs under a lapsed lease, by the index of held runs.
+      'stuck-runs#2': [
+        'runs_held on runs r',
+        'runs_task_attempt on runs sibling',
+        'runs_task_attempt on runs higher',
+        'tasks_pkey on tasks t',
+      ],
+      // Tasks past their deadline, by the index of deadlines.
+      'stuck-runs#3': ['tasks_cancel on tasks t', 'runs_task_attempt on runs ownership_run'],
+      // The clock, which reads `meta` and nothing else.
+      'stuck-runs#4': [],
+      'queue-status#0': [
+        "runs_poll on runs r: ((queue = $1) AND (state = 'pending'::text) AND (available_at_ms IS NOT NULL))",
+      ],
+      'queue-status#1': [
+        "runs_poll on runs r: ((queue = $1) AND (state = 'sleeping'::text) AND (available_at_ms IS NOT NULL))",
+      ],
+      'queue-status#2': ['runs_lease on runs r: (queue = $1)'],
+      'queue-status#3': ['tasks_cancel on tasks t: (queue = $1)'],
+      'queue-status#4': [],
+      'fake-clock#0': [],
+      'event-waiters#0': ['waits_event on waits w: ((queue = $1) AND (event_name = $2))'],
+    })
+    // The counts. A table with an index that leads with the queue is counted through one,
+    // by the queue alone, and which of several such indexes is the planner's choice. `tasks`
+    // and `checkpoints` have none, so their count scans the table.
+    expect(
+      counts.map((name) => [
+        name,
+        (reached[name] ?? []).map((reach) => reach.replace(/^\w+ on /, '')),
+      ]),
+    ).toEqual([
+      ['table-rows#0', ['runs: (queue = $1)']],
+      ['table-rows#1', []],
+      ['table-rows#2', ['waits: (queue = $1)']],
+      ['table-rows#3', ['events: (queue = $1)']],
+      ['table-rows#4', []],
+    ])
+    expect(scans).toEqual([
+      '[table-rows#1] ->  Seq Scan on tasks',
+      '[table-rows#4] ->  Seq Scan on checkpoints',
+    ])
   } finally {
     await client.end()
     await db.close()
