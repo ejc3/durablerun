@@ -79,7 +79,7 @@ export const TERMINAL_BATCH_LABELS = [
   'sweep:cancel',
   'sweep:lost-launch',
   'sweep:claim-timeout',
-] as const satisfies readonly (typeof MATRIX_WRITE_LABELS)[number][]
+] as const satisfies readonly MatrixWriteLabel[]
 
 export const MATRIX_READ_LABELS = [
   'claimed-task-name',

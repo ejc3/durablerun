@@ -1,22 +1,29 @@
 import {
+  MAX_EPOCH_MS,
+  SAGA_STARTED_PREFIX,
+  type SqlExecutor,
+  type SqlStatement,
   TERMINAL_STATES,
   type TerminalState,
   encodeTaskOutcome,
+  parseFenceStamp,
   taskDoneEventName,
 } from '@durablerun/core'
-import { RecordingExecutor } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
-import { TERMINAL_BATCHES, type TerminalBatch } from './child-tasks.js'
+import { type ReadyChild, TERMINAL_BATCHES, type TerminalBatch } from './child-tasks.js'
 import { engineHistoryViolations } from './engine-history.js'
 import {
   MATRIX_WRITE_LABELS,
   type MatrixWriteLabel,
   TERMINAL_BATCH_LABELS,
 } from './fault-matrix.js'
-import type { StoreFixtureFactory } from './fixture.js'
+import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import {
+  ENDED_TASK_SHAPE_CELLS,
+  type EndedChildReplayObservation,
   type EndedTaskStamp,
   type EndedTaskStamps,
+  INVOCATION_SHAPES,
   POISON_INVOCATION,
   TERMINAL_PRE_STATE_ENDED_AT_MS,
   TERMINAL_PRE_STATE_INVOKED_AT_MS,
@@ -24,7 +31,15 @@ import {
   observeTerminalPreState,
   storedInstant,
 } from './poison-matrix.js'
-import { readOne, withFixture } from './scenario.js'
+import {
+  checkpointOwned,
+  claimActivated,
+  handWrittenRun,
+  handWrittenTask,
+  readOne,
+  withFixture,
+} from './scenario.js'
+import { corpusVariantOf, readCorpusDescriptor } from './sql-corpus.js'
 
 const Q = 'q'
 const START_MS = 1_000_000
@@ -36,10 +51,194 @@ const START_MS = 1_000_000
  */
 const ENDING_GAP_MS = 2_500
 
+const BOOM = '{"name":"Boom"}'
+
+type TerminalLabel = (typeof TERMINAL_BATCH_LABELS)[number]
+
+/** One way to end a task through one shape of a terminal label's batch. */
+export interface EndingPath {
+  /** What is ended and how, for the case's title. */
+  readonly path: string
+  /** The statement of the batch that the task's row must name as the one that ended it. */
+  readonly endedBy: string
+  /** The instant the case starts at, when the path needs another than the usual one. */
+  readonly startMs?: number
+  readonly prepare: TerminalBatch['prepare']
+}
+
+/** The way the child-task surface ends a task by `label`, which is that label's plainest path. */
+const asTheChildSurfaceEndsIt =
+  (label: TerminalLabel): TerminalBatch['prepare'] =>
+  (f, queue) => {
+    const batch = TERMINAL_BATCHES.find((candidate) => candidate.label === label)
+    if (batch === undefined)
+      throw new Error(`nothing in the child-task surface ends a task by ${label}`)
+    return batch.prepare(f, queue)
+  }
+
+/** A task in the rolling-back phase, with the pass that rolls it back claimed and started. */
+async function rollingBack(f: StoreFixture, queue: string) {
+  const task = await f.store.spawn(queue, 'saga', '{}')
+  const forward = await claimActivated(f.store, queue, `w-forward-${queue}`)
+  await checkpointOwned(f.store, queue, forward, `${SAGA_STARTED_PREFIX}a`, '1', 60)
+  await f.store.fail(queue, forward.runId, forward.claimToken, BOOM, null)
+  return { taskId: task.taskId, pass: await claimActivated(f.store, queue, `w-pass-${queue}`) }
+}
+
+const failed = (childTaskId: string, end: ReadyChild['end']): ReadyChild => ({
+  childTaskId,
+  outcome: { state: 'failed', failureReasonJson: BOOM },
+  advanceMs: 0,
+  end,
+})
+
+/**
+ * Every shape a terminal label's batch compiles to, as the SQL corpus names it, with the
+ * ways a task is ended through it. A label is not a path: `fail` ends a task through one
+ * statement when no retry is asked and through another when a retry is asked and the
+ * budget refuses it, and each is a batch shape of its own in the corpus. The shapes come
+ * from `corpus/labels.json`, which the corpus test holds to what every store compiles, so
+ * a shape added there has no entry here and fails the inventory case by name. Reaching a
+ * batch takes a scenario, so the paths are written by hand, and a second path through one
+ * shape is listed where its pre-state differs: inside the rolling-back phase, or under a
+ * worker's claim.
+ */
+export const ENDINGS: Readonly<Record<string, readonly EndingPath[]>> = {
+  'complete/completed': [
+    {
+      path: 'a run its worker completes',
+      endedBy: 'task',
+      prepare: asTheChildSurfaceEndsIt('complete'),
+    },
+  ],
+  'fail/retrying': [
+    {
+      path: 'a retry asked at the attempt cap',
+      endedBy: 'task-terminal',
+      prepare: async (f, queue) => {
+        const task = await f.store.spawn(queue, 'job', '{}', { maxAttempts: 1 })
+        const run = await claimActivated(f.store, queue, `w-${queue}`)
+        return failed(task.taskId, async (store) => {
+          await store.fail(queue, run.runId, run.claimToken, BOOM, { delaySeconds: 1 })
+        })
+      },
+    },
+  ],
+  'fail/final': [
+    {
+      path: 'a failure no retry follows',
+      endedBy: 'task',
+      prepare: asTheChildSurfaceEndsIt('fail'),
+    },
+    {
+      path: 'a failure no retry follows, inside the rolling-back phase',
+      endedBy: 'task',
+      prepare: async (f, queue) => {
+        const { taskId, pass } = await rollingBack(f, queue)
+        return failed(taskId, async (store) => {
+          await store.fail(queue, pass.runId, pass.claimToken, BOOM, null)
+        })
+      },
+    },
+  ],
+  'fail-rollback/retrying': [
+    {
+      // The pass that would retry the rollback is due after its delay, and an instant past
+      // the last one the engine keeps cannot be stored, so no pass is placed and the task
+      // ends where it stands.
+      path: 'a retry of the rollback whose delay runs past the last instant the engine keeps',
+      endedBy: 'task',
+      startMs: MAX_EPOCH_MS - 100_000,
+      prepare: async (f, queue) => {
+        const { taskId, pass } = await rollingBack(f, queue)
+        return failed(taskId, async (store) => {
+          await store.failRollback(
+            queue,
+            pass.runId,
+            pass.claimToken,
+            BOOM,
+            { delaySeconds: 100 },
+            { stepKey: 'a', errorJson: '{"name":"RollbackBoom"}' },
+          )
+        })
+      },
+    },
+  ],
+  'fail-rollback/final': [
+    {
+      path: 'a failed rollback no retry follows',
+      endedBy: 'task',
+      prepare: asTheChildSurfaceEndsIt('fail-rollback'),
+    },
+  ],
+  'cancel-task/cancelled': [
+    {
+      path: 'a task no worker has claimed',
+      endedBy: 'cancel',
+      prepare: asTheChildSurfaceEndsIt('cancel-task'),
+    },
+    {
+      path: 'a task a worker is running',
+      endedBy: 'cancel',
+      prepare: async (f, queue) => {
+        const ready = await asTheChildSurfaceEndsIt('cancel-task')(f, queue)
+        const run = await claimActivated(f.store, queue, `w-${queue}`)
+        if (run.taskId !== ready.childTaskId) throw new Error('the claim did not take the task')
+        return ready
+      },
+    },
+  ],
+  'sweep:cancel/cancelled': [
+    {
+      path: 'a task past its cancellation deadline',
+      endedBy: 'cancel',
+      prepare: asTheChildSurfaceEndsIt('sweep:cancel'),
+    },
+  ],
+  'sweep:lost-launch/swept': [
+    {
+      path: 'a launch lost at the relaunch cap',
+      endedBy: 'task-fail',
+      prepare: asTheChildSurfaceEndsIt('sweep:lost-launch'),
+    },
+  ],
+  'sweep:claim-timeout/swept': [
+    {
+      path: 'a claim that timed out at the infrastructure cap',
+      endedBy: 'task-terminal',
+      prepare: asTheChildSurfaceEndsIt('sweep:claim-timeout'),
+    },
+  ],
+}
+
+/** One stamp case: a shape of a terminal label's batch, and one path through it. */
+export interface EndingStampCase {
+  readonly label: TerminalLabel
+  readonly variant: string
+  readonly ending: EndingPath
+}
+
+/** Every shape a terminal label's batch compiles to, from the corpus descriptor. */
+export function terminalBatchShapes(): { label: TerminalLabel; variant: string }[] {
+  const descriptor = readCorpusDescriptor()
+  return TERMINAL_BATCH_LABELS.flatMap((label) =>
+    (descriptor[label] ?? []).map((variant) => ({ label, variant })),
+  )
+}
+
+/** The stamp cases: for each shape the corpus declares, each path listed for it. */
+export function endingStampCases(): EndingStampCase[] {
+  return terminalBatchShapes().flatMap(({ label, variant }) =>
+    (ENDINGS[`${label}/${variant}`] ?? []).map((ending) => ({ label, variant, ending })),
+  )
+}
+
 /** What a stamp case reads once a terminal batch has ended a task. */
 export interface EndingStamp {
-  /** The batch under the label ran. */
-  readonly ran: boolean
+  /** The shape of the label's batch that was sent, as the corpus names it. */
+  readonly sent: string
+  /** The statement the ended task's row names as the one that wrote it last. */
+  readonly endedBy: string | null
   /** The stamp of the task's row before the ending. */
   readonly stampedBeforeAtMs: number | null
   readonly state: unknown
@@ -50,33 +249,53 @@ export interface EndingStamp {
   readonly violations: readonly string[]
 }
 
+/** An executor that keeps the statements of every batch sent under `label`. */
+function keeping(raw: SqlExecutor, label: string, kept: (readonly SqlStatement[])[]): SqlExecutor {
+  return {
+    batch: (name, statements, control) => {
+      if (name === label) kept.push(statements)
+      return raw.batch(name, statements, control)
+    },
+  }
+}
+
 /**
- * End one task by `batch` at an instant of its own, and read what the ending left on the
- * task's row. The expected answer is written from what the scenario did: the clock it set.
+ * End one task by one path at an instant of its own, and read what the ending left on the
+ * task's row. The expected answer is written from what the scenario did: the clock it set,
+ * the shape of the batch its path is listed under, and the statement that path names.
  */
 export async function endingStampCase(
   makeFixture: StoreFixtureFactory,
-  batch: TerminalBatch,
+  { label, variant, ending }: EndingStampCase,
 ): Promise<{ observed: EndingStamp; expected: EndingStamp }> {
-  return withFixture(makeFixture, `ending-stamp-${batch.label}`, async (f) => {
-    await f.admin.setFakeNowEpochMs(START_MS)
-    const ready = await batch.prepare(f, Q)
-    const stamp = () =>
-      readOne(f.raw, 'SELECT state, fence_at_ms FROM tasks WHERE task_id = ?', [ready.childTaskId])
-    const before = await stamp()
-    const endedAtMs = START_MS + ready.advanceMs + ENDING_GAP_MS
+  return withFixture(makeFixture, `ending-stamp-${label}-${variant}`, async (f) => {
+    const startMs = ending.startMs ?? START_MS
+    await f.admin.setFakeNowEpochMs(startMs)
+    const ready = await ending.prepare(f, Q)
+    const row = () =>
+      readOne(f.raw, 'SELECT state, fence_stamp, fence_at_ms FROM tasks WHERE task_id = ?', [
+        ready.childTaskId,
+      ])
+    const before = await row()
+    const endedAtMs = startMs + ready.advanceMs + ENDING_GAP_MS
     await f.admin.setFakeNowEpochMs(endedAtMs)
-    const recorded = new RecordingExecutor(f.raw)
-    await ready.end(f.storeOver(recorded))
-    const after = await stamp()
+    const kept: (readonly SqlStatement[])[] = []
+    await ready.end(f.storeOver(keeping(f.raw, label, kept)))
+    const after = await row()
     const event = await readOne(
       f.raw,
       'SELECT emitted_at_ms FROM events WHERE queue = ? AND event_name = ?',
       [Q, taskDoneEventName(ready.childTaskId)],
     )
+    const [statements, ...more] = kept
+    const stamp = parseFenceStamp(String(after?.fence_stamp))
     return {
       observed: {
-        ran: recorded.labels.includes(batch.label),
+        sent:
+          statements === undefined || more.length > 0
+            ? `${kept.length} batches under ${label}`
+            : `${label}/${corpusVariantOf(readCorpusDescriptor(), label, statements)}`,
+        endedBy: stamp.ok ? stamp.statement : null,
         stampedBeforeAtMs: storedInstant(before?.fence_at_ms),
         state: after?.state,
         stampedAtMs: storedInstant(after?.fence_at_ms),
@@ -84,8 +303,9 @@ export async function endingStampCase(
         violations: await engineHistoryViolations(f.raw),
       },
       expected: {
-        ran: true,
-        stampedBeforeAtMs: START_MS,
+        sent: `${label}/${variant}`,
+        endedBy: ending.endedBy,
+        stampedBeforeAtMs: startMs,
         state: ready.outcome.state,
         stampedAtMs: endedAtMs,
         eventAtMs: endedAtMs,
@@ -123,7 +343,10 @@ export async function terminalPreStateCase(
   // expected whether or not it was read, so a cell whose task had not ended fails.
   const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
   tasks[POISON_INVOCATION.taskId] = { before: ended, after: after(ended) }
-  return { observed, expected: { fired: true, healthy: 'fulfilled', tasks } }
+  return {
+    observed,
+    expected: { reachedTheEndedTask: true, fired: true, healthy: 'fulfilled', tasks },
+  }
 }
 
 function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): string {
@@ -132,44 +355,53 @@ function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): s
     : `${label} leaves the stamp of a ${state} task where its ending put it`
 }
 
-/** A task row written by hand, with nothing else of its unit. */
-function taskRow(taskId: string, state: string, completedPayload: string | null = null) {
-  return {
-    sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
-            state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
-          VALUES (?, ?, 'hand-written', '{}', '{"kind":"none"}', 3, ?, 0, 0, ?, ?, ?)`,
-    args: [taskId, Q, state, completedPayload, START_MS, START_MS],
-  }
-}
+type OtherShape = keyof typeof ENDED_TASK_SHAPE_CELLS
 
-/** A sleeping run written by hand, parked on `wake` when it names one. */
-function sleepingRun(
-  runId: string,
-  taskId: string,
-  wake: { event: string; step: string } | null = null,
-) {
+/**
+ * Replay a parent's spawn of a child that the engine has ended, and say what the replay
+ * must answer and what the child's row must read: the same child, nothing created, and the
+ * stamp its ending wrote.
+ */
+export async function endedChildReplayCase(
+  makeFixture: StoreFixtureFactory,
+  shape: OtherShape,
+  state: TerminalState,
+): Promise<{ observed: EndedChildReplayObservation; expected: EndedChildReplayObservation }> {
+  const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
   return {
-    sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, wake_step, created_at_ms)
-          VALUES (?, ?, ?, 1, 'sleeping', NULL, ?, ?, ?)`,
-    args: [runId, Q, taskId, wake?.event ?? null, wake?.step ?? null, START_MS],
+    observed: await ENDED_TASK_SHAPE_CELLS[shape](makeFixture, state),
+    expected: {
+      sent: true,
+      sameChild: true,
+      created: false,
+      child: { before: ended, after: ended },
+    },
   }
 }
 
 /**
  * What retention will rely on before any store can purge (DESIGN.md §3.12): the stamp a
  * unit's age is read from, and the row checks that see what a wrong purge would leave.
- * The stamp cases are generated from the terminal batch labels and the cells from the
- * write labels, so a label added to either list is held here without a case being written.
+ * The stamp cases are generated from the shapes the corpus declares for the terminal batch
+ * labels, and the cells from the write labels and the call shapes, so a shape, a label or
+ * a call shape added to one of those lists is held here without a case being written.
  */
 export function retentionConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`retention conformance [${dialect}]`, () => {
     describe('the stamp of an ending', () => {
-      for (const label of TERMINAL_BATCH_LABELS) {
-        it(`${label} stamps the task it ends with the ending instant`, async () => {
-          const batch = TERMINAL_BATCHES.find((candidate) => candidate.label === label)
-          if (batch === undefined) throw new Error(`nothing here ends a task by ${label}`)
-          const { observed, expected } = await endingStampCase(makeFixture, batch)
+      // The shapes are the corpus's and the paths are listed by hand, so this is what
+      // fails when a terminal label's batch gains a shape and no case ends a task by it.
+      it('ends a task through every shape a terminal label compiles to', () => {
+        expect(
+          Object.keys(ENDINGS),
+          'mutation-verdict:behavior:retention-every-terminal-batch-shape-has-a-stamp-case',
+        ).toEqual(terminalBatchShapes().map(({ label, variant }) => `${label}/${variant}`))
+      })
+
+      for (const stampCase of endingStampCases()) {
+        const { label, variant, ending } = stampCase
+        it(`${label}/${variant}, ${ending.path}: the batch stamps the task it ends with the ending instant`, async () => {
+          const { observed, expected } = await endingStampCase(makeFixture, stampCase)
           expect(
             observed,
             'mutation-verdict:behavior:terminal-batch-stamps-the-ending-instant',
@@ -187,6 +419,15 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           })
         }
       }
+
+      for (const shape of Object.keys(ENDED_TASK_SHAPE_CELLS) as OtherShape[]) {
+        for (const state of TERMINAL_STATES) {
+          it(`spawn${INVOCATION_SHAPES[shape].form} finds a ${state} child by its reserved key, and leaves its stamp where its ending put it`, async () => {
+            const { observed, expected } = await endedChildReplayCase(makeFixture, shape, state)
+            expect(observed).toEqual(expected)
+          })
+        }
+      }
     })
 
     // specs/Retention.tla's twins among the row checks. Each case writes by hand the rows a
@@ -199,7 +440,12 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           await f.raw.batch(
             'hand-written-rows',
             [
-              taskRow('kept-row', 'completed', outcome.completedPayloadJson),
+              handWrittenTask({
+                taskId: 'kept-row',
+                state: 'completed',
+                atMs: START_MS,
+                completedPayload: outcome.completedPayloadJson,
+              }),
               {
                 sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
                       VALUES (?, ?, ?, ?)`,
@@ -220,8 +466,13 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           await f.raw.batch(
             'hand-written-rows',
             [
-              taskRow('parent', 'sleeping'),
-              sleepingRun('parent-run', 'parent'),
+              handWrittenTask({ taskId: 'parent', state: 'sleeping', atMs: START_MS }),
+              handWrittenRun({
+                runId: 'parent-run',
+                taskId: 'parent',
+                state: 'sleeping',
+                atMs: START_MS,
+              }),
               {
                 sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, status,
                         owner_run_id, owner_attempt, updated_at_ms)
@@ -245,8 +496,14 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           await f.raw.batch(
             'hand-written-rows',
             [
-              taskRow('waiter', 'sleeping'),
-              sleepingRun('waiter-run', 'waiter', { event, step }),
+              handWrittenTask({ taskId: 'waiter', state: 'sleeping', atMs: START_MS }),
+              handWrittenRun({
+                runId: 'waiter-run',
+                taskId: 'waiter',
+                state: 'sleeping',
+                atMs: START_MS,
+                wake: { event, step },
+              }),
               {
                 sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
                         timeout_at_ms, created_at_ms)

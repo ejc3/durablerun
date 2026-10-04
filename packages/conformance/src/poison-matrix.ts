@@ -1,11 +1,13 @@
 import {
   type IntegerBounds,
+  LeaseLostError,
   PERSISTED_COUNTER_FIELDS,
   PERSISTED_INTEGER_BOUNDS,
   PERSISTED_TEMPORAL_FIELDS,
   type PersistedCounterFieldDescriptor,
   type PersistedCounterFieldId,
   type PersistedTemporalFieldDescriptor,
+  RunCancelledError,
   SAGA_PHASE_CHECKPOINT,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -42,7 +44,7 @@ import {
   type EngineInvariantFinding,
   engineInvariantFindings,
 } from './invariants.js'
-import { withFixture } from './scenario.js'
+import { claimActivated, withFixture } from './scenario.js'
 
 /**
  * Generated corrupt-pre-state surface.
@@ -2182,7 +2184,7 @@ export const HEALTHY_INVOCATION: InvocationTarget = {
 
 /** The one call of the scheduler port that sends `label`, naming `target`. */
 export async function invoke(
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   store: SchedulerStore,
   target: InvocationTarget,
   selectionLimit = 100,
@@ -3643,7 +3645,7 @@ interface PreparedPoisonCase {
 
 async function preparePoisonCase(
   makeFixture: StoreFixtureFactory,
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   witness: PoisonWitness,
   options: PoisonCaseOptions,
 ): Promise<PreparedPoisonCase> {
@@ -3693,7 +3695,7 @@ async function preparePoisonCase(
 }
 
 export interface PoisonAggregateWitnessObservation {
-  readonly label: (typeof MATRIX_WRITE_LABELS)[number]
+  readonly label: MatrixWriteLabel
   readonly witness: PoisonAggregateWitnessId
   readonly profile?: PoisonTargetProfile
   readonly conditionIds: readonly EngineInvariantConditionId[]
@@ -3702,7 +3704,7 @@ export interface PoisonAggregateWitnessObservation {
 
 async function observePoisonAggregateWitnessCase(
   makeFixture: StoreFixtureFactory,
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   witnessId: PoisonAggregateWitnessId,
   options: Pick<PoisonCaseOptions, 'targetProfile' | 'targetCompanions'>,
 ): Promise<PoisonAggregateWitnessObservation> {
@@ -3723,7 +3725,7 @@ async function observePoisonAggregateWitnessCase(
 
 export function observePoisonAggregateAmbientCase(
   makeFixture: StoreFixtureFactory,
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   witnessId: PoisonAggregateWitnessId,
 ): Promise<PoisonAggregateWitnessObservation> {
   return observePoisonAggregateWitnessCase(makeFixture, label, witnessId, {})
@@ -3749,7 +3751,7 @@ export function observePoisonAggregateTargetCase(
  */
 export async function runPoisonMatrixCase(
   makeFixture: StoreFixtureFactory,
-  label: (typeof MATRIX_WRITE_LABELS)[number],
+  label: MatrixWriteLabel,
   witness: PoisonWitness,
   options: PoisonCaseOptions = {},
 ): Promise<PoisonCaseResult> {
@@ -3948,6 +3950,8 @@ export interface EndedTaskStamps {
 }
 
 export interface TerminalPreStateObservation {
+  /** The label's batch crossed the executor on the call that named the ended task. */
+  readonly reachedTheEndedTask: boolean
   /** The label's batch crossed the executor and changed durable state. */
   readonly fired: boolean
   /** How the label's call on the healthy trigger settled. */
@@ -3978,6 +3982,41 @@ function endedTaskStamp(row: SqlRow): EndedTaskStamp {
   return { state: String(row.state), stampedAtMs: storedInstant(row.fence_at_ms) }
 }
 
+/** The ended tasks of a snapshot, and what each reads in a later one. */
+function endedTasksAcross(
+  label: string,
+  before: ProtocolSnapshot,
+  after: ProtocolSnapshot,
+): Record<string, EndedTaskStamps> {
+  const later = rowsByKey('tasks', after.tasks)
+  const tasks: Record<string, EndedTaskStamps> = {}
+  for (const task of before.tasks) {
+    if (!isTerminalState(task.state)) continue
+    const taskId = key('tasks', task)
+    const still = later.get(taskId)
+    if (still === undefined) throw new Error(`${label}: task ${taskId} is gone`)
+    tasks[taskId] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
+  }
+  return tasks
+}
+
+/**
+ * A task the engine ended whose completion event is not recorded, as a build older than
+ * the event leaves one: the engine cancels a task of its own, and the event that batch
+ * wrote is deleted. `record-task-done` records the outcome of such a task, and this one
+ * carries the stamp its terminal batch wrote, where a hand-seeded one carries none.
+ */
+async function endedWithNothingRecorded(f: StoreFixture): Promise<string> {
+  const { taskId } = await f.store.spawn(Q, 'ended-unrecorded', '{}')
+  await f.store.cancelTask(Q, taskId)
+  await f.raw.batch(
+    'poison:no-event-recorded',
+    [sql('DELETE FROM events WHERE queue = ? AND event_name = ?', [Q, taskDoneEventName(taskId)])],
+    'write',
+  )
+  return taskId
+}
+
 /**
  * One cell from a terminal pre-state. The engine ends the base population's task in
  * `state`, the clock moves on, and `label` is invoked on that ended task and then on a
@@ -3993,27 +4032,86 @@ export function observeTerminalPreState(
     await seedBase(f)
     await invoke(ENDING_LABEL[state], f.store, POISON_INVOCATION)
     await seedHealthyTrigger(f.raw, label)
+    // The healthy call that records a task's outcome records this one's.
+    const healthyTarget = { ...HEALTHY_INVOCATION, endedChildId: await endedWithNothingRecorded(f) }
     await f.admin.setFakeNowEpochMs(TERMINAL_PRE_STATE_INVOKED_AT_MS)
     const before = await snapshot(f.raw)
     const recorder = new StateWatchingExecutor(f.raw)
     const store = f.storeOver(recorder)
-    // The ended task refuses most calls, and a refusal is an answer here. What the cell
-    // reports is below: whether the label ran and changed something, and whether the call
-    // on the healthy trigger threw.
-    await invoke(label, store, POISON_INVOCATION).catch(() => undefined)
-    const healthy = await invoke(label, store, HEALTHY_INVOCATION).then(
+    // A run of the ended task is refused with one of the store's two refusals of a claim
+    // that is gone, and that refusal is an answer here. Any other error is the cell's.
+    await invoke(label, store, POISON_INVOCATION).catch((error: unknown) => {
+      if (!(error instanceof LeaseLostError || error instanceof RunCancelledError)) throw error
+    })
+    const reachedTheEndedTask = recorder.labels.includes(label)
+    const healthy = await invoke(label, store, healthyTarget).then(
       () => 'fulfilled' as const,
       () => 'rejected' as const,
     )
-    const after = rowsByKey('tasks', (await snapshot(f.raw)).tasks)
-    const tasks: Record<string, EndedTaskStamps> = {}
-    for (const task of before.tasks) {
-      if (!isTerminalState(task.state)) continue
-      const taskId = key('tasks', task)
-      const still = after.get(taskId)
-      if (still === undefined) throw new Error(`${label}: task ${taskId} is gone`)
-      tasks[taskId] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
+    return {
+      reachedTheEndedTask,
+      fired: recorder.changedDurableState(label),
+      healthy,
+      tasks: endedTasksAcross(label, before, await snapshot(f.raw)),
     }
-    return { fired: recorder.changedDurableState(label), healthy, tasks }
   })
+}
+
+/** What a replayed spawn of a child that has ended answered, and what the child reads. */
+export interface EndedChildReplayObservation {
+  /** The replay's batch crossed the executor. */
+  readonly sent: boolean
+  /** The replay answered with the child the first spawn created. */
+  readonly sameChild: boolean
+  /** Whether the replay says it created a task. */
+  readonly created: unknown
+  readonly child: EndedTaskStamps
+}
+
+/**
+ * The shapes of a call other than the plain one, each run over a task that had ended. The
+ * type asks a shape added to `INVOCATION_SHAPES` for its cell.
+ */
+export const ENDED_TASK_SHAPE_CELLS: Readonly<
+  Record<
+    Exclude<keyof typeof INVOCATION_SHAPES, 'plain'>,
+    (makeFixture: StoreFixtureFactory, state: TerminalState) => Promise<EndedChildReplayObservation>
+  >
+> = {
+  // A parent's replay of its spawn finds the child by the engine's reserved key. The child
+  // has ended, and the replay must answer with it and leave its row as its ending left it.
+  childReplayKey: (makeFixture, state) =>
+    withFixture(makeFixture, `ended-child-replay-${state}`, async (f) => {
+      const parent = { ...HEALTHY_INVOCATION, ...INVOCATION_SHAPES.childReplayKey.set }
+      await seedBase(f)
+      await seedHealthyTrigger(f.raw, 'spawn', parent)
+      const first = (await invoke('spawn', f.store, parent)) as { taskId: string }
+      if (state === 'cancelled') {
+        await f.store.cancelTask(Q, first.taskId)
+      } else {
+        const run = await claimActivated(f.store, Q, 'ended-child-worker')
+        if (run.taskId !== first.taskId) throw new Error('the claim did not take the child')
+        await invoke(ENDING_LABEL[state], f.store, {
+          ...HEALTHY_INVOCATION,
+          taskId: run.taskId,
+          runId: run.runId,
+          token: run.claimToken,
+        })
+      }
+      await f.admin.setFakeNowEpochMs(TERMINAL_PRE_STATE_INVOKED_AT_MS)
+      const before = await snapshot(f.raw)
+      const recorder = new StateWatchingExecutor(f.raw)
+      const replay = (await invoke('spawn', f.storeOver(recorder), parent)) as {
+        taskId: string
+        created: unknown
+      }
+      const child = endedTasksAcross('spawn', before, await snapshot(f.raw))[first.taskId]
+      if (child === undefined) throw new Error(`the child had not ended as ${state}`)
+      return {
+        sent: recorder.labels.includes('spawn'),
+        sameChild: replay.taskId === first.taskId,
+        created: replay.created,
+        child,
+      }
+    }),
 }

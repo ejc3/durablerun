@@ -2,6 +2,7 @@ import type { SqlStatement } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { retentionViolations } from '../src/retention-rows.js'
+import { handWrittenRun, handWrittenTask } from '../src/scenario.js'
 import type { StoreFixture } from '../src/index.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
@@ -14,22 +15,11 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
  */
 const NOW = 1_000_000
 
-function task(taskId: string, state: string, queue = 'q'): SqlStatement {
-  return {
-    sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
-            state, attempts, infra_retries, enqueue_at_ms, created_at_ms)
-          VALUES (?, ?, 'hand-written', '{}', '{"kind":"none"}', 3, ?, 0, 0, ?, ?)`,
-    args: [taskId, queue, state, NOW, NOW],
-  }
-}
+const task = (taskId: string, state: string, queue = 'q'): SqlStatement =>
+  handWrittenTask({ taskId, state, queue, atMs: NOW })
 
-function run(runId: string, taskId: string, state: string, queue = 'q'): SqlStatement {
-  return {
-    sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, created_at_ms)
-          VALUES (?, ?, ?, 1, ?, ?)`,
-    args: [runId, queue, taskId, state, NOW],
-  }
-}
+const run = (runId: string, taskId: string, state: string, queue = 'q'): SqlStatement =>
+  handWrittenRun({ runId, taskId, state, queue, atMs: NOW })
 
 function checkpoint(taskId: string, name: string, state: string): SqlStatement {
   return {

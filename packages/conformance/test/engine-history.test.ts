@@ -1,6 +1,7 @@
 import { encodeTaskOutcome } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from '../src/index.js'
+import { handWrittenTask } from '../src/scenario.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 const NOW = 1_000_000
@@ -57,13 +58,8 @@ describe('the one helper that judges the rows of a history', () => {
     const f = await makeLibsqlFixture('engine-history-retention')
     try {
       await f.raw.batch('hand-written-history', [
-        {
-          // A completed task with its completion event and no run: the other three pass it.
-          sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
-                  state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
-                VALUES ('kept', 'q', 'kept', '{}', '{"kind":"none"}', 1, 'completed', 0, 0, '1', ?, ?)`,
-          args: [NOW, NOW],
-        },
+        // A completed task with its completion event and no run: the other three pass it.
+        handWrittenTask({ taskId: 'kept', state: 'completed', atMs: NOW, completedPayload: '1' }),
         {
           sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
                 VALUES ('q', '$task-done:kept', ?, ?)`,
