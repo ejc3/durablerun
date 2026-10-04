@@ -1196,7 +1196,7 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
     }
   })
 
-  it("reads what a queue is owed, its gauges and an event's waiters without walking what they do not list or count, and walks a table to count its rows", async () => {
+  it("reads what a queue is owed, its gauges, its oldest live tasks and an event's waiters without walking what they do not list or count, and walks a table to count its rows", async () => {
     // Each leg of what a queue is owed takes the runs or the tasks whose instant has come,
     // oldest first, from the index that holds them in that order. Each gauge takes the runs
     // of one state from the same indexes. Beside them stands a history of tasks that ended,
@@ -1204,7 +1204,7 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
     // which no leg lists. Every batch is measured from inside its own transaction.
     const db = await openMysqlTestDb({ idNamespace: 'plan-operator-queue-reads', nowMs: 1_000_000 })
     try {
-      const labels = ['stuck-runs', 'queue-status', 'event-waiters', 'table-rows']
+      const labels = ['stuck-runs', 'queue-status', 'event-waiters', 'table-rows', 'aged-tasks']
       const store = new MysqlSchedulerStore(db.raw, db.ids)
       // One task that ended, one run parked on an event, one run under a lease, and one
       // run that is due and unclaimed under a start deadline.
@@ -1255,8 +1255,10 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
         const status = await reads.queueStatus(Q)
         const waiters = await reads.eventWaiters(Q, 'approval')
         const rows = await reads.tableRows(Q)
+        const oldest = await reads.agedTasks(Q, { olderThanSeconds: 0, limit: 10 })
         return {
           what,
+          oldest: oldest.tasks.rows.length,
           answered: {
             // The await that timed out, the lease that lapsed, and the task past its deadline.
             sleepingPastWake: owed.sleepingPastWake.rows.length,
@@ -1298,32 +1300,41 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
       await analyze()
       const besideTheBacklog = await beside('a backlog of runs that are not due')
       // Measured on MySQL 8.4. Beside the history the legs walked 11 rows between them, the
-      // gauges 6 and the waiters 1. Beside the backlog the legs still walked 11: a run that
-      // is not due is in no leg. The gauges walked 406, because a gauge counts every pending
-      // run, due or not, up to its cap. The counts of rows walk the rows they count: 2,427
-      // and then 4,027 over the five tables.
+      // gauges 9, the waiters 1 and the read of the oldest live tasks 3, which is every live
+      // task. Beside the backlog the legs still walked 11: a run that is not due is in no
+      // leg. The read of the oldest live tasks walked 12 of the 403 live tasks, one row past
+      // its limit of ten and one each of the other two states: the index of live tasks
+      // hands them out oldest first. The gauges walked 809, because a gauge counts every
+      // pending run and every live task, due or not, up to its cap. The counts of rows walk
+      // the rows they count: 2,427 and then 4,027 over the five tables.
       expect([judged(besideTheHistory), judged(besideTheBacklog)]).toEqual([
         {
           what: 'a history of ended tasks',
           answered,
+          // The three live tasks: the parked one, the leased one and the due one.
+          oldest: 3,
           tasks: 4 + HISTORY,
           walkedFew: {
             'stuck-runs': true,
             'queue-status': true,
             'event-waiters': true,
             'table-rows': false,
+            'aged-tasks': true,
           },
           countsWalkTheirRows: true,
         },
         {
           what: 'a backlog of runs that are not due',
           answered,
+          // The limit asked for, of the 403 live tasks.
+          oldest: 10,
           tasks: 4 + 2 * HISTORY,
           walkedFew: {
             'stuck-runs': true,
             'queue-status': false,
             'event-waiters': true,
             'table-rows': false,
+            'aged-tasks': true,
           },
           countsWalkTheirRows: true,
         },

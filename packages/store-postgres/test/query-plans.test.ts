@@ -684,6 +684,8 @@ it("reads a queue for an operator through the index of each leg's instant, and s
     expect((await reads.queueStatus('q')).gauges.pendingRuns.count).toBe(1)
     expect((await reads.tableRows('q')).tables.tasks.count).toBe(1)
     expect((await reads.eventWaiters('q', 'approval')).waiters.rows).toEqual([])
+    const oldest = await reads.agedTasks('q', { olderThanSeconds: 0, limit: 10 })
+    expect(oldest.tasks.rows).toHaveLength(1)
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
     const { reached, scans } = await indexesAndScans(client, recorder)
@@ -693,6 +695,8 @@ it("reads a queue for an operator through the index of each leg's instant, and s
     // they are the engine's own bounds on an instant, and the cases above pin those where
     // the engine sends them.
     const indexOf = (reach: string): string => reach.slice(0, reach.indexOf(':'))
+    const liveTasks = (state: string): string =>
+      `tasks_live on tasks t: ((queue = $1) AND (state = '${state}'::text) AND (enqueue_at_ms >= '-9223372036854775808'::bigint))`
     const aClaimIsOwed = [
       'runs_poll on runs r',
       'waits_event on waits w_1',
@@ -734,6 +738,16 @@ it("reads a queue for an operator through the index of each leg's instant, and s
       'queue-status#2': ['runs_lease on runs r: (queue = $1)'],
       'queue-status#3': ['tasks_cancel on tasks t: (queue = $1)'],
       'queue-status#4': [],
+      // The live tasks of each state, by the index of live tasks, which the comparison of
+      // the enqueue instant lets the planner use: for the gauge of them, and for the read
+      // of the oldest.
+      'queue-status#5': [liveTasks('pending')],
+      'queue-status#6': [liveTasks('running')],
+      'queue-status#7': [liveTasks('sleeping')],
+      'aged-tasks#0': [liveTasks('pending')],
+      'aged-tasks#1': [liveTasks('running')],
+      'aged-tasks#2': [liveTasks('sleeping')],
+      'aged-tasks#3': [],
       'fake-clock#0': [],
       'event-waiters#0': ['waits_event on waits w: ((queue = $1) AND (event_name = $2))'],
     })
