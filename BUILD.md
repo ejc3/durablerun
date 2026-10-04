@@ -435,9 +435,12 @@ accepts it.
     neither a claim nor a sweep takes it unless its task is past its deadline"
     builds three such runs, two by fixture and one by a deadline. "lists a lapsed
     lease that no sweep reclaims and a passed deadline that no sweep cancels, and
-    the sweep takes neither" builds one of each by fixture. "does not list a run
-    no claim admits that is younger than its window, and lists it once the runs
-    ahead of it are taken" holds what a window does not see. "lists a move from
+    the sweep takes neither" builds by fixture one such lease and three such
+    deadlines, of a pending, a running and a sleeping task, so that a store that
+    reads one window of deadlines to a live state has a refused task in each.
+    "does not list a run no claim admits that is younger than its window, and
+    lists it once the runs ahead of it are taken" holds what a window does not
+    see. "lists a move from
     the instant it comes due, as the engine takes it, and not a millisecond
     before" holds four moves of a seeded queue at the millisecond each comes due
     and one millisecond before, and a run due the instant it is spawned. "lists
@@ -460,7 +463,11 @@ accepts it.
     stdout either way"; "lists a due run that no claim admits, names it as one,
     and exits 9 for it with --fail-if-any", and the same for "a run under a lapsed
     lease that no sweep reclaims" and for "a task past its cancellation deadline
-    that no sweep cancels"; "lists no healthy run: one under a live lease past the
+    that no sweep cancels"; "says more than it lists for one run a claim takes
+    beside thirty it refuses, and that more may lie past its window" and "leaves
+    nothing unexamined for a backlog too young for the grace", which hold what a
+    leg found through a window says beside its rows; "lists no healthy run: one
+    under a live lease past the
     hung-run bound, and one parked on an event nobody emits", which their age
     then finds; "exits 10 for a report that names a corrupt row, before it exits
     9, and still prints the report on stdout"; "refuses a grace or a limit it
