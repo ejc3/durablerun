@@ -1175,34 +1175,42 @@ export function operatorQueueReadsConformance(
     )
 
     it(
-      "stops the list of an event's waiters at the cap, beside a thousand and one waits, fixture-built",
+      "lists the first thousand of an event's waiters in the order it prints, beside a thousand and two waits, fixture-built",
       () =>
         inWorld('queue-waiters-cap', async ({ f }) => {
-          // Fixture-built: a wait is registered by a claimed run, and these stand alone.
-          const past = OPERATOR_GAUGE_CAP + 1
-          const tasks = Array.from(
-            { length: past },
-            (_, row) => `crowd-${String(row).padStart(4, '0')}`,
-          )
+          // Fixture-built: a wait is registered by a claimed run, and these stand alone. Two
+          // more than the cap, with run ids in the reverse of the order of their task ids, so
+          // an order by run and an order by task disagree about which waits come first.
+          const past = OPERATOR_GAUGE_CAP + 2
+          const waits = Array.from({ length: past }, (_, row) => ({
+            runId: `run-${String(past - 1 - row).padStart(4, '0')}`,
+            taskId: `crowd-${String(row).padStart(4, '0')}`,
+          }))
           for (let from = 0; from < past; from += 100) {
             await f.raw.batch(
               'fixture:waits',
-              tasks.slice(from, from + 100).map((taskId) => ({
+              waits.slice(from, from + 100).map((wait) => ({
                 sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
                       timeout_at_ms, created_at_ms)
                     VALUES (?, 'approve', ?, ?, 'crowded', 'waiting', NULL, ?)`,
-                args: [`run-of-${taskId}`, Q, taskId, START],
+                args: [wait.runId, Q, wait.taskId, START],
               })),
             )
           }
           const answer = await f.operatorReadsOver(f.raw).eventWaiters(Q, 'crowded')
+          // The list is in the order of run and then step, and it is the first thousand of
+          // all the waits in that order: no wait it leaves out comes before one it lists.
+          const byRun = [...waits].sort((left, right) => (left.runId < right.runId ? -1 : 1))
           expect(
             {
-              waiters: answer.waiters.rows.map((waiter) => waiter.taskId),
+              waiters: answer.waiters.rows.map((waiter) => [waiter.runId, waiter.taskId]),
               atLeast: answer.waiters.atLeast,
             },
             'mutation-verdict:behavior:operator-waiters-stop-at-the-cap',
-          ).toEqual({ waiters: tasks.slice(0, OPERATOR_GAUGE_CAP), atLeast: true })
+          ).toEqual({
+            waiters: byRun.slice(0, OPERATOR_GAUGE_CAP).map((wait) => [wait.runId, wait.taskId]),
+            atLeast: true,
+          })
         }),
       60_000,
     )
