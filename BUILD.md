@@ -6247,10 +6247,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Option for the three store files of the reads, not built, with its trigger: one check
     that holds them equal, or one file. They are the same apart from the class name, shaped
     as a class so that the batch checkers, which read text, see each label inside a
-    member. PR5.3c adds to what is written three times: the `owed` and `counted` wiring
-    of those files, and in each store's `store.ts` the fragments `dueRuns`, `claimOwed`,
-    `LEASES_LAPSED` and `countedRuns` with the constants made from them, the same text in
-    the three. The registered mutations of those fragments aim at the libSQL copy only,
+    member. PR5.3c adds to what is written three times: the `owed`, `overdue` and
+    `counted` wiring of those files, and in each store's `store.ts` the fragments
+    `dueRuns`, `claimOwed`, `LEASES_LAPSED`, `DEADLINES_PASSED` and `countedRuns` with the
+    constants made from them. The text is the same in the three, but for
+    `DEADLINES_PASSED`, which is one fragment on libSQL and PostgreSQL and one to a live
+    state on MySQL. The registered mutations of those fragments aim at the libSQL copy only,
     so a change to PostgreSQL's or MySQL's copy is held by the conformance cases on that
     dialect and by no mutation. Trigger: a fourth file of this shape, batch checkers that
     read trees, or the next change to one of those fragments.
@@ -6398,11 +6400,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   SQL, which the corpus holds, and no released declaration changes. DESIGN.md section 3.11
   holds each read, each gauge's definition and what a gauge is not, the exits, the index
   with its measured write cost, and the two questions that await the maintainer. The
-  registry holds 1340 mutations where main held 1259: twenty-nine for how core decodes a
+  registry holds 1344 mutations where main held 1259: thirty-three for how core decodes a
   leg, a gauge, a count and a list, twenty-six for what a dialect decides, held on libSQL
   against the engine and against a dump, twenty for the three commands and the waiters
   `explain` lists, and six for what bounds a due range in the libSQL plan test. The base
-  gate's arm is keyed on main's digest and exempts their seventy-four markers. It re-aims one
+  gate's arm is keyed on main's digest and exempts their seventy-six markers. It re-aims one
   entry of main's registry, whose lines moved out of the libSQL store's `claim` into
   `claimEligibility`.
   - What awaits the maintainer. (1) The libSQL plan reader counts a range on
@@ -6504,15 +6506,45 @@ these three things; nothing else in the system does I/O, time, or randomness.
     leg, and core lists a row of the window that the engine's leg does not hold. The fold
     first built the leg of due runs from the claim's requirement negated, which read every
     due run a claim admits and cost the due backlog, and exit test line 37 was given a
-    sentence for that. The windows replaced it, every read is bounded by its LIMIT, and
-    the sentence is taken back: on libSQL the window of pending runs took 0.2 ms beside
+    sentence for that. The windows replaced it and the sentence is taken back. A window
+    is bounded by its LIMIT: on libSQL the window of pending runs took 0.2 ms beside
     2,000 due runs and beside 20,000, where the negated read had taken 13 ms and 114 ms.
-  - What a window does not see. A window is the limit and one row deep. A row the engine
-    refuses is not listed while as many rows as the limit and one more stand ahead of it
-    in its order, and the leg's `unexamined` is true whenever its window left a row
-    unsettled. Such a row is never taken, so it reaches the front as the rows ahead of it
-    are taken. Under the default limit of 20 that is 21 rows ahead. A conformance case
-    holds both halves under a limit of two.
+    An engine's leg is bounded by its LIMIT beside rows the engine takes, and reads past
+    each row the engine refuses that stands ahead of what it answers, as the claim's own
+    candidate read does. Beside 20,000 due runs that a claim refuses and one it admits,
+    the engine's leg of pending runs took 49 ms where the window took 0.2 ms. DESIGN.md
+    section 3.11 gives the four measurements.
+  - What a window does not see. A window is the limit and two rows deep. A row the
+    engine refuses is not settled while as many rows as the limit and two stand ahead of
+    it in its order, or as many rows the engine takes as the limit and one: 22 and 21
+    under the default limit of 20. The leg's `unexamined` is true when such a row could
+    be listed under the grace asked for, so a backlog too young for the grace leaves
+    nothing unexamined. Such a row is never taken, so it reaches the front as the rows
+    ahead of it are taken. A conformance case holds both halves under a limit of two.
+    For these three legs `atLeast` says what the window showed, and `unexamined` is what
+    says more may exist past it.
+  - The re-review of the fold, and the last fold. A narrow re-review of the fold alone,
+    at bd28312, found no HIGH, no MEDIUM and nine LOW, every one of them made by the
+    fold. Six of the nine count, 12 in all, and the same postmortem holds the round. The
+    last fold holds `unexamined` to the grace (R2), examines every row a window read and
+    says what `atLeast` means for a leg found through a window (R1), corrects the
+    sentence that said every read of the batch is bounded by its LIMIT (R6), runs
+    `explain` in the case DESIGN.md says holds its answer for a lapsed lease no sweep
+    reclaims (R7), seeds a refused deadline in every live state with a hold that fails
+    when a window of deadlines is left out (R8), and corrects the doc of `UnadmittedRun`
+    (R9). It wires each leg through one descriptor that holds the id column, the id and
+    the decoder together (R5), and the option for the three store files names the
+    `overdue` wiring and `DEADLINES_PASSED` (R4). No review follows the last fold: each
+    change was checked by running it.
+  - Option for the legs of what the engine does not take, not built, with its trigger
+    (R3): one statement to a leg, a derived table of the oldest rows by the instant alone
+    under a LIMIT, with the engine's predicate selected beside each row as a value. Every
+    row of the window would be settled by the engine's own predicate at one clock. Today
+    refusal is inferred from two reads, each under a LIMIT: the inference rests on the
+    order of the reads and on the rule that a refused row sorts before the last row the
+    engine's leg answered, and it leaves rows of the window unsettled. Trigger: the first
+    wrong answer the inference gives, or a statement tree that can select the engine's
+    predicate as a value.
   - Option for `explain`, not built, with its trigger: a cause of its own for a due run
     that no claim admits. `explain` gives such a run the cause and the verdict it gives
     any due run, and the next command those causes name is a tick, which will not take
