@@ -6035,16 +6035,27 @@ the row stays as it is. A row of these three legs is read from its own table, so
 prints there with its task's id and no task name, and a run whose task is not in its queue
 is listed like any other.
 
-What a window does not see, the leg says. The window is the limit and one row deep. A row
+What a window does not see, the leg says. The window is the limit and two rows deep. A row
 past it is not settled, and neither is a row of it that sorts after the last row of a full
-leg of the engine's. So a row the engine refuses is not listed while as many rows as the
-limit and one more stand ahead of it in its order, and the leg's `unexamined` is true
-whenever its window left a row unsettled. A row the engine refuses is never taken, so it
-moves to the front of its order as the rows ahead of it are taken, and the window reaches
-it then. A conformance case holds both halves: under a limit of two, a run no claim admits
-that stands behind three runs a claim takes is not listed and `unexamined` is true, and
-once a claim has taken the three the same read lists it. `atLeast` says, as it does for the
-other legs, that the leg found more rows than it lists.
+leg of the engine's. So a row the engine refuses is not settled while as many rows as the
+limit and two stand ahead of it in its order, or as many rows the engine takes as the limit
+and one. The leg's `unexamined` is true when such a row could be one the leg lists under
+the grace it was asked with: a row of the window that was not settled and is old enough for
+the grace, or a window that came back full whose last row is old enough, since no row past
+it is older. A backlog too young for the grace leaves nothing unexamined. Twenty-two
+healthy runs due for one second print `unexamined` false under the default grace, and a CLI
+case holds that. A row the engine refuses is never taken, so it moves to the front of its
+order as the rows ahead of it are taken, and the window reaches it then. A conformance case
+holds both halves: under a limit of two, a run no claim admits that stands behind three
+runs a claim takes is not listed and `unexamined` is true, and once a claim has taken the
+three the same read lists it.
+
+`atLeast` says less for these three legs than for the other four. The window is all such a
+leg reads. True says the window showed more rows the engine does not take than the leg
+lists. False says only that the window showed no more. How many lie past the window the leg
+cannot know, and `unexamined` is what says more may exist. One run a claim takes beside
+thirty it refuses, an hour on and with no grace, prints the limit of twenty rows with
+`atLeast` true and `unexamined` true, and a CLI case holds that.
 
 One batch, `stuck-runs`, holds the windows, then the engine's four legs, then a read of
 the clock, in one read-only snapshot. The windows are four statements on libSQL and
@@ -6058,11 +6069,16 @@ report is dated by the batch's last statement, so no leg saw a later clock than 
 rows are dated against. Whether the test clock is set follows in `fake-clock`, as it does
 for `taskFacts`.
 
-Every read of the batch is bounded by its LIMIT. A window reads the oldest rows of one
-range of an index and stops, whatever the engine would make of them. Measured on libSQL:
-beside 2,000 due pending runs and beside 20,000, the window of pending runs took 0.2 ms and
-the claim's leg of pending runs 0.7 ms. The libSQL plan test names the four windows as due
-ranges that stand alone, each bounded by its LIMIT.
+A window is bounded by its LIMIT. It reads the oldest rows of one range of an index and
+stops, whatever the engine would make of them. An engine's leg is bounded by its LIMIT
+beside rows the engine takes. It reads past each row the engine refuses that stands ahead
+of what it answers, as the claim's own candidate read does, so beside such rows it costs
+what a claim costs there. Measured on libSQL: beside 2,001 due pending runs that a claim
+admits and beside 20,001, the window of pending runs took 0.29 ms and 0.23 ms and the
+engine's leg of pending runs 0.89 ms and 0.92 ms. Beside 2,000 due pending runs that a
+claim refuses and one it admits, the window took 0.21 ms and the engine's leg 4.83 ms, and
+beside 20,000 it refuses and one it admits, 0.19 ms and 49.07 ms. The libSQL plan test
+names the four windows as due ranges that stand alone, each bounded by its LIMIT.
 
 The grace is applied in core, once, to every leg: a row is listed when the instant its move
 came due is at or before database time less the grace. With a grace of zero four legs are
@@ -6070,9 +6086,10 @@ what a claim and a sweep at that instant take, and the other three are what thei
 found that neither takes. A row is listed from the millisecond its
 grace has run. `explain` calls the same move `stuck` one millisecond later, because its rule
 is a move more than the grace in the past: at exactly the grace the command lists the row
-and the verdict is still `waiting`. A leg is read one row past its limit, so `atLeast` says
-exactly whether more rows are owed than the leg lists. The limit is from 1 to 1,000
-(`OPERATOR_LIST_CAP`). Rows of one instant are listed in the order of their ids.
+and the verdict is still `waiting`. A leg of what the engine takes is read one row past its
+limit, so its `atLeast` says exactly whether more rows are owed than the leg lists. The
+limit is from 1 to 1,000 (`OPERATOR_LIST_CAP`). Rows of one instant are listed in the order
+of their ids.
 
 A run under a lapsed lease whose task is also past its deadline is in two legs,
 `leaseLapsed` and `cancelOverdue`. The sweep finds it twice, and sends a batch for each
