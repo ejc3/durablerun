@@ -49,7 +49,9 @@
  * prints a range the same way whichever way it points: the leases that have expired and
  * the leases that have not are both `claim_expires_at_ms>? AND claim_expires_at_ms<?`. So
  * the reading also reports each due range that drives another step, and the test holds
- * those to a list of the statements where one may, each with the limit that bounds it.
+ * those to a list of the statements where one may, each with the limit that bounds it. It
+ * reports every due range as well, because one that drives nothing is bounded the same
+ * way, and the test holds each statement that has one to a second list.
  */
 export interface PlanRow {
   readonly id: number
@@ -140,6 +142,8 @@ export interface NestReading {
   readonly faults: string[]
   /** Each due range that another step runs once for each row of. */
   readonly dueDrivers: string[]
+  /** Every due range of the plan, whether or not another step runs once for each row of it. */
+  readonly dueRanges: string[]
 }
 
 /**
@@ -216,6 +220,7 @@ export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
     else faults.push(`cannot place the plan line: ${row.detail}`)
   }
   const dueDrivers = new Set<string>()
+  const dueRanges = new Set<string>()
 
   /** The loop one SCAN or SEARCH line is, judged against the loops that drive it. */
   function stepLoop(
@@ -233,6 +238,8 @@ export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
     // judged against what drives it as any other step is.
     const reach = made ?? (kind === 'SCAN' ? 'walk' : reachOf(access))
     const loop: Loop = { detail: node.detail, reach }
+    // A read of the rows a body made is no range of a table's own.
+    if (made === undefined && reach === 'due') dueRanges.add(loop.detail)
     // A walk of a table is refused where it stands, whatever drives it and whatever it
     // drives. The rows of a body are no table's, and the steps that made them are judged.
     if (made === undefined && reach === 'walk') {
@@ -307,5 +314,5 @@ export function readNests(rows: readonly PlanRow[], sql: string): NestReading {
   const own = nodes.get(0)?.children ?? []
   loopsOf(own, [])
   faults.push(...writeFaults(own, sql))
-  return { faults, dueDrivers: [...dueDrivers] }
+  return { faults, dueDrivers: [...dueDrivers], dueRanges: [...dueRanges] }
 }

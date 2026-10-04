@@ -373,18 +373,19 @@ describe('the plan reader against a measured backlog', () => {
     // pass a statement that grew, and report no due range either.
     const passedAndGrew = rows
       .filter((r) => !insideATrigger(r))
-      .filter((r) => r.grew && !isBad(r.reading) && r.reading.dueDrivers.length === 0)
+      .filter((r) => r.grew && !isBad(r.reading) && r.reading.dueRanges.length === 0)
       .map(nameOfRow)
     expect(passedAndGrew, 'mutation-verdict:behavior:plan-nests').toEqual([])
   })
 
   it('refuses exactly the statements that grew, in the database as the store shipped it', () => {
-    // With every index in place the reader passes every shipped statement, and none of them
-    // grew but the ones a due range drives. Both directions are held: a statement the reader
-    // refuses that does no more work beside a backlog is a reader that has misread a plan.
+    // With every index in place the reader passes every shipped statement but the row counts
+    // an operator asks for, and none that it passes grew but the ones that read a due range.
+    // Both directions are held: a statement the reader refuses that does no more work beside
+    // a backlog is a reader that has misread a plan.
     const disagree = rows
       .filter((r) => r.variation === 'shipped' && !insideATrigger(r))
-      .filter((r) => isBad(r.reading) !== (r.grew && r.reading.dueDrivers.length === 0))
+      .filter((r) => isBad(r.reading) !== (r.grew && r.reading.dueRanges.length === 0))
       .map(nameOfRow)
     expect(disagree, 'mutation-verdict:behavior:plan-nests').toEqual([])
   })

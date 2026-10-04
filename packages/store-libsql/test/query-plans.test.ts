@@ -15,7 +15,7 @@ import {
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
 import { type Shipped, keyOf, recordHistory } from './plan-history.js'
-import { type PlanRow, readNests } from './plan-nests.js'
+import { type NestReading, type PlanRow, readNests } from './plan-nests.js'
 import { planRows } from './plan-oracle.js'
 
 /**
@@ -793,13 +793,27 @@ describe('every statement a store ships, by the nests of its plan', () => {
 
   /**
    * Statements this block excuses, by name, each for the one fault it names and with where
-   * the open question is recorded. Any other fault in the same statement still fails. None
-   * is excused today. Until schema version 9 a claim found the runs it took by queue and
-   * state, and its task update and its delete of timed-out waits were excused here for that
-   * walk. They reach those runs by the claim token now, and the reader counts that seek as
-   * keyed: one token holds at most one claim's limit of runs.
+   * the decision is recorded. Any other fault in the same statement still fails. Until
+   * schema version 9 a claim found the runs it took by queue and state, and its task update
+   * and its delete of timed-out waits were excused here for that walk. They reach those
+   * runs by the claim token now, and the reader counts that seek as keyed: one token holds
+   * at most one claim's limit of runs.
+   *
+   * The five statements of `table-rows` are excused, each for its walk of the one table it
+   * counts. An operator's `sizes` counts a queue's rows of a table, so it reads them: that
+   * is what was asked for, on request only, and the count stops one row past its cap.
    */
-  const EXCUSED_NESTS: Readonly<Record<string, { fault: RegExp; because: string }>> = {}
+  const countsOneQueue = (table: string) => ({
+    fault: new RegExp(` :: is a walk of ${table}: neither keyed nor a due range$`),
+    because: "BUILD.md PR5.3c: sizes counts one queue's rows of a table, up to its cap",
+  })
+  const EXCUSED_NESTS: Readonly<Record<string, { fault: RegExp; because: string }>> = {
+    'table-rows/read#0': countsOneQueue('runs'),
+    'table-rows/read#1': countsOneQueue('tasks'),
+    'table-rows/read#2': countsOneQueue('waits'),
+    'table-rows/read#3': countsOneQueue('events'),
+    'table-rows/read#4': countsOneQueue('checkpoints'),
+  }
 
   /**
    * A due range is what is due only if it points that way, and it is bounded only by a
@@ -815,6 +829,9 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'SEARCH r USING INDEX runs_lease (queue=? AND claim_expires_at_ms>? AND claim_expires_at_ms<?)'
   const TASKS_PAST_THEIR_DEADLINE =
     'SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>? AND cancel_at_ms<?)'
+  /** Every run of one state that holds an available instant: a range with no upper end. */
+  const RUNS_COUNTED =
+    'SEARCH r USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>?)'
   const DRIVEN_BY_A_DUE_RANGE: Readonly<
     Record<string, { drivers: readonly string[]; boundedBy: string }>
   > = {
@@ -823,6 +840,46 @@ describe('every statement a store ships, by the nests of its plan', () => {
     'sweep:scan/read#0': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
     // The leases that have expired.
     'sweep:scan/read#1': { drivers: [LEASES], boundedBy: 'LIMIT' },
+    // An operator's read of what a claim or a sweep would take now. Each leg is the engine's
+    // own predicate, read oldest first and one row past the limit it was asked for.
+    'stuck-runs/read#0': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
+    'stuck-runs/read#1': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
+    'stuck-runs/read#2': { drivers: [LEASES], boundedBy: 'LIMIT' },
+    'stuck-runs/read#3': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
+  }
+
+  /**
+   * A due range that drives no other step is bounded the same way and shown no better, so
+   * every statement that has one is named here too, with the lines and with what bounds
+   * them: the statement's own LIMIT, which must then be the last thing its text holds, or
+   * that the range is read for its first row alone, by a minimum over its column.
+   */
+  const A_DUE_RANGE_ALONE: Readonly<
+    Record<string, { ranges: readonly string[]; boundedBy: 'LIMIT' | 'its first row' }>
+  > = {
+    // Each source of the next wake is the minimum of one instant, which is its range's
+    // first row.
+    'next-wake/read#0': {
+      ranges: [
+        'SEARCH r USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>? AND available_at_ms<?)',
+        'SEARCH r USING COVERING INDEX runs_lease (queue=? AND claim_expires_at_ms>? AND claim_expires_at_ms<?)',
+        TASKS_PAST_THEIR_DEADLINE,
+      ],
+      boundedBy: 'its first row',
+    },
+    // An operator's gauges. Each leg reads every row of one state that holds an instant,
+    // earliest first, and stops one row past the gauge's cap: it grows with the backlog by
+    // design, up to that limit.
+    'queue-status/read#0': { ranges: [RUNS_COUNTED], boundedBy: 'LIMIT' },
+    'queue-status/read#1': { ranges: [RUNS_COUNTED], boundedBy: 'LIMIT' },
+    'queue-status/read#2': {
+      ranges: ['SEARCH r USING COVERING INDEX runs_lease (queue=? AND claim_expires_at_ms>?)'],
+      boundedBy: 'LIMIT',
+    },
+    'queue-status/read#3': {
+      ranges: ['SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>?)'],
+      boundedBy: 'LIMIT',
+    },
   }
 
   /** A statement's name: where the corpus holds it, or for text its place in its batch. */
@@ -842,6 +899,8 @@ describe('every statement a store ships, by the nests of its plan', () => {
   /** One statement's plan, read with its text. The generated check reads through this too. */
   const nestsOf = async (st: { sql: string; args: unknown[] }) =>
     readNests(await planTree(st.sql, st.args), st.sql)
+  /** What a reading refuses and which due ranges drive, for a case that holds it to no more. */
+  const judged = ({ faults, dueDrivers }: NestReading) => ({ faults, dueDrivers })
   /** The same reading of a statement that nothing runs, so each bind is a placeholder. */
   const read = (sql: string) => nestsOf({ sql, args: (sql.match(/\?/g) ?? []).map(() => 0) })
   /** A read of a queue's leases in one state, which SQLite plans from the state it is sent with. */
@@ -875,11 +934,14 @@ describe('every statement a store ships, by the nests of its plan', () => {
     const faults: string[] = []
     const excused = new Set<string>()
     const drivenByADueRange: Record<string, string[]> = {}
+    const aDueRangeAlone: Record<string, string[]> = {}
     const textOf = new Map<string, string>()
     for (const st of (await shippedStatements()).values()) {
       const name = nameOf(st)
       const reading = await nestsOf(st)
       if (reading.dueDrivers.length > 0) drivenByADueRange[name] = [...reading.dueDrivers].sort()
+      const alone = reading.dueRanges.filter((range) => !reading.dueDrivers.includes(range))
+      if (alone.length > 0) aDueRangeAlone[name] = alone.sort()
       textOf.set(name, st.sql)
       const excuse = EXCUSED_NESTS[name]
       const unexcused = reading.faults.filter((fault) => !excuse?.fault.test(fault))
@@ -907,6 +969,20 @@ describe('every statement a store ships, by the nests of its plan', () => {
           boundedBy === 'LIMIT'
             ? !/\blimit\b/i.test(textOf.get(name) ?? '')
             : !/^BUILD\.md PR\d/.test(boundedBy),
+        )
+        .map(([name]) => name),
+    ).toEqual([])
+    // A due range that stands alone, named line for line in both directions as well.
+    expect(aDueRangeAlone).toEqual(
+      Object.fromEntries(
+        Object.entries(A_DUE_RANGE_ALONE).map(([name, { ranges }]) => [name, [...ranges].sort()]),
+      ),
+    )
+    expect(
+      Object.entries(A_DUE_RANGE_ALONE)
+        .filter(
+          ([name, { boundedBy }]) =>
+            !(boundedBy === 'LIMIT' ? / limit \?$/i : /\bmin\(/i).test(textOf.get(name) ?? ''),
         )
         .map(([name]) => name),
     ).toEqual([])
@@ -982,7 +1058,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       'select value from meta where key = ?',
       'select * from (values (1), (2), (3))',
     ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+      expect(judged(await read(sql)), sql).toEqual({ faults: [], dueDrivers: [] })
     }
   })
 
@@ -1070,7 +1146,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `insert into events (queue, event_name, payload, emitted_at_ms)
        values (?, ?, ?, ?), (?, ?, ?, ?)`,
     ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+      expect(judged(await read(sql)), sql).toEqual({ faults: [], dueDrivers: [] })
     }
   })
 
@@ -1091,13 +1167,20 @@ describe('every statement a store ships, by the nests of its plan', () => {
   })
 
   it('shows what the refusal of a walk cannot see, and what it refuses though it is sound', async () => {
-    // A due range that stands alone is no walk, and the list of due ranges names only one
-    // that drives another step. Under no LIMIT it reads everything due at once, and pointed
-    // the other way, as here, it reads the backlog.
+    // A due range that stands alone is no walk, and it drives no other step. Under no LIMIT
+    // it reads everything due at once, and pointed the other way, as here, it reads the
+    // backlog. The reading names it among its due ranges, and for a statement the store
+    // ships the second list above is what holds it, by a bound a person wrote.
     const everyRunNotYetDue = await read(
       `select run_id from runs where queue = ? and state = 'pending' and available_at_ms > ?`,
     )
-    expect(everyRunNotYetDue).toEqual({ faults: [], dueDrivers: [] })
+    expect(everyRunNotYetDue).toEqual({
+      faults: [],
+      dueDrivers: [],
+      dueRanges: [
+        'SEARCH runs USING COVERING INDEX runs_poll (queue=? AND state=? AND available_at_ms>?)',
+      ],
+    })
     // Among the steps of a write's own select, over the table it writes, one is refused.
     // Anywhere else in a write it is not: this UPDATE counts every expired lease of its
     // queue in its SET, and this INSERT copies them.
@@ -1109,7 +1192,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
        select queue, run_id, null, 0 from runs
        where queue = ? and state = 'running' and claim_expires_at_ms < ?`,
     ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+      expect(judged(await read(sql)), sql).toEqual({ faults: [], dueDrivers: [] })
     }
     // A write that reaches its table by another entity's key passes: it is bounded by that
     // entity's rows, the waiters of one event or the checkpoints of one task, as a keyed
@@ -1119,20 +1202,20 @@ describe('every statement a store ships, by the nests of its plan', () => {
       'delete from waits where queue = ? and event_name = ?',
       'delete from checkpoints where task_id = ?',
     ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+      expect(judged(await read(sql)), sql).toEqual({ faults: [], dueDrivers: [] })
     }
     // A test for NULL prints as an equality, so a test of an entity column for NULL reads as
     // keyed: here it is every running run of the queue that no claim holds.
     const heldByNoClaim = await read(
       `select run_id from runs where queue = ? and state = 'running' and claimed_by is null`,
     )
-    expect(heldByNoClaim).toEqual({ faults: [], dueDrivers: [] })
+    expect(judged(heldByNoClaim)).toEqual({ faults: [], dueDrivers: [] })
     // The same test in a write, which fails every such run, reads as keyed too.
     const failsTheUnheld = await read(
       `update runs set state = 'failed'
        where queue = ? and state = 'running' and claimed_by is null`,
     )
-    expect(failsTheUnheld).toEqual({ faults: [], dueDrivers: [] })
+    expect(judged(failsTheUnheld)).toEqual({ faults: [], dueDrivers: [] })
     // A table aliased to the name of a body of the same select reads as a read of that body,
     // so its scan is never judged. Under any other alias it is refused.
     const beside = (alias: string) =>
@@ -1176,7 +1259,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       'delete from waits as "2 CONSTANT ROWS" where status = ?',
       'select 1 from waits as "2 CONSTANT ROWS" where status = ?',
     ]) {
-      expect(await read(sql), sql).toEqual({ faults: [], dueDrivers: [] })
+      expect(judged(await read(sql)), sql).toEqual({ faults: [], dueDrivers: [] })
     }
     // A statement is planned under the binds its sends carried, and SQLite plans from bound
     // values. Sent with a state the history never sends it with, this one walks.
@@ -1258,7 +1341,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
       `update runs set claim_gen = (select count(*) from checkpoints c
                                     where c.task_id = runs.task_id) where task_id = ?`,
     )
-    expect(ownRows).toEqual({ faults: [], dueDrivers: [] })
+    expect(judged(ownRows)).toEqual({ faults: [], dueDrivers: [] })
     // What is due under no limit, and what is not due at all, read alike: a due range that
     // drives. The list of names above is what holds them, by a reason a person wrote.
     const unlimited = await read(
@@ -1284,7 +1367,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
     if (!beat) throw new Error('the history sent no driver heartbeat')
     const beatPlan = await planTree(beat.sql, beat.args)
     expect(beatPlan.map((row) => row.detail).join('\n')).not.toContain('drivers')
-    expect(readNests(beatPlan, beat.sql)).toEqual({ faults: [], dueDrivers: [] })
+    expect(judged(readNests(beatPlan, beat.sql))).toEqual({ faults: [], dueDrivers: [] })
     // Planned by hand from the trigger's own text, with a bind where it names the new row,
     // that DELETE is a walk, and the reader refuses it.
     const triggers = await raw.execute(`select sql from sqlite_master where type = 'trigger'`)
@@ -1407,6 +1490,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
     expect(plan.map((row) => row.detail)).toContain(
       'SEARCH t USING PRIMARY KEY (task_id=?) LEFT-JOIN',
     )
-    expect(readNests(plan, sql)).toEqual({ faults: [], dueDrivers: [] })
+    expect(judged(readNests(plan, sql))).toEqual({ faults: [], dueDrivers: [] })
   })
 })
