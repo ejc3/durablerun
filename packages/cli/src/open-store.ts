@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import type {
+  AgedTasksOptions,
   HeldOperatorReads,
   IdSource,
   OperatorReads,
@@ -30,7 +31,13 @@ export type CliScheduler = Pick<SchedulerStore, 'getTaskResult' | 'getCheckpoint
 /** The operator reads a command may make. */
 export type CliOperator = Pick<
   OperatorReads,
-  'taskFacts' | 'taskIdByKey' | 'stuckRuns' | 'queueStatus' | 'tableRows' | 'eventWaiters'
+  | 'taskFacts'
+  | 'taskIdByKey'
+  | 'stuckRuns'
+  | 'agedTasks'
+  | 'queueStatus'
+  | 'tableRows'
+  | 'eventWaiters'
 >
 
 /** What an operator should know before a migration crosses a version, as a store says it. */
@@ -305,6 +312,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       taskIdByKey: (queue: string, idempotencyKey: string) =>
         operator.taskIdByKey(queue, idempotencyKey),
       stuckRuns: (queue: string, options: StuckRunsOptions) => operator.stuckRuns(queue, options),
+      agedTasks: (queue: string, options: AgedTasksOptions) => operator.agedTasks(queue, options),
       queueStatus: (queue: string) => operator.queueStatus(queue),
       tableRows: (queue: string) => operator.tableRows(queue),
       eventWaiters: (queue: string, eventName: string) => operator.eventWaiters(queue, eventName),

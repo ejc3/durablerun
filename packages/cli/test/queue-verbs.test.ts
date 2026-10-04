@@ -46,6 +46,13 @@ type StuckAnswer = Readonly<Record<Leg, { rows: Row[]; atLeast: boolean }>> & {
   readonly limit: number
   readonly listed: number
   readonly corrupt: unknown[]
+  /** Present with --older-than. */
+  readonly agedLive?: {
+    readonly olderThanSeconds: number
+    readonly rows: { taskId: string; taskName: string; state: string; ageMs: number | null }[]
+    readonly atLeast: boolean
+    readonly corrupt: { field: string; taskId?: string }[]
+  }
 }
 
 /** Run `stuck --json` with the flags given, and read each leg by the ids it lists. */
@@ -191,7 +198,7 @@ describe('stuck on libSQL', () => {
     onDb('stuck-healthy', async (db) => {
       const long = await db.store.spawn(QUEUE, 'long', '{}')
       const run = await claimActivated(db, 'w-long', long.taskId)
-      await parkedOnAnEvent(db, null)
+      const parked = await parkedOnAnEvent(db, null)
       await db.admin.setFakeNowEpochMs(NOW_MS + HUNG_RUN_MS - 1_000)
       if (!(await db.store.heartbeat(QUEUE, run.runId, run.claimToken, 60)).held) {
         throw new Error('the seed lost its lease')
@@ -203,6 +210,29 @@ describe('stuck on libSQL', () => {
         listed: 0,
         ids: NO_ROW,
       })
+      // No move is owed to either, so only their age finds them: asked for the live tasks
+      // an hour old, the same command lists both, oldest first, and then it fails on them.
+      const aged = await stuck(db, ['--grace', '0s', '--fail-if-any', '--older-than', '1h'])
+      expect(
+        {
+          exit: aged.exit,
+          listed: aged.listed,
+          ids: aged.ids,
+          aged: aged.answer.agedLive?.rows.map((task) => [task.taskId, task.state, task.ageMs]),
+        },
+        'mutation-verdict:behavior:cli-stuck-older-than-lists-what-no-leg-holds',
+      ).toEqual({
+        exit: exitCode('found'),
+        listed: 2,
+        ids: NO_ROW,
+        aged: [
+          [long.taskId, 'running', HUNG_RUN_MS + 1],
+          [parked, 'sleeping', HUNG_RUN_MS + 1],
+        ].sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+      })
+      // One millisecond more than their age lists neither.
+      const older = await stuck(db, ['--fail-if-any', '--older-than', '3601s'])
+      expect({ exit: older.exit, aged: older.answer.agedLive?.rows }).toEqual({ exit: 0, aged: [] })
     }))
 
   it('exits 10 for a report that names a corrupt row, before it exits 9, and still prints the report on stdout', () =>
@@ -269,6 +299,8 @@ describe('stuck on libSQL', () => {
         ['--grace=-1s'],
         // More than the hundred years a duration may be.
         ['--grace', '36526d'],
+        ['--older-than', 'soon'],
+        ['--older-than', '36526d'],
         ['--limit', '0'],
         ['--limit', String(OPERATOR_LIST_CAP + 1)],
         ['--limit', '1.5'],
@@ -298,6 +330,7 @@ describe('stuck on libSQL', () => {
       for (const flags of [
         ['--grace', '36525d'],
         ['--grace', '0d'],
+        ['--older-than', '0s'],
         ['--limit', String(OPERATOR_LIST_CAP)],
         ['--limit', '1'],
       ]) {
@@ -365,6 +398,18 @@ describe('stuck on libSQL', () => {
             }
             seenAtGraceZero.push(shown)
           }
+          // Its age is what finds it: the task has been live since the first tick, four
+          // minutes less a millisecond ago.
+          const aged = await stuck(db, ['--older-than', '3m'])
+          expect(
+            {
+              form,
+              ids: aged.ids,
+              aged: aged.answer.agedLive?.rows.map((row) => [row.taskId, row.ageMs]),
+            },
+            'mutation-verdict:behavior:cli-stuck-older-than-finds-a-deferral-loop',
+          ).toEqual({ form, ids: NO_ROW, aged: [[task.taskId, 4 * CADENCE_MS - 1]] })
+          expect((await stuck(db, ['--older-than', '4m'])).answer.agedLive?.rows).toEqual([])
           // Parked for 15 to 24 seconds, the run is asleep one millisecond after each tick
           // and past its wake from 24 seconds on at the latest.
           for (const shown of seenAtGraceZero) {
@@ -385,6 +430,7 @@ interface StatsAnswer {
   readonly claimLagMs: number | null
   readonly leaseHeadroomMs: number | null
   readonly nextWakeAtMs: number | null
+  readonly oldestLiveTaskAgeMs: number | null
   readonly databaseNowEpochMs: number
   readonly fakeClock: boolean
   readonly corrupt: { field: string; runId?: string }[]
@@ -427,21 +473,21 @@ describe('stats on libSQL', () => {
         line: ['summary: quiet'],
         counted: {},
       })
-      // A run parked on an event nobody emits holds no instant, so it is in no gauge, and
-      // the queue is still quiet: which is why the word is not ok.
+      // A run parked on an event nobody emits holds no instant, so it is in no gauge of
+      // runs. Its task is live, and the gauge of live tasks counts it.
       await parkedOnAnEvent(db, null)
       expect(await says()).toEqual({
         exit: 0,
-        summary: 'quiet',
-        line: ['summary: quiet'],
-        counted: {},
+        summary: 'active',
+        line: ['summary: active'],
+        counted: { liveTasks: 1 },
       })
       await db.store.spawn(QUEUE, 'job', '{}')
       expect(await says(), 'mutation-verdict:behavior:cli-stats-says-active').toEqual({
         exit: 0,
         summary: 'active',
         line: ['summary: active'],
-        counted: { pendingRuns: 1, pendingRunsDue: 1 },
+        counted: { pendingRuns: 1, pendingRunsDue: 1, liveTasks: 2 },
       })
     }))
 
@@ -459,12 +505,14 @@ describe('stats on libSQL', () => {
         claimLagMs: answer.claimLagMs,
         leaseHeadroomMs: answer.leaseHeadroomMs,
         nextWakeAtMs: answer.nextWakeAtMs,
+        oldestLiveTaskAgeMs: answer.oldestLiveTaskAgeMs,
         databaseNowEpochMs: answer.databaseNowEpochMs,
         fakeClock: answer.fakeClock,
       }).toEqual({
         exit: 0,
         gaugeCap: OPERATOR_GAUGE_CAP,
         names: [
+          'liveTasks',
           'pendingRuns',
           'pendingRunsDue',
           'runningRuns',
@@ -485,12 +533,15 @@ describe('stats on libSQL', () => {
           runningRunsLapsed: 1,
           tasksWithADeadline: 1,
           tasksPastTheirDeadline: 1,
+          // The four tasks of the seed, all live.
+          liveTasks: 4,
         },
         capped: false,
         // The head of the queue has waited since the seed's start, a minute ago.
         claimLagMs: 60_000,
         leaseHeadroomMs: 0,
         nextWakeAtMs: NOW_MS,
+        oldestLiveTaskAgeMs: 60_000,
         databaseNowEpochMs: OWED_AT_MS,
         fakeClock: true,
       })
@@ -515,7 +566,7 @@ describe('stats on libSQL', () => {
       ).toEqual({
         exit: exitCode('unreadable'),
         // The row is counted in its state's gauge, and in neither gauge of an instant.
-        counted: { pendingRuns: 1 },
+        counted: { pendingRuns: 1, liveTasks: 1 },
         corrupt: ['runs.available_at_ms'],
       })
       const text = await runCli(['stats', '--queue', QUEUE], db.env)
@@ -578,5 +629,111 @@ describe('sizes on libSQL', () => {
       const text = await runCli(['sizes', '--queue', QUEUE], db.env)
       expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
       expect(text.stdout.split('\n')).toContain(`cap: ${OPERATOR_TABLE_ROWS_CAP}`)
+    }))
+})
+
+describe('stuck --older-than on libSQL', () => {
+  it('lists the live tasks enqueued at least that long ago, oldest first, each with its age, beside the legs', () =>
+    onDb('stuck-older-than', async (db) => {
+      await owedQueue(db)
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS)
+      const newest = await db.store.spawn(QUEUE, 'newest', '{}')
+      await db.admin.setFakeNowEpochMs(OWED_AT_MS + 1_000)
+      const ages = async (olderThan: string, ...more: string[]) => {
+        const found = await stuck(db, ['--older-than', olderThan, ...more])
+        const aged = found.answer.agedLive
+        return {
+          exit: found.exit,
+          // Under the default grace no leg lists a row, so every row listed is one of these.
+          listed: found.listed,
+          olderThanSeconds: aged?.olderThanSeconds,
+          tasks: aged?.rows.map((task) => [task.taskName, task.ageMs]),
+          atLeast: aged?.atLeast,
+        }
+      }
+      const seeded = [
+        ['doomed', 61_000],
+        ['due', 61_000],
+        ['left', 61_000],
+        ['nap', 61_000],
+      ]
+      const any = await ages('0s')
+      // The four tasks of the seed were enqueued at one instant, so among them the order is
+      // their ids', and the task enqueued a minute later is last.
+      expect({
+        ...any,
+        tasks: [...(any.tasks ?? []).slice(0, 4).sort(), ...(any.tasks ?? []).slice(4)],
+      }).toEqual({
+        exit: 0,
+        listed: 5,
+        olderThanSeconds: 0,
+        tasks: [...seeded, ['newest', 1_000]],
+        atLeast: false,
+      })
+      // A task is listed from the instant it is as old as asked.
+      const exactly = async (olderThan: string) => ((await ages(olderThan)).tasks ?? []).length
+      expect(
+        {
+          aSecond: await exactly('1s'),
+          sixtyOne: await exactly('61s'),
+          more: await exactly('62s'),
+        },
+        'mutation-verdict:behavior:cli-stuck-older-than-lists-a-task-as-old-as-asked',
+      ).toEqual({ aSecond: 5, sixtyOne: 4, more: 0 })
+      // The limit of a leg is the limit of this list too.
+      const two = await ages('0s', '--limit', '2')
+      expect({ tasks: two.tasks?.length, atLeast: two.atLeast, listed: two.listed }).toEqual({
+        tasks: 2,
+        atLeast: true,
+        listed: 2,
+      })
+      // Without the flag the report holds no such list, and nothing reads the live tasks.
+      const { opener, sent } = recordingOpener()
+      const plain = await stuck(db, [], opener)
+      expect({
+        agedLive: plain.answer.agedLive,
+        labels: sent().map((batch) => batch.label),
+      }).toEqual({ agedLive: undefined, labels: ['migrate:version', 'stuck-runs', 'fake-clock'] })
+      // In text the list prints on stdout under its own name.
+      const text = await runCli(['stuck', '--queue', QUEUE, '--older-than', '0s'], db.env)
+      expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
+      const lines = text.stdout.split('\n')
+      for (const line of [
+        'agedLive:',
+        '  olderThanSeconds: 0',
+        `      taskId: ${newest.taskId}`,
+        '      ageMs: 1000',
+      ]) {
+        expect(lines, line).toContain(line)
+      }
+    }))
+
+  it('exits 10 for a live task whose enqueue instant is not readable, lists it, and puts that before exit 9', () =>
+    onDb('stuck-older-than-corrupt', async (db) => {
+      const task = await db.store.spawn(QUEUE, 'job', '{}')
+      // Fixture-built: no engine path writes an enqueue instant outside its bounds.
+      await fixture(db, 'UPDATE tasks SET enqueue_at_ms = -9 WHERE task_id = ?', [task.taskId])
+      for (const output of [[], ['--json']]) {
+        const run = await runCli(
+          ['stuck', '--queue', QUEUE, '--older-than', '1h', '--fail-if-any', ...output],
+          db.env,
+        )
+        expect(
+          {
+            output,
+            exit: run.exit,
+            stderr: run.stderr,
+            namesTheField: run.stdout.includes('tasks.enqueue_at_ms'),
+            listsTheTask: run.stdout.includes(task.taskId),
+          },
+          'mutation-verdict:behavior:cli-stuck-exits-10-for-a-live-task-it-cannot-date',
+        ).toEqual({
+          output,
+          exit: exitCode('unreadable'),
+          stderr: '',
+          namesTheField: true,
+          listsTheTask: true,
+        })
+      }
     }))
 })

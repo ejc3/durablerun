@@ -131,7 +131,8 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       line: (_db, _seeded, parent) => ['explain', parent ?? '', '--queue', QUEUE, '--json'],
     },
   ],
-  stuck: readAt(() => ['stuck', '--queue', QUEUE, '--json']),
+  // With --older-than, `stuck` sends each batch it declares.
+  stuck: readAt(() => ['stuck', '--queue', QUEUE, '--json', '--older-than', '1h']),
   stats: readAt(() => ['stats', '--queue', QUEUE, '--json']),
   sizes: readAt(() => ['sizes', '--queue', QUEUE, '--json']),
 }

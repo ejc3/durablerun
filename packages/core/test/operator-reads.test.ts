@@ -55,6 +55,7 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
       queueStatus: () => batch('queue-status'),
       tableRows: () => batch('table-rows'),
       eventWaiters: () => batch('event-waiters'),
+      agedTasks: () => batch('aged-tasks'),
     },
     fakeClock: async () => {
       sent.push('fake-clock')
@@ -76,6 +77,8 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
       sleepingRuns: byQueue('r'),
       runningRuns: byQueue('r'),
       tasksWithADeadline: (queue: string) => [byQueue('t')(queue)],
+      // Two legs, as a store hands out one to a live state.
+      liveTasks: (queue: string) => [byQueue('t')(queue), byQueue('t')(queue)],
     },
   }
   return { reads: createOperatorReads(dialect), sent, args }
@@ -141,6 +144,7 @@ const CALLS = {
   taskIdByKey: ['q', 'k'],
   eventState: ['q', 'e'],
   stuckRuns: ['q', { graceSeconds: 0, limit: 20 }],
+  agedTasks: ['q', { olderThanSeconds: 0, limit: 20 }],
   queueStatus: ['q'],
   tableRows: ['q'],
   eventWaiters: ['q', 'e'],
@@ -785,12 +789,22 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
   })
 })
 
-/** `queue-status` answers its five statements in order: pending, sleeping, running, deadlines, database time. */
+/** A live task of a leg, as a store answers it, enqueued at `at`. */
+const liveTask = (at: Stored, row: number) => ({
+  task_id: `l${row}`,
+  task_name: 'job',
+  state: 'pending',
+  enqueue_at_ms: at,
+})
+
+/** `queue-status` answers its seven statements in order: pending, sleeping, running, deadlines, database time, and the two legs of live tasks. */
 const status = (legs: {
   pending?: Stored[]
   sleeping?: Stored[]
   running?: Stored[]
   deadlines?: Stored[]
+  live?: Stored[]
+  moreLive?: Stored[]
 }) => ({
   'queue-status': [
     (legs.pending ?? []).map((at, row) => ({ run_id: `p${row}`, available_at_ms: at })),
@@ -798,6 +812,8 @@ const status = (legs: {
     (legs.running ?? []).map((at, row) => ({ run_id: `r${row}`, claim_expires_at_ms: at })),
     (legs.deadlines ?? []).map((at, row) => ({ task_id: `t${row}`, cancel_at_ms: at })),
     [{ now_ms: NOW }],
+    (legs.live ?? []).map(liveTask),
+    (legs.moreLive ?? []).map((at, row) => ({ ...liveTask(at, row), task_id: `m${row}` })),
   ],
 })
 
@@ -826,6 +842,7 @@ describe("how an operator's read of a queue's gauges counts", () => {
       runningRunsLapsed: exactly(2),
       tasksWithADeadline: exactly(1),
       tasksPastTheirDeadline: exactly(0),
+      liveTasks: exactly(0),
     })
     expect(
       {
@@ -851,7 +868,7 @@ describe("how an operator's read of a queue's gauges counts", () => {
       leaseHeadroomMs: empty.leaseHeadroomMs,
       nextWakeAtMs: empty.nextWakeAtMs,
     }).toEqual({
-      gauges: Array.from({ length: 8 }, () => exactly(0)),
+      gauges: Array.from({ length: 9 }, () => exactly(0)),
       claimLagMs: null,
       leaseHeadroomMs: null,
       nextWakeAtMs: null,
@@ -883,7 +900,7 @@ describe("how an operator's read of a queue's gauges counts", () => {
     expect(
       (args['queue-status'] ?? []).map((bound) => bound.at(-1)),
       'mutation-verdict:behavior:operator-reads-read-a-gauge-one-row-past-its-cap',
-    ).toEqual([past, past, past, past, undefined])
+    ).toEqual([past, past, past, past, undefined, past, past])
     const capped = { count: OPERATOR_GAUGE_CAP, atLeast: true }
     expect(
       {
@@ -929,6 +946,7 @@ describe("how an operator's read of a queue's gauges counts", () => {
         runningRunsLapsed: exactly(0),
         tasksWithADeadline: exactly(2),
         tasksPastTheirDeadline: exactly(1),
+        liveTasks: exactly(0),
       },
       claimLagMs: 8_000,
       leaseHeadroomMs: null,
@@ -1074,5 +1092,251 @@ describe("how an operator's read of an event's waiters is read", () => {
       [past.waiters.rows.length, past.waiters.atLeast, at.waiters.rows.length, at.waiters.atLeast],
       'mutation-verdict:behavior:operator-reads-stop-the-waiters-at-the-cap',
     ).toEqual([OPERATOR_GAUGE_CAP, true, OPERATOR_GAUGE_CAP, false])
+  })
+})
+
+describe("how an operator's read of a queue's gauges counts its live tasks", () => {
+  it('counts the live tasks of every leg, and dates the oldest', async () => {
+    const { reads } = readsAnswering(
+      status({ live: [NOW - 9_000, NOW - 2_000], moreLive: [NOW - 4_000, NOW, NOW + 50] }),
+    )
+    const answer = await reads.queueStatus('q')
+    expect(
+      { liveTasks: answer.gauges.liveTasks, oldestLiveTaskAgeMs: answer.oldestLiveTaskAgeMs },
+      'mutation-verdict:behavior:operator-reads-count-the-live-tasks-of-every-leg',
+    ).toEqual({ liveTasks: exactly(5), oldestLiveTaskAgeMs: 9_000 })
+    // The live tasks are in no gauge of runs, and they move no instant of the queue's head.
+    expect({
+      pendingRuns: answer.gauges.pendingRuns,
+      claimLagMs: answer.claimLagMs,
+      nextWakeAtMs: answer.nextWakeAtMs,
+    }).toEqual({ pendingRuns: exactly(0), claimLagMs: null, nextWakeAtMs: null })
+    const empty = await readsAnswering(status({})).reads.queueStatus('q')
+    expect({
+      liveTasks: empty.gauges.liveTasks,
+      oldestLiveTaskAgeMs: empty.oldestLiveTaskAgeMs,
+    }).toEqual({ liveTasks: exactly(0), oldestLiveTaskAgeMs: null })
+  })
+
+  it('stops the gauge of live tasks at its cap, over the legs together', async () => {
+    const half = OPERATOR_GAUGE_CAP / 2
+    const atTheCap = await readsAnswering(
+      status({
+        live: Array.from({ length: half }, () => 1_000),
+        moreLive: Array.from({ length: half }, () => 2_000),
+      }),
+    ).reads.queueStatus('q')
+    const past = await readsAnswering(
+      status({
+        live: Array.from({ length: half }, () => 1_000),
+        moreLive: Array.from({ length: half + 1 }, () => 2_000),
+      }),
+    ).reads.queueStatus('q')
+    expect(
+      [atTheCap.gauges.liveTasks, past.gauges.liveTasks],
+      'mutation-verdict:behavior:operator-reads-stop-the-gauge-of-live-tasks-at-its-cap',
+    ).toEqual([exactly(OPERATOR_GAUGE_CAP), { count: OPERATOR_GAUGE_CAP, atLeast: true }])
+  })
+
+  it('counts a live task whose enqueue instant is not readable, lists it, and dates the oldest from the rest', async () => {
+    const answer = await readsAnswering(
+      status({ live: ['long ago', NOW - 3_000] }),
+    ).reads.queueStatus('q')
+    expect(
+      {
+        liveTasks: answer.gauges.liveTasks,
+        oldestLiveTaskAgeMs: answer.oldestLiveTaskAgeMs,
+        corrupt: answer.corrupt,
+      },
+      'mutation-verdict:behavior:operator-reads-count-a-live-task-whose-instant-is-not-readable',
+    ).toEqual({
+      liveTasks: exactly(2),
+      oldestLiveTaskAgeMs: 3_000,
+      corrupt: [
+        {
+          field: 'tasks.enqueue_at_ms',
+          taskId: 'l0',
+          reason: 'not-an-exact-integer',
+          stored: 'string',
+        },
+      ],
+    })
+  })
+})
+
+/** `aged-tasks` answers its three statements in order: the two legs of live tasks, and database time. */
+const aged = (first: [string, Stored][], second: [string, Stored][] = [], nowMs: Stored = NOW) => {
+  const leg = (rows: [string, Stored][]) =>
+    rows.map(([taskId, at]) => ({
+      task_id: taskId,
+      task_name: 'job',
+      state: 'sleeping',
+      enqueue_at_ms: at,
+    }))
+  return { 'aged-tasks': [leg(first), leg(second), [{ now_ms: nowMs }]] }
+}
+
+describe("how an operator's read of a queue's oldest live tasks is read", () => {
+  it('lists a task from the instant it is as old as asked, with its age, and not a millisecond before', async () => {
+    const rows: [string, Stored][] = [
+      ['a', NOW - 5_000],
+      ['b', NOW - 1_000],
+      ['c', NOW],
+    ]
+    const asOldAs = async (olderThanSeconds: number) => {
+      const { reads } = readsAnswering(aged(rows))
+      const answer = await reads.agedTasks('q', { olderThanSeconds, limit: 20 })
+      return answer.tasks.rows.map((task) => [task.taskId, task.ageMs])
+    }
+    expect(
+      {
+        any: await asOldAs(0),
+        aSecond: await asOldAs(1),
+        aMillisecondMore: await asOldAs(1.001),
+        fiveSeconds: await asOldAs(5),
+        more: await asOldAs(5.001),
+      },
+      'mutation-verdict:behavior:operator-reads-list-a-task-once-it-is-as-old-as-asked',
+    ).toEqual({
+      any: [
+        ['a', 5_000],
+        ['b', 1_000],
+        ['c', 0],
+      ],
+      aSecond: [
+        ['a', 5_000],
+        ['b', 1_000],
+      ],
+      aMillisecondMore: [['a', 5_000]],
+      fiveSeconds: [['a', 5_000]],
+      more: [],
+    })
+    const { reads, sent } = readsAnswering(aged(rows), 1)
+    expect(await reads.agedTasks('q', { olderThanSeconds: 5, limit: 20 })).toEqual({
+      nowMs: NOW,
+      fakeClock: true,
+      tasks: {
+        rows: [
+          {
+            taskId: 'a',
+            taskName: 'job',
+            state: 'sleeping',
+            enqueueAtMs: NOW - 5_000,
+            ageMs: 5_000,
+          },
+        ],
+        atLeast: false,
+      },
+      corrupt: [],
+    })
+    expect(sent).toEqual(['aged-tasks', 'fake-clock'])
+  })
+
+  it('merges the legs oldest first, and tasks of one instant by id in code point order', async () => {
+    const { reads } = readsAnswering(
+      aged(
+        [
+          ['t3', 100],
+          ['t1', 300],
+        ],
+        [
+          ['t2', 100],
+          ['t0', 200],
+          ['\u{1F600}', 100],
+          ['\uFFFD', 100],
+        ],
+      ),
+    )
+    const answer = await reads.agedTasks('q', { olderThanSeconds: 0, limit: 20 })
+    expect(
+      answer.tasks.rows.map((task) => task.taskId),
+      'mutation-verdict:behavior:operator-reads-merge-the-live-legs-oldest-first',
+    ).toEqual(['t2', 't3', '\uFFFD', '\u{1F600}', 't0', 't1'])
+  })
+
+  it('reads each leg one row past the limit, lists the limit across the legs, and says when more are as old', async () => {
+    const leg = (prefix: string, at: number): [string, Stored][] => [
+      [`${prefix}0`, at],
+      [`${prefix}1`, at + 1],
+      [`${prefix}2`, at + 2],
+    ]
+    const { reads, args } = readsAnswering(aged(leg('x', 100), leg('y', 50)))
+    const answer = await reads.agedTasks('q', { olderThanSeconds: 0, limit: 2 })
+    expect(
+      (args['aged-tasks'] ?? []).map((bound) => bound.at(-1)),
+      'mutation-verdict:behavior:operator-reads-read-a-live-leg-one-row-past-its-limit',
+    ).toEqual([3, 3, undefined])
+    expect(
+      { rows: answer.tasks.rows.map((task) => task.taskId), atLeast: answer.tasks.atLeast },
+      'mutation-verdict:behavior:operator-reads-say-when-more-tasks-are-as-old',
+    ).toEqual({ rows: ['y0', 'y1'], atLeast: true })
+    // Exactly the limit across the legs holds no more.
+    const exact = await readsAnswering(aged([['p', 1]], [['q', 2]])).reads.agedTasks('q', {
+      olderThanSeconds: 0,
+      limit: 2,
+    })
+    expect({ rows: exact.tasks.rows.length, atLeast: exact.tasks.atLeast }).toEqual({
+      rows: 2,
+      atLeast: false,
+    })
+  })
+
+  it('lists a task whose enqueue instant is not readable however old was asked, with no age, and names it', async () => {
+    const { reads } = readsAnswering(
+      aged([
+        ['young', NOW],
+        ['broken', 1.5],
+      ]),
+    )
+    const answer = await reads.agedTasks('q', { olderThanSeconds: 3600, limit: 20 })
+    expect(
+      { rows: answer.tasks.rows, corrupt: answer.corrupt },
+      'mutation-verdict:behavior:operator-reads-list-a-task-whose-enqueue-instant-is-not-readable',
+    ).toEqual({
+      rows: [
+        { taskId: 'broken', taskName: 'job', state: 'sleeping', enqueueAtMs: null, ageMs: null },
+      ],
+      corrupt: [
+        {
+          field: 'tasks.enqueue_at_ms',
+          taskId: 'broken',
+          reason: 'not-an-exact-integer',
+          stored: 'number',
+          value: '1.5',
+        },
+      ],
+    })
+    // With no database time nothing says a task is younger than asked, so every one is listed.
+    const undated = await readsAnswering(aged([['young', NOW]], [], 'now')).reads.agedTasks('q', {
+      olderThanSeconds: 3600,
+      limit: 20,
+    })
+    expect({
+      nowMs: undated.nowMs,
+      rows: undated.tasks.rows.map((task) => [task.taskId, task.ageMs]),
+      corrupt: undated.corrupt.map((entry) => entry.field),
+    }).toEqual({ nowMs: null, rows: [['young', null]], corrupt: ['derived.epoch_ms'] })
+  })
+
+  it('refuses an age or a limit it cannot take, before anything is sent', async () => {
+    const refused: unknown[] = []
+    for (const options of [
+      { olderThanSeconds: -1, limit: 20 },
+      { olderThanSeconds: Number.NaN, limit: 20 },
+      { olderThanSeconds: 0, limit: 0 },
+      { olderThanSeconds: 0, limit: 1.5 },
+      { olderThanSeconds: 0, limit: OPERATOR_LIST_CAP + 1 },
+    ]) {
+      const { reads, sent } = readsAnswering(aged([]))
+      const answer = await reads.agedTasks('q', options).then(
+        () => 'accepted',
+        (error: unknown) => (error instanceof RangeError ? 'refused' : `another error: ${error}`),
+      )
+      refused.push([answer, sent])
+    }
+    expect(
+      refused,
+      'mutation-verdict:behavior:operator-reads-refuse-an-age-or-a-limit-it-cannot-take',
+    ).toEqual(refused.map(() => ['refused', []]))
   })
 })

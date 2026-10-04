@@ -79,6 +79,7 @@ const OWED_LINES: readonly (readonly string[])[] = [
   ['stuck', '--queue', QUEUE, '--json', '--grace', '0s'],
   ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
   ['stuck', '--queue', QUEUE, '--json', '--grace', '30s', '--limit', '1'],
+  ['stuck', '--queue', QUEUE, '--json', '--older-than', '1m', '--fail-if-any'],
   ['stats', '--queue', QUEUE, '--json'],
   ['sizes', '--queue', QUEUE, '--json'],
 ]
@@ -176,11 +177,13 @@ describe('the CLI on every selected dialect', () => {
           const { exit, stdout } = answers.get(line.join(' ')) ?? { exit: -1, stdout: '{}' }
           return { exit, listed: (JSON.parse(stdout) as { listed?: number }).listed }
         }
-        expect(OWED_LINES.slice(0, 4).map(listed)).toEqual([
+        expect(OWED_LINES.slice(0, 5).map(listed)).toEqual([
           { exit: 0, listed: 0 },
           { exit: 0, listed: 4 },
           { exit: exitCode('found'), listed: 4 },
           { exit: 0, listed: 2 },
+          // The four live tasks, each a minute old, and no row of a leg under the default grace.
+          { exit: exitCode('found'), listed: 4 },
         ])
       }, 120_000)
 

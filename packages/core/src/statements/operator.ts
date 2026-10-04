@@ -247,6 +247,24 @@ export const taskDeadlinesRead = defineStatement(
 )
 
 /**
+ * The live tasks a store's predicate takes, in the order they were enqueued, up to a limit:
+ * a leg of `aged-tasks`, and of the gauge of live tasks in `queue-status`. `rows` names
+ * the queue and one live state and compares the enqueue instant, so the index of live
+ * tasks hands the rows out oldest first, and it holds the instant to no bounds.
+ */
+export const liveTasksRead = defineStatement(
+  'live-tasks',
+  (binds: { limit: number; rows: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select(['t.task_id', 't.task_name', 't.state', 't.enqueue_at_ms'])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy('t.enqueue_at_ms')
+      .orderBy('t.task_id')
+      .limit(binds.limit),
+)
+
+/**
  * `event-waiters`: the waits of a queue registered on one event that are still waiting,
  * in the order of their key, up to a limit. A wait holds its task, so the task of each is
  * read from the wait's own row.

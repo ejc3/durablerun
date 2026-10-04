@@ -33,5 +33,6 @@
   "stuck-runs": ["read"],
   "queue-status": ["read"],
   "table-rows": ["read"],
-  "event-waiters": ["read"]
+  "event-waiters": ["read"],
+  "aged-tasks": ["read"]
 }

@@ -47,7 +47,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
-import { rowsListed, sizesView, statsView, stuckView } from './queue.js'
+import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 
 /** Where the CLI writes. The bin hands it the process's streams, and a test its own. */
@@ -615,22 +615,33 @@ async function readableQueue({ invocation, store }: Context): Promise<string | A
   return typeof version === 'number' ? queue : { ...version, view: { queue, ...version.view } }
 }
 
+/** The seconds a duration flag names, or null for a value it cannot take. */
+function secondsOf(shown: string): number | null {
+  const seconds = durationSeconds(shown)
+  return seconds === null || seconds * 1000 > MAX_DURATION_MS ? null : seconds
+}
+
+const durationRefused = (flag: string): Answer =>
+  flagRefused(
+    `--${flag} takes a whole number and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years`,
+  )
+
 /**
  * What a move of the driver is owed to in one queue, and has been for at least the grace,
- * on stdout whatever the command exits with. Listing a row is not a failure: the command
- * exits `done` unless it was asked to fail on one. It exits `unreadable` when a row it
- * read holds an instant that is not readable, which it lists all the same, and that exit
- * comes before `found`, so a script never takes a report with a corrupt row for a count.
+ * on stdout whatever the command exits with. With `--older-than` it also lists the live
+ * tasks enqueued at least that long ago, which is an age and no lateness. Listing a row is
+ * not a failure: the command exits `done` unless it was asked to fail on one, and then a
+ * row of any list it printed counts. It exits `unreadable` when a row it read holds an
+ * instant that is not readable, which it lists all the same, and that exit comes before
+ * `found`, so a script never takes a report with a corrupt row for a count.
  */
 const stuck: Handler = async (context) => {
   const { strings, booleans } = context.invocation
-  const graceSeconds =
-    strings.grace === undefined ? DUE_GRACE_MS / 1000 : durationSeconds(strings.grace)
-  if (graceSeconds === null || graceSeconds * 1000 > MAX_DURATION_MS) {
-    return flagRefused(
-      '--grace takes a whole number and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years',
-    )
-  }
+  const graceSeconds = strings.grace === undefined ? DUE_GRACE_MS / 1000 : secondsOf(strings.grace)
+  if (graceSeconds === null) return durationRefused('grace')
+  const asked = strings['older-than']
+  const olderThanSeconds = asked === undefined ? undefined : secondsOf(asked)
+  if (olderThanSeconds === null) return durationRefused('older-than')
   const limit =
     strings.limit === undefined
       ? STUCK_DEFAULT_LIMIT
@@ -642,13 +653,28 @@ const stuck: Handler = async (context) => {
   }
   const queue = await readableQueue(context)
   if (typeof queue !== 'string') return queue
-  const owed = await context.store.operator.stuckRuns(queue, { graceSeconds, limit })
-  const listed = rowsListed(owed)
+  const { operator } = context.store
+  const owed = await operator.stuckRuns(queue, { graceSeconds, limit })
+  const aged =
+    olderThanSeconds === undefined
+      ? undefined
+      : await operator.agedTasks(queue, { olderThanSeconds, limit })
+  const listed = rowsListed(owed) + (aged?.tasks.rows.length ?? 0)
+  const notReadable = owed.corrupt.length + (aged?.corrupt.length ?? 0)
   const found = booleans['fail-if-any'] === true && listed > 0
   return {
-    exit: owed.corrupt.length > 0 ? 'unreadable' : found ? 'found' : 'done',
+    exit: notReadable > 0 ? 'unreadable' : found ? 'found' : 'done',
     holdsFacts: true,
-    view: { queue, graceSeconds, limit, listed, ...stuckView(owed) },
+    view: {
+      queue,
+      graceSeconds,
+      limit,
+      listed,
+      ...stuckView(owed),
+      ...(aged === undefined || olderThanSeconds === undefined
+        ? {}
+        : { agedLive: agedLiveView(aged, olderThanSeconds) }),
+    },
   }
 }
 

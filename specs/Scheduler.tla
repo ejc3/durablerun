@@ -345,6 +345,8 @@
 \*     to a cap; no engine actor sends it
 \*   'event-waiters' [read] -- an operator's read of the waits registered on one
 \*     event that are still waiting; no engine actor sends it
+\*   'aged-tasks' [read] -- an operator's read of a queue's live tasks in the order
+\*     they were enqueued, oldest first; no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

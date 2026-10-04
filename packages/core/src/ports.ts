@@ -4,6 +4,8 @@ import type {
   CheckpointWrite,
   ClaimedRun,
   EventState,
+  AgedTasks,
+  AgedTasksOptions,
   EventWaiters,
   FailOutcome,
   FailedRollback,
@@ -288,6 +290,9 @@ export interface OperatorReads {
    * least the grace: what a claim would take, and what a sweep would reclaim or cancel.
    */
   stuckRuns(queue: string, options: StuckRunsOptions): Promise<StuckRuns>
+
+  /** The live tasks of a queue enqueued at least so long ago, oldest first: an age, and no defect. */
+  agedTasks(queue: string, options: AgedTasksOptions): Promise<AgedTasks>
 
   /** A queue's gauges, each stopped at a cap, and the instants at the head of the queue. */
   queueStatus(queue: string): Promise<QueueStatus>

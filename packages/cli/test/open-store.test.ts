@@ -63,6 +63,7 @@ describe('the store opener', () => {
         expect(Object.keys(store.admin).sort()).toEqual(['migrate', 'nowEpochMs', 'schemaVersion'])
         expect(Object.keys(store.scheduler).sort()).toEqual(['getCheckpoints', 'getTaskResult'])
         expect(Object.keys(store.operator).sort()).toEqual([
+          'agedTasks',
           'eventWaiters',
           'queueStatus',
           'stuckRuns',

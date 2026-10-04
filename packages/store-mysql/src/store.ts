@@ -499,6 +499,17 @@ export const COUNTED_DEADLINES: readonly string[] = LIVE_STATES.map(
 )
 
 /**
+ * The live tasks of a queue in one state, which `tasks_live` hands out in the order they
+ * were enqueued: the rows the operator's read of a queue's oldest live tasks takes, and
+ * its gauge of live tasks counts. One leg to a live state, because the index orders by the
+ * enqueue instant within a state. Each binds the queue once.
+ */
+export const LIVE_TASKS_BY_AGE: readonly string[] = LIVE_STATES.map(
+  (state) => `t.queue = ? AND t.state = '${state}'
+  AND ${storedAtAll('t.enqueue_at_ms')}`,
+)
+
+/**
  * The task still admits this run's completion: it is already terminal, or this is its
  * only live run and no saga began. A task that is rolling back cannot complete
  * (DESIGN.md §3.10, specs/Sagas.tla ForwardFrozenInSaga).

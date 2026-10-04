@@ -42,6 +42,7 @@ export interface PortUse {
     | 'operator.taskFacts'
     | 'operator.taskIdByKey'
     | 'operator.stuckRuns'
+    | 'operator.agedTasks'
     | 'operator.queueStatus'
     | 'operator.tableRows'
     | 'operator.eventWaiters'
@@ -122,6 +123,7 @@ const CHECKPOINTS: PortUse = { call: 'scheduler.getCheckpoints', labels: ['get-c
 const TASK_ID_BY_KEY: PortUse = { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] }
 const TASK_FACTS: PortUse = { call: 'operator.taskFacts', labels: ['task-facts', 'fake-clock'] }
 const STUCK_RUNS: PortUse = { call: 'operator.stuckRuns', labels: ['stuck-runs', 'fake-clock'] }
+const AGED_TASKS: PortUse = { call: 'operator.agedTasks', labels: ['aged-tasks', 'fake-clock'] }
 const QUEUE_STATUS: PortUse = {
   call: 'operator.queueStatus',
   labels: ['queue-status', 'fake-clock'],
@@ -289,12 +291,19 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
         value: 'N',
         description: `the most rows each leg lists, from 1 to ${OPERATOR_LIST_CAP}; ${STUCK_DEFAULT_LIMIT} when not given`,
       },
+      'older-than': {
+        type: 'string',
+        value: 'D',
+        description:
+          'also list the live tasks enqueued at least this long ago, oldest first, each with its age: a whole number and s, m, h or d, as in 1h',
+      },
       'fail-if-any': { type: 'boolean', description: 'exit 9 when any row is listed' },
     },
     opensStore: true,
     writes: false,
     repeat: 'read',
-    ports: [SCHEMA_VERSION, STUCK_RUNS],
+    // The oldest live tasks are read only with --older-than.
+    ports: [SCHEMA_VERSION, STUCK_RUNS, AGED_TASKS],
     exits: [...QUEUE_READ_EXITS, 'found', 'unreadable'],
     faults: READ_FAULTS,
   },

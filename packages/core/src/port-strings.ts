@@ -338,6 +338,7 @@ export const OPERATOR_READ_STRINGS = frozenThroughout({
   taskIdByKey: ['queue', 'idempotencyKey'],
   eventState: ['queue', 'eventName'],
   stuckRuns: ['queue', null],
+  agedTasks: ['queue', null],
   queueStatus: ['queue'],
   tableRows: ['queue'],
   eventWaiters: ['queue', 'eventName'],

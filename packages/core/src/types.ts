@@ -461,6 +461,8 @@ export interface QueueGauges {
   readonly tasksWithADeadline: Gauge
   /** Live tasks whose cancellation deadline is at or before database time. */
   readonly tasksPastTheirDeadline: Gauge
+  /** Live tasks: every task that is pending, running or sleeping. */
+  readonly liveTasks: Gauge
 }
 
 /** What an operator reads of one queue's state. Every member but `fakeClock` is read from one snapshot. */
@@ -484,6 +486,46 @@ export interface QueueStatus {
    * read of a queue's next wake answers.
    */
   readonly nextWakeAtMs: number | null
+  /**
+   * Database time less the instant the oldest live task was enqueued, or null when the
+   * queue holds no live task. It is an age and no lateness: a task is live for as long as
+   * its work takes.
+   */
+  readonly oldestLiveTaskAgeMs: number | null
+  readonly corrupt: readonly CorruptInteger[]
+}
+
+/** A live task, as the read of a queue's oldest live tasks lists it. */
+export interface AgedTask {
+  readonly taskId: string
+  readonly taskName: string
+  readonly state: string
+  /** When the task was enqueued. */
+  readonly enqueueAtMs: number | null
+  /** Database time less `enqueueAtMs`, or null when either is not readable. */
+  readonly ageMs: number | null
+}
+
+/** What `agedTasks` is asked for. */
+export interface AgedTasksOptions {
+  /** How long ago a task must have been enqueued to be listed. Zero lists every live task. */
+  readonly olderThanSeconds: number
+  /** The most tasks listed, from 1 to `OPERATOR_LIST_CAP`. */
+  readonly limit: number
+}
+
+/**
+ * The live tasks of one queue that were enqueued at least so long ago, oldest first and
+ * stopped at the limit. It reports an age, and an age is not a defect: nothing says how
+ * long a task's work may take. It lists what no leg of `stuckRuns` can, because no move
+ * is owed to any of them: a run under a lease its worker keeps alive, a run parked on an
+ * event nobody emits, and a task a worker parks again on every tick. Every member but
+ * `fakeClock` is read from one snapshot.
+ */
+export interface AgedTasks {
+  readonly nowMs: number | null
+  readonly fakeClock: boolean
+  readonly tasks: Capped<AgedTask>
   readonly corrupt: readonly CorruptInteger[]
 }
 

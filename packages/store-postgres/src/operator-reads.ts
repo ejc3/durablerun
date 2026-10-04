@@ -14,6 +14,7 @@ import {
   COUNTED_PENDING_RUNS,
   COUNTED_RUNNING_RUNS,
   COUNTED_SLEEPING_RUNS,
+  LIVE_TASKS_BY_AGE,
   SWEEP_CANCELS_DUE,
   SWEEP_CLAIMS_EXPIRED,
   SWEEP_LIVE_RUN_OF_TASK,
@@ -49,6 +50,8 @@ class PostgresOperatorReads {
           new FencedBatch('table-rows', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
         eventWaiters: () =>
           new FencedBatch('event-waiters', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        agedTasks: () =>
+          new FencedBatch('aged-tasks', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
       },
       fakeClock: async () => {
         const [flag] = await this.db.batch(
@@ -75,6 +78,7 @@ class PostgresOperatorReads {
         sleepingRuns: (queue) => sqlFragment(COUNTED_SLEEPING_RUNS, [queue]),
         runningRuns: (queue) => sqlFragment(COUNTED_RUNNING_RUNS, [queue]),
         tasksWithADeadline: (queue) => COUNTED_DEADLINES.map((leg) => sqlFragment(leg, [queue])),
+        liveTasks: (queue) => LIVE_TASKS_BY_AGE.map((leg) => sqlFragment(leg, [queue])),
       },
     })
   }

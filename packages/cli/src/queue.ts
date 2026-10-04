@@ -1,4 +1,6 @@
 import {
+  type AgedTask,
+  type AgedTasks,
   type Capped,
   type Gauge,
   type LapsedRun,
@@ -77,6 +79,37 @@ export function stuckView(
   }
 }
 
+const agedTaskView = (task: AgedTask): Printed<AgedTask> => ({
+  taskId: task.taskId,
+  taskName: task.taskName,
+  state: task.state,
+  enqueueAtMs: task.enqueueAtMs,
+  ageMs: task.ageMs,
+})
+
+/**
+ * What `stuck --older-than` adds to its report, under `agedLive`: the live tasks enqueued
+ * at least that long ago, oldest first, each with its age. It is read after the legs, in
+ * a snapshot of its own, so it prints the database time it was read at. An age is not a
+ * defect: a row here says a task has been live that long, and nothing about why.
+ */
+export function agedLiveView(
+  aged: AgedTasks,
+  olderThanSeconds: number,
+): Printed<Omit<AgedTasks, 'nowMs' | 'tasks'> & Capped<AgedTask>> & {
+  readonly olderThanSeconds: number
+  readonly databaseNowEpochMs: unknown
+} {
+  return {
+    olderThanSeconds,
+    databaseNowEpochMs: aged.nowMs,
+    fakeClock: aged.fakeClock,
+    rows: aged.tasks.rows.map(agedTaskView),
+    atLeast: aged.tasks.atLeast,
+    corrupt: aged.corrupt.map(corruptView),
+  }
+}
+
 const gaugeView = (gauge: Gauge): Printed<Gauge> => ({ count: gauge.count, atLeast: gauge.atLeast })
 
 /** Every gauge of a set, each under its own name, so a gauge core adds prints with no line here. */
@@ -106,6 +139,7 @@ export function statsView(status: QueueStatus): Printed<Omit<QueueStatus, 'nowMs
     claimLagMs: status.claimLagMs,
     leaseHeadroomMs: status.leaseHeadroomMs,
     nextWakeAtMs: status.nextWakeAtMs,
+    oldestLiveTaskAgeMs: status.oldestLiveTaskAgeMs,
     corrupt: status.corrupt.map(corruptView),
   }
 }

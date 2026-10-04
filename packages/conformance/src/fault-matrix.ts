@@ -99,6 +99,7 @@ export const MATRIX_READ_LABELS = [
   'queue-status',
   'table-rows',
   'event-waiters',
+  'aged-tasks',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -897,6 +898,7 @@ export async function runFaultMatrixCase(
       await go(() => operator.queueStatus(Q))
       await go(() => operator.tableRows(Q))
       await go(() => operator.eventWaiters(Q, 'go'))
+      await go(() => operator.agedTasks(Q, { olderThanSeconds: 0, limit: 10 }))
     })
     await world.run()
 

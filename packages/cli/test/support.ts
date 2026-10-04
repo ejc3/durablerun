@@ -575,6 +575,8 @@ export function comparedLines(
     .map(({ verb }) => [verb, '--queue', QUEUE, '--json'])
   // What a claim or a sweep would take this instant, one row to a leg.
   lines.push(['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--limit', '1'])
+  // And every live task, by its age.
+  lines.push(['stuck', '--queue', QUEUE, '--json', '--older-than', '0s'])
   for (const taskId of [...Object.values(seeded), 'no-such-task']) {
     for (const { verb } of reads.filter((spec) => spec.positionals.includes('taskId'))) {
       lines.push([verb, taskId, '--queue', QUEUE, '--json'])

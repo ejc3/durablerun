@@ -167,6 +167,10 @@ interface Reached {
   cancelled: number
   /** Runs under a lapsed lease whose task was also past its deadline, which are in two legs. */
   inBothLegs: number
+  /** Live tasks enqueued at least `AGED_SECONDS` before a reading, which the read of the oldest lists. */
+  agedLive: number
+  /** Live tasks enqueued more recently than that, which it leaves out. */
+  youngLive: number
 }
 
 const nothingReached = (): Reached => ({
@@ -176,6 +180,8 @@ const nothingReached = (): Reached => ({
   claimTimeouts: 0,
   cancelled: 0,
   inBothLegs: 0,
+  agedLive: 0,
+  youngLive: 0,
 })
 
 /**
@@ -308,6 +314,12 @@ function statusFromTheDump(dump: ProtocolSnapshot, nowMs: number): QueueStatus {
       .filter((task) => task.queue === Q && live.includes(String(task.state)))
       .map((task) => instantOf(task, 'cancel_at_ms')),
   )
+  const enqueued = held(
+    dump.tasks
+      .filter((task) => task.queue === Q && live.includes(String(task.state)))
+      .map((task) => instantOf(task, 'enqueue_at_ms')),
+  )
+  const firstEnqueued = least(enqueued)
   const cameDue = (instants: readonly number[]) => instants.filter((at) => at <= nowMs)
   const gauge = (rows: readonly number[]) => ({
     count: Math.min(rows.length, OPERATOR_GAUGE_CAP),
@@ -327,10 +339,12 @@ function statusFromTheDump(dump: ProtocolSnapshot, nowMs: number): QueueStatus {
       runningRunsLapsed: gauge(cameDue(running)),
       tasksWithADeadline: gauge(deadlines),
       tasksPastTheirDeadline: gauge(cameDue(deadlines)),
+      liveTasks: gauge(enqueued),
     },
     claimLagMs: head === null ? null : nowMs - head,
     leaseHeadroomMs: firstExpiry === null ? null : firstExpiry - nowMs,
     nextWakeAtMs: least([...pending, ...sleeping, ...running, ...deadlines]),
+    oldestLiveTaskAgeMs: firstEnqueued === null ? null : nowMs - firstEnqueued,
     corrupt: [],
   }
 }
@@ -348,8 +362,43 @@ function rowsFromTheDump(dump: ProtocolSnapshot, queue: string): TableRows {
   }
 }
 
-/** The gauges and the row counts of the queue, each against a count made from a dump of every table. */
-async function countsAgainstTheDump(f: StoreFixture, where: string, nowMs: number): Promise<void> {
+/** How old a live task must be for the readings of a walk to list it, in seconds. */
+const AGED_SECONDS = 45
+
+/**
+ * What `agedTasks` must answer for one queue with a limit past its live tasks, made from the
+ * same dump: every live task enqueued at least so long ago, oldest first and then by id.
+ */
+function agedFromTheDump(dump: ProtocolSnapshot, nowMs: number, olderThanMs: number) {
+  const live: readonly string[] = LIVE_STATES
+  const rows = dump.tasks
+    .filter((task) => task.queue === Q && live.includes(String(task.state)))
+    .map((task) => ({
+      taskId: String(task.task_id),
+      taskName: String(task.task_name),
+      state: String(task.state),
+      enqueueAtMs: Number(task.enqueue_at_ms),
+    }))
+    .filter((task) => task.enqueueAtMs <= nowMs - olderThanMs)
+    .sort(
+      (left, right) =>
+        left.enqueueAtMs - right.enqueueAtMs ||
+        (left.taskId < right.taskId ? -1 : left.taskId > right.taskId ? 1 : 0),
+    )
+    .map((task) => ({ ...task, ageMs: nowMs - task.enqueueAtMs }))
+  return { nowMs, fakeClock: true, tasks: { rows, atLeast: false }, corrupt: [] }
+}
+
+/**
+ * The gauges, the row counts and the oldest live tasks of the queue, each against a count
+ * or a list made from a dump of every table.
+ */
+async function countsAgainstTheDump(
+  f: StoreFixture,
+  where: string,
+  nowMs: number,
+  reached?: Reached,
+): Promise<void> {
   const reads = f.operatorReadsOver(f.raw)
   const dump = await snapshot(f.raw)
   expect(
@@ -360,6 +409,23 @@ async function countsAgainstTheDump(f: StoreFixture, where: string, nowMs: numbe
     { where, rows: await reads.tableRows(Q) },
     'mutation-verdict:behavior:operator-row-counts-equal-a-count-of-the-dump',
   ).toEqual({ where, rows: rowsFromTheDump(dump, Q) })
+  // The live tasks, oldest first: every one of them, and those enqueued long enough ago.
+  const everyLive = agedFromTheDump(dump, nowMs, 0)
+  for (const olderThanSeconds of [0, AGED_SECONDS]) {
+    const aged = agedFromTheDump(dump, nowMs, olderThanSeconds * 1000)
+    expect(
+      {
+        where,
+        olderThanSeconds,
+        aged: await reads.agedTasks(Q, { olderThanSeconds, limit: OPERATOR_LIST_CAP }),
+      },
+      'mutation-verdict:behavior:operator-aged-equals-the-live-tasks-of-the-dump',
+    ).toEqual({ where, olderThanSeconds, aged })
+    if (olderThanSeconds > 0 && reached !== undefined) {
+      reached.agedLive += aged.tasks.rows.length
+      reached.youngLive += everyLive.tasks.rows.length - aged.tasks.rows.length
+    }
+  }
 }
 
 /**
@@ -377,6 +443,8 @@ const ROUNDS_AHEAD_MS = [0, 31_000, 62_000, 300_000, 4_000_000]
  * fails. Measured when the case was written, the same on every dialect because the walks
  * are: 86 pending and 12 sleeping runs that a claim took, 103 launches reopened, 14 started
  * runs failed for a lapsed lease, 4 tasks cancelled, and 2 runs in both legs of the sweep.
+ * Over the readings the walks also left 267 live tasks at least 45 seconds old, beside
+ * 26 younger ones, which the read of the oldest live tasks tells apart.
  * Each floor sits below that, so a change to the walk that moves a seed does not fail the
  * case for a row or two, and a walk that stops reaching a kind of move does.
  */
@@ -387,6 +455,8 @@ const FLOORS: Reached = {
   claimTimeouts: 10,
   cancelled: 3,
   inBothLegs: 1,
+  agedLive: 180,
+  youngLive: 10,
 }
 
 export function operatorQueueReadsConformance(
@@ -470,6 +540,8 @@ export function operatorQueueReadsConformance(
           sleepingRuns: exactly(2),
           runningRuns: exactly(2),
           tasksWithADeadline: exactly(1),
+          // Every task of the seed is live.
+          liveTasks: exactly(8),
         }
         expect(await reads.queueStatus(Q)).toEqual({
           nowMs: START,
@@ -484,6 +556,7 @@ export function operatorQueueReadsConformance(
           claimLagMs: 0,
           leaseHeadroomMs: LEASES_END_AT - START,
           nextWakeAtMs: START,
+          oldestLiveTaskAgeMs: 0,
           corrupt: [],
         })
         await at(LATER)
@@ -507,6 +580,7 @@ export function operatorQueueReadsConformance(
           claimLagMs: LATER - START,
           leaseHeadroomMs: LEASES_END_AT - LATER,
           nextWakeAtMs: START,
+          oldestLiveTaskAgeMs: LATER - START,
           corrupt: [],
         })
         const counted = (tables: Record<string, number>) => ({
@@ -651,7 +725,7 @@ export function operatorQueueReadsConformance(
             nowMs += ahead
             await f.admin.setFakeNowEpochMs(nowMs)
             const where = `walk ${seed}, round ${round}`
-            await countsAgainstTheDump(f, where, nowMs)
+            await countsAgainstTheDump(f, where, nowMs, reached)
             await finderAgainstTheEngine(f, where, `${seed}-round-${round}`, reached)
           }
         })
@@ -660,7 +734,8 @@ export function operatorQueueReadsConformance(
       const missed = (Object.keys(FLOORS) as (keyof Reached)[]).filter(
         (kind) => reached[kind] < FLOORS[kind],
       )
-      expect({ missed, reached }).toEqual({ missed: [], reached })
+      // A floor that is missed prints everything the walks reached.
+      expect(missed, `the walks reached ${JSON.stringify(reached)}`).toEqual([])
     }, 600_000)
 
     it('counts a row whose instant is outside its bounds, lists it as corrupt, and agrees with the engine about the rest', () =>
@@ -702,10 +777,12 @@ export function operatorQueueReadsConformance(
             runningRunsLapsed: exactly(1),
             tasksWithADeadline: exactly(1),
             tasksPastTheirDeadline: exactly(0),
+            liveTasks: exactly(8),
           },
           claimLagMs: LATER - START,
           leaseHeadroomMs: LEASES_END_AT - LATER,
           nextWakeAtMs: START,
+          oldestLiveTaskAgeMs: LATER - START,
           corrupt: [
             { field: 'runs.available_at_ms', runId: seeded.due.runId, ...outOfRange, value: '-1' },
             {
@@ -732,6 +809,120 @@ export function operatorQueueReadsConformance(
         const reached = nothingReached()
         await finderAgainstTheEngine(f, 'beside three corrupt rows', 'corrupt', reached)
         expect(reached).toEqual({ ...nothingReached(), sleepingPastWake: 2, lostLaunches: 1 })
+      }))
+
+    it('lists the live tasks of a queue enqueued at least so long ago, oldest first, each with its age, and no task that ended', () =>
+      inWorld('queue-aged', async (world) => {
+        const { f, at } = world
+        // A task that ended, and then three that stay live, enqueued a second apart: one a
+        // worker holds, one parked on an event nobody emits, and one that waits its turn.
+        await spawn(f, 'ended')
+        const ending = await claimActivated(f.store, Q, 'w-ended')
+        await f.store.complete(Q, ending.runId, ending.claimToken, '{}')
+        const held = await spawn(f, 'held')
+        await claimActivated(f.store, Q, 'w-held')
+        await at(START + 1_000)
+        const parked = await spawn(f, 'parked')
+        const parking = await claimActivated(f.store, Q, 'w-parked')
+        expect(await awaitOwned(f.store, Q, parking, 'approve', 'approval', null)).toEqual({
+          emitted: false,
+        })
+        await at(START + 2_000)
+        const waiting = await spawn(f, 'waits-its-turn')
+        await f.store.spawn('another-queue', 'job', '{}')
+        const now = START + 10_000
+        await at(now)
+        const recorder = new RecordingExecutor(f.raw)
+        const reads = f.operatorReadsOver(recorder)
+        const before = await snapshot(f.raw)
+        const live = (task: Spawned, taskName: string, state: string, enqueueAtMs: number) => ({
+          taskId: task.taskId,
+          taskName,
+          state,
+          enqueueAtMs,
+          ageMs: now - enqueueAtMs,
+        })
+        const oldest = [
+          live(held, 'held', 'running', START),
+          live(parked, 'parked', 'sleeping', START + 1_000),
+          live(waiting, 'waits-its-turn', 'pending', START + 2_000),
+        ]
+        const listing = (rows: unknown[], atLeast = false) => ({
+          nowMs: now,
+          fakeClock: true,
+          tasks: { rows, atLeast },
+          corrupt: [],
+        })
+        expect(
+          await reads.agedTasks(Q, { olderThanSeconds: 0, limit: 10 }),
+          'mutation-verdict:behavior:operator-aged-answers-a-seeded-queue',
+        ).toEqual(listing(oldest))
+        // A task is listed from the instant it is as old as asked. The parked one is nine
+        // seconds old.
+        expect(
+          await reads.agedTasks(Q, { olderThanSeconds: 9, limit: 10 }),
+          'mutation-verdict:behavior:operator-aged-lists-a-task-at-the-instant-it-is-as-old-as-asked',
+        ).toEqual(listing(oldest.slice(0, 2)))
+        expect(await reads.agedTasks(Q, { olderThanSeconds: 9.001, limit: 10 })).toEqual(
+          listing(oldest.slice(0, 1)),
+        )
+        expect(await reads.agedTasks(Q, { olderThanSeconds: 11, limit: 10 })).toEqual(listing([]))
+        // A limit lists the oldest, and says that more are as old.
+        expect(
+          await reads.agedTasks(Q, { olderThanSeconds: 0, limit: 2 }),
+          'mutation-verdict:behavior:operator-aged-stops-at-its-limit',
+        ).toEqual(listing(oldest.slice(0, 2), true))
+        expect(await reads.agedTasks(Q, { olderThanSeconds: 0, limit: 3 })).toEqual(listing(oldest))
+        // Another queue's task is its own queue's, and an empty queue has none.
+        const elsewhere = await reads.agedTasks('another-queue', { olderThanSeconds: 0, limit: 10 })
+        expect(elsewhere.tasks.rows.map((task) => task.taskName)).toEqual(['job'])
+        expect(await reads.agedTasks('an-empty-queue', { olderThanSeconds: 0, limit: 10 })).toEqual(
+          listing([]),
+        )
+        const status = await reads.queueStatus(Q)
+        expect({
+          liveTasks: status.gauges.liveTasks,
+          oldestLiveTaskAgeMs: status.oldestLiveTaskAgeMs,
+        }).toEqual({ liveTasks: exactly(3), oldestLiveTaskAgeMs: 10_000 })
+        // Every reading is a batch of reads, and nothing was written.
+        expect(new Set(recorder.batches.map((batch) => `${batch.label}/${batch.mode}`))).toEqual(
+          new Set(['aged-tasks/read', 'fake-clock/read', 'queue-status/read']),
+        )
+        expect(await snapshot(f.raw)).toEqual(before)
+        // Fixture-built: no engine path writes an enqueue instant outside its bounds. The
+        // task is listed however old was asked, with no age, and named, and the gauge still
+        // counts it and dates the oldest from the rest.
+        await f.raw.batch('fixture:out-of-bounds', [
+          { sql: 'UPDATE tasks SET enqueue_at_ms = -9 WHERE task_id = ?', args: [waiting.taskId] },
+        ])
+        const entry = {
+          field: 'tasks.enqueue_at_ms',
+          taskId: waiting.taskId,
+          reason: 'out-of-range',
+          stored: 'number',
+          value: '-9',
+        }
+        expect(
+          await reads.agedTasks(Q, { olderThanSeconds: 3600, limit: 10 }),
+          'mutation-verdict:behavior:operator-aged-lists-a-task-whose-enqueue-instant-is-outside-its-bounds',
+        ).toEqual({
+          ...listing([
+            {
+              taskId: waiting.taskId,
+              taskName: 'waits-its-turn',
+              state: 'pending',
+              enqueueAtMs: null,
+              ageMs: null,
+            },
+          ]),
+          corrupt: [entry],
+        })
+        const beside = await reads.queueStatus(Q)
+        expect({
+          liveTasks: beside.gauges.liveTasks,
+          oldestLiveTaskAgeMs: beside.oldestLiveTaskAgeMs,
+          corrupt: beside.corrupt,
+        }).toEqual({ liveTasks: exactly(3), oldestLiveTaskAgeMs: 10_000, corrupt: [entry] })
       }))
 
     it(
@@ -773,6 +964,17 @@ export function operatorQueueReadsConformance(
             runs: many.dueUnclaimed.rows.length,
             atLeast: many.dueUnclaimed.atLeast,
           }).toEqual({ runs: OPERATOR_LIST_CAP, atLeast: true })
+          // Every task is live, so the gauge of live tasks stops at its cap too, and the read
+          // of the oldest at the most a caller may ask for.
+          expect(
+            status.gauges.liveTasks,
+            'mutation-verdict:behavior:operator-gauge-of-live-tasks-stops-at-the-cap',
+          ).toEqual(capped)
+          const oldest = await reads.agedTasks(Q, { olderThanSeconds: 0, limit: OPERATOR_LIST_CAP })
+          expect({ tasks: oldest.tasks.rows.length, atLeast: oldest.tasks.atLeast }).toEqual({
+            tasks: OPERATOR_LIST_CAP,
+            atLeast: true,
+          })
           // A count of rows stops far higher, so it is exact here.
           const rows = await reads.tableRows(Q)
           expect({ tasks: rows.tables.tasks, runs: rows.tables.runs }).toEqual({
@@ -834,6 +1036,13 @@ export function operatorQueueReadsConformance(
         expect(status.nowMs).toBeGreaterThan(1_600_000_000_000)
         expect(owed.dueUnclaimed.rows.length).toBe(2)
         expect(status.gauges.runningRunsLapsed).toEqual(exactly(2))
+        // Every task of the seed is live, and far older than an hour by that clock.
+        const aged = await reads.agedTasks(Q, { olderThanSeconds: 3600, limit: 10 })
+        expect({ fakeClock: aged.fakeClock, tasks: aged.tasks.rows.length }).toEqual({
+          fakeClock: false,
+          tasks: 8,
+        })
+        expect(aged.nowMs).toBeGreaterThan(1_600_000_000_000)
       }))
   })
 }

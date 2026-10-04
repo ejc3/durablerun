@@ -98,7 +98,9 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     lines: () => [
       ['stuck', '--queue', QUEUE],
       ['stuck', '--queue', QUEUE, '--grace', '0s', '--limit', '5', '--fail-if-any'],
+      ['stuck', '--queue', QUEUE, '--older-than', '0s'],
       ['stuck', '--queue', QUEUE, '--grace', SENTINEL],
+      ['stuck', '--queue', QUEUE, '--older-than', SENTINEL],
       ['stuck', '--queue', QUEUE, '--limit', SENTINEL],
     ],
     shows: false,
@@ -225,7 +227,7 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
     ['explain', 'a-task', '--queue', QUEUE],
     ['explain', '--key', 'a-key', '--queue', QUEUE],
   ],
-  stuck: () => [['stuck', '--queue', QUEUE, '--fail-if-any']],
+  stuck: () => [['stuck', '--queue', QUEUE, '--fail-if-any', '--older-than', '1h']],
   stats: () => [['stats', '--queue', QUEUE]],
   sizes: () => [['sizes', '--queue', QUEUE]],
 }

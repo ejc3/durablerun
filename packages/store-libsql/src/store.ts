@@ -114,6 +114,7 @@ import {
   userRetrySuccessorInsert,
   wakeHasOwn,
   wakeRunsUpdate,
+  LIVE_STATES,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -470,6 +471,24 @@ export const COUNTED_DEADLINES: readonly string[] = [
   `t.queue = ? AND t.state IN ${LIVE}
   AND ${storedAtAll('t.cancel_at_ms')}`,
 ]
+
+/**
+ * The live tasks of a queue in one state, which `tasks_live` hands out in the order they
+ * were enqueued: the rows the operator's read of a queue's oldest live tasks takes, and
+ * its gauge of live tasks counts. One leg to a live state, because the index orders by the
+ * enqueue instant within a state. Each binds the queue once.
+ *
+ * Each leg writes the two terms of the index's own predicate as the index writes them,
+ * the live states and that the enqueue instant is not NULL. SQLite reads a partial index
+ * only for a statement that holds the index's terms, and the SQLite this store runs on
+ * (3.45) does not take the comparison below for the second of them. The comparison is
+ * what gives the index a range to read in order, so the leg stops at its limit: with the
+ * test for NULL alone the rows of a state are read whole and sorted.
+ */
+export const LIVE_TASKS_BY_AGE: readonly string[] = LIVE_STATES.map(
+  (state) => `t.queue = ? AND t.state IN ${LIVE} AND t.state = '${state}'
+  AND t.enqueue_at_ms IS NOT NULL AND ${storedAtAll('t.enqueue_at_ms')}`,
+)
 
 /**
  * The task still admits this run's completion: it is already terminal, or this is its
