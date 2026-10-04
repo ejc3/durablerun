@@ -6119,10 +6119,13 @@ with a grace of zero, the runs those two gauges count are the runs of `dueUnclai
 cases hold both to one dump of the tables: the gauges equal a count of it, and every run
 the dump shows as due is in one of the three legs under its own state. So when `claimLagMs`
 is more than a grace, `stuck` under that grace lists a row, and `--fail-if-any` exits 9 or
-10. `explain` reads one task. For a run that is due it names `pending-due-unclaimed`,
-`woken-unclaimed` or `sleeping-past-its-wake`, with the verdict `stuck` once the run is more
-than `DUE_GRACE_MS` late, and under the default grace `stuck` the command lists that run.
-`explain` does not test what a claim requires. It gives a run no claim admits the cause and
+10. `explain` reads one task. Three of its causes name a run that is due:
+`pending-due-unclaimed`, `woken-unclaimed` and `sleeping-past-its-wake`. Their verdict is
+`stuck` once the run is more than `DUE_GRACE_MS` late, and under the default grace `stuck`
+the command then holds that run in one of its three legs of due runs: it lists the run, or
+the leg says with `atLeast` that it holds more than its limit. A task past its cancellation
+deadline is named for the deadline before any of the three, and a row that is not readable
+is named as that. `explain` does not test what a claim requires. It gives a run no claim admits the cause and
 the verdict it gives any due run, and it does not say that no tick will take the run. The
 leg `stuck` lists the run in is what tells the two apart.
 
