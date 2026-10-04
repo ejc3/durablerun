@@ -306,6 +306,22 @@ export const MIGRATIONS: Migration[] = [
       'UPDATE events SET payload = payload WHERE payload IS NULL',
     ],
   },
+  {
+    // An operator asks which live tasks of a queue are the oldest: `stuck --older-than`
+    // lists them, and `stats` counts a queue's live tasks by state and names the age of
+    // the oldest. No index led by a queue held the tasks by when they were enqueued, so
+    // each of those reads walked every task the database holds. This index holds only live
+    // tasks, by state and then by enqueue instant, so a read of one state takes the oldest
+    // first and stops at its limit. A task enters it at spawn, moves in it when its state
+    // changes, and leaves it when the task ends, which is the write this version adds to
+    // those transitions. It is an index and nothing else: a build that predates it runs
+    // against this schema unchanged, and no statement the engine sends reads it.
+    version: 11,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS tasks_live ON tasks (queue, state, enqueue_at_ms)
+       WHERE state IN ('pending','running','sleeping')`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
@@ -314,7 +330,7 @@ export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version
  * The schema versions this build's reads accept. A read-only tool, such as the operator
  * CLI, answers against any version in the window and refuses one outside it, and it never
  * migrates. The window starts at version 5 because the release alpha.1 migrated its
- * databases to version 5 and nothing later: versions 6 to 10 add indexes, empty versions and
+ * databases to version 5 and nothing later: versions 6 to 11 add indexes, empty versions and
  * triggers, and no read selects a column that a later version adds. A database recorded
  * past `newest` was migrated by a newer build and is refused.
  */

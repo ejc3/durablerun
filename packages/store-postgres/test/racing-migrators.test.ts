@@ -338,14 +338,20 @@ describe('version 9 over a run held under a token too long for its index', () =>
       }).join('')
       // Version 9 is named by what it builds, and every version from it on is recorded as
       // not applied, so this case holds whatever the newest version is. The versions after
-      // it are then applied a second time, over their own effect, which each of them so far
-      // allows: version 10 makes a column NOT NULL that already is.
+      // it are then applied a second time. An index one of them builds is dropped first, as
+      // version 9's is, because a second build of an index is refused. Every other one runs
+      // over its own effect, which each of them so far allows: version 10 makes a column
+      // NOT NULL that already is.
       const heldIndex = MIGRATIONS.find(({ statements }) =>
         statements.some((sql) => sql.includes('runs_held')),
       )
       if (heldIndex === undefined) throw new Error('no version builds the index runs_held')
       expect(heldIndex.version).toBe(9)
-      await client.query('DROP INDEX runs_held')
+      const builtSince = MIGRATIONS.filter(({ version }) => version >= heldIndex.version)
+        .flatMap(({ statements }) => statements)
+        .flatMap((sql) => /^CREATE INDEX (\w+) /.exec(sql)?.[1] ?? [])
+      expect(builtSince).toContain('runs_held')
+      for (const index of builtSince) await client.query(`DROP INDEX ${index}`)
       await client.query('DELETE FROM meta WHERE key = ANY($1)', [
         MIGRATIONS.filter(({ version }) => version >= heldIndex.version).map(
           ({ version }) => `applied:v${version}`,

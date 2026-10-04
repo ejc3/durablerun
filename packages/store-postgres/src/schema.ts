@@ -323,6 +323,23 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     version: 10,
     statements: ['ALTER TABLE events ALTER COLUMN payload SET NOT NULL'],
   },
+  {
+    // An operator asks which live tasks of a queue are the oldest: `stuck --older-than`
+    // lists them, and `stats` counts a queue's live tasks by state and names the age of
+    // the oldest. No index led by a queue held the tasks by when they were enqueued, so
+    // each of those reads walked every task the database holds. This index holds only live
+    // tasks, by state and then by enqueue instant, so a read of one state takes the oldest
+    // first and stops at its limit. A task enters it at spawn, moves in it when its state
+    // changes, and leaves it when the task ends. It is an index and nothing else: a build
+    // that predates it runs against this schema unchanged, and no statement the engine
+    // sends reads it. Like versions 6 and 9, it is built under a lock that blocks writes
+    // to its table, `tasks`, while it reads the whole table.
+    version: 11,
+    statements: [
+      `CREATE INDEX tasks_live ON tasks (queue, state, enqueue_at_ms)
+       WHERE state IN ('pending','running','sleeping')`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
