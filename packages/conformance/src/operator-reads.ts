@@ -7,6 +7,7 @@ import {
   InvalidDurableStringError,
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
+  type OperatorReadMethod,
   PERSISTED_INTEGER_BOUNDS,
   REASON_CANCELLED,
   RELAUNCH_BACKOFF_BASE_SECONDS,
@@ -60,8 +61,8 @@ import {
  * with raw fixture SQL, and its name says so.
  */
 
-const Q = 'q'
-const START = 1_000_000
+export const Q = 'q'
+export const START = 1_000_000
 
 interface Seeded {
   readonly taskId: string
@@ -69,13 +70,23 @@ interface Seeded {
 }
 
 /** A fixture and its test clock, which starts at `START`. */
-interface World {
+export interface World {
   readonly f: StoreFixture
   at(ms: number): Promise<void>
 }
 
-const spawn = (f: StoreFixture, taskName: string, options?: SpawnOptions) =>
+export const spawn = (f: StoreFixture, taskName: string, options?: SpawnOptions) =>
   spawnedRun(f.store, Q, taskName, options)
+
+/** Run `body` against a fixture of its own, with the test clock set to `START`. */
+export const worldOf =
+  (makeFixture: StoreFixtureFactory) =>
+  <T>(name: string, body: (world: World) => Promise<T>): Promise<T> =>
+    withFixture(makeFixture, `operator-reads-${name}`, async (f) => {
+      const at = (ms: number) => f.admin.setFakeNowEpochMs(ms)
+      await at(START)
+      return body({ f, at })
+    })
 
 const taskOf = (taskId: string, over: Partial<TaskRowFacts> = {}): TaskRowFacts => ({
   taskId,
@@ -844,12 +855,7 @@ const entryIdentity = (table: Table, rows: Rows): Partial<CorruptInteger> =>
 
 export function operatorReadsConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`operator reads [${dialect}]`, () => {
-    const inWorld = <T>(name: string, body: (world: World) => Promise<T>): Promise<T> =>
-      withFixture(makeFixture, `operator-reads-${name}`, async (f) => {
-        const at = (ms: number) => f.admin.setFakeNowEpochMs(ms)
-        await at(START)
-        return body({ f, at })
-      })
+    const inWorld = worldOf(makeFixture)
 
     describe('answers every seeded state with one canonical answer, the same on every dialect', () => {
       for (const [index, seed] of SEEDS.entries()) {
@@ -1272,12 +1278,26 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
         // The names the store's port is held to: outside the domain, a value that is no
         // string among them, and past the width.
         const refusedNames = Object.entries({ ...OUTSIDE_THE_DOMAIN, ...PAST_THE_WIDTH })
+        // One well-formed call of each method, into which each refused name is put in turn.
+        const calls: Readonly<Record<OperatorReadMethod, readonly unknown[]>> = {
+          taskFacts: ['q', 'a-name'],
+          taskIdByKey: ['q', 'a-name'],
+          eventState: ['q', 'a-name'],
+          stuckRuns: ['q', { graceSeconds: 0, limit: 1 }],
+          queueStatus: ['q'],
+          tableRows: ['q'],
+          eventWaiters: ['q', 'a-name'],
+        }
         const accepted: string[] = []
         let asked = 0
+        let places = 0
         for (const method of OPERATOR_READ_METHODS) {
           for (const [index, name] of OPERATOR_READ_STRINGS[method].entries()) {
+            // An argument that carries no string, as the options of `stuckRuns` are.
+            if (name === null) continue
+            places += 1
             for (const [what, bad] of refusedNames) {
-              const args: unknown[] = ['q', 'a-name']
+              const args: unknown[] = [...calls[method]]
               args[index] = bad
               const call = reads[method] as (...made: unknown[]) => Promise<unknown>
               const refused = await call(...args).then(
@@ -1290,7 +1310,8 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
           }
         }
         expect(accepted).toEqual([])
-        expect(asked).toBe(OPERATOR_READ_METHODS.length * 2 * refusedNames.length)
+        // Eleven places: two in each of four methods, and the queue of the other three.
+        expect({ places, asked }).toEqual({ places: 11, asked: 11 * refusedNames.length })
         expect(recorder.batches).toEqual([])
       }))
   })
