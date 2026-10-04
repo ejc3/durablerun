@@ -36,9 +36,13 @@ const LEGS = [
   'sleepingPastWake',
   'dueNotAdmitted',
   'leaseLapsed',
+  'lapsedNotReclaimed',
   'cancelOverdue',
+  'deadlineNotCancelled',
 ] as const
 type Leg = (typeof LEGS)[number]
+/** The legs that list tasks. Every other lists runs. */
+const TASK_LEGS: readonly Leg[] = ['cancelOverdue', 'deadlineNotCancelled']
 
 interface Row {
   readonly runId: string | null
@@ -65,11 +69,10 @@ type StuckAnswer = Readonly<Record<Leg, { rows: Row[]; atLeast: boolean }>> & {
 async function stuck(db: CliDb, flags: readonly string[] = [], opener?: StoreOpener) {
   const run = await runCli(['stuck', '--queue', QUEUE, '--json', ...flags], db.env, opener)
   const answer = JSON.parse(run.stdout) as StuckAnswer
-  // A run leg lists runs, and the last leg lists tasks.
   const ids = Object.fromEntries(
     LEGS.map((leg) => [
       leg,
-      answer[leg].rows.map((row) => (leg === 'cancelOverdue' ? row.taskId : row.runId)),
+      answer[leg].rows.map((row) => (TASK_LEGS.includes(leg) ? row.taskId : row.runId)),
     ]),
   )
   return { exit: run.exit, stderr: run.stderr, answer, ids, listed: answer.listed }
@@ -80,7 +83,9 @@ const NO_ROW: Readonly<Record<Leg, string[]>> = {
   sleepingPastWake: [],
   dueNotAdmitted: [],
   leaseLapsed: [],
+  lapsedNotReclaimed: [],
   cancelOverdue: [],
+  deadlineNotCancelled: [],
 }
 
 /** One database of these tests, closed whatever the body does. */
@@ -98,6 +103,7 @@ describe('stuck on libSQL', () => {
     onDb('stuck-legs', async (db) => {
       const seeded = await owedQueue(db)
       const everyLeg = {
+        ...NO_ROW,
         dueUnclaimed: [seeded.due],
         sleepingPastWake: [seeded.sleeper],
         // The run of the task past its deadline: a claim refuses it, and the sweep cancels
@@ -135,7 +141,7 @@ describe('stuck on libSQL', () => {
       expect(
         LEGS.map((leg) => now.answer[leg].rows.map((row) => row.lateByMs)),
         'how late each move is: the due run a minute, the sleeper half of one, the refused run a minute, the lease not at all, the deadline a quarter',
-      ).toEqual([[60_000], [30_000], [60_000], [0], [15_000]])
+      ).toEqual([[60_000], [30_000], [60_000], [0], [], [15_000], []])
       expect(now.answer.leaseLapsed.rows[0]?.activated).toBe(true)
       // A grace between the two lists the two runs that have been due that long.
       expect((await stuck(db, ['--grace', '1m'])).ids).toEqual({
@@ -241,7 +247,7 @@ describe('stuck on libSQL', () => {
       const answer = JSON.parse(found.stdout) as {
         listed: number
         dueUnclaimed: { rows: unknown[] }
-        dueNotAdmitted?: { rows: unknown[]; atLeast: boolean }
+        dueNotAdmitted?: { rows: unknown[]; atLeast: boolean; unexamined: boolean }
       }
       expect(
         {
@@ -260,7 +266,6 @@ describe('stuck on libSQL', () => {
             {
               runId: run,
               taskId: task.taskId,
-              taskName: 'poisoned',
               state: 'pending',
               attempt: 1,
               dueAtMs: NOW_MS,
@@ -268,6 +273,7 @@ describe('stuck on libSQL', () => {
             },
           ],
           atLeast: false,
+          unexamined: false,
         },
       })
     }))

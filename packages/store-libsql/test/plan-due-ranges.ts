@@ -16,6 +16,12 @@ export const CORPUS: Record<string, Record<string, { sql: string }[]>> = JSON.pa
   readFileSync(new URL('../../conformance/corpus/libsql.json', import.meta.url), 'utf8'),
 )
 
+/** The due runs of one state, oldest first: the range a claim's candidates are read by. */
+export const RUNS_DUE =
+  'SEARCH r USING INDEX runs_poll (queue=? AND state=? AND available_at_ms>? AND available_at_ms<?)'
+/** The leases that have expired, oldest first. */
+export const LEASES =
+  'SEARCH r USING INDEX runs_lease (queue=? AND claim_expires_at_ms>? AND claim_expires_at_ms<?)'
 /** A range of tasks past their cancellation deadline, which the sweep's scan also drives by. */
 export const TASKS_PAST_THEIR_DEADLINE =
   'SEARCH t USING INDEX tasks_cancel (queue=? AND cancel_at_ms>? AND cancel_at_ms<?)'
@@ -48,6 +54,13 @@ export const A_DUE_RANGE_ALONE: Readonly<
     ],
     boundedBy: 'its first row',
   },
+  // The windows of an operator's read of what a move is owed to: the oldest rows by their
+  // instant alone, from the row's own table with nothing joined, up to two rows past the
+  // limit it was asked for. Each grows with what is owed by design, up to that limit.
+  'stuck-runs/read#0': { ranges: [RUNS_DUE], boundedBy: 'LIMIT' },
+  'stuck-runs/read#1': { ranges: [RUNS_DUE], boundedBy: 'LIMIT' },
+  'stuck-runs/read#2': { ranges: [LEASES], boundedBy: 'LIMIT' },
+  'stuck-runs/read#3': { ranges: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
   // An operator's gauges. Each leg reads every row of one state that holds an instant,
   // earliest first, and stops one row past the gauge's cap: it grows with the backlog by
   // design, up to that limit.

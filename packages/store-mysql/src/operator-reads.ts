@@ -10,12 +10,14 @@ import { rollbackError, rollbackOutcome, runOwnedByTask, sagaBegan } from './fra
 import {
   CLAIM_OWED_PENDING,
   CLAIM_OWED_SLEEPING,
-  CLAIM_REFUSES_PENDING,
-  CLAIM_REFUSES_SLEEPING,
   COUNTED_DEADLINES,
   COUNTED_PENDING_RUNS,
   COUNTED_RUNNING_RUNS,
   COUNTED_SLEEPING_RUNS,
+  DEADLINES_PASSED,
+  DUE_PENDING,
+  DUE_SLEEPING,
+  LEASES_LAPSED,
   LIVE_TASKS_BY_AGE,
   SWEEP_CANCELS_DUE,
   SWEEP_CLAIMS_EXPIRED,
@@ -68,15 +70,19 @@ class MysqlOperatorReads {
       rollbackError: sqlFragment(rollbackError('tasks')),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
       liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
-      // What the claim and the sweep of this store would take now, by their own predicates,
-      // and the due runs its claim refuses, by the claim's own predicate negated.
+      // What the claim and the sweep of this store would take now, by their own predicates.
       owed: {
         pendingRuns: (queue) => sqlFragment(CLAIM_OWED_PENDING, [queue]),
         sleepingRuns: (queue) => sqlFragment(CLAIM_OWED_SLEEPING, [queue]),
-        refusedPendingRuns: (queue) => sqlFragment(CLAIM_REFUSES_PENDING, [queue]),
-        refusedSleepingRuns: (queue) => sqlFragment(CLAIM_REFUSES_SLEEPING, [queue]),
         expiredClaims: (queue) => sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
         dueCancels: (queue) => sqlFragment(SWEEP_CANCELS_DUE, [queue]),
+      },
+      // The same rows by their instant alone, before anything the claim or the sweep requires.
+      overdue: {
+        pendingRuns: (queue) => sqlFragment(DUE_PENDING, [queue]),
+        sleepingRuns: (queue) => sqlFragment(DUE_SLEEPING, [queue]),
+        lapsedLeases: (queue) => sqlFragment(LEASES_LAPSED, [queue]),
+        passedDeadlines: (queue) => DEADLINES_PASSED.map((leg) => sqlFragment(leg, [queue])),
       },
       counted: {
         pendingRuns: (queue) => sqlFragment(COUNTED_PENDING_RUNS, [queue]),

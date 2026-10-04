@@ -395,14 +395,54 @@ export interface LapsedRun extends OverdueRun {
 }
 
 /**
- * A run that is due and that no claim admits: what a claim requires of a run and its task
- * is not true of it, so no claim takes it however long it has been due. The sweep takes it
- * only when its task is also past its cancellation deadline, and `cancelOverdue` then
- * lists that task.
+ * A list of rows a move is owed to that the engine does not take. It is found through a
+ * window: the oldest rows by the leg's instant alone, as many as the limit and one more,
+ * of which the leg lists those the engine's own statement does not answer.
  */
-export interface UnadmittedRun extends OverdueRun {
+export interface Windowed<Row> extends Capped<Row> {
+  /**
+   * True when rows the window did not settle exist: rows past it, or rows of it that sort
+   * after the last row the engine's statement answered. One of them that the engine does
+   * not take is not listed until the rows ahead of it are taken.
+   */
+  readonly unexamined: boolean
+}
+
+/**
+ * A run that is due and that no claim admits: a claim's own statement does not answer it,
+ * so no claim takes it however long it has been due. The sweep takes it only when its task
+ * is also past its cancellation deadline, and `cancelOverdue` then lists that task. It is
+ * read from the run's own row, with no task joined, so it has no task name.
+ */
+export interface UnadmittedRun {
+  readonly runId: string
+  readonly taskId: string
   /** The state the run is in: `pending`, or `sleeping` past its wake. */
   readonly state: 'pending' | 'sleeping'
+  readonly attempt: number | null
+  /** The instant the run became available. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** A running run whose lease has expired and that the sweep's scan does not answer, so no sweep takes it back. */
+export interface UnreclaimedRun {
+  readonly runId: string
+  readonly taskId: string
+  readonly attempt: number | null
+  /** The instant the lease expired. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** A live task past its cancellation deadline that the sweep's scan does not answer, so no sweep cancels it. */
+export interface UncancelledTask {
+  readonly taskId: string
+  readonly taskName: string
+  readonly state: string
+  /** The cancellation deadline. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
 }
 
 /** A live task whose cancellation deadline has passed, which the sweep cancels. */
@@ -427,14 +467,16 @@ export interface StuckRunsOptions {
 
 /**
  * The runs and tasks of one queue that a move of the driver is owed to and has been for at
- * least the grace, in five legs, each oldest first and each stopped at the limit. Four hold
+ * least the grace, in seven legs, each oldest first and each stopped at the limit. Four hold
  * what the engine's own statement would take: `dueUnclaimed` and `sleepingPastWake` are the
  * pending and the sleeping runs a claim takes, `leaseLapsed` and `cancelOverdue` are what
  * the sweep's scan finds. A run under a lapsed lease whose task is also past its deadline
- * is in both of the last two, and the sweep takes it by either arm. The fifth,
- * `dueNotAdmitted`, holds the due runs a claim refuses, so every run that is due is in
- * `dueUnclaimed`, in `sleepingPastWake` or in it, and in one of them only. Every member
- * but `fakeClock` is read from one snapshot, and `fakeClock` straight after it.
+ * is in both of the last two, and the sweep takes it by either arm. Three hold what the
+ * engine does not take, each beside the legs it completes: `dueNotAdmitted` the due runs
+ * no claim admits, `lapsedNotReclaimed` the lapsed leases no sweep takes back, and
+ * `deadlineNotCancelled` the passed deadlines no sweep cancels. Each of the three is found
+ * through a window of the oldest rows by the instant alone (`Windowed`). Every member but
+ * `fakeClock` is read from one snapshot, and `fakeClock` straight after it.
  */
 export interface StuckRuns {
   /** Database time as the snapshot's last statement read it. */
@@ -442,9 +484,11 @@ export interface StuckRuns {
   readonly fakeClock: boolean
   readonly dueUnclaimed: Capped<OverdueRun>
   readonly sleepingPastWake: Capped<OverdueRun>
-  readonly dueNotAdmitted: Capped<UnadmittedRun>
+  readonly dueNotAdmitted: Windowed<UnadmittedRun>
   readonly leaseLapsed: Capped<LapsedRun>
+  readonly lapsedNotReclaimed: Windowed<UnreclaimedRun>
   readonly cancelOverdue: Capped<OverdueTask>
+  readonly deadlineNotCancelled: Windowed<UncancelledTask>
   readonly corrupt: readonly CorruptInteger[]
 }
 

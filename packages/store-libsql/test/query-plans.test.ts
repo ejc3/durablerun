@@ -16,6 +16,8 @@ import {
 import { testIdSource } from '../src/testing.js'
 import {
   A_DUE_RANGE_ALONE,
+  LEASES,
+  RUNS_DUE,
   TASKS_PAST_THEIR_DEADLINE,
   aloneAsNamed,
   boundHolds,
@@ -829,13 +831,6 @@ describe('every statement a store ships, by the nests of its plan', () => {
    * recorded. A range that drives in a statement nobody named fails, and so does another
    * line in a statement that is named, and so does a name nothing needs.
    */
-  const RUNS_DUE =
-    'SEARCH r USING INDEX runs_poll (queue=? AND state=? AND available_at_ms>? AND available_at_ms<?)'
-  const LEASES =
-    'SEARCH r USING INDEX runs_lease (queue=? AND claim_expires_at_ms>? AND claim_expires_at_ms<?)'
-  /** Where the cost of the legs of due runs a claim refuses is recorded, with its option. */
-  const THE_REFUSED_ARE_FEW =
-    'BUILD.md PR5.3c: a leg of the due runs a claim refuses reads every due run of its state until it has its limit of refused ones'
   const DRIVEN_BY_A_DUE_RANGE: Readonly<
     Record<string, { drivers: readonly string[]; boundedBy: string }>
   > = {
@@ -845,16 +840,12 @@ describe('every statement a store ships, by the nests of its plan', () => {
     // The leases that have expired.
     'sweep:scan/read#1': { drivers: [LEASES], boundedBy: 'LIMIT' },
     // An operator's read of what a claim or a sweep would take now. Each leg is the engine's
-    // own predicate, read oldest first and one row past the limit it was asked for.
-    'stuck-runs/read#0': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
-    'stuck-runs/read#1': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
-    'stuck-runs/read#2': { drivers: [LEASES], boundedBy: 'LIMIT' },
-    'stuck-runs/read#3': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
-    // The due runs of one state that a claim refuses. The LIMIT bounds what a leg answers
-    // and not what it reads: a due run a claim admits is read and passed over, so beside a
-    // backlog of due runs with none refused the leg reads every due run of its state.
-    'stuck-runs/read#4': { drivers: [RUNS_DUE], boundedBy: THE_REFUSED_ARE_FEW },
-    'stuck-runs/read#5': { drivers: [RUNS_DUE], boundedBy: THE_REFUSED_ARE_FEW },
+    // own predicate, read oldest first and one row past the limit it was asked for. The
+    // batch's first four statements are the windows, which drive nothing.
+    'stuck-runs/read#4': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
+    'stuck-runs/read#5': { drivers: [RUNS_DUE], boundedBy: 'LIMIT' },
+    'stuck-runs/read#6': { drivers: [LEASES], boundedBy: 'LIMIT' },
+    'stuck-runs/read#7': { drivers: [TASKS_PAST_THEIR_DEADLINE], boundedBy: 'LIMIT' },
   }
 
   /** One statement's plan, read with its text. The generated check reads through this too. */

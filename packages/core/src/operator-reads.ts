@@ -21,6 +21,8 @@ import {
   liveTasksRead,
   overdueCancelsRead,
   overdueRunsRead,
+  overdueRunsWindowRead,
+  overdueTasksWindowRead,
   runInstantsRead,
   tableRowsRead,
   taskDeadlinesRead,
@@ -52,6 +54,9 @@ import type {
   TaskFacts,
   TaskOutcomeFacts,
   UnadmittedRun,
+  UncancelledTask,
+  UnreclaimedRun,
+  Windowed,
   WaitFacts,
 } from './types.js'
 import {
@@ -131,17 +136,26 @@ export interface OperatorReadsDialect {
    * with the queue bound: over a run `r` and its task `t`, a claim's candidates of one
    * state and the sweep's expired claims, and over a task `t`, the sweep's due
    * cancellations. A store hands out the predicate its claim and its sweep are built from,
-   * so a leg of `stuck-runs` cannot mean anything the engine does not. The two `refused`
-   * members are the due runs of one state that the claim refuses: the claim's due
-   * predicate, with what the claim requires of a run and its task negated.
+   * so a leg of `stuck-runs` cannot mean anything the engine does not.
    */
   readonly owed: {
     pendingRuns(queue: string): SqlFragment
     sleepingRuns(queue: string): SqlFragment
-    refusedPendingRuns(queue: string): SqlFragment
-    refusedSleepingRuns(queue: string): SqlFragment
     expiredClaims(queue: string): SqlFragment
     dueCancels(queue: string): SqlFragment
+  }
+  /**
+   * The same rows by their instant alone, with the queue bound, before anything the claim
+   * or the sweep requires of them: over a run `r`, the due runs of one state and the
+   * running runs whose lease has expired, and over a task `t`, the live tasks past their
+   * cancellation deadline, in one leg or several as an index hands them out in the order
+   * of the deadline. `stuck-runs` reads a window of the oldest of each.
+   */
+  readonly overdue: {
+    pendingRuns(queue: string): SqlFragment
+    sleepingRuns(queue: string): SqlFragment
+    lapsedLeases(queue: string): SqlFragment
+    passedDeadlines(queue: string): readonly SqlFragment[]
   }
   /**
    * The rows each leg of `queue-status` counts, with the queue bound: over a run `r`, the
@@ -662,6 +676,45 @@ async function agedTasks(
   }
 }
 
+/** A row's place in the order every leg is read in: its instant, and then its id. */
+interface Placed {
+  readonly id: string
+  readonly at: number | null
+}
+
+const sortsBefore = (row: Placed, other: Placed): boolean =>
+  (absentLast(row.at, other.at) || byCodePoints(row.id, other.id)) < 0
+
+/**
+ * The rows of a window that the engine does not take. `read` is the oldest rows by a leg's
+ * instant alone, as many as the limit and two more, of which the first `limit + 1` are the
+ * window and the last says whether rows lie past it. `taken` is what the engine's own
+ * statement answered for the same instant, oldest first and one row past the limit. A row
+ * of the window that `taken` does not hold is one the engine refuses when `taken` holds
+ * every row the engine would take, or when the row sorts before the last row of `taken`:
+ * had the engine admitted it, its statement would have answered it ahead of that one. A row
+ * that sorts after the last of a full `taken` is not settled, and neither is a row past
+ * the window, and `unexamined` says that such rows exist.
+ */
+function notTaken<Row>(
+  read: readonly SqlRow[],
+  idColumn: 'run_id' | 'task_id',
+  decode: (row: SqlRow) => Row,
+  placeOf: (row: Row) => Placed,
+  taken: readonly Placed[],
+  limit: number,
+): { readonly rows: Row[]; readonly unexamined: boolean } {
+  const held = new Set(taken.map((row) => row.id))
+  const last = taken.length > limit ? taken[taken.length - 1] : undefined
+  const candidates = read
+    .slice(0, limit + 1)
+    .filter((row) => !held.has(stringFrom(row[idColumn])))
+    .map(decode)
+  const rows =
+    last === undefined ? candidates : candidates.filter((row) => sortsBefore(placeOf(row), last))
+  return { rows, unexamined: read.length > limit + 1 || rows.length < candidates.length }
+}
+
 async function stuckRuns(
   dialect: OperatorReadsDialect,
   queue: string,
@@ -669,12 +722,36 @@ async function stuckRuns(
 ): Promise<StuckRuns> {
   const graceMs = durationToMs('graceSeconds', options.graceSeconds)
   const limit = requireListLimit(options.limit)
-  const { owed, taskOwnsRun, liveRunOfTask } = dialect
+  const { owed, overdue, taskOwnsRun, liveRunOfTask } = dialect
   const b = dialect.open.stuckRuns()
+  // The windows first, and the engine's own legs after them. Each statement holds its
+  // instant to the clock as it reads it, so a row a window read as owed is owed when the
+  // engine's leg is read, and a row the leg does not answer was not left out for its time.
+  const window = (rows: SqlFragment, dueAt: RunInstant) =>
+    overdueRunsWindowRead({ limit: limit + 2, rows, dueAt })
+  b.readTree('window-pending', window(overdue.pendingRuns(queue), 'available_at_ms'))
+  b.readTree(
+    'window-sleeping',
+    window(overdue.sleepingRuns(queue), 'available_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  b.readTree(
+    'window-lapsed',
+    window(overdue.lapsedLeases(queue), 'claim_expires_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  const deadlineWindows = overdue.passedDeadlines(queue).map((rows, leg) => {
+    b.readTree(
+      `window-deadlines-${leg}`,
+      overdueTasksWindowRead({ limit: limit + 2, rows }),
+      OPERATOR_REPORT_DRIFT,
+    )
+    return `window-deadlines-${leg}`
+  })
   // Each leg is read one row past the limit, so it says whether it holds more than it lists.
   const runs = (admitted: SqlFragment, dueAt: RunInstant) =>
     overdueRunsRead({ limit: limit + 1, taskOwnsRun, admitted, dueAt })
-  b.readTree('pending', runs(owed.pendingRuns(queue), 'available_at_ms'))
+  b.readTree('pending', runs(owed.pendingRuns(queue), 'available_at_ms'), OPERATOR_REPORT_DRIFT)
   b.readTree('sleeping', runs(owed.sleepingRuns(queue), 'available_at_ms'), OPERATOR_REPORT_DRIFT)
   b.readTree(
     'lapsed',
@@ -686,23 +763,13 @@ async function stuckRuns(
     overdueCancelsRead({ limit: limit + 1, due: owed.dueCancels(queue), liveRunOfTask }),
     OPERATOR_REPORT_DRIFT,
   )
-  b.readTree(
-    'refused-pending',
-    runs(owed.refusedPendingRuns(queue), 'available_at_ms'),
-    OPERATOR_REPORT_DRIFT,
-  )
-  b.readTree(
-    'refused-sleeping',
-    runs(owed.refusedSleepingRuns(queue), 'available_at_ms'),
-    OPERATOR_REPORT_DRIFT,
-  )
   b.readTree('now', databaseNowRead({}), OPERATOR_REPORT_DRIFT)
   const ran = await dialect.run(b)
   const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
 
   const corrupt: CorruptInteger[] = []
   const nowMs = reportTime(b, ran, corrupt)
-  /** The runs of one leg, each with the instant its move came due at. */
+  /** The runs of one of the engine's legs, each with the instant its move came due at. */
   const runsOf = (leg: string, dueAt: PersistedIntegerBounds) =>
     readRows(b, ran, leg).map((row) => {
       const runId = stringFrom(row.run_id)
@@ -717,6 +784,8 @@ async function stuckRuns(
       }
       return { run, int }
     })
+  const pending = runsOf('pending', RUN.available_at_ms).map(({ run }) => run)
+  const sleeping = runsOf('sleeping', RUN.available_at_ms).map(({ run }) => run)
   const lapsed = runsOf('lapsed', RUN.claim_expires_at_ms).map(({ run, int }) => {
     const claims = int(RUN.claim_gen)
     const activations = int(RUN.activated_gen)
@@ -735,36 +804,87 @@ async function stuckRuns(
       dueAtMs: integersOf(row, corrupt, { taskId })(TASK.cancel_at_ms),
     }
   })
+  const placeOfRun = (run: { runId: string; dueAtMs: number | null }): Placed => ({
+    id: run.runId,
+    at: run.dueAtMs,
+  })
+  const placeOfTask = (task: { taskId: string; dueAtMs: number | null }): Placed => ({
+    id: task.taskId,
+    at: task.dueAtMs,
+  })
+  /** The runs of a window that the engine's leg beside it did not answer, from the run's own row. */
+  const runsNotTaken = (
+    leg: string,
+    dueAt: PersistedIntegerBounds,
+    taken: readonly { runId: string; dueAtMs: number | null }[],
+  ) =>
+    notTaken(
+      readRows(b, ran, leg),
+      'run_id',
+      (row) => {
+        const runId = stringFrom(row.run_id)
+        const int = integersOf(row, corrupt, { runId })
+        const ordinal = int(RUN.attempt)
+        return { runId, taskId: stringFrom(row.task_id), attempt: ordinal, dueAtMs: int(dueAt) }
+      },
+      placeOfRun,
+      taken.map(placeOfRun),
+      limit,
+    )
+  const pendingNotAdmitted = runsNotTaken('window-pending', RUN.available_at_ms, pending)
+  const sleepingNotAdmitted = runsNotTaken('window-sleeping', RUN.available_at_ms, sleeping)
+  const notReclaimed = runsNotTaken('window-lapsed', RUN.claim_expires_at_ms, lapsed)
+  const notCancelled = deadlineWindows.map((leg) =>
+    notTaken(
+      readRows(b, ran, leg),
+      'task_id',
+      (row) => {
+        const taskId = stringFrom(row.task_id)
+        return {
+          taskId,
+          taskName: stringFrom(row.task_name),
+          state: stringFrom(row.state),
+          dueAtMs: integersOf(row, corrupt, { taskId })(TASK.cancel_at_ms),
+        }
+      },
+      placeOfTask,
+      cancels.map(placeOfTask),
+      limit,
+    ),
+  )
   const byRun = (run: { readonly runId: string }): string => run.runId
-  const owedRuns = (leg: string): Capped<OverdueRun> =>
-    owedFor(
-      runsOf(leg, RUN.available_at_ms).map(({ run }) => run),
-      byRun,
+  const byTask = (task: { readonly taskId: string }): string => task.taskId
+  /** One leg of what the engine does not take, from the windows that hold it, under the grace and the limit. */
+  const windowed = <Row extends { readonly dueAtMs: number | null }>(
+    windows: readonly { readonly rows: readonly Row[]; readonly unexamined: boolean }[],
+    idOf: (row: Row) => string,
+  ): Windowed<Row & { readonly lateByMs: number | null }> => ({
+    ...owedFor(
+      windows.flatMap((one) => one.rows),
+      idOf,
       nowMs,
       graceMs,
       limit,
-    )
-  const dueUnclaimed = owedRuns('pending')
-  const sleepingPastWake = owedRuns('sleeping')
-  // One leg of the two states, each read oldest first and one row past the limit, so the
-  // oldest of both are among the rows read.
-  const refused = (leg: string, state: UnadmittedRun['state']) =>
-    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state }))
-  const dueNotAdmitted: Capped<UnadmittedRun> = owedFor(
-    [...refused('refused-pending', 'pending'), ...refused('refused-sleeping', 'sleeping')],
+    ),
+    unexamined: windows.some((one) => one.unexamined),
+  })
+  const inState = (
+    found: typeof pendingNotAdmitted,
+    state: UnadmittedRun['state'],
+  ): typeof found & { readonly rows: Omit<UnadmittedRun, 'lateByMs'>[] } => ({
+    rows: found.rows.map((run) => ({ ...run, state })),
+    unexamined: found.unexamined,
+  })
+  const dueUnclaimed: Capped<OverdueRun> = owedFor(pending, byRun, nowMs, graceMs, limit)
+  const sleepingPastWake: Capped<OverdueRun> = owedFor(sleeping, byRun, nowMs, graceMs, limit)
+  const dueNotAdmitted: Windowed<UnadmittedRun> = windowed(
+    [inState(pendingNotAdmitted, 'pending'), inState(sleepingNotAdmitted, 'sleeping')],
     byRun,
-    nowMs,
-    graceMs,
-    limit,
   )
   const leaseLapsed: Capped<LapsedRun> = owedFor(lapsed, byRun, nowMs, graceMs, limit)
-  const cancelOverdue: Capped<OverdueTask> = owedFor(
-    cancels,
-    (task) => task.taskId,
-    nowMs,
-    graceMs,
-    limit,
-  )
+  const lapsedNotReclaimed: Windowed<UnreclaimedRun> = windowed([notReclaimed], byRun)
+  const cancelOverdue: Capped<OverdueTask> = owedFor(cancels, byTask, nowMs, graceMs, limit)
+  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed(notCancelled, byTask)
   return {
     nowMs,
     fakeClock,
@@ -772,7 +892,9 @@ async function stuckRuns(
     sleepingPastWake,
     dueNotAdmitted,
     leaseLapsed,
+    lapsedNotReclaimed,
     cancelOverdue,
+    deadlineNotCancelled,
     corrupt: inOrder(corrupt),
   }
 }

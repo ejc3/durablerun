@@ -69,10 +69,14 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
     owed: {
       pendingRuns: dueByQueue('r'),
       sleepingRuns: dueByQueue('r'),
-      refusedPendingRuns: dueByQueue('r'),
-      refusedSleepingRuns: dueByQueue('r'),
       expiredClaims: dueByQueue('r'),
       dueCancels: dueByQueue('t'),
+    },
+    overdue: {
+      pendingRuns: dueByQueue('r'),
+      sleepingRuns: dueByQueue('r'),
+      lapsedLeases: dueByQueue('r'),
+      passedDeadlines: (queue: string) => [dueByQueue('t')(queue)],
     },
     counted: {
       pendingRuns: byQueue('r'),
@@ -484,29 +488,50 @@ type Stored = SqlRow[string]
 const NOW = 10_000
 
 /**
- * `stuck-runs` answers its seven statements in order: pending, sleeping, lapsed, cancels,
- * the pending and the sleeping runs a claim refuses, database time.
+ * `stuck-runs` answers its nine statements in order: the four windows, of pending runs, of
+ * sleeping runs, of lapsed leases and of passed deadlines, then the engine's four legs,
+ * pending, sleeping, lapsed and cancels, then database time.
  */
 const stuck = (
   legs: {
+    windowPending?: SqlRow[]
+    windowSleeping?: SqlRow[]
+    windowLapsed?: SqlRow[]
+    windowDeadlines?: SqlRow[]
     pending?: SqlRow[]
     sleeping?: SqlRow[]
     lapsed?: SqlRow[]
     cancels?: SqlRow[]
-    refusedPending?: SqlRow[]
-    refusedSleeping?: SqlRow[]
   },
   now: SqlRow[] = [{ now_ms: NOW }],
 ) => ({
   'stuck-runs': [
+    legs.windowPending ?? [],
+    legs.windowSleeping ?? [],
+    legs.windowLapsed ?? [],
+    legs.windowDeadlines ?? [],
     legs.pending ?? [],
     legs.sleeping ?? [],
     legs.lapsed ?? [],
     legs.cancels ?? [],
-    legs.refusedPending ?? [],
-    legs.refusedSleeping ?? [],
     now,
   ],
+})
+
+/** A run as a window selects it: from its own row, with no task joined. */
+const windowRun = (run_id: string, at: Stored, column = 'available_at_ms'): SqlRow => ({
+  run_id,
+  task_id: `task-of-${run_id}`,
+  attempt: 1,
+  [column]: at,
+})
+
+/** A task as the window of deadlines selects it. */
+const windowTask = (task_id: string, cancel_at_ms: Stored): SqlRow => ({
+  task_id,
+  task_name: 'job',
+  state: 'pending',
+  cancel_at_ms,
 })
 
 /** A run a claim would take, as its leg selects it. */
@@ -606,7 +631,7 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
     expect(
       (args['stuck-runs'] ?? []).map((bound) => bound.at(-1)),
       'mutation-verdict:behavior:operator-reads-read-a-leg-one-row-past-its-limit',
-    ).toEqual([3, 3, 3, 3, 3, 3, undefined])
+    ).toEqual([4, 4, 4, 4, 3, 3, 3, 3, undefined])
     expect(
       {
         dueUnclaimed: [listed(answer.dueUnclaimed), answer.dueUnclaimed.atLeast],
@@ -638,41 +663,130 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
     expect(answer.fakeClock).toBe(false)
   })
 
-  it('lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more', async () => {
-    // Database time is 10,000 and the grace one second. Each state is answered oldest
-    // first, as a store answers it, and the leg is the oldest of both.
-    const refused = stuck({
-      refusedPending: [dueRun('p-old', 1_000), dueRun('p-young', 7_000), dueRun('p-inside', 9_500)],
-      refusedSleeping: [dueRun('s-mid', 4_000), dueRun('s-last', 8_000)],
+  it("lists the rows of a window that the engine's leg does not answer, in each of the three legs, with the state of a due run", async () => {
+    // Database time is 10,000 and the grace one second. Each window is answered oldest
+    // first, as a store answers it, and holds the rows the engine's leg answered as well.
+    const { reads } = readsAnswering(
+      stuck({
+        windowPending: [windowRun('p-refused', 1_000), windowRun('p-taken', 2_000)],
+        pending: [dueRun('p-taken', 2_000)],
+        windowSleeping: [windowRun('s-refused', 4_000), windowRun('s-inside', 9_500)],
+        windowLapsed: [
+          windowRun('l-taken', 3_000, 'claim_expires_at_ms'),
+          windowRun('l-refused', 5_000, 'claim_expires_at_ms'),
+        ],
+        lapsed: [lapsedRun('l-taken', 3_000)],
+        windowDeadlines: [windowTask('c-refused', 6_000)],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 1, limit: 10 })
+    expect(
+      {
+        dueUnclaimed: listed(answer.dueUnclaimed),
+        dueNotAdmitted: answer.dueNotAdmitted,
+        leaseLapsed: listed(answer.leaseLapsed),
+        lapsedNotReclaimed: answer.lapsedNotReclaimed,
+        cancelOverdue: answer.cancelOverdue.rows,
+        deadlineNotCancelled: answer.deadlineNotCancelled,
+      },
+      'mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses',
+    ).toEqual({
+      dueUnclaimed: [['p-taken', 8_000]],
+      // The oldest of both states, each under its state. The sleeping run half a second
+      // late is inside the grace.
+      dueNotAdmitted: {
+        rows: [
+          {
+            runId: 'p-refused',
+            taskId: 'task-of-p-refused',
+            attempt: 1,
+            dueAtMs: 1_000,
+            state: 'pending',
+            lateByMs: 9_000,
+          },
+          {
+            runId: 's-refused',
+            taskId: 'task-of-s-refused',
+            attempt: 1,
+            dueAtMs: 4_000,
+            state: 'sleeping',
+            lateByMs: 6_000,
+          },
+        ],
+        atLeast: false,
+        unexamined: false,
+      },
+      leaseLapsed: [['l-taken', 7_000]],
+      lapsedNotReclaimed: {
+        rows: [
+          {
+            runId: 'l-refused',
+            taskId: 'task-of-l-refused',
+            attempt: 1,
+            dueAtMs: 5_000,
+            lateByMs: 5_000,
+          },
+        ],
+        atLeast: false,
+        unexamined: false,
+      },
+      cancelOverdue: [],
+      deadlineNotCancelled: {
+        rows: [
+          {
+            taskId: 'c-refused',
+            taskName: 'job',
+            state: 'pending',
+            dueAtMs: 6_000,
+            lateByMs: 4_000,
+          },
+        ],
+        atLeast: false,
+        unexamined: false,
+      },
     })
-    const leg = async (limit: number) => {
-      const answer = await readsAnswering(refused).reads.stuckRuns('q', { graceSeconds: 1, limit })
+  })
+
+  it("settles a row of a window only ahead of the last row the engine's leg answered, and says when the window left rows unsettled", async () => {
+    // The limit is two, so a window is three rows deep and is read one row past that, and
+    // the engine's leg is full at three.
+    const taken = [dueRun('a', 1_000), dueRun('b', 2_000), dueRun('c', 3_000)]
+    const leg = async (windowPending: SqlRow[], pending: SqlRow[]) => {
+      const { reads } = readsAnswering(stuck({ windowPending, pending }))
+      const answer = await reads.stuckRuns('q', { graceSeconds: 0, limit: 2 })
       return {
-        rows: answer.dueNotAdmitted.rows.map((row) => [row.runId, row.state, row.lateByMs]),
+        rows: answer.dueNotAdmitted.rows.map((row) => row.runId),
         atLeast: answer.dueNotAdmitted.atLeast,
-        others: [
-          answer.dueUnclaimed,
-          answer.sleepingPastWake,
-          answer.leaseLapsed,
-          answer.cancelOverdue,
-        ].map((other) => other.rows.length),
+        unexamined: answer.dueNotAdmitted.unexamined,
       }
     }
-    const oldestThree = [
-      ['p-old', 'pending', 9_000],
-      ['s-mid', 'sleeping', 6_000],
-      ['p-young', 'pending', 3_000],
-    ]
     expect(
-      await leg(3),
-      'mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses',
-    ).toEqual({ rows: oldestThree, atLeast: true, others: [0, 0, 0, 0] })
-    // Four have been due for the grace, and the fifth has not.
-    expect(await leg(4)).toEqual({
-      rows: [...oldestThree, ['s-last', 'sleeping', 2_000]],
-      atLeast: false,
-      others: [0, 0, 0, 0],
-    })
+      [
+        // Ahead of the last row the full leg answered, and not in it: the claim refuses it.
+        // The fourth row read is past the window.
+        await leg(
+          [
+            windowRun('old', 500),
+            windowRun('a', 1_000),
+            windowRun('b', 2_000),
+            windowRun('young', 3_500),
+          ],
+          taken,
+        ),
+        // Behind the last row a full leg answered: a claim may admit it, further down.
+        await leg([windowRun('a', 1_000), windowRun('b', 2_000), windowRun('young', 3_500)], taken),
+        // The leg is not full, so it holds every run a claim admits, and this is not one.
+        await leg(
+          [windowRun('a', 1_000), windowRun('b', 2_000), windowRun('young', 3_500)],
+          taken.slice(0, 2),
+        ),
+      ],
+      'mutation-verdict:behavior:operator-reads-settle-a-window-row-only-ahead-of-the-last-taken',
+    ).toEqual([
+      { rows: ['old'], atLeast: false, unexamined: true },
+      { rows: [], atLeast: false, unexamined: true },
+      { rows: ['young'], atLeast: false, unexamined: false },
+    ])
   })
 
   it('orders a leg oldest first, and rows of one instant by id in code point order', async () => {

@@ -442,33 +442,42 @@ export const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
   AND ${sweepScanAdmissible('r', 't')}`
 
 /**
- * The runs of one state a claim would take now, over a run `r` and its task `t`: due, as
- * the claim's candidates are, and eligible as the claim requires of each (`claimEligibility`).
- * The operator's read of the runs a claim is owed to takes these. The claim's own candidate
+ * The runs of one state that are due, over a run `r` alone: a claim's candidates by their
+ * instant, before anything is required of them or of their task. The operator's read of
+ * what a claim is owed to reads its window of the oldest of these. Each binds the queue
+ * once.
+ */
+const dueRuns = (state: 'pending' | 'sleeping'): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${runAvailableDue('r', NOW)}`
+export const DUE_PENDING = dueRuns('pending')
+export const DUE_SLEEPING = dueRuns('sleeping')
+
+/**
+ * The runs of one state a claim would take now, over a run `r` and its task `t`: due
+ * (`dueRuns`), and eligible as the claim requires of each (`claimEligibility`). The
+ * operator's read of the runs a claim is owed to takes these. The claim's own candidate
  * subquery is not a read's to take: it is shaped for the claim's update. Each binds the
  * queue once.
  */
 const claimOwed = (state: 'pending' | 'sleeping'): string =>
-  `r.queue = ? AND r.state = '${state}'
-  AND ${runAvailableDue('r', NOW)}
+  `${dueRuns(state)}
   AND ${claimEligibility('r', 't')}`
 export const CLAIM_OWED_PENDING = claimOwed('pending')
 export const CLAIM_OWED_SLEEPING = claimOwed('sleeping')
 
 /**
- * The runs of one state that are due, as the claim's candidates are, and that the claim
- * refuses, over a run `r` and its task `t`: what the claim requires of the two
- * (`claimEligibility`) is not true of them. It is `claimOwed` with that requirement
- * negated, so every due run of the state is in one of the two and none is in both.
- * `IS NOT TRUE` holds for a requirement that is false and for one that is NULL, and a
- * claim takes a run for neither. Each binds the queue once.
+ * What the sweep's scan is owed to by its instant alone, before the scan's own admission:
+ * over a run `r`, the running runs whose lease has expired, and over a task `t`, the live
+ * tasks past their cancellation deadline. The operator's read of what a sweep is owed to
+ * reads its window of the oldest of each. The deadlines are one leg or several, each a
+ * predicate whose rows the index of deadlines hands out in the order of the deadline. Each
+ * binds the queue once.
  */
-const claimRefuses = (state: 'pending' | 'sleeping'): string =>
-  `r.queue = ? AND r.state = '${state}'
-  AND ${runAvailableDue('r', NOW)}
-  AND (${claimEligibility('r', 't')}) IS NOT TRUE`
-export const CLAIM_REFUSES_PENDING = claimRefuses('pending')
-export const CLAIM_REFUSES_SLEEPING = claimRefuses('sleeping')
+export const LEASES_LAPSED = `r.queue = ? AND r.state = 'running' AND ${runClaimExpired('r', NOW)}`
+export const DEADLINES_PASSED: readonly string[] = [
+  `t.queue = ? AND t.state IN ${LIVE} AND ${cancelDue('t', NOW)}`,
+]
 
 /**
  * The rows each gauge of the operator's `queue-status` counts: the runs of one state whose

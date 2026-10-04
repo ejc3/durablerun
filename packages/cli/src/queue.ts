@@ -11,6 +11,9 @@ import {
   type StuckRuns,
   type TableRows,
   type UnadmittedRun,
+  type UncancelledTask,
+  type UnreclaimedRun,
+  type Windowed,
 } from '@durablerun/core'
 import { type Printed, corruptView } from './inspect.js'
 
@@ -33,11 +36,26 @@ const overdueRunView = (run: OverdueRun): Printed<OverdueRun> => ({
 const unadmittedRunView = (run: UnadmittedRun): Printed<UnadmittedRun> => ({
   runId: run.runId,
   taskId: run.taskId,
-  taskName: run.taskName,
   state: run.state,
   attempt: run.attempt,
   dueAtMs: run.dueAtMs,
   lateByMs: run.lateByMs,
+})
+
+const unreclaimedRunView = (run: UnreclaimedRun): Printed<UnreclaimedRun> => ({
+  runId: run.runId,
+  taskId: run.taskId,
+  attempt: run.attempt,
+  dueAtMs: run.dueAtMs,
+  lateByMs: run.lateByMs,
+})
+
+const uncancelledTaskView = (task: UncancelledTask): Printed<UncancelledTask> => ({
+  taskId: task.taskId,
+  taskName: task.taskName,
+  state: task.state,
+  dueAtMs: task.dueAtMs,
+  lateByMs: task.lateByMs,
 })
 
 const lapsedRunView = (run: LapsedRun): Printed<LapsedRun> => ({
@@ -60,18 +78,30 @@ const legView = <Row>(leg: Capped<Row>, view: (row: Row) => unknown): Printed<Ca
   atLeast: leg.atLeast,
 })
 
+/** One leg of what the engine does not take: the same, and whether its window left rows unsettled. */
+const windowView = <Row>(
+  leg: Windowed<Row>,
+  view: (row: Row) => unknown,
+): Printed<Windowed<Row>> => ({
+  rows: leg.rows.map(view),
+  atLeast: leg.atLeast,
+  unexamined: leg.unexamined,
+})
+
 /**
- * How many rows the legs list between them, which is what `--fail-if-any` asks about. A run
- * under a lapsed lease whose task is also past its deadline is a row of two legs, and so is
- * a due run no claim admits whose task is past its deadline: its run is in `dueNotAdmitted`
- * and its task in `cancelOverdue`.
+ * How many rows the legs list between them, which is what `--fail-if-any` asks about. A row
+ * can be in two legs: a run under a lapsed lease whose task is also past its deadline, and
+ * a run the engine does not take whose task the sweep cancels, which is listed as a run
+ * and as a task.
  */
 export const rowsListed = (owed: StuckRuns): number =>
   owed.dueUnclaimed.rows.length +
   owed.sleepingPastWake.rows.length +
   owed.dueNotAdmitted.rows.length +
   owed.leaseLapsed.rows.length +
-  owed.cancelOverdue.rows.length
+  owed.lapsedNotReclaimed.rows.length +
+  owed.cancelOverdue.rows.length +
+  owed.deadlineNotCancelled.rows.length
 
 /** What `stuck` prints of what the driver owes a queue, every member of it. */
 export function stuckView(
@@ -82,9 +112,11 @@ export function stuckView(
     fakeClock: owed.fakeClock,
     dueUnclaimed: legView(owed.dueUnclaimed, overdueRunView),
     sleepingPastWake: legView(owed.sleepingPastWake, overdueRunView),
-    dueNotAdmitted: legView(owed.dueNotAdmitted, unadmittedRunView),
+    dueNotAdmitted: windowView(owed.dueNotAdmitted, unadmittedRunView),
     leaseLapsed: legView(owed.leaseLapsed, lapsedRunView),
+    lapsedNotReclaimed: windowView(owed.lapsedNotReclaimed, unreclaimedRunView),
     cancelOverdue: legView(owed.cancelOverdue, overdueTaskView),
+    deadlineNotCancelled: windowView(owed.deadlineNotCancelled, uncancelledTaskView),
     corrupt: owed.corrupt.map(corruptView),
   }
 }

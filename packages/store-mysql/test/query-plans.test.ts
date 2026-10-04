@@ -1302,7 +1302,7 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
       // Measured on MySQL 8.4. Beside the history the legs walked 15 rows between them, the
       // gauges 9, the waiters 1 and the read of the oldest live tasks 3, which is every live
       // task. Beside the backlog the legs still walked 15: a run that is not due is in no
-      // leg, and the two reads of the due runs a claim refuses walk only runs that are due. The read of the oldest live tasks walked 12 of the 403 live tasks, one row past
+      // leg, and no window reads it. The read of the oldest live tasks walked 12 of the 403 live tasks, one row past
       // its limit of ten and one each of the other two states: the index of live tasks
       // hands them out oldest first. The gauges walked 809, because a gauge counts every
       // pending run and every live task, due or not, up to its cap. The counts of rows walk

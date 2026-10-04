@@ -208,6 +208,38 @@ export const overdueCancelsRead = defineStatement(
 )
 
 /**
+ * A window of `stuck-runs` over runs: the runs a store's predicate takes by their instant
+ * alone, oldest first, up to a limit. `rows` names the queue, the state, and that the
+ * instant has come, and requires nothing else of the run or of its task: no task is joined.
+ * The engine's own leg is read beside it, and a run of the window that the engine's leg
+ * does not answer is one the engine does not take.
+ */
+export const overdueRunsWindowRead = defineStatement(
+  'stuck-runs window runs',
+  (binds: { limit: number; rows: SqlFragment; dueAt: RunInstant }) =>
+    treeBuilder
+      .selectFrom('runs as r')
+      .select(['r.run_id', 'r.task_id', 'r.attempt', runInstant(binds.dueAt)])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy(runInstant(binds.dueAt))
+      .orderBy('r.run_id')
+      .limit(binds.limit),
+)
+
+/** A window of `stuck-runs` over tasks: the live tasks past their cancellation deadline, oldest deadline first. */
+export const overdueTasksWindowRead = defineStatement(
+  'stuck-runs window tasks',
+  (binds: { limit: number; rows: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select(['t.task_id', 't.task_name', 't.state', 't.cancel_at_ms'])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy('t.cancel_at_ms')
+      .orderBy('t.task_id')
+      .limit(binds.limit),
+)
+
+/**
  * Database time, as a statement of its own. A report of a queue dates itself with it, last
  * in its batch, because a queue may hold no row to select the clock beside.
  */
