@@ -243,12 +243,15 @@ describe('stuck on libSQL', () => {
         dueUnclaimed: { rows: unknown[] }
         dueNotAdmitted?: { rows: unknown[]; atLeast: boolean }
       }
-      expect({
-        exit: found.exit,
-        listed: answer.listed,
-        dueUnclaimed: answer.dueUnclaimed.rows,
-        dueNotAdmitted: answer.dueNotAdmitted ?? 'the report has no such leg',
-      }).toEqual({
+      expect(
+        {
+          exit: found.exit,
+          listed: answer.listed,
+          dueUnclaimed: answer.dueUnclaimed.rows,
+          dueNotAdmitted: answer.dueNotAdmitted ?? 'the report has no such leg',
+        },
+        'mutation-verdict:behavior:cli-stuck-counts-a-due-run-no-claim-admits',
+      ).toEqual({
         exit: exitCode('found'),
         listed: 1,
         dueUnclaimed: [],

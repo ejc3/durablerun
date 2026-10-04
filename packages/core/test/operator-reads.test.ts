@@ -663,7 +663,10 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
       ['s-mid', 'sleeping', 6_000],
       ['p-young', 'pending', 3_000],
     ]
-    expect(await leg(3)).toEqual({ rows: oldestThree, atLeast: true, others: [0, 0, 0, 0] })
+    expect(
+      await leg(3),
+      'mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses',
+    ).toEqual({ rows: oldestThree, atLeast: true, others: [0, 0, 0, 0] })
     // Four have been due for the grace, and the fifth has not.
     expect(await leg(4)).toEqual({
       rows: [...oldestThree, ['s-last', 'sleeping', 2_000]],

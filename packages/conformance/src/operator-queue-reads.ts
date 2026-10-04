@@ -258,7 +258,7 @@ async function finderAgainstTheEngine(
         ...owed.dueNotAdmitted.rows.map((run) => `${run.state} ${run.runId}`),
       ]),
     },
-    'every due run is in one leg of due runs, under its state',
+    'mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg',
   ).toEqual({ where, due: sorted(dueInTheDump) })
 
   const claimed = await f.store.claim(Q, claimToken, {
@@ -966,7 +966,10 @@ export function operatorQueueReadsConformance(
             lateByMs: LATER - DEADLINE_AT,
           }),
         })
-        expect(await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })).toEqual(expected)
+        expect(
+          await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 }),
+          'mutation-verdict:behavior:operator-finder-lists-the-due-runs-a-claim-refuses',
+        ).toEqual(expected)
         // A limit of two lists the two oldest of both states, and says the leg holds more.
         expect((await reads.stuckRuns(Q, { graceSeconds: 0, limit: 2 })).dueNotAdmitted).toEqual({
           rows: sinceTheStart,

@@ -979,7 +979,7 @@ describe('every statement a store ships, by the nests of its plan', () => {
         // A range that drives is no lone range: the table of driving ranges names it.
         aRangeThatDrives: aloneAsNamed(name, alone(ranges, ranges), bounded),
       },
-      'a lone due range is excused only as the table names it',
+      'mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named',
     ).toEqual({
       named: true,
       withoutItsLimit: false,

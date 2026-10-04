@@ -19319,9 +19319,9 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-order-the-waiters",
             "packages/core/src/operator-reads.ts",
-            "        byCodePoints(left.taskId, right.taskId) ||\n        byCodePoints(left.runId, right.runId) ||\n        byCodePoints(left.stepName, right.stepName),\n",
-            "        byCodePoints(left.runId, right.runId) || byCodePoints(left.stepName, right.stepName), // MUTATION: the waiters are not ordered by task\n",
-            "an event's waiters come back in the order of their runs, so the list is not the one order every dialect prints",
+            "    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }\n  })\n",
+            "    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }\n  })\n  read.reverse() // MUTATION: the waiters are listed in the reverse of the order they were read in\n",
+            "an event's waiters are listed in another order than the statement read them in, so the cap no longer cuts where the list does",
         ),
         (
             "operator-reads-stop-the-waiters-at-the-cap",
@@ -19333,8 +19333,8 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-count-the-live-tasks-of-every-leg",
             "packages/core/src/operator-reads.ts",
-            "  return legs.flatMap((leg) =>\n",
-            "  return legs.slice(0, 1).flatMap((leg) => // MUTATION: only the first leg of live tasks is read back\n",
+            "  const enqueued = liveLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms))\n",
+            "  const enqueued = liveLegs.slice(0, 1).flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms)) // MUTATION: only the first leg of live tasks is counted\n",
             "the gauge of live tasks counts the tasks of one live state, so a queue of running and sleeping tasks reads as empty",
         ),
         (
@@ -19347,8 +19347,8 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-count-a-live-task-whose-instant-is-not-readable",
             "packages/core/src/operator-reads.ts",
-            "  const enqueued = liveTasksOf(b, ran, liveLegs, corrupt).map((task) => task.enqueueAtMs)\n",
-            "  const enqueued = liveTasksOf(b, ran, liveLegs, corrupt).map((task) => task.enqueueAtMs).filter((at) => at !== null) // MUTATION: a live task with no readable enqueue instant is not counted\n",
+            "  const enqueued = liveLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms))\n",
+            "  const enqueued = liveLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms)).filter((at) => at !== null) // MUTATION: a live task with no readable enqueue instant is not counted\n",
             "a live task whose enqueue instant is not readable is named as corrupt and left out of the gauge of live tasks",
         ),
         (
@@ -19361,8 +19361,8 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-read-a-live-leg-one-row-past-its-limit",
             "packages/core/src/operator-reads.ts",
-            "  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit + 1)\n",
-            "  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit) // MUTATION: a leg of live tasks is read up to the limit and no further\n",
+            "  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit + 1, liveTasksRead)\n",
+            "  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit, liveTasksRead) // MUTATION: a leg of live tasks is read up to the limit and no further\n",
             "the read of the oldest live tasks reads no row past its limit, so it can never say that more tasks are as old",
         ),
         (
@@ -19515,8 +19515,8 @@ MUTATION_SPECS.extend(
         (
             "operator-gauge-of-live-tasks-stops-at-the-cap",
             "packages/core/src/operator-reads.ts",
-            "  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit)\n",
-            "  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit - 1) // MUTATION: a leg of live tasks stops at the cap\n",
+            "  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit, liveTaskInstantsRead)\n",
+            "  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit - 1, liveTaskInstantsRead) // MUTATION: a leg of live tasks stops at the cap\n",
             "a queue with more live tasks of one state than the cap prints the cap as an exact count",
         ),
         (
@@ -19655,9 +19655,79 @@ MUTATION_SPECS.extend(
         (
             "plan-a-due-range-alone-is-bounded-as-its-entry-says",
             "packages/core/src/statements/operator.ts",
-            "      .orderBy('t.enqueue_at_ms')\n      .orderBy('t.task_id')\n      .limit(binds.limit),\n",
-            "      .orderBy('t.enqueue_at_ms')\n      .orderBy('t.task_id'), // MUTATION: the live tasks of a state are read with no limit\n",
+            "    .orderBy('t.enqueue_at_ms')\n    .orderBy('t.task_id')\n    .limit(binds.limit)\n",
+            "    .orderBy('t.enqueue_at_ms')\n    .orderBy('t.task_id') // MUTATION: the live tasks of a state are read with no limit\n",
             "the read of a queue's oldest live tasks and the gauge of live tasks read every live task of the queue",
+        ),
+        (
+            "operator-finder-lists-every-due-run-in-one-leg",
+            "packages/store-libsql/src/store.ts",
+            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE`\n",
+            "  AND (${claimEligibility('r', 't')}) IS TRUE` // MUTATION: the leg of refused runs holds what a claim requires and not its negation\n",
+            "a due run a claim takes is listed a second time as one no claim admits, and a due run a claim refuses is in no leg",
+        ),
+        (
+            "operator-finder-lists-the-due-runs-a-claim-refuses",
+            "packages/store-libsql/src/store.ts",
+            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE`\n",
+            "  AND (${claimEligibility('r', 't')}) IS NOT TRUE AND 1 = 0` // MUTATION: no due run a claim refuses is listed\n",
+            "a due run no claim will ever take is in no leg of stuck at any grace, so --fail-if-any exits 0 for it",
+        ),
+        (
+            "operator-reads-merge-the-runs-a-claim-refuses",
+            "packages/core/src/operator-reads.ts",
+            "    [...refused('refused-pending', 'pending'), ...refused('refused-sleeping', 'sleeping')],\n",
+            "    refused('refused-pending', 'pending'), // MUTATION: the sleeping runs a claim refuses are not listed\n",
+            "a sleeping run past its wake that a claim refuses is in no leg of stuck",
+        ),
+        (
+            "operator-reads-name-the-state-of-a-run-a-claim-refuses",
+            "packages/core/src/operator-reads.ts",
+            "    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state }))\n",
+            "    runsOf(leg, RUN.available_at_ms).map(({ run }) => ({ ...run, state: 'pending' as typeof state })) // MUTATION: every run a claim refuses is named pending\n",
+            "a sleeping run a claim refuses is listed as pending, so the report names a state the run is not in",
+        ),
+        (
+            "cli-stuck-counts-a-due-run-no-claim-admits",
+            "packages/cli/src/queue.ts",
+            "  owed.dueNotAdmitted.rows.length +\n",
+            "  0 + // MUTATION: a due run no claim admits is listed and not counted\n",
+            "stuck --fail-if-any exits 0 for a queue whose only listed row is a due run that no tick will take",
+        ),
+        (
+            "operator-waiters-are-the-first-in-the-order-they-print",
+            "packages/core/src/operator-reads.ts",
+            "    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }\n  })\n",
+            "    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }\n  })\n  read.sort((left, right) => byCodePoints(left.taskId, right.taskId)) // MUTATION: the waiters read are sorted by task before the list is cut\n",
+            "past the cap the list of an event's waiters leaves out a wait that comes before one it lists",
+        ),
+        (
+            "operator-gauge-of-live-tasks-selects-only-what-it-counts",
+            "packages/core/src/statements/operator.ts",
+            "    liveTaskRows(binds).select(['t.task_id', 't.enqueue_at_ms']),\n",
+            "    liveTaskRows(binds).select(['t.task_id', 't.task_name', 't.enqueue_at_ms']), // MUTATION: the gauge of live tasks selects a column its index does not hold\n",
+            "each row the gauge of live tasks counts costs a read of the table as well as of the index",
+        ),
+        (
+            "plan-a-lone-due-range-is-excused-only-by-the-lines-named",
+            "packages/store-libsql/test/plan-due-ranges.ts",
+            "    lone.length > 0 &&\n    lone.every((range) => entry.ranges.includes(range)) &&\n",
+            "    lone.length > 0 && // MUTATION: any lone due range of a named statement is excused\n",
+            "a variation of a named statement that grows through another index passes the growth oracle",
+        ),
+        (
+            "plan-a-lone-due-range-is-excused-only-with-its-bound",
+            "packages/store-libsql/test/plan-due-ranges.ts",
+            "    lone.every((range) => entry.ranges.includes(range)) &&\n    boundHolds(entry.boundedBy, sql)\n",
+            "    lone.every((range) => entry.ranges.includes(range)) // MUTATION: a named lone due range is excused with no bound in the text\n",
+            "a named statement that lost its LIMIT and grows passes the growth oracle",
+        ),
+        (
+            "plan-a-statement-with-no-lone-due-range-is-not-excused",
+            "packages/store-libsql/test/plan-due-ranges.ts",
+            "    entry !== undefined &&\n    lone.length > 0 &&\n",
+            "    entry !== undefined && // MUTATION: a named statement is excused with no lone due range in its plan\n",
+            "a variation of a named statement whose plan reads no due range at all, and grows, passes the growth oracle",
         ),
     )
 )
@@ -19763,13 +19833,13 @@ VERDICTS.update(
         "operator-reads-order-the-waiters": ExpectedVerdict(
             "behavior",
             "packages/core/test/operator-reads.test.ts",
-            "how an operator's read of an event's waiters is read lists the waiters by task, then run, then step, and a timeout outside its bounds as corrupt",
+            "how an operator's read of an event's waiters is read lists the waiters in the order the statement answered them, and a timeout outside its bounds as corrupt",
             "mutation-verdict:behavior:operator-reads-order-the-waiters",
         ),
         "operator-reads-stop-the-waiters-at-the-cap": ExpectedVerdict(
             "behavior",
             "packages/core/test/operator-reads.test.ts",
-            "how an operator's read of an event's waiters is read stops the list at the cap and says when more waits exist",
+            "how an operator's read of an event's waiters is read stops the list at the cap, keeps the first of what was answered, and says when more waits exist",
             "mutation-verdict:behavior:operator-reads-stop-the-waiters-at-the-cap",
         ),
         "operator-reads-count-the-live-tasks-of-every-leg": ExpectedVerdict(
@@ -19956,7 +20026,7 @@ VERDICTS.update(
         "operator-waiters-stop-at-the-cap": ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "operator reads of a queue [libsql] stops the list of an event's waiters at the cap, beside a thousand and one waits, fixture-built",
+            "operator reads of a queue [libsql] lists the first thousand of an event's waiters in the order it prints, beside a thousand and two waits, fixture-built",
             "mutation-verdict:behavior:operator-waiters-stop-at-the-cap",
             "packages/conformance/src/operator-queue-reads.ts",
         ),
@@ -20073,6 +20143,69 @@ VERDICTS.update(
             "packages/store-libsql/test/query-plans.test.ts",
             "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
             "mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says",
+        ),
+        "operator-finder-lists-every-due-run-in-one-leg": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of a queue [libsql] lists a move from the instant it comes due, as the engine takes it, and not a millisecond before a run that is due the instant it is spawned",
+            "mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg",
+            "packages/conformance/src/operator-queue-reads.ts",
+        ),
+        "operator-finder-lists-the-due-runs-a-claim-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of a queue [libsql] lists a due run that no claim admits, and neither a claim nor a sweep takes it unless its task is past its deadline",
+            "mutation-verdict:behavior:operator-finder-lists-the-due-runs-a-claim-refuses",
+            "packages/conformance/src/operator-queue-reads.ts",
+        ),
+        "operator-reads-merge-the-runs-a-claim-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more",
+            "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
+        ),
+        "operator-reads-name-the-state-of-a-run-a-claim-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how an operator's read of what a move is owed to decodes its legs lists the due runs a claim refuses in one leg of both states, oldest first, each with its state, and says when it holds more",
+            "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
+        ),
+        "cli-stuck-counts-a-due-run-no-claim-admits": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/queue-verbs.test.ts",
+            "stuck on libSQL lists a due run that no claim admits, names it as one, and exits 9 for it with --fail-if-any",
+            "mutation-verdict:behavior:cli-stuck-counts-a-due-run-no-claim-admits",
+        ),
+        "operator-waiters-are-the-first-in-the-order-they-print": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of a queue [libsql] lists the first thousand of an event's waiters in the order it prints, beside a thousand and two waits, fixture-built",
+            "mutation-verdict:behavior:operator-waiters-stop-at-the-cap",
+            "packages/conformance/src/operator-queue-reads.ts",
+        ),
+        "operator-gauge-of-live-tasks-selects-only-what-it-counts": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "every statement a store ships, by the nests of its plan reads no table once for each row of a backlog, but for the claim it names",
+            "mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says",
+        ),
+        "plan-a-lone-due-range-is-excused-only-by-the-lines-named": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "every statement a store ships, by the nests of its plan takes a lone due range as named only in the statement the table names it in, line for line, with its bound in the text",
+            "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
+        ),
+        "plan-a-lone-due-range-is-excused-only-with-its-bound": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "every statement a store ships, by the nests of its plan takes a lone due range as named only in the statement the table names it in, line for line, with its bound in the text",
+            "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
+        ),
+        "plan-a-statement-with-no-lone-due-range-is-not-excused": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "every statement a store ships, by the nests of its plan takes a lone due range as named only in the statement the table names it in, line for line, with its bound in the text",
+            "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
         ),
     }
 )
@@ -23988,7 +24121,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1324:
+        if len(MUTATIONS) != 1334:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -354,13 +354,13 @@ jobs:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == '45d4fc7e8f217d199ca3d7dbf52f38e42db7fd5eee844e5117b04fb99f6a0bbb':
-              # The operator's reads of a queue register sixty-five mutations: twenty-five for how
-              # core decodes a leg, a gauge, a count and a list, twenty-one for what a dialect
+              # The operator's reads of a queue register seventy-five mutations: twenty-seven for
+              # how core decodes a leg, a gauge, a count and a list, twenty-four for what a dialect
               # decides, held on libSQL against the engine and against a dump of every table,
-              # seventeen for the exits and the streams of `stuck`, `stats` and `sizes` and for the
-              # waiters `explain` lists, and two for what bounds a due range in the libSQL plan
-              # test. Each verdict marker of their cases is newer than the base registry, so each
-              # is exempted there. One base entry is re-aimed: the lines of the libSQL claim's
+              # eighteen for the exits and the streams of `stuck`, `stats` and `sizes` and for the
+              # waiters `explain` lists, and six for what bounds a due range in the libSQL plan
+              # test. Their cases carry seventy verdict markers. Each is newer than the base
+              # registry, so each is exempted there. One base entry is re-aimed: the lines of the libSQL claim's
               # admission that it mutates moved out of `claim` into `claimEligibility`, which the
               # claim and the operator's read of what a claim is owed to share.
               repaired = exempt(previous, candidate, (
@@ -372,6 +372,7 @@ jobs:
                   "mutation-verdict:behavior:cli-stats-prints-its-report-on-stdout",
                   "mutation-verdict:behavior:cli-stats-says-active",
                   "mutation-verdict:behavior:cli-stats-says-quiet-never-ok",
+                  "mutation-verdict:behavior:cli-stuck-counts-a-due-run-no-claim-admits",
                   "mutation-verdict:behavior:cli-stuck-default-grace-outlasts-a-tick",
                   "mutation-verdict:behavior:cli-stuck-exits-0-when-it-lists-nothing",
                   "mutation-verdict:behavior:cli-stuck-exits-10-for-a-corrupt-row",
@@ -388,6 +389,8 @@ jobs:
                   "mutation-verdict:behavior:operator-aged-stops-at-its-limit",
                   "mutation-verdict:behavior:operator-finder-answers-a-seeded-queue",
                   "mutation-verdict:behavior:operator-finder-lists-a-move-at-the-instant-it-comes-due",
+                  "mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg",
+                  "mutation-verdict:behavior:operator-finder-lists-the-due-runs-a-claim-refuses",
                   "mutation-verdict:behavior:operator-finder-lists-the-runs-a-claim-takes",
                   "mutation-verdict:behavior:operator-finder-lists-the-runs-a-sweep-reclaims",
                   "mutation-verdict:behavior:operator-finder-lists-the-tasks-a-sweep-cancels",
@@ -407,6 +410,7 @@ jobs:
                   "mutation-verdict:behavior:operator-reads-list-a-task-once-it-is-as-old-as-asked",
                   "mutation-verdict:behavior:operator-reads-list-a-task-whose-enqueue-instant-is-not-readable",
                   "mutation-verdict:behavior:operator-reads-merge-the-live-legs-oldest-first",
+                  "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
                   "mutation-verdict:behavior:operator-reads-name-the-head-of-the-queue",
                   "mutation-verdict:behavior:operator-reads-order-a-leg-oldest-first",
                   "mutation-verdict:behavior:operator-reads-order-the-waiters",
@@ -429,6 +433,7 @@ jobs:
                   "mutation-verdict:behavior:operator-waiters-stop-at-the-cap",
                   "mutation-verdict:behavior:plan-a-driving-due-range-is-bounded-as-its-entry-says",
                   "mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says",
+                  "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
               ))
               repaired = reaim_entry(repaired, candidate, "claim-payload-validation-atomic")
           else:
