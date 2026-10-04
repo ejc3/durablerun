@@ -316,10 +316,19 @@ export const MIGRATIONS: Migration[] = [
     // changes, and leaves it when the task ends, which is the write this version adds to
     // those transitions. It is an index and nothing else: a build that predates it runs
     // against this schema unchanged, and no statement the engine sends reads it.
+    //
+    // The second term of its predicate is what keeps the engine's statements off it. Every
+    // task has an enqueue instant, so the term leaves no task out. SQLite uses a partial
+    // index only for a statement whose own WHERE implies the index's, and no statement the
+    // engine sends compares the enqueue instant. Without the term every follow-on that
+    // updates a task by its key was planned through this index, by its queue and its state,
+    // and read every live task of that state: the plan test named 25 statements of 14
+    // batches, the claim's among them. A read that means to use the index compares the
+    // enqueue instant, which implies the term.
     version: 11,
     statements: [
       `CREATE INDEX IF NOT EXISTS tasks_live ON tasks (queue, state, enqueue_at_ms)
-       WHERE state IN ('pending','running','sleeping')`,
+       WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms IS NOT NULL`,
     ],
   },
 ]
