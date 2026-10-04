@@ -22,6 +22,7 @@ const EXPECTED_SURFACE_IDS = [
   'stale-token',
   'executor-errors',
   'operator-reads',
+  'retention',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 

@@ -37,6 +37,7 @@ import {
   uncoveredConditionIds,
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
+import { retentionConformance } from './retention.js'
 import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
 import { selfConcurrencyConformance } from './self-concurrency.js'
@@ -1411,4 +1412,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'stale-token', run: staleTokenConformance },
   { id: 'executor-errors', run: executorErrorConformance },
   { id: 'operator-reads', run: operatorReadsConformance },
+  { id: 'retention', run: retentionConformance },
 ] as const)

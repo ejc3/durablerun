@@ -29,6 +29,7 @@ export {
 } from './invariants.js'
 export { childTaskViolations, missingCompletionEvent } from './child-task-rows.js'
 export { engineHistoryViolations } from './engine-history.js'
+export { retentionViolations } from './retention-rows.js'
 export { sagaViolations } from './saga-rows.js'
 export { storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'

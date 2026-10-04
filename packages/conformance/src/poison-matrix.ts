@@ -15,6 +15,7 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
+  type TerminalState,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -3923,6 +3924,94 @@ export async function observeCleanAddressedProfile(
           .map((row) => `${row.attempt} ${row.state}`),
         checkpoints: (closure.checkpoints ?? []).map((row) => String(row.checkpoint_name)).sort(),
       },
+    }
+  } finally {
+    await f.close()
+  }
+}
+
+/** The state and the stamp of a task that had ended: what retention reads a unit's age from. */
+export interface EndedTaskStamp {
+  readonly state: string
+  readonly stampedAtMs: number | null
+}
+
+export interface TerminalPreStateObservation {
+  /** The label's batch crossed the executor and changed durable state. */
+  readonly fired: boolean
+  /** How the label's call on the healthy trigger settled. */
+  readonly healthy: 'fulfilled' | 'rejected'
+  /** The instant the engine ended the cell's task at. */
+  readonly endedAtMs: number
+  /** The later instant both invocations ran at. */
+  readonly invokedAtMs: number
+  /** Every task that was terminal before the invocations, before them and after. */
+  readonly tasks: Readonly<Record<string, { before: EndedTaskStamp; after: EndedTaskStamp }>>
+}
+
+/** The port call that ends the base population's running task in each terminal state. */
+const END_SEEDED_TASK: Readonly<
+  Record<TerminalState, (store: SchedulerStore) => Promise<unknown>>
+> = {
+  completed: (store) => store.complete(Q, RUN, TOKEN, '{"ended":true}'),
+  failed: (store) => store.fail(Q, RUN, TOKEN, '{"name":"PoisonEnded"}', null),
+  cancelled: (store) => store.cancelTask(Q, TASK),
+}
+
+/** How long after the ending the label runs, so a write that stamped the ended row would show. */
+const AFTER_THE_ENDING_MS = 5_000
+
+function endedTaskStamp(row: SqlRow): EndedTaskStamp {
+  const stamp = row.fence_at_ms
+  return {
+    state: String(row.state),
+    stampedAtMs: stamp === null || stamp === undefined ? null : Number(stamp),
+  }
+}
+
+/**
+ * One cell from a terminal pre-state. The engine ends the base population's task in
+ * `state`, the clock moves on, and `label` is invoked on that ended task and then on a
+ * healthy trigger. The cell answers what each task that had ended reads before and after,
+ * and judges nothing: the retention surface says what must hold.
+ */
+export async function observeTerminalPreState(
+  makeFixture: StoreFixtureFactory,
+  label: (typeof MATRIX_WRITE_LABELS)[number],
+  state: TerminalState,
+): Promise<TerminalPreStateObservation> {
+  const f = await makeFixture(`terminal-pre-state-${label}-${state}`)
+  try {
+    await seedBase(f)
+    await END_SEEDED_TASK[state](f.store)
+    await seedHealthyTrigger(f.raw, label)
+    const invokedAtMs = NOW + AFTER_THE_ENDING_MS
+    await f.admin.setFakeNowEpochMs(invokedAtMs)
+    const before = await snapshot(f.raw)
+    const recorder = new StateWatchingExecutor(f.raw)
+    const store = f.storeOver(recorder)
+    // The ended task refuses most calls, and a refusal is an answer here. What the cell
+    // reports is below: whether the label ran and changed something, and whether the call
+    // on the healthy trigger threw.
+    await invoke(label, store, POISON_INVOCATION).catch(() => undefined)
+    const healthy = await invoke(label, store, HEALTHY_INVOCATION).then(
+      () => 'fulfilled' as const,
+      () => 'rejected' as const,
+    )
+    const after = rowsByKey('tasks', (await snapshot(f.raw)).tasks)
+    const tasks: Record<string, { before: EndedTaskStamp; after: EndedTaskStamp }> = {}
+    for (const task of before.tasks) {
+      if (!isTerminalState(task.state)) continue
+      const still = after.get(key('tasks', task))
+      if (still === undefined) throw new Error(`${label}: task ${String(task.task_id)} is gone`)
+      tasks[String(task.task_id)] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
+    }
+    return {
+      fired: recorder.labels.includes(label) && recorder.changedDurableState(label),
+      healthy,
+      endedAtMs: NOW,
+      invokedAtMs,
+      tasks,
     }
   } finally {
     await f.close()

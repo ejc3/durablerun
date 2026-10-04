@@ -1,3 +1,4 @@
+import { engineHistoryViolations } from '@durablerun/conformance'
 import {
   EventTimeoutError,
   type SchedulerStore,
@@ -358,5 +359,46 @@ describe('child tasks through the SDK', () => {
     ])
     expect(await taskCount(f, 'child')).toBe(0)
     f.close()
+  })
+
+  // The row checks read a spawn memo by the name and the shape this SDK stores it under,
+  // and a child's wait by the event `ctx.awaitTask` registers. Deleting the child's rows
+  // by hand is what a purge that ignored its barrier would do, and the checks must then
+  // name the parent's memo and its wait, from rows this SDK really wrote.
+  it('stores a spawn memo and a wait that the row checks name once the child is gone', async () => {
+    const f = await fx('child-rows-gone')
+    try {
+      const reg = registry({
+        parent: async (ctx) => ctx.awaitTask(await ctx.spawn('child', null)),
+        child: async () => 'done',
+      })
+      const parent = await f.store.spawn(Q, 'parent', '{}')
+      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'suspended' })
+      await expectCleanRows(f)
+      const [children, parentRuns] = await f.raw.batch(
+        't',
+        [
+          { sql: "SELECT task_id FROM tasks WHERE task_name = 'child'", args: [] },
+          { sql: 'SELECT run_id FROM runs WHERE task_id = ?', args: [parent.taskId] },
+        ],
+        'read',
+      )
+      const childId = String(children?.rows[0]?.task_id)
+      const parentRunId = String(parentRuns?.rows[0]?.run_id)
+      await f.raw.batch(
+        'a-purge-that-ignored-its-barrier',
+        [
+          { sql: 'DELETE FROM runs WHERE task_id = ?', args: [childId] },
+          { sql: 'DELETE FROM tasks WHERE task_id = ?', args: [childId] },
+        ],
+        'write',
+      )
+      expect(await engineHistoryViolations(f.raw)).toEqual([
+        `spawn-memo-without-its-task: ${parent.taskId}/$spawn:child names ${childId}`,
+        `completion-wait-without-its-task-or-event: ${parentRunId}/$await-task:${childId} awaits ${childId}`,
+      ])
+    } finally {
+      await f.close()
+    }
   })
 })
