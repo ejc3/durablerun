@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util'
-import { OPERATOR_LIST_CAP } from '@durablerun/core'
+import { MAX_DURATION_MS, OPERATOR_LIST_CAP } from '@durablerun/core'
 import type { ExitName } from './exit.js'
 
 /**
@@ -153,12 +153,19 @@ const DURATION_UNITS = { s: 1, m: 60, h: 3_600, d: 86_400 } as const
 
 /**
  * The seconds of a duration as an operator writes one: a whole number and a unit, `s`, `m`,
- * `h` or `d`, as in `90s` or `2m`. Null for any other text.
+ * `h` or `d`, as in `90s` or `2m`, of at most the 100 years a port takes. Null for any
+ * other text.
  */
 export function durationSeconds(text: string): number | null {
   const match = /^(0|[1-9][0-9]{0,8})([smhd])$/.exec(text)
   if (match === null) return null
-  return Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS]
+  const seconds = Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS]
+  return seconds * 1000 > MAX_DURATION_MS ? null : seconds
+}
+
+/** A whole number from 1 to `most`, as a flag writes one. Null for any other text. */
+export function wholeNumber(text: string, most: number): number | null {
+  return /^[1-9][0-9]*$/.test(text) && Number(text) <= most ? Number(text) : null
 }
 
 export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({

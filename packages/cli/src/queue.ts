@@ -49,20 +49,15 @@ const legView = <Row>(leg: Capped<Row>, view: (row: Row) => unknown): Printed<Ca
   atLeast: leg.atLeast,
 })
 
-/** The legs of `stuck`, by the name each prints under, with how many rows each lists. */
-const listedIn = (owed: StuckRuns): readonly number[] => [
-  owed.dueUnclaimed.rows.length,
-  owed.sleepingPastWake.rows.length,
-  owed.leaseLapsed.rows.length,
-  owed.cancelOverdue.rows.length,
-]
-
 /**
  * How many rows the legs list between them, which is what `--fail-if-any` asks about. A run
  * under a lapsed lease whose task is also past its deadline is a row of two legs.
  */
 export const rowsListed = (owed: StuckRuns): number =>
-  listedIn(owed).reduce((sum, rows) => sum + rows, 0)
+  owed.dueUnclaimed.rows.length +
+  owed.sleepingPastWake.rows.length +
+  owed.leaseLapsed.rows.length +
+  owed.cancelOverdue.rows.length
 
 /** What `stuck` prints of what the driver owes a queue, every member of it. */
 export function stuckView(

@@ -1,7 +1,6 @@
 import {
   type Clock,
   type IdSource,
-  MAX_DURATION_MS,
   MAX_RUN_ORDINAL,
   OPERATOR_LIST_CAP,
   PermanentStoreError,
@@ -23,6 +22,7 @@ import {
   durationSeconds,
   parseInvocation,
   usage,
+  wholeNumber,
 } from './commands.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
 import {
@@ -372,6 +372,12 @@ const migrate: Handler = async ({ invocation, store, reveal, note }) => {
   }
 }
 
+/** The refusal of a flag's value, which the parser took as text. Nothing was read. */
+const flagRefused = (message: string): Answer => ({
+  exit: 'usage',
+  view: { error: { kind: 'usage', message } },
+})
+
 const result: Handler = async (context) => {
   const found = await readTask(context)
   if ('exit' in found) return found
@@ -385,22 +391,15 @@ const result: Handler = async (context) => {
 const checkpoints: Handler = async (context) => {
   const { invocation, store, reveal } = context
   const shown = invocation.strings.attempt
-  if (shown !== undefined && !(/^[1-9][0-9]*$/.test(shown) && Number(shown) <= MAX_RUN_ORDINAL)) {
-    return {
-      exit: 'usage',
-      view: {
-        error: {
-          kind: 'usage',
-          message: `--attempt takes a whole number from 1 to ${MAX_RUN_ORDINAL}`,
-        },
-      },
-    }
+  const asked = shown === undefined ? undefined : wholeNumber(shown, MAX_RUN_ORDINAL)
+  if (asked === null) {
+    return flagRefused(`--attempt takes a whole number from 1 to ${MAX_RUN_ORDINAL}`)
   }
   const found = await readTask(context)
   if ('exit' in found) return found
   const { queue, taskId } = found
-  const attempt = shown === undefined ? MAX_RUN_ORDINAL : Number(shown)
-  const view = { queue, taskId, attempt: shown === undefined ? null : attempt }
+  const attempt = asked ?? MAX_RUN_ORDINAL
+  const view = { queue, taskId, attempt: asked ?? null }
   const rows = await decoded(() => store.scheduler.getCheckpoints(queue, taskId, attempt))
   if ('refused' in rows) {
     return unreadable({ ...view, checkpoints: 'unreadable' }, rows.refused, reveal)
@@ -602,23 +601,11 @@ const explain: Handler = async (context) => {
   }
 }
 
-/** The refusal of a flag's value, which the parser took as text. Nothing was read. */
-const flagRefused = (message: string): Answer => ({
-  exit: 'usage',
-  view: { error: { kind: 'usage', message } },
-})
-
 /** The queue a read of a queue names, once the schema window admits the database, or the answer that refuses. */
 async function readableQueue({ invocation, store }: Context): Promise<string | Answer> {
   const queue = invocation.strings.queue ?? ''
   const version = await readableVersion(store)
   return typeof version === 'number' ? queue : { ...version, view: { queue, ...version.view } }
-}
-
-/** The seconds a duration flag names, or null for a value it cannot take. */
-function secondsOf(shown: string): number | null {
-  const seconds = durationSeconds(shown)
-  return seconds === null || seconds * 1000 > MAX_DURATION_MS ? null : seconds
 }
 
 const durationRefused = (flag: string): Answer =>
@@ -637,18 +624,17 @@ const durationRefused = (flag: string): Answer =>
  */
 const stuck: Handler = async (context) => {
   const { strings, booleans } = context.invocation
-  const graceSeconds = strings.grace === undefined ? DUE_GRACE_MS / 1000 : secondsOf(strings.grace)
+  const graceSeconds =
+    strings.grace === undefined ? DUE_GRACE_MS / 1000 : durationSeconds(strings.grace)
   if (graceSeconds === null) return durationRefused('grace')
   const asked = strings['older-than']
-  const olderThanSeconds = asked === undefined ? undefined : secondsOf(asked)
+  const olderThanSeconds = asked === undefined ? undefined : durationSeconds(asked)
   if (olderThanSeconds === null) return durationRefused('older-than')
   const limit =
     strings.limit === undefined
       ? STUCK_DEFAULT_LIMIT
-      : /^[1-9][0-9]*$/.test(strings.limit)
-        ? Number(strings.limit)
-        : 0
-  if (limit < 1 || limit > OPERATOR_LIST_CAP) {
+      : wholeNumber(strings.limit, OPERATOR_LIST_CAP)
+  if (limit === null) {
     return flagRefused(`--limit takes a whole number from 1 to ${OPERATOR_LIST_CAP}`)
   }
   const queue = await readableQueue(context)

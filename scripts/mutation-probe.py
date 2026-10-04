@@ -19564,8 +19564,8 @@ MUTATION_SPECS.extend(
         (
             "cli-stuck-refuses-a-flag-it-cannot-read",
             "packages/cli/src/main.ts",
-            "  if (limit < 1 || limit > OPERATOR_LIST_CAP) {\n",
-            "  if (limit < 0 || limit > OPERATOR_LIST_CAP) { // MUTATION: a limit that is no whole number from 1 is handed to the port\n",
+            "  if (limit === null) {\n",
+            "  if (false) { // MUTATION: a limit that is no whole number from 1 is handed to the port\n",
             "stuck --limit all opens the store and ends in exit 1, a defect's exit, where the flag should be refused with exit 2",
         ),
         (
@@ -19578,8 +19578,8 @@ MUTATION_SPECS.extend(
         (
             "cli-stuck-default-grace-outlasts-a-tick",
             "packages/cli/src/main.ts",
-            "  const graceSeconds = strings.grace === undefined ? DUE_GRACE_MS / 1000 : secondsOf(strings.grace)\n",
-            "  const graceSeconds = strings.grace === undefined ? 0 : secondsOf(strings.grace) // MUTATION: with no --grace a move is listed the millisecond it is owed\n",
+            "    strings.grace === undefined ? DUE_GRACE_MS / 1000 : durationSeconds(strings.grace)\n",
+            "    strings.grace === undefined ? 0 : durationSeconds(strings.grace) // MUTATION: with no --grace a move is listed the millisecond it is owed\n",
             "stuck with no --grace lists every run that is waiting for the next tick, so a healthy queue reads as stuck between ticks",
         ),
         (
@@ -19592,8 +19592,8 @@ MUTATION_SPECS.extend(
         (
             "cli-stuck-older-than-lists-a-task-as-old-as-asked",
             "packages/cli/src/main.ts",
-            "  const olderThanSeconds = asked === undefined ? undefined : secondsOf(asked)\n",
-            "  const olderThanSeconds = asked === undefined ? undefined : secondsOf(asked) === null ? null : 0 // MUTATION: every live task is listed, whatever age was asked for\n",
+            "  const olderThanSeconds = asked === undefined ? undefined : durationSeconds(asked)\n",
+            "  const olderThanSeconds = asked === undefined ? undefined : durationSeconds(asked) === null ? null : 0 // MUTATION: every live task is listed, whatever age was asked for\n",
             "stuck --older-than 1h lists every live task of the queue",
         ),
         (
