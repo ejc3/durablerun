@@ -297,6 +297,14 @@ describe('stuck on libSQL', () => {
         (await runCli(['stats', '--queue', QUEUE, '--json'], db.env)).stdout,
       ) as { gauges: { runningRunsLapsed: { count: number } } }
       expect(stats.gauges.runningRunsLapsed.count).toBe(1)
+      // `explain` reads the run as any lapsed lease, and calls its task stuck.
+      const explained = await runCli(['explain', task.taskId, '--queue', QUEUE, '--json'], db.env)
+      const diagnosis = JSON.parse(explained.stdout) as { cause: string; verdict: string }
+      expect({
+        exit: explained.exit,
+        cause: diagnosis.cause,
+        verdict: diagnosis.verdict,
+      }).toEqual({ exit: 0, cause: 'lease-lapsed-unswept', verdict: 'stuck' })
       const found = await runCli(
         ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
         db.env,
@@ -367,6 +375,62 @@ describe('stuck on libSQL', () => {
         cancelOverdue: [],
         deadlineNotCancelled: [[task.taskId, 'pending', hour - 30_000]],
       })
+    }))
+
+  it('says more than it lists for one run a claim takes beside thirty it refuses, and that more may lie past its window', () =>
+    onDb('stuck-window-beside-refused', async (db) => {
+      const admitted = await db.store.spawn(QUEUE, 'healthy', '{}')
+      // The thirty are due a second after it, so it is the oldest row of the window.
+      await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
+      for (let n = 0; n < 30; n++) await db.store.spawn(QUEUE, 'poisoned', '{}')
+      // Fixture-built: no engine path writes a retry strategy that is not JSON.
+      await db.raw.batch('fixture:retry-strategy', [
+        {
+          sql: "UPDATE tasks SET retry_strategy = 'not json' WHERE task_id <> ?",
+          args: [admitted.taskId],
+        },
+      ])
+      await db.admin.setFakeNowEpochMs(NOW_MS + 3_600_000)
+      const found = await stuck(db, ['--grace', '0s'])
+      const leg = found.answer.dueNotAdmitted as unknown as {
+        rows: unknown[]
+        atLeast: boolean
+        unexamined: boolean
+      }
+      // The window is the 22 oldest due runs: the one a claim takes, and 21 it refuses. The
+      // leg lists its limit of them, says the window showed more, and says that more may
+      // lie past the window. It cannot say how many.
+      expect({
+        dueUnclaimed: found.answer.dueUnclaimed.rows.length,
+        rows: leg.rows.length,
+        atLeast: leg.atLeast,
+        unexamined: leg.unexamined,
+      }).toEqual({ dueUnclaimed: 1, rows: STUCK_DEFAULT_LIMIT, atLeast: true, unexamined: true })
+    }))
+
+  it('leaves nothing unexamined for a backlog too young for the grace', () =>
+    onDb('stuck-window-young-backlog', async (db) => {
+      for (let n = 0; n < STUCK_DEFAULT_LIMIT + 2; n++) await db.store.spawn(QUEUE, 'healthy', '{}')
+      await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
+      const unexamined = async (flags: string[]) => {
+        const run = await stuck(db, flags)
+        const leg = run.answer.dueNotAdmitted as unknown as { unexamined: boolean }
+        return { exit: run.exit, listed: run.listed, unexamined: leg.unexamined }
+      }
+      // Twenty-two runs due for one second, under the default grace of two minutes: no row
+      // of them could be listed, so the window left nothing unexamined.
+      expect(await unexamined(['--fail-if-any'])).toEqual({ exit: 0, listed: 0, unexamined: false })
+      // With no grace the twenty-second run stands behind a full leg of the claim's, and
+      // could be one a claim refuses: the window does not settle it.
+      expect(await unexamined(['--grace', '0s'])).toEqual({
+        exit: 0,
+        listed: STUCK_DEFAULT_LIMIT,
+        unexamined: true,
+      })
+      // A claim takes all of them.
+      expect((await db.store.claim(QUEUE, 'w', { leaseSeconds: 60, limit: 100 })).length).toBe(
+        STUCK_DEFAULT_LIMIT + 2,
+      )
     }))
 
   it('lists no healthy run: one under a live lease past the hung-run bound, and one parked on an event nobody emits', () =>

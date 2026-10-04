@@ -76,7 +76,8 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
       pendingRuns: dueByQueue('r'),
       sleepingRuns: dueByQueue('r'),
       lapsedLeases: dueByQueue('r'),
-      passedDeadlines: (queue: string) => [dueByQueue('t')(queue)],
+      // Two windows, as a store whose index of deadlines leads with the state hands out.
+      passedDeadlines: (queue: string) => [dueByQueue('t')(queue), dueByQueue('t')(queue)],
     },
     counted: {
       pendingRuns: byQueue('r'),
@@ -488,9 +489,9 @@ type Stored = SqlRow[string]
 const NOW = 10_000
 
 /**
- * `stuck-runs` answers its nine statements in order: the four windows, of pending runs, of
- * sleeping runs, of lapsed leases and of passed deadlines, then the engine's four legs,
- * pending, sleeping, lapsed and cancels, then database time.
+ * `stuck-runs` answers its ten statements in order: the windows, of pending runs, of
+ * sleeping runs, of lapsed leases and the two of passed deadlines, then the engine's four
+ * legs, pending, sleeping, lapsed and cancels, then database time.
  */
 const stuck = (
   legs: {
@@ -498,6 +499,7 @@ const stuck = (
     windowSleeping?: SqlRow[]
     windowLapsed?: SqlRow[]
     windowDeadlines?: SqlRow[]
+    windowDeadlinesSecond?: SqlRow[]
     pending?: SqlRow[]
     sleeping?: SqlRow[]
     lapsed?: SqlRow[]
@@ -510,6 +512,7 @@ const stuck = (
     legs.windowSleeping ?? [],
     legs.windowLapsed ?? [],
     legs.windowDeadlines ?? [],
+    legs.windowDeadlinesSecond ?? [],
     legs.pending ?? [],
     legs.sleeping ?? [],
     legs.lapsed ?? [],
@@ -631,7 +634,7 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
     expect(
       (args['stuck-runs'] ?? []).map((bound) => bound.at(-1)),
       'mutation-verdict:behavior:operator-reads-read-a-leg-one-row-past-its-limit',
-    ).toEqual([4, 4, 4, 4, 3, 3, 3, 3, undefined])
+    ).toEqual([4, 4, 4, 4, 4, 3, 3, 3, 3, undefined])
     expect(
       {
         dueUnclaimed: [listed(answer.dueUnclaimed), answer.dueUnclaimed.atLeast],
@@ -786,6 +789,67 @@ describe("how an operator's read of what a move is owed to decodes its legs", ()
       { rows: ['old'], atLeast: false, unexamined: true },
       { rows: [], atLeast: false, unexamined: true },
       { rows: ['young'], atLeast: false, unexamined: false },
+    ])
+  })
+
+  it('says with atLeast what a window showed, and with unexamined only what the grace could list', async () => {
+    // The limit is two, so a window is read four rows deep. Database time is 10,000.
+    const leg = async (windowPending: SqlRow[], pending: SqlRow[], graceSeconds: number) => {
+      const { reads } = readsAnswering(stuck({ windowPending, pending }))
+      const answer = await reads.stuckRuns('q', { graceSeconds, limit: 2 })
+      return {
+        rows: answer.dueNotAdmitted.rows.map((row) => row.runId),
+        atLeast: answer.dueNotAdmitted.atLeast,
+        unexamined: answer.dueNotAdmitted.unexamined,
+      }
+    }
+    const spread = (ids: string[], from: number, step: number) =>
+      ids.map((id, row) => windowRun(id, from + row * step))
+    const fourOld = spread(['a', 'b', 'c', 'd'], 1_000, 1_000)
+    const fourYoung = spread(['a', 'b', 'c', 'd'], 9_000, 100)
+    const taken = (window: SqlRow[]) =>
+      window.slice(0, 3).map((row) => dueRun(String(row.run_id), row.available_at_ms as number))
+    expect(
+      [
+        // One run a claim takes ahead of three it refuses. The claim's leg is not full, so
+        // it holds every run a claim takes and the three are refused: one more than the
+        // limit, which the window showed. The read came back full, so more may lie past it.
+        await leg(
+          [windowRun('taken', 1_000), ...spread(['r1', 'r2', 'r3'], 2_000, 1_000)],
+          [dueRun('taken', 1_000)],
+          0,
+        ),
+        // Four runs due for less than a second, under a grace of five. The fourth stands
+        // behind a full leg and the read came back full, and no row there could be listed
+        // under that grace.
+        await leg(fourYoung, taken(fourYoung), 5),
+        // The same four, old enough for the grace: the fourth is not settled.
+        await leg(fourOld, taken(fourOld), 5),
+      ],
+      'mutation-verdict:behavior:operator-reads-say-what-a-window-showed',
+    ).toEqual([
+      { rows: ['r1', 'r2'], atLeast: true, unexamined: true },
+      { rows: [], atLeast: false, unexamined: false },
+      { rows: [], atLeast: false, unexamined: true },
+    ])
+  })
+
+  it('lists the tasks no sweep cancels from every window of deadlines, oldest first', async () => {
+    // A store whose index of deadlines leads with the state reads one window to a live
+    // state. The older task is in the second.
+    const { reads } = readsAnswering(
+      stuck({
+        windowDeadlines: [windowTask('in-the-first', 6_000)],
+        windowDeadlinesSecond: [windowTask('in-the-second', 3_000)],
+      }),
+    )
+    const answer = await reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(
+      answer.deadlineNotCancelled.rows.map((row) => [row.taskId, row.lateByMs]),
+      'mutation-verdict:behavior:operator-reads-merge-every-window-of-deadlines',
+    ).toEqual([
+      ['in-the-second', 7_000],
+      ['in-the-first', 4_000],
     ])
   })
 

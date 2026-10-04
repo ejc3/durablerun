@@ -1116,6 +1116,30 @@ export function operatorQueueReadsConformance(
         await f.raw.batch('fixture:not-swept', [
           { sql: "UPDATE runs SET queue = 'another-queue' WHERE run_id = ?", args: [doomed.runId] },
         ])
+        // The same of a running and of a sleeping task, so that a refused deadline stands in
+        // every live state: a store that reads one window of deadlines to a state has a
+        // refused task in each of them. Each is given the deadline by fixture, and its run
+        // is moved to a third queue.
+        const doomedRunning = await spawn(f, 'doomed-running')
+        await claimActivated(f.store, Q, 'w-doomed-running')
+        const doomedSleeping = await spawn(f, 'doomed-sleeping')
+        const dozing = await claimActivated(f.store, Q, 'w-doomed-sleeping')
+        await f.store.suspendRun(
+          Q,
+          dozing.runId,
+          dozing.claimToken,
+          { inSeconds: 20 },
+          { key: '$sleep:nap', stateJson: 'null' },
+        )
+        for (const task of [doomedRunning, doomedSleeping]) {
+          await f.raw.batch('fixture:not-swept', [
+            {
+              sql: 'UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?',
+              args: [DEADLINE_AT, task.taskId],
+            },
+            { sql: "UPDATE runs SET queue = 'a-third-queue' WHERE run_id = ?", args: [task.runId] },
+          ])
+        }
         await at(LATER)
         const reads = f.operatorReadsOver(f.raw)
         const lapsedNotReclaimed = found({
@@ -1125,13 +1149,21 @@ export function operatorQueueReadsConformance(
           dueAtMs: LEASES_END_AT,
           lateByMs: LATER - LEASES_END_AT,
         })
-        const deadlineNotCancelled = found({
-          taskId: doomed.taskId,
-          taskName: 'doomed',
-          state: 'pending',
+        // One deadline, so the three are listed in the order of their ids.
+        const uncancelled = (task: Spawned, taskName: string, state: string) => ({
+          taskId: task.taskId,
+          taskName,
+          state,
           dueAtMs: DEADLINE_AT,
           lateByMs: LATER - DEADLINE_AT,
         })
+        const deadlineNotCancelled = found(
+          ...[
+            uncancelled(doomed, 'doomed', 'pending'),
+            uncancelled(doomedRunning, 'doomed-running', 'running'),
+            uncancelled(doomedSleeping, 'doomed-sleeping', 'sleeping'),
+          ].sort((left, right) => (left.taskId < right.taskId ? -1 : 1)),
+        )
         expect(
           await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 }),
           'mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes',
@@ -1157,7 +1189,7 @@ export function operatorQueueReadsConformance(
         expect({
           runningRunsLapsed: status.gauges.runningRunsLapsed,
           tasksPastTheirDeadline: status.gauges.tasksPastTheirDeadline,
-        }).toEqual({ runningRunsLapsed: exactly(2), tasksPastTheirDeadline: exactly(1) })
+        }).toEqual({ runningRunsLapsed: exactly(2), tasksPastTheirDeadline: exactly(3) })
         // The sweep fails the run it can take, and no move comes to the other two rows.
         const reached = nothingReached()
         await finderAgainstTheEngine(f, 'beside two rows no sweep takes', 'not-swept', reached)
@@ -1165,7 +1197,7 @@ export function operatorQueueReadsConformance(
           ...nothingReached(),
           claimTimeouts: 1,
           notReclaimed: 1,
-          notCancelled: 1,
+          notCancelled: 3,
         })
         // They are still listed.
         const after = await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })
