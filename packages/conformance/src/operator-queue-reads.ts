@@ -21,7 +21,8 @@ import { awaitOwned, claimActivated, claimOne } from './scenario.js'
 
 /**
  * The operator's reads of a queue (`OperatorReads`, DESIGN.md §3.11) on one dialect: what a
- * move of the driver is owed to, the gauges, the row counts, and an event's waiters. Core
+ * move of the driver is owed to, the oldest live tasks, the gauges, the row counts, and an
+ * event's waiters. Core
  * holds the one implementation, and core's own cases hold how it decodes rows. What is held
  * here is what a dialect decides: which rows each of its statements answers with.
  *
@@ -32,7 +33,8 @@ import { awaitOwned, claimActivated, claimOne } from './scenario.js'
  * leaves a queue in, so it is asked of the states a fuzz walk of the engine leaves, with a
  * floor on what the walks reached, as well as of a queue seeded by hand, at the instant
  * each move comes due and one millisecond before it. The gauges and the row counts equal
- * counts made here, in TypeScript, from a dump of every table.
+ * counts made here, in TypeScript, from a dump of every table, and the list of the oldest
+ * live tasks equals a list made from the same dump.
  */
 
 /** A task and its one run, as a spawn answers them. */
