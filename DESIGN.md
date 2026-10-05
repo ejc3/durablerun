@@ -2946,6 +2946,13 @@ are load-bearing):
      inside them, a suspension's checkpoint, and a failed rollback. Read as an object such
      a value has no member, so a spawn went on as if empty options had been passed, and
      null was a TypeError from inside the entry.
+   - An options object of switches holds booleans. The options of `cancelTask` are the
+     one such object: they are left out, or they are an object whose `unlessSagaBegan` is
+     a boolean or left out. A store asks whether a switch is `true`, so `1` or `'true'`
+     there would read as the switch left off, and the cancel would halt a rollback its
+     caller asked it to spare (§3.10). The table of strings names no string in these
+     options, so core holds them in a table of their own, whose type names every member
+     of `CancelOptions`: an option that type gains stops the build until it is held.
    - The refusal is `InvalidDurableStringError`. It names what the caller passed, it
      happens before an id is minted or anything is sent, and it is a rejected promise and
      never a throw.

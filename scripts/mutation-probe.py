@@ -21181,6 +21181,34 @@ VERDICTS.update(
     }
 )
 
+# What the drive verbs and the port they call take and say, held after the branch's first
+# round: a switch of a cancel's options is a boolean, a number is refused by its value, a
+# hosted route's own 500 is permanent whatever its code, a repeat the spawn answered is
+# answered, a cancellation says whether it halted a rollback, and a retry that is not
+# confirmed says what a confirmed one would do.
+MUTATION_SPECS.extend(
+    (
+        (
+            "port-cancel-options-are-held-to-a-boolean",
+            "packages/core/src/port-strings.ts",
+            "    if (member !== undefined && typeof member !== 'boolean') {\n",
+            "    if (false) { // MUTATION: a switch of a cancel's options is taken whatever it is\n",
+            "cancelTask with unlessSagaBegan of 1 or 'true' reaches every store, which reads the switch as off: the cancel carries no saga conjunct and halts a rollback its caller asked it to spare",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "port-cancel-options-are-held-to-a-boolean": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "identifier bound conformance [libsql] refuses the options of a cancel that are no object, or whose unlessSagaBegan is no boolean, before anything is sent",
+            "mutation-verdict:behavior:port-cancel-options-are-held-to-a-boolean",
+            "packages/conformance/src/identifier-bound.ts",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -25107,7 +25135,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1406:
+        if len(MUTATIONS) != 1407:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
