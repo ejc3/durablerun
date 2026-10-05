@@ -382,6 +382,7 @@ jobs:
                   "mutation-verdict:behavior:cli-emit-never-prints-the-stored-payload",
                   "mutation-verdict:behavior:cli-emit-refuses-a-reserved-name",
                   "mutation-verdict:behavior:cli-emit-says-already-emitted-with-the-stored-digest",
+                  "mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name",
                   "mutation-verdict:behavior:cli-enqueue-hides-only-a-refusal-of-the-key",
                   "mutation-verdict:behavior:cli-enqueue-refuses-an-empty-task-name",
                   "mutation-verdict:behavior:cli-enqueue-says-whether-the-stored-name-matches",

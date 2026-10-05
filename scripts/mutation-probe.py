@@ -20469,9 +20469,16 @@ MUTATION_SPECS.extend(
         (
             "cli-enqueue-hides-only-a-refusal-of-the-key",
             "packages/cli/src/main.ts",
-            "    if (!isPortRefusal(error) || reveal || !refusesTheKey(key)) throw error\n",
-            "    if (!isPortRefusal(error) || reveal || !error.message.includes(key)) throw error // MUTATION: the words are searched for the key\n",
+            "    if (!isPortRefusal(error) || reveal || refusesAnArgumentThatPrints(queue, taskName)) {\n",
+            "    if (!isPortRefusal(error) || reveal || !error.message.includes(key)) { // MUTATION: the words are searched for the key\n",
             "enqueue under a key of one letter hides every refusal of the port, and tells the operator its words quote the key",
+        ),
+        (
+            "cli-enqueue-hides-a-refusal-it-cannot-name",
+            "packages/cli/src/drive.ts",
+            "    requirePortString('taskName', taskName)\n    return false\n",
+            "    requirePortString('taskName', taskName)\n    return true // MUTATION: every refusal is taken for one that prints\n",
+            "enqueue prints the words of a refusal that quotes the idempotency key, with no --reveal",
         ),
         (
             "cli-enqueue-says-whether-the-stored-name-matches",
@@ -20850,6 +20857,12 @@ VERDICTS.update(
             "packages/cli/test/drive-verbs.test.ts",
             "enqueue on libSQL refuses a command line with no key, parameters that are no JSON and a key of the engine, and none changes anything",
             "mutation-verdict:behavior:cli-enqueue-hides-only-a-refusal-of-the-key",
+        ),
+        "cli-enqueue-hides-a-refusal-it-cannot-name": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL refuses a command line with no key, parameters that are no JSON and a key of the engine, and none changes anything",
+            "mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name",
         ),
         "cli-enqueue-says-whether-the-stored-name-matches": ExpectedVerdict(
             "behavior",
@@ -25094,7 +25107,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1405:
+        if len(MUTATIONS) != 1406:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

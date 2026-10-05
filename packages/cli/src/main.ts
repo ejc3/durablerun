@@ -33,7 +33,7 @@ import {
 import {
   isReservedEventName,
   jsonArgument,
-  refusesTheKey,
+  refusesAnArgumentThatPrints,
   retryRefusal,
   rollbackFacts,
   runsInAnotherQueue,
@@ -788,10 +788,12 @@ const enqueue: Handler = async (context) => {
     })
     found = spawned
   } catch (error) {
-    // A port's refusal names what the caller passed, and the one value a user wrote that it
-    // quotes is the key, when the key is what it refuses. So the words print, unless core's
-    // own check of the key refuses this one, and then they print only with --reveal.
-    if (!isPortRefusal(error) || reveal || !refusesTheKey(key)) throw error
+    // A port's refusal names what the caller passed. The words print when the refusal is of
+    // the queue or the task name, whose names print everywhere. Any other refusal may quote
+    // the key, so its words print only with --reveal.
+    if (!isPortRefusal(error) || reveal || refusesAnArgumentThatPrints(queue, taskName)) {
+      throw error
+    }
     return {
       exit: 'refused',
       view: {
@@ -800,7 +802,7 @@ const enqueue: Handler = async (context) => {
           kind: 'refused',
           name: error.name,
           message:
-            'the store refused the idempotency key, and its words quote the key: run it again with --reveal to print them. Nothing was changed',
+            'the store refused the call, and its words may quote the idempotency key: run it again with --reveal to print them. Nothing was changed',
         },
       },
     }

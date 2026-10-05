@@ -6428,9 +6428,11 @@ reach.
   it was written is refused as a usage error that says which: a number that is not finite
   once it is read, as `1e400` is, or an integer a double cannot hold, as
   `12345678901234567890` is. So what is stored, and what the printed digest is of, is what
-  the caller passed, in canonical form. `emit --payload` is read the same way. A refusal of
-  the port prints its words, but for a refusal of the key, which quotes the key: when
-  core's own check of the key refuses it, the words print only with `--reveal`.
+  the caller passed, in canonical form: the same values, with a fraction read as the double
+  nearest it. `emit --payload` is read the same way. A refusal of the port prints its words
+  when it is of the queue or of the task name, the two strings the port checks before the
+  key, which core's own check of each decides. Any other refusal may quote the key, so its
+  words print only with `--reveal`. The words are never searched for the key.
 - `emit <eventName> [--payload JSON] --yes --queue Q --target T` is `emitEvent`. The first
   emit's payload stands. A later emit changes no payload and wakes nothing, and the engine
   stamps the event's row with the batch that last wrote it. The answer says which this call
@@ -6574,7 +6576,8 @@ exits 10 exactly when `explain` would name something. `stuck`, `stats` and `size
 ids, task names, states of the engine's own, instants and counts, and no value a user
 wrote. A drive verb prints the idempotency key, the parameters and the payload its caller
 passed as their length and sha256, and their text with `--reveal`. A port's refusal of an
-`enqueue` that quotes the key prints only with `--reveal`. The payload an event already
+`enqueue` prints only with `--reveal`, unless it is of the queue or of the task name, because
+any other may quote the key. The payload an event already
 holds prints as its length and sha256 and never as text. `tick` prints neither URL as it
 was given and never the token.
 

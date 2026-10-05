@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RETRY_GUARD, type RetryGuardConjunct } from '@durablerun/core'
+import { PortRefusalError, RETRY_GUARD, type RetryGuardConjunct } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { RETRY_REFUSALS } from '../../conformance/src/operator-admission.js'
@@ -426,9 +426,9 @@ describe('enqueue on libSQL', () => {
         hidden: [hidden.exit, hidden.answer.error?.message?.includes('$spawn:forged')],
         shown: [shown.exit, shown.answer.error?.message?.includes('$spawn:forged')],
       }).toEqual({ hidden: [3, false], shown: [3, true] })
-      // A refusal that is not of the key prints its words. The key here is one letter, which
-      // every sentence holds: what hides a refusal is that the key is refused, and not that
-      // the words hold it.
+      // A refusal of the queue prints its words. The key here is one letter, which every
+      // sentence holds: what a refusal is of decides whether it prints, and not whether its
+      // words hold the key.
       const longQueue = await drive(db, [
         'enqueue',
         'report',
@@ -456,6 +456,43 @@ describe('enqueue on libSQL', () => {
         namesTheQueue: true,
         holdsTheKeysLetter: true,
       })
+      // A refusal the command cannot name as one of the queue or the task name is hidden,
+      // whatever refuses and for whatever reason: here a store that refuses a key core's
+      // own checks take, in words that quote it.
+      const refusingStore: StoreOpener = async (url, token, ids, options) => {
+        const opened = await openStore(url, token, ids, options)
+        return {
+          ...opened,
+          scheduler: {
+            ...opened.scheduler,
+            spawn: (_queue, _taskName, _paramsJson, spawnOptions) =>
+              Promise.reject(
+                new PortRefusalError(`this store keeps no key '${spawnOptions?.idempotencyKey}'`),
+              ),
+          },
+        }
+      }
+      const unknown = async (...more: string[]) => {
+        const run = await runCli(
+          [
+            'enqueue',
+            'report',
+            '--key',
+            'a-key-only-this-store-refuses',
+            ...writeFlags(db),
+            '--json',
+            ...more,
+          ],
+          db.env,
+          refusingStore,
+        )
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        return [run.exit, run.stdout.includes('a-key-only-this-store-refuses'), answer.error?.kind]
+      }
+      expect(
+        { hidden: await unknown(), shown: await unknown('--reveal') },
+        'mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name',
+      ).toEqual({ hidden: [3, false, 'refused'], shown: [3, true, 'refused'] })
       // An empty task name is a command line no handler could ever match.
       const noName = await drive(db, ['enqueue', '', '--key', 'k', ...writeFlags(db)])
       expect(

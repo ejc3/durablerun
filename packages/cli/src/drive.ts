@@ -6,7 +6,6 @@ import {
   isPortRefusal,
   parseTaskValueJson,
   refuseReservedEventName,
-  refuseReservedIdempotencyKey,
   requirePortString,
   serializeTaskValue,
 } from '@durablerun/core'
@@ -82,16 +81,18 @@ export function jsonArgument(
 }
 
 /**
- * Whether core's own check of an idempotency key refuses this one: the rule the port holds
- * the string to, and the engine's reserved namespace. A refusal of the key is the one
- * refusal of `spawn` that quotes a value a user wrote. So whether the words of a refusal
- * may print is asked of the check that refuses a key, and never of the words: a key of one
- * letter is in every sentence.
+ * Whether a refusal of `spawn` is of its queue or of its task name: the two strings the
+ * port checks before the key, in the order of its arguments, each asked of core's own
+ * check of it. A queue and a task name print everywhere, so the words of such a refusal
+ * print. Any other refusal may quote the idempotency key, the one value a user wrote that
+ * the call carries as text: a refusal of the key does, and so may one this function does
+ * not know of. So what it cannot name as printable is hidden, and the words of a refusal
+ * are never searched: a key of one letter is in every sentence.
  */
-export function refusesTheKey(key: string): boolean {
+export function refusesAnArgumentThatPrints(queue: string, taskName: string): boolean {
   try {
-    requirePortString('idempotencyKey', key)
-    refuseReservedIdempotencyKey('enqueue', key)
+    requirePortString('queue', queue)
+    requirePortString('taskName', taskName)
     return false
   } catch (error) {
     if (isPortRefusal(error)) return true
