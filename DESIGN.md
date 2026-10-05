@@ -5596,9 +5596,31 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     rollback records `complete`. This is what cancellation does to any live
     task. A caller that must not halt a saga asks for that: `cancelTask` takes
     `unlessSagaBegan`, and the store's cancel compare-and-set then carries one
-    more conjunct, that the task holds no phase marker. The check and the
-    cancellation are one statement, so a saga that begins beside the call is
-    never halted by it: the call answers false and writes nothing. That is
+    more conjunct, that the task holds no phase marker. The conjunct is in
+    the statement that cancels, so no read of the caller's decides anything.
+    A saga that begins beside the call is not halted by it: the call answers
+    false and writes nothing. One statement is not what makes that so, and
+    what does differs by dialect. On libSQL a write batch runs whole under
+    the database's one writer, so the cancel runs before the failure that
+    begins the saga or after it, and after it the conjunct reads the marker.
+    On PostgreSQL the two batches are two transactions, and a subquery reads
+    the snapshot its statement began with. A cancel that began while the
+    failure was still open would wait at the task's row, wake after the
+    marker was committed, and not see it. What closes that is the lock: the
+    cancel and every batch that can end a task, which are the batches that
+    can begin its saga, take the task's completion-event lock before their
+    first statement (§3.2, rule 2 of §3.4). So the cancel's statement does
+    not begin until the failure has committed, and it reads the marker. On
+    MySQL the cancel takes the same lock in the same order. A conformance
+    case holds the outcome on three dialects: the failure that begins the
+    saga is held open at the task's row, the sparing cancel is issued beside
+    it, the cancel answers false, and the rollback pass stands and runs.
+    With the lock left out of `cancel-task` by hand, that case fails on
+    PostgreSQL: the cancel answers true, and the task and its rollback pass
+    are cancelled. With the same plant on MySQL the case still passes, so it
+    does not show the lock to be what holds the outcome there. Every fuzz
+    walk also sends the sparing cancel, as half of its cancels, and fails if
+    one that the store answered true left a task that holds the marker. That is
     the model's Cancel under `CancelMidRollback = "refused"`, which
     `SagasCancelRefused.cfg` checks. The label is `cancel-task` still, and
     the corpus holds the conjunct as the label's second variant. Left out,

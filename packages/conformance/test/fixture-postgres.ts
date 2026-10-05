@@ -76,6 +76,13 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
   }
 }
 
+/**
+ * How long a batch is given to reach the held row, or the lock in front of it. The server
+ * does not say which sessions of a shared database have blocked, so this is real time, and
+ * it is many times what a batch needs to begin and take its first lock.
+ */
+const arrivedAtALock = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 750))
+
 export async function makePostgresFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
@@ -111,6 +118,10 @@ export async function makePostgresFixture(
       raw,
       holdWriteLock: (taskId: string, during: () => Promise<void>) =>
         opened.holdTaskRowLock(taskId, during),
+      holdBatchesAtTheRow: (
+        taskId: string,
+        during: (arrived: () => Promise<void>) => Promise<void>,
+      ) => opened.holdTaskRowLock(taskId, () => during(arrivedAtALock)),
       shortenFirst: [],
       // PostgreSQL waits at the locked row, inside the batch, until its lock_timeout.
       shortenInside: [{ sql: "SET LOCAL lock_timeout = '100ms'", args: [] }],
