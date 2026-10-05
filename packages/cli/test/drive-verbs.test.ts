@@ -422,10 +422,13 @@ describe('enqueue on libSQL', () => {
       const reserved = ['enqueue', 'report', '--key', '$spawn:forged', ...writeFlags(db)]
       const hidden = await drive(db, reserved)
       const shown = await drive(db, [...reserved, '--reveal'])
-      expect({
-        hidden: [hidden.exit, hidden.answer.error?.message?.includes('$spawn:forged')],
-        shown: [shown.exit, shown.answer.error?.message?.includes('$spawn:forged')],
-      }).toEqual({ hidden: [3, false], shown: [3, true] })
+      expect(
+        {
+          hidden: [hidden.exit, hidden.answer.error?.message?.includes('$spawn:forged')],
+          shown: [shown.exit, shown.answer.error?.message?.includes('$spawn:forged')],
+        },
+        'mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name',
+      ).toEqual({ hidden: [3, false], shown: [3, true] })
       // A refusal of the queue prints its words. The key here is one letter, which every
       // sentence holds: what a refusal is of decides whether it prints, and not whether its
       // words hold the key.
@@ -489,10 +492,10 @@ describe('enqueue on libSQL', () => {
         const answer = JSON.parse(run.stdout) as JsonAnswer
         return [run.exit, run.stdout.includes('a-key-only-this-store-refuses'), answer.error?.kind]
       }
-      expect(
-        { hidden: await unknown(), shown: await unknown('--reveal') },
-        'mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name',
-      ).toEqual({ hidden: [3, false, 'refused'], shown: [3, true, 'refused'] })
+      expect({ hidden: await unknown(), shown: await unknown('--reveal') }).toEqual({
+        hidden: [3, false, 'refused'],
+        shown: [3, true, 'refused'],
+      })
       // An empty task name is a command line no handler could ever match.
       const noName = await drive(db, ['enqueue', '', '--key', 'k', ...writeFlags(db)])
       expect(
