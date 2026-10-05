@@ -1,6 +1,6 @@
 # Postmortem: PR3.2b retryTask review round (PR #29)
 
-PR3.2b adds `retryTask`, Absurd's `retry_task`: an operator revives a failed task in place with a new pending run. The model came first and TLC caught the first accounting defect before any SQL existed. An outside Fable `/code-review` round then found three correctness defects in the revival itself. A revival could write a budget past its persisted bound. It derived attempts from counters it never checked, so a corrupt row became a negative attempt count. And its run dropped the parked wake every other successor carries. The same round found a poison-matrix barrier that skipped a revived task outright. All four were committed red and fixed, the dead budget branch is gone, and each mechanism below has its false negative measured.
+PR3.2b adds `retryTask`, Absurd's `retry_task`: an operator revives a failed task in place with a new pending run. The model came first and TLC caught the first accounting defect before any SQL existed. An outside `/code-review` round then found three correctness defects in the revival itself. A revival could write a budget past its persisted bound. It derived attempts from counters it never checked, so a corrupt row became a negative attempt count. And its run dropped the parked wake every other successor carries. The same round found a poison-matrix barrier that skipped a revived task outright. All four were committed red and fixed, the dead budget branch is gone, and each mechanism below has its false negative measured.
 
 ## Severity
 
@@ -18,7 +18,7 @@ The worst escape was the dropped wake. A task that registered on an event, recei
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review`, round 1 | 3 | no |
+| `/code-review`, round 1 | 3 | no |
 | This project's own machinery | 0 | yes |
 
 Self-catch rate: 0% (previous round: 0%, `pr3.2a-lifecycle-review.md`). Our machinery did catch two defects before review, and neither is counted here. TLC on `SchedulerRetry.cfg` found a revival that left the top run unaccounted before any SQL existed. The fault matrix's strict specs caught `retry-task` enrolled but never invoked. Both are the machinery working. The three escapes are the correctness core of the feature, and none of the existing layers could see them.
@@ -59,7 +59,7 @@ Round 2 also found a defect older than this round. The "refuses a replay" case, 
   - `f37aadd`, TLC. `SchedulerRetry.cfg` gives a ten-step counterexample ending in `RetryTask(t1)`, with run 1 holding `e1` and payload 1 and revival run 2 holding neither. The same property completes on `SchedulerCI.cfg` over 568,401 distinct states, which covers the user-retry successor. The claim-timeout sweep's successor needs a nonzero infrastructure-retry cap, so that path was checked later in `SchedulerLiveness2.cfg`: no error over 13,097,995 distinct states, and a model whose sweep drops the wake is caught at `SweepClaimTimeout(1)`.
   - `0794f62`, 2 tests. libSQL revives all four corrupt tasks, and PostgreSQL revives three, because it rejects the fractional ordinal at storage.
 - Fixes: `1cc5d87` turned all 16 named retryTask and carry cases green. TLC completes on `SchedulerRetry.cfg` (1,579,633 distinct states) and `SchedulerCI.cfg` (568,401). `82f7065` puts the accounting invariants in the safety scope, which completes with every vacuity probe witnessed. At `4ffe9c2`, which has the tree the fixes were verified on: `pnpm verify` passes 109 test files and 6,752 tests, and `TLA_SCOPE=ci` witnesses every probe and completes `SchedulerCI.cfg` (568,401 distinct states) and `SchedulerRetry.cfg` (1,579,633) with no error.
-- Finder: Fable `/code-review`, round 1. Quoted verdicts:
+- Finder: `/code-review`, round 1. Quoted verdicts:
   - "revival can raise `max_attempts` past `PERSISTED_INTEGER_BOUNDS.tasks.max_attempts` (confirmed from source)";
   - "the revival run doesn't copy the carried run columns (plausible)";
   - "the revive CAS checks no stored counters (plausible)".

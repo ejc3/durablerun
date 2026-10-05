@@ -1,6 +1,6 @@
 # Postmortem: PR3.9e part 1, the generated follow-ons as trees, review round 1 (PR #43)
 
-PR3.9e part 1 makes the generated follow-ons, `derived()` and `seal()`, build statement trees. One Fable `/code-review` round compared all 62 regenerated statements with the text they replace and found every one a faithful respelling, with the fence, the parentheses, the queue correlation, the source instant, and the bind order intact. It then ran the rules around those statements and found six gaps. Three are regressions: the text path refused the shape and the tree path had stopped. Four more defects were ours, found by our own instruments while fixing the six: two in the repairs, and two holes that turned up when the false-negative exhibits for this document were written and run. All ten are fixed, and no store statement has any of these shapes.
+PR3.9e part 1 makes the generated follow-ons, `derived()` and `seal()`, build statement trees. One `/code-review` round compared all 62 regenerated statements with the text they replace and found every one a faithful respelling, with the fence, the parentheses, the queue correlation, the source instant, and the bind order intact. It then ran the rules around those statements and found six gaps. Three are regressions: the text path refused the shape and the tree path had stopped. Four more defects were ours, found by our own instruments while fixing the six: two in the repairs, and two holes that turned up when the false-negative exhibits for this document were written and run. All ten are fixed, and no store statement has any of these shapes.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -37,7 +37,7 @@ Nothing shipped wrong. The severity is that three rules silently weakened in tra
 | An existing test of the dollar-quote refusal, during the repair | 1 | yes |
 | The witnessed deletion run over the repairs | 1 | yes |
 | The false-negative exhibits, written and run for this document | 2 | yes |
-| Fable `/code-review` and `/simplify`, round 1 over `fce5078...3ab86a6` | 6 | no |
+| `/code-review` and `/simplify`, round 1 over `fce5078...3ab86a6` | 6 | no |
 
 Self-catch rate: 4 of 10, or 40%. The earlier rounds were 0 of 1, 2 of 6, 1 of 7, and 2 of 13. All four self-catches are defects in the repairs or holes beside them, found by instruments pointed at the repairs: an existing test, the deletion run, and the exhibits this template demands. The exhibits earned their place: asked to write the code that still has the bug and still passes, two of four attempts found a bug worth fixing, one of which the text path had carried all along. Nothing of ours found any of the six the review found, and the next section says why that is the finding that matters.
 
@@ -67,7 +67,7 @@ Four, findings 7 to 10. Findings 7 and 8 were caught before the first repair was
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `fce5078...3ab86a6`, run locally in the PR's worktree. It re-ran its top findings with scratch probes against the head and the base. For the statements, its verdict: "All 31 changed statements per dialect keep the same paths, `bindArity`, and placeholder count", with `where` and `narrow` parenthesized, the queue correlation kept, `fence_at_ms` as `min(f.fence_at_ms)`, and bind order unchanged.
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `fce5078...3ab86a6`, run locally in the PR's worktree. It re-ran its top findings with scratch probes against the head and the base. For the statements, its verdict: "All 31 changed statements per dialect keep the same paths, `bindArity`, and placeholder count", with `where` and `narrow` parenthesized, the queue correlation kept, `fence_at_ms` as `min(f.fence_at_ms)`, and bind order unchanged.
 - Quoted findings:
   - "Head accepts it and compiles `set "attempts" = (tasks.attempts + 1)`. Base refuses it with 'bumps a counter blindly'";
   - "A spec with `whereArgs:['r']` and `where` absent or `''` is accepted on head. It compiles with no caller correlation";

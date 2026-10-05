@@ -1,6 +1,6 @@
 # Postmortem: PR3.9e part 2, review round 1 (PR #44)
 
-PR3.9e part 2 moves the thirteen hand-written follow-ons, tails, and open tails of both stores onto shared statement trees, and adds the rules a hand-written tree needs: a follow-on INSERT, a subquery gate tied to the row it guards, and an open tail. One Fable review read every moved statement against the text it replaced and found them faithful in both dialects. It then ran the new rules and found seven gaps. Six are fixed, red first. One stays open, because the fix built for it broke two registered mutations, and it is deferred to part 3. Three more defects were ours, all three in the fixes, and all three caught by our own runs before anything was pushed.
+PR3.9e part 2 moves the thirteen hand-written follow-ons, tails, and open tails of both stores onto shared statement trees, and adds the rules a hand-written tree needs: a follow-on INSERT, a subquery gate tied to the row it guards, and an open tail. One review read every moved statement against the text it replaced and found them faithful in both dialects. It then ran the new rules and found seven gaps. Six are fixed, red first. One stays open, because the fix built for it broke two registered mutations, and it is deferred to part 3. Three more defects were ours, all three in the fixes, and all three caught by our own runs before anything was pushed.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -30,7 +30,7 @@ Nothing shipped wrong. The review's verdict: "This branch introduces no producti
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| One Fable `/code-review` and `/simplify` run over `9aa3b30...da99a02`, with probes against real SQLite and PostgreSQL 17 | 7 | no |
+| One `/code-review` and `/simplify` run over `9aa3b30...da99a02`, with probes against real SQLite and PostgreSQL 17 | 7 | no |
 | The witnessed-deletion run over the fold's new conditions | 2 | yes |
 | The filtered mutation runs over the entries that own the successor's deadline | 1 | yes |
 
@@ -65,7 +65,7 @@ Three of ten, findings 8, 9, and 10, and all three were caught before push by th
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `9aa3b30...da99a02`, 45 minutes, both lenses finished, 10 of 14 candidates surviving its verifier, with probes of its own under a scratch directory.
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `9aa3b30...da99a02`, 45 minutes, both lenses finished, 10 of 14 candidates surviving its verifier, with probes of its own under a scratch directory.
 - Quoted: "The IN branch only checks that the left side is a column", "On real SQLite the victim row became `completed|seed:task` and the fenced run's own task was left alone", "Base 9aa3b30 accepts it as well, so it is carried, not regressed", and "`plain` does not refuse a `RawNode`".
 - What it found sound: guards, conflict arms, orderings, and limits intact in every moved statement; spawn's receipt, the old UNION ALL against the new OR form, identical over 24 cases of id and key on SQLite and on PostgreSQL 17, with both indexes kept in the plan; the bridge digest equal to main's registry.
 - Finding 1. Red: commit `cc1c4ae`, 1 of 275 tests fails, eight untied shapes read as tied. Green: `2cb4320`.

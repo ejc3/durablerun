@@ -1,6 +1,6 @@
 # Postmortem: the verify event-loop yield, review round 1 (PR #45)
 
-PR #45 stops the `verify` job failing on runs in which every test passed. It adds a timer yield after every test of the conformance file, a regression test for it, one root vitest configuration, and a BUILD.md entry. It changes no engine code. One Fable review ran the change's own claims and found no blocking defect and three low ones. A fourth was ours, found by an exhibit written while folding the first. All four are fixed.
+PR #45 stops the `verify` job failing on runs in which every test passed. It adds a timer yield after every test of the conformance file, a regression test for it, one root vitest configuration, and a BUILD.md entry. It changes no engine code. One review ran the change's own claims and found no blocking defect and three low ones. A fourth was ours, found by an exhibit written while folding the first. All four are fixed.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -24,7 +24,7 @@ Nothing here could lose or misattribute durable state. The cost is to the gate's
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| One Fable review over `9aa3b30...7ea9ced`, its own runs | 3 | no |
+| One review over `9aa3b30...7ea9ced`, its own runs | 3 | no |
 | A false-negative exhibit written while folding finding 1 | 1 | yes |
 
 Self-catch rate: 1 of 4. The defect this PR fixes was itself found by our machinery: CI's `verify` failed and the cause was measured. That is not counted here, because the ledger is about the change under review. The built-in `/code-review` lens did not return inside the time box, so the three review findings come from the reviewer's own runs and reading.
@@ -48,7 +48,7 @@ None of four. The fold changed one test and two texts, and the restructured test
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `9aa3b30...7ea9ced`, 20 minutes, in the PR's worktree. `/simplify` finished all four lenses. `/code-review` did not return inside the box. Its verdict: "Every measured claim I could test on this branch held up, and I found no blocking defect."
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `9aa3b30...7ea9ced`, 20 minutes, in the PR's worktree. `/simplify` finished all four lenses. `/code-review` did not return inside the box. Its verdict: "Every measured claim I could test on this branch held up, and I found no blocking defect."
 - Quoted: "Selected alone with `-t \"is not one stall\"`, it fails 1 of 1: `expected 0.455 to be greater than 400`", "\"About 20 seconds on CI, a third of the limit\" has no source in the PR body", and "A between-test yield cannot help inside a single test."
 - What the review ran and found sound: the test fails at 1757 ms with the yield removed and at 0 with the monitor disabled, 10 of 10 runs pass under sixteen busy loops on a four-core quota, no test depends on the old 5000 ms default, and the repository has no fake timers.
 - Finding 1, witnessed at `7ea9ced`: `-t "is not one stall"` exits 1 with "expected 0.69 to be greater than 400". After the fix: whole file passes, no yield fails at 1757, one blocker selected alone passes, a name that matches nothing skips three tests at exit 0, ten runs under load pass. There is no committed red, because the fix removes the test that could be selected.

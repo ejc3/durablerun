@@ -34,7 +34,7 @@ The other four are a rule that was nowhere, a dead line under a sentence that de
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| The one review: a Fable subagent with the built-in code review skill and probes of its own on servers of its own | 6 | No |
+| The one review: a subagent with the built-in code review skill and probes of its own on servers of its own | 6 | No |
 | This project's machinery | 0 | Yes |
 
 Self-catch rate: 0 of 6, or 0% (previous round in this line of work, the keyed write locks: 2 of 5, or 40%).
@@ -76,7 +76,7 @@ No finding was introduced by the fixes of this review's own fold. Those fixes we
 - Red tests: commit `1bae085`, probe `packages/store-mysql/test/executor.test.ts` `refuses a migration batch sent as a read, and sends nothing`, run and seen failing (1 test) against `401f364`: accepted, with the `CREATE TABLE` sent inside the read-only transaction.
 - Fixes: commit `0f739d8`, which turns `1bae085` green; gate after fix: the MySQL store's suite, 78 of 78, and the shared schema and admin surface on MySQL, 9 of 9.
 - Fixes: commit `7f29ee8` registers a mutation for each refusal, and commit `b356274` holds the documents for findings 1, 5 and 6 and the options with their triggers; gate after fix: the registry's self-test, 965 entries with every find exactly once, the bridge run on a fresh copy of the base's registry, and the base's own copies of six checkers on this tree.
-- Finder: the one review of the pull request, a Fable subagent that invoked the built-in code review skill and ran probes of its own on servers of its own, quoted verdict: "I found no HIGH and no MEDIUM. Every finding below is LOW." and, first of all, "Nothing I found requires a change" to what a version's author writes, what the runner sends, or what a rerun after a crash does.
+- Finder: the one review of the pull request, a subagent that invoked the built-in code review skill and ran probes of its own on servers of its own, quoted verdict: "I found no HIGH and no MEDIUM. Every finding below is LOW." and, first of all, "Nothing I found requires a change" to what a version's author writes, what the runner sends, or what a rerun after a crash does.
 - What the review reproduced, so that an outside reader can audit the round: both of the branch's earlier reds failing by name at their commits; the PostgreSQL wire recorded with its own recorder, 153 frontend messages for each build of which 132 are Query, Parse or Bind, byte identical; 192 jittered races of real migrators of both builds and 120 rounds of racing bootstraps, every one finishing with a clean schema; a real 35 second hold of the migration lock, with the same outcome on both builds; all 58 cuts on a server of its own; fourteen mutations applied by hand, each failing by name.
 - Claims that did NOT reproduce, and what settled each. The review's question assumed that the old text-match mutation on MySQL's repeatable statements had been re-owned to the generated cuts. It had not, and the body had said so: the base gate runs the base's registry, which binds that verdict to the text match's marker, and the bridge never moves a verdict. The reviewer's own words: "The body is accurate here. Your question's premise was not." The test spells the released build's lock as one expression with literals, which is not the text of the statement that build sends. The reviewer settled that it is equal in effect by running the case against the base's real `migrate()`, which waited on exactly that name with no table written.
 

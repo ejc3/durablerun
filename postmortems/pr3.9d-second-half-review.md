@@ -1,6 +1,6 @@
 # Postmortem: PR3.9d second half, review round 1 (PR #41)
 
-PR3.9d's second half moves the last compare-and-sets onto shared statement trees: spawn's task insert, the lost-launch sweep's reopen and cap, and the claim-timeout sweep's failure. It widens the closed statement grammar by one field, a partial-index predicate on a conflict target, which spawn's idempotency index needs. One Fable `/code-review` round found the four moved statements equal to the SQL they replace in both dialects, with every bind in its old order, and found one defect in the new grammar field: nothing read what the predicate holds. The review's other seven points were wording and duplication. The defect is fixed, and nothing shipped wrong.
+PR3.9d's second half moves the last compare-and-sets onto shared statement trees: spawn's task insert, the lost-launch sweep's reopen and cap, and the claim-timeout sweep's failure. It widens the closed statement grammar by one field, a partial-index predicate on a conflict target, which spawn's idempotency index needs. One `/code-review` round found the four moved statements equal to the SQL they replace in both dialects, with every bind in its old order, and found one defect in the new grammar field: nothing read what the predicate holds. The review's other seven points were wording and duplication. The defect is fixed, and nothing shipped wrong.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -20,7 +20,7 @@ Nothing shipped wrong: spawn's predicate is `idempotency_key is not null`, which
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review` round 1 over `28984c5...d720f10` | 1 | no |
+| `/code-review` round 1 over `28984c5...d720f10` | 1 | no |
 
 Self-catch rate: 0 of 1. The earlier rounds were 2 of 6, 1 of 7, and 2 of 13. One finding is too few to call a trend in either direction. What the round does show is that the instruments built in the earlier rounds held: the review tried the bind order of a twenty-bind insert, NULL propagation through the cancel deadline, PostgreSQL's typing of values that used to be literals, the corpus scenario's task identities, and the bridge arm, and reported no finding for any of them. The one defect was in the one place this PR added a rule with nothing beside it.
 
@@ -41,7 +41,7 @@ None in the code. One in the process, caught before it left the machine: the fir
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `28984c5...d720f10`, run locally in the PR's worktree, with all six finder lenses, its verifier, and all four simplify lenses complete. Its verdict: "`/code-review` found no correctness bug. Eight LOW findings survive its verifier."
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `28984c5...d720f10`, run locally in the PR's worktree, with all six finder lenses, its verifier, and all four simplify lenses complete. Its verdict: "`/code-review` found no correctness bug. Eight LOW findings survive its verifier."
 - Quoted finding: "`indexWhere` is admitted with no check that reads what it holds. `insertShapeProblem` checks only `columns.length`", and "I measured PostgreSQL 17 accepting both a bind and a stronger predicate, inferring the same index and swallowing the same conflict. SQLite 3.36 refuses both."
 - Red test: commit `5cacb54`, run and seen failing (1 of 49 tests) against `d720f10` with "expected [Function] to throw an error": a predicate comparing to a bound value, and a predicate that is a store fragment.
 - Fix: commit `5a3844f`, after which core and the corpus test pass (248 tests). Witnessed: deleting either refusal fails the new test, and refusing inline values too fails the test that admits spawn's own predicate. After the round's other folds, 1236 sweep, spawn, and migrator conformance cases pass in both dialects.

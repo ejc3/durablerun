@@ -1,6 +1,6 @@
 # Postmortem: PR3.5a simplification review (PR #25)
 
-PR3.5a is the first slice of the PR3.5 simplification sweep. Its contract is that it reshapes code without changing behavior, except where a change is named. Two Fable `/code-review` rounds ran over the branch.
+PR3.5a is the first slice of the PR3.5 simplification sweep. Its contract is that it reshapes code without changing behavior, except where a change is named. Two `/code-review` rounds ran over the branch.
 
 Round one covered `main...d971246` and reported ten findings. One is a correctness finding in this repository's sense, meaning a reachable contract or release-safety violation: the sweep deleted a type exported by the published `@durablerun/core`. Round one also claimed that the loopback listen helper absorbed later server errors. Round two's experiment found no reachable trigger for that, so it is recorded as latent hygiene rather than a correctness finding.
 
@@ -23,8 +23,8 @@ Round two covered `main...ed99ed6` and judged the fixes and the `/simplify` pass
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review` round one over `main...d971246` (10 findings reported; 1 is a correctness finding) | 1 | No |
-| Fable `/code-review` round two over `main...ed99ed6` (10 findings reported; 8 were introduced by round-one fixes and the simplify pass; none is a correctness finding) | 0 | No |
+| `/code-review` round one over `main...d971246` (10 findings reported; 1 is a correctness finding) | 1 | No |
+| `/code-review` round two over `main...ed99ed6` (10 findings reported; 8 were introduced by round-one fixes and the simplify pass; none is a correctness finding) | 0 | No |
 
 Self-catch rate: 0 of 1, or 0% (previous round: 40%, `watcher-2026-09-09-github-observer.md`).
 
