@@ -20,27 +20,48 @@ import { stateView } from './inspect.js'
 
 /**
  * A JSON string or a JSON number, as the grammar writes each. A string is matched so that
- * the digits inside one are not read as a number.
+ * the digits inside one are not read as a number. A number is matched in its parts: the
+ * digits before the point, the digits after it, and the exponent.
  */
 const JSON_STRING_OR_NUMBER =
-  /"(?:[^"\\]|\\.)*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g
+  /"(?:[^"\\]|\\.)*"|-?(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?/g
 
 /**
  * Why a JSON text cannot be stored as it was written, or null when it can. Reading a number
- * makes it a double. One that is past what a double holds is read as no finite number and
- * would be written as `null`, and an integer with more digits than a double keeps would be
- * written as another integer. Either is a document other than the one the caller passed.
- * The text is one JSON value already, so every digit outside a string is part of a number.
+ * makes it a double, and three kinds of number are another number once read. One past
+ * what a double holds is read as no finite number and would be written as `null`. One that
+ * is not zero and is nearer zero than any double would be written as `0`. And an integer
+ * that no double is would be written as another integer. Each is a document other than
+ * the one the caller passed.
+ *
+ * The refusal is over the number's value and not its spelling: an integer is one however
+ * it is written, as digits alone, with a fraction part of zeros, or with an exponent. So
+ * the token is read exactly, as its digits times a power of ten, and compared with the
+ * double. A number that is no integer is left to the double nearest it. The text is one
+ * JSON value already, so every digit outside a string is part of a number.
  */
 function numberNotHeld(text: string): string | null {
-  for (const [token] of text.matchAll(JSON_STRING_OR_NUMBER)) {
+  for (const [token, whole, fraction = '', exponent = '0'] of text.matchAll(
+    JSON_STRING_OR_NUMBER,
+  )) {
     if (token.startsWith('"')) continue
     const read = Number(token)
     if (!Number.isFinite(read)) {
       return 'holds a number that is not finite once it is read, as 1e400 is, so it would be stored as null'
     }
-    if (/^-?[0-9]+$/.test(token) && BigInt(token) !== BigInt(read)) {
-      return 'holds an integer a double cannot hold, as 12345678901234567890 is, so it would be stored as another number: pass it as a string'
+    // The number as it is written, without its sign: `kept` times ten to the `power`,
+    // where `kept` ends in no zero.
+    const digits = `${whole}${fraction}`
+    const kept = digits.replace(/0+$/, '')
+    // Zero, however it is written.
+    if (kept === '') continue
+    if (read === 0) {
+      return 'holds a number that is not zero as it is written and reads as zero, as 1e-400 is, so it would be stored as 0'
+    }
+    const power = Number(exponent) - fraction.length + (digits.length - kept.length)
+    // A finite number has at most 309 digits before its point, so the power is small here.
+    if (power >= 0 && BigInt(kept) * 10n ** BigInt(power) !== BigInt(Math.abs(read))) {
+      return 'holds an integer a double cannot hold, as 12345678901234567890 is however it is written, so it would be stored as another number: pass it as a string'
     }
   }
   return null

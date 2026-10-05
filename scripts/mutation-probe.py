@@ -21195,6 +21195,13 @@ MUTATION_SPECS.extend(
             "    if (false) { // MUTATION: a switch of a cancel's options is taken whatever it is\n",
             "cancelTask with unlessSagaBegan of 1 or 'true' reaches every store, which reads the switch as off: the cancel carries no saga conjunct and halts a rollback its caller asked it to spare",
         ),
+        (
+            "cli-refuses-a-number-by-its-value",
+            "packages/cli/src/drive.ts",
+            "    if (power >= 0 && BigInt(kept) * 10n ** BigInt(power) !== BigInt(Math.abs(read))) {\n",
+            "    if (/^-?[0-9]+$/.test(token) && BigInt(token) !== BigInt(read)) { // MUTATION: only a number written as digits alone is compared\n",
+            "enqueue --params with a 20 digit integer written with a fraction of zeros or an exponent stores another integer, and prints the digest of what it stored",
+        ),
     )
 )
 VERDICTS.update(
@@ -21205,6 +21212,12 @@ VERDICTS.update(
             "identifier bound conformance [libsql] refuses the options of a cancel that are no object, or whose unlessSagaBegan is no boolean, before anything is sent",
             "mutation-verdict:behavior:port-cancel-options-are-held-to-a-boolean",
             "packages/conformance/src/identifier-bound.ts",
+        ),
+        "cli-refuses-a-number-by-its-value": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL refuses a number by its value, however it is written: an integer a double cannot hold with a fraction of zeros or an exponent, and a number that reads as zero and is not",
+            "mutation-verdict:behavior:cli-refuses-a-number-by-its-value",
         ),
     }
 )
@@ -25135,7 +25148,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1407:
+        if len(MUTATIONS) != 1408:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

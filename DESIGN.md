@@ -6435,8 +6435,12 @@ reach.
   a store its JSON through, so a task enqueued here holds the bytes it holds when it is
   enqueued over HTTP, and `null` when none is given. A document that would not be stored as
   it was written is refused as a usage error that says which: a number that is not finite
-  once it is read, as `1e400` is, or an integer a double cannot hold, as
-  `12345678901234567890` is. So what is stored, and what the printed digest is of, is what
+  once it is read, as `1e400` is, a number that is not zero as it is written and reads as
+  zero, as `1e-400` is, or an integer a double cannot hold, as `12345678901234567890` is.
+  The refusal is over the number's value and not its spelling. An integer is refused
+  however it is written, with a fraction part of zeros or with an exponent too, so
+  `9007199254740993.0` and `1e23` are refused, and `9007199254740992.0` and `1e22`, which
+  a double holds, are taken. So what is stored, and what the printed digest is of, is what
   the caller passed, in canonical form: the same values, with a fraction read as the double
   nearest it. `emit --payload` is read the same way. A refusal of the port prints its words
   when it is of the queue or of the task name, the two strings the port checks before the
