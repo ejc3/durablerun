@@ -466,7 +466,7 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
         // sparing cancels cancelled a task, and nine more met a live task that was rolling
         // back, in nine walks, and the store left each as it was. So one walk in about
         // seventy meets the state this check is for, and no floor could hold that count in
-        // a shard. With the libSQL store planted to ignore the option, four of the 124
+        // a shard. With the libSQL store planted to ignore the option, four of the 125
         // walks of two shards of `verify:fuzz` failed here.
         if ((await checkpointState(f.raw, taskId, SAGA_PHASE_CHECKPOINT)) !== undefined) {
           throw new Error(
