@@ -20467,6 +20467,27 @@ MUTATION_SPECS.extend(
             "cancel decides from a read made before the write that it will not call the port, so a task that appears between the two is not cancelled",
         ),
         (
+            "cli-tick-refuses-a-wait-a-timer-cannot-hold",
+            "packages/cli/src/commands.ts",
+            "  return seconds === null || seconds === 0 || seconds > TICK_MAX_TIMEOUT_SECONDS ? null : seconds\n",
+            "  return seconds === null || seconds === 0 ? null : seconds // MUTATION: a wait no timer holds is taken\n",
+            "tick --timeout 25d is taken, its timer fires at once, and the command exits 6 as if the deployment had not answered",
+        ),
+        (
+            "cli-tick-reads-no-more-of-an-answer-than-its-cap",
+            "packages/cli/src/http.ts",
+            "    if (held > most) {\n",
+            "    if (false) { // MUTATION: the whole of an answer is read, whatever its length\n",
+            "tick holds every byte of an answer that never ends until its wait is over, and then says the deployment did not answer",
+        ),
+        (
+            "cli-tick-exits-6-for-an-answer-that-says-try-later",
+            "packages/cli/src/main.ts",
+            "  if (saysTryLater(status, code)) {\n",
+            "  if (status === 503) { // MUTATION: only a 503 says try later\n",
+            "tick exits 7 for a gateway's 502 or 504 and for a 429, so a caller that repeats only an outage gives up on a deployment that was busy",
+        ),
+        (
             "cli-retry-reports-the-live-run-a-repeat-finds",
             "packages/cli/src/main.ts",
             "        outcome: wasFailed ? 'revived' : 'already-live',\n",
@@ -20788,6 +20809,24 @@ VERDICTS.update(
             "saga conformance [libsql] a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is",
             "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
             "packages/conformance/src/sagas.ts",
+        ),
+        "cli-tick-refuses-a-wait-a-timer-cannot-hold": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address waits by a clock that keeps time up to the longest wait a timer holds, and refuses a longer wait before anything is sent",
+            "mutation-verdict:behavior:cli-tick-refuses-a-wait-a-timer-cannot-hold",
+        ),
+        "cli-tick-reads-no-more-of-an-answer-than-its-cap": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address reads a long answer as it arrives: a pass that swept 600 rows prints whole, and an answer that never ends is cut at the cap and named",
+            "mutation-verdict:behavior:cli-tick-reads-no-more-of-an-answer-than-its-cap",
+        ),
+        "cli-tick-exits-6-for-an-answer-that-says-try-later": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address answers a deployment that cannot be reached or says try later with exit 6, and one whose answer a repeat would not change with exit 7",
+            "mutation-verdict:behavior:cli-tick-exits-6-for-an-answer-that-says-try-later",
         ),
         "cli-a-confirmed-verb-always-makes-its-call": ExpectedVerdict(
             "behavior",
@@ -24990,7 +25029,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1397:
+        if len(MUTATIONS) != 1400:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

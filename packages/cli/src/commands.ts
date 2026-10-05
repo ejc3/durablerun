@@ -224,6 +224,13 @@ export const SWEEP_DEFAULT_LIMIT = STUCK_DEFAULT_LIMIT
 /** How long `tick` waits for the deployment's answer when `--timeout` is not given. */
 export const TICK_DEFAULT_TIMEOUT_SECONDS = 60
 
+/**
+ * The longest `tick` waits, in seconds: what a timer holds. A timer keeps its delay in 31
+ * bits of milliseconds, and the runtime fires a longer one at once, so a wait past this
+ * would end as it began. It is 24 days and 20 hours: `24d` is within it and `25d` is not.
+ */
+export const TICK_MAX_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000)
+
 const DURATION_UNITS = { s: 1, m: 60, h: 3_600, d: 86_400 } as const
 
 /**
@@ -236,6 +243,15 @@ export function durationSeconds(text: string): number | null {
   if (match === null) return null
   const seconds = Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS]
   return seconds * 1000 > MAX_DURATION_MS ? null : seconds
+}
+
+/**
+ * The seconds `tick --timeout` waits: a duration as above, above zero, of at most
+ * `TICK_MAX_TIMEOUT_SECONDS`. Null for any other text.
+ */
+export function tickTimeoutSeconds(text: string): number | null {
+  const seconds = durationSeconds(text)
+  return seconds === null || seconds === 0 || seconds > TICK_MAX_TIMEOUT_SECONDS ? null : seconds
 }
 
 /** A whole number from 1 to `most`, as a flag writes one. Null for any other text. */
@@ -535,7 +551,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
       timeout: {
         type: 'string',
         value: 'D',
-        description: `how long to wait for the answer: a whole number above zero and s, m, h or d, as in 90s; ${TICK_DEFAULT_TIMEOUT_SECONDS}s when not given`,
+        description: `how long to wait for the answer: a whole number above zero and s, m, h or d, as in 90s, of at most ${TICK_MAX_TIMEOUT_SECONDS}s; ${TICK_DEFAULT_TIMEOUT_SECONDS}s when not given`,
       },
     },
     opensStore: false,

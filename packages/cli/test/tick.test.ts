@@ -2,10 +2,15 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { type Clock, systemClock } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { COMMANDS, TICK_DEFAULT_TIMEOUT_SECONDS, VERBS } from '../src/commands.js'
+import {
+  COMMANDS,
+  TICK_DEFAULT_TIMEOUT_SECONDS,
+  TICK_MAX_TIMEOUT_SECONDS,
+  VERBS,
+} from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
-import { TICK_PATH, deploymentOrigin, tickRequest } from '../src/http.js'
-import { TICK_TOKEN, onDeployment, serving } from './hosted.js'
+import { BODY_MAX_BYTES, TICK_PATH, deploymentOrigin, tickRequest } from '../src/http.js'
+import { TICK_TOKEN, dropping, neverEnding, onDeployment, serving } from './hosted.js'
 import { BIN, type JsonAnswer, QUEUE, ROOT, runCli } from './support.js'
 
 /**
@@ -254,41 +259,129 @@ describe('tick --url against a hosted router on the loopback address', () => {
     }
   })
 
-  it('answers a deployment that is not there, one that is unavailable and one that is no tick route with the exits the table declares', async () => {
-    const gone = await answering(200, '{}')
-    await gone.close()
-    const unavailable = await answering(503, '{"error":"service_unavailable"}')
-    const notFound = await answering(404, '{"error":"not_found"}')
-    const notJson = await answering(200, '<html>a page</html>')
+  it('waits by a clock that keeps time up to the longest wait a timer holds, and refuses a longer wait before anything is sent', async () => {
+    // A deployment that answers after a moment. A wait that ended at once would not see it.
+    const slow = await serving(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150))
+      return new Response('{"swept":[]}', { status: 200 })
+    })
+    try {
+      const asked = (timeout: string) =>
+        tick(['--url', slow.url, '--timeout', timeout, '--json'], envOf(slow))
+      const longest = await asked(`${TICK_MAX_TIMEOUT_SECONDS}s`)
+      const days = await asked('24d')
+      const sent = slow.connections()
+      const past = await asked(`${TICK_MAX_TIMEOUT_SECONDS + 1}s`)
+      const moreDays = await asked('25d')
+      const refused = (run: Awaited<ReturnType<typeof asked>>) => [
+        run.exit,
+        run.answer?.error?.kind,
+        run.answer?.error?.message?.includes(`${TICK_MAX_TIMEOUT_SECONDS}s`),
+      ]
+      expect(
+        {
+          longest: [longest.exit, longest.answer?.timeoutSeconds],
+          days: [days.exit, days.answer?.timeoutSeconds],
+          past: refused(past),
+          moreDays: refused(moreDays),
+          sentWhenRefused: slow.connections() - sent,
+        },
+        'mutation-verdict:behavior:cli-tick-refuses-a-wait-a-timer-cannot-hold',
+      ).toEqual({
+        // 2^31 - 1 milliseconds, in whole seconds.
+        longest: [0, 2_147_483],
+        days: [0, 24 * 86_400],
+        past: [2, 'usage', true],
+        moreDays: [2, 'usage', true],
+        sentWhenRefused: 0,
+      })
+    } finally {
+      await slow.close()
+    }
+  })
+
+  it('reads a long answer as it arrives: a pass that swept 600 rows prints whole, and an answer that never ends is cut at the cap and named', async () => {
+    const swept = Array.from({ length: 600 }, (_, row) => ({
+      kind: 'claim-timeout',
+      taskId: `task-${row}`.padEnd(64, 't'),
+      runId: `run-${row}`.padEnd(64, 'r'),
+    }))
+    const long = await answering(200, JSON.stringify({ swept, claimed: 0 }))
+    const endless = await neverEnding(200)
+    try {
+      const whole = await tick(['--url', long.url, '--json'], envOf(long))
+      const cut = await tick(['--url', endless.url, '--timeout', '5s', '--json'], envOf(endless))
+      expect(
+        {
+          whole: [
+            whole.exit,
+            (whole.answer?.tick as { swept?: unknown[] } | undefined)?.swept?.length,
+          ],
+          cut: [cut.exit, cut.answer?.error?.kind, cut.answer?.status],
+          // It let go at the cap, and did not read for as long as it was allowed to wait.
+          letGoAtTheCap: endless.written() < 8 * BODY_MAX_BYTES,
+        },
+        'mutation-verdict:behavior:cli-tick-reads-no-more-of-an-answer-than-its-cap',
+      ).toEqual({
+        whole: [0, 600],
+        cut: [exitCode('permanent'), 'answer-too-large', 200],
+        letGoAtTheCap: true,
+      })
+    } finally {
+      await long.close()
+      await endless.close()
+    }
+  }, 60_000)
+
+  it('answers a deployment that cannot be reached or says try later with exit 6, and one whose answer a repeat would not change with exit 7', async () => {
+    // A listener that drops every connection: the request fails by construction.
+    const gone = await dropping()
+    const answers = {
+      unavailable: await answering(503, '{"error":"service_unavailable"}'),
+      badGateway: await answering(502, '<html>bad gateway</html>'),
+      gatewayTimeout: await answering(504, ''),
+      tooMany: await answering(429, '{"error":"rate_limited"}'),
+      // A 500 that is not the router's own: the platform under it failed.
+      crashed: await answering(500, 'the function crashed'),
+      // The router's own answer to a failure no retry cures.
+      permanent: await answering(500, '{"error":"internal_error"}'),
+      notFound: await answering(404, '{"error":"not_found"}'),
+      notJson: await answering(200, '<html>a page</html>'),
+    }
     try {
       const asked = async (deployment: { url: string }) => {
         const run = await tick(['--url', deployment.url, '--json'], envOf(deployment))
         return [run.exit, run.answer?.error?.kind, run.answer?.status, run.answer?.code]
       }
-      expect({
-        gone: await asked(gone),
-        unavailable: await asked(unavailable),
-        notFound: await asked(notFound),
-        notJson: await asked(notJson),
-      }).toEqual({
-        gone: [exitCode('unavailable'), 'unreachable', undefined, undefined],
-        unavailable: [
-          exitCode('unavailable'),
-          'deployment-unavailable',
-          503,
-          'service_unavailable',
-        ],
-        notFound: [exitCode('permanent'), 'unexpected-answer', 404, 'not_found'],
-        notJson: [exitCode('permanent'), 'unexpected-answer', 200, undefined],
+      const said: Record<string, unknown> = { gone: await asked(gone) }
+      for (const [name, deployment] of Object.entries(answers)) {
+        said[name] = await asked(deployment)
+      }
+      const outage = exitCode('unavailable')
+      const permanent = exitCode('permanent')
+      expect(
+        said,
+        'mutation-verdict:behavior:cli-tick-exits-6-for-an-answer-that-says-try-later',
+      ).toEqual({
+        gone: [outage, 'unreachable', undefined, undefined],
+        unavailable: [outage, 'deployment-unavailable', 503, 'service_unavailable'],
+        badGateway: [outage, 'deployment-unavailable', 502, undefined],
+        gatewayTimeout: [outage, 'deployment-unavailable', 504, undefined],
+        tooMany: [outage, 'deployment-unavailable', 429, 'rate_limited'],
+        crashed: [outage, 'deployment-unavailable', 500, undefined],
+        permanent: [permanent, 'deployment-error', 500, 'internal_error'],
+        notFound: [permanent, 'unexpected-answer', 404, 'not_found'],
+        notJson: [permanent, 'unexpected-answer', 200, undefined],
       })
+      // The request reached the listener, and the listener dropped it.
+      expect(gone.dropped()).toBeGreaterThan(0)
       // Every exit `tick` gave here and above is one the table declares for it.
       for (const exit of ['unavailable', 'permanent', 'unauthorized', 'usage', 'done'] as const) {
         expect(COMMANDS.tick.exits).toContain(exit)
       }
     } finally {
-      await unavailable.close()
-      await notFound.close()
-      await notJson.close()
+      await gone.close()
+      for (const deployment of Object.values(answers)) await deployment.close()
     }
   })
 

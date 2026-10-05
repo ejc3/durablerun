@@ -1,4 +1,5 @@
-import { type IncomingMessage, type Server, createServer } from 'node:http'
+import { type IncomingMessage, createServer } from 'node:http'
+import { type Server, createServer as createTcpServer } from 'node:net'
 import { systemClock } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { bearerAuthorization, createHostedRouter } from '@durablerun/driver'
@@ -103,6 +104,65 @@ export async function serving(
     connections: () => accepted,
     close: () =>
       new Promise<void>((resolve) => {
+        server.close(() => resolve())
+        server.closeAllConnections()
+      }),
+  }
+}
+
+/** A listener that is no hosted router: where it is, and how to close it. */
+export interface Listener {
+  readonly url: string
+  close(): Promise<void>
+}
+
+/**
+ * A listener that takes every connection and drops it before any answer. A request to it
+ * fails by construction, on a busy host too: nothing depends on a port staying free.
+ */
+export async function dropping(): Promise<Listener & { dropped(): number }> {
+  let dropped = 0
+  const server = createTcpServer((socket) => {
+    dropped += 1
+    socket.destroy()
+  })
+  const port = await listening(server)
+  return {
+    url: `http://127.0.0.1:${port}`,
+    dropped: () => dropped,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  }
+}
+
+/**
+ * A deployment whose answer never ends: it sends its status and then its body in pieces,
+ * for as long as the caller holds the connection. `written` is how many bytes of body it
+ * has handed over.
+ */
+export async function neverEnding(status: number): Promise<Listener & { written(): number }> {
+  let written = 0
+  const piece = Buffer.alloc(256 * 1024, ' ')
+  const writing = new Set<ReturnType<typeof setInterval>>()
+  const server = createServer((incoming, outgoing) => {
+    incoming.resume()
+    outgoing.writeHead(status, { 'content-type': 'application/json' })
+    const timer = setInterval(() => {
+      written += piece.byteLength
+      outgoing.write(piece)
+    }, 5)
+    writing.add(timer)
+    outgoing.on('close', () => {
+      clearInterval(timer)
+      writing.delete(timer)
+    })
+  })
+  const port = await listening(server)
+  return {
+    url: `http://127.0.0.1:${port}`,
+    written: () => written,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const timer of writing) clearInterval(timer)
         server.close(() => resolve())
         server.closeAllConnections()
       }),

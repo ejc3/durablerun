@@ -20,11 +20,13 @@ import {
   STUCK_DEFAULT_LIMIT,
   SWEEP_DEFAULT_LIMIT,
   TICK_DEFAULT_TIMEOUT_SECONDS,
+  TICK_MAX_TIMEOUT_SECONDS,
   UsageError,
   VERBS,
   type Verb,
   durationSeconds,
   parseInvocation,
+  tickTimeoutSeconds,
   usage,
   wholeNumber,
 } from './commands.js'
@@ -49,7 +51,15 @@ import {
   readUnreadableRow,
   ringClosedBy,
 } from './explain.js'
-import { deploymentOrigin, postTick, routerErrorCode, tickRequest } from './http.js'
+import {
+  BODY_MAX_BYTES,
+  deploymentOrigin,
+  isRoutersPermanentAnswer,
+  postTick,
+  routerErrorCode,
+  saysTryLater,
+  tickRequest,
+} from './http.js'
 import { corruptView, factsView, stateView, whatIsNotReadable } from './inspect.js'
 import {
   MissingDatabaseError,
@@ -1042,7 +1052,9 @@ const sweep: Handler = async (context) => {
  * answer. It opens no store. Nothing is sent unless `--url` names the origin of
  * DURABLERUN_BASE_URL, and the token goes in the Authorization header to that origin
  * alone. An answer that does not come within the timeout exits `unavailable`: the pass may
- * still have run, and a tick is safe to send again.
+ * still have run, and a tick is safe to send again. An answer that says the deployment
+ * cannot now exits `unavailable` too. Only an answer a repeat would not change exits
+ * `permanent`.
  */
 async function tick(
   invocation: Invocation,
@@ -1050,10 +1062,10 @@ async function tick(
   clock: Clock,
 ): Promise<Answer> {
   const shown = invocation.strings.timeout
-  const seconds = shown === undefined ? TICK_DEFAULT_TIMEOUT_SECONDS : durationSeconds(shown)
-  if (seconds === null || seconds === 0) {
+  const seconds = shown === undefined ? TICK_DEFAULT_TIMEOUT_SECONDS : tickTimeoutSeconds(shown)
+  if (seconds === null) {
     return flagRefused(
-      '--timeout takes a whole number above zero and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years',
+      `--timeout takes a whole number above zero and a unit, s, m, h or d, as in 90s or 2m, of at most ${TICK_MAX_TIMEOUT_SECONDS}s, the longest wait a timer holds: 24d is within it and 25d is not`,
     )
   }
   const request = tickRequest({
@@ -1066,7 +1078,7 @@ async function tick(
   }
   const sentTo = { url: request.endpoint, timeoutSeconds: seconds }
   const outcome = await postTick(request, seconds * 1000, clock)
-  if (outcome.kind !== 'answered') {
+  if (outcome.kind === 'timed-out' || outcome.kind === 'unreachable') {
     return {
       exit: 'unavailable',
       view: {
@@ -1081,7 +1093,9 @@ async function tick(
       },
     }
   }
-  const { status, body } = outcome
+  const { status } = outcome
+  // A body longer than is read is no body. Only a 200 is told from another by it.
+  const body = outcome.kind === 'answered' ? outcome.body : undefined
   if (status === 200 && body !== undefined)
     return { exit: 'done', view: { ...sentTo, status, tick: body } }
   const code = routerErrorCode(body)
@@ -1096,11 +1110,27 @@ async function tick(
       `the deployment refused the token tick sent, with HTTP ${status}`,
     )
   }
-  if (status === 503) {
+  if (saysTryLater(status, code)) {
     return refused(
       'unavailable',
       'deployment-unavailable',
-      'the deployment answered HTTP 503: its store or its authorization is unavailable',
+      status === 503
+        ? 'the deployment answered HTTP 503: its store or its authorization is unavailable'
+        : `the deployment answered HTTP ${status}, which says it cannot now. A tick is safe to send again`,
+    )
+  }
+  if (isRoutersPermanentAnswer(status, code)) {
+    return refused(
+      'permanent',
+      'deployment-error',
+      'the deployment answered HTTP 500 internal_error, which a hosted route answers for a failure a repeat does not cure, such as a schema it does not read. Its own log says what failed',
+    )
+  }
+  if (status === 200 && outcome.kind === 'answer-too-large') {
+    return refused(
+      'permanent',
+      'answer-too-large',
+      `the deployment answered HTTP 200 with a body longer than ${BODY_MAX_BYTES} bytes, and no more of it was read. If it is a tick route, the pass ran: stats and stuck say what the queue holds now`,
     )
   }
   return refused(

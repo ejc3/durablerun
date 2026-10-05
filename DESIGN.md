@@ -6510,11 +6510,22 @@ is made. Both must be https, or http to a loopback address (`localhost`, `127.0.
 cannot carry is refused, so neither URL as given nor the token is ever printed. The request
 goes to `/api/tick` of that origin whatever path either URL holds. A redirect is answered
 as the status it is and never followed, so the token goes to no second origin. The wait
-ends through the injected clock after `--timeout`, 60 seconds by default. The command exits
-4 when the deployment refuses the token (401 or 403), 6 when the deployment could not be
-reached, did not answer in time or answered 503, and 7 for any other status and for a 200
-whose body is not one JSON object. An answer that does not come in time leaves the outcome
-unknown: the pass may have run, and a tick is safe to send again.
+ends through the injected clock after `--timeout`, 60 seconds by default. The longest wait
+is 2,147,483 seconds, which is what a timer holds: the runtime fires a longer timer at
+once, so a longer wait is refused before anything is sent (`24d` is taken and `25d` is
+not). The answer's body is read as it arrives, and at most 4 MiB of it. A tick's body lists
+every transition its sweep made, about 600 bytes each at the widest ids, so that holds a
+pass that swept several thousand rows. Reading stops at the first byte past it, so a long
+answer is never held whole. The command exits 4 when the deployment refuses the token (401
+or 403). It exits 6 when the deployment could not be reached, did not answer in time, or
+answered that it cannot now: 408, 425, 429 and any 5xx, a gateway's 502 or 504 among them,
+because a tick is safe to send again. One 5xx is not an outage: 500 with the code
+`internal_error`, which a hosted route answers for a failure no retry cures (section 3.5),
+exits 7 as `deployment-error`. It exits 7 as well for any other status, for a 200 whose
+body is not one JSON object (`unexpected-answer`), and for a 200 whose body is past the cap
+(`answer-too-large`): no tick route is known to have answered, and if one did the pass ran.
+An answer that does not come in time leaves the outcome unknown: the pass may have run, and
+a tick is safe to send again.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
@@ -6580,8 +6591,8 @@ same table, which a test holds equal to this one.
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
 | 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
-| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time or answered 503; safe to repeat, with retries capped, because a wrong store credential exits 6 too |
-| 7 | permanent | the store answered with a permanent error, or the deployment answered tick with a status no tick route gives |
+| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not its own permanent 500); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
+| 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what a repeat does not change: a status no tick route gives, its own permanent 500, or a 200 that is no JSON object or is too long to read |
 | 8 | not-found | no such task in the queue |
 | 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
